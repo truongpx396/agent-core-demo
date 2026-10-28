@@ -56,9 +56,9 @@ For a question about Ecorp's OWN policy, procedure, or product behavior,
 use ONLY the knowledge base (search_docs) and the skill catalog
 (skill_search/use_skill) to answer it — never guess or invent an answer
 from general knowledge. If the knowledge base resolves the question,
-answer directly with citations. search_docs' own `topic` filter, if you
-use it at all, only ever accepts `langgraph`, `qdrant`, or `company` —
-omit it entirely rather than guess a value outside that list, and never
+answer directly with citations. search_docs' own `topic` filter only ever
+accepts `langgraph`, `qdrant`, or `company` — pass null for it rather than
+guess a value outside that list, and never
 use search_docs at all for something that isn't an Ecorp policy/procedure
 question in the first place (see the pasted-log/payload case below).
 

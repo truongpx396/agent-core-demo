@@ -6,12 +6,48 @@ whole product would go down to protect one collection. So the condition is repor
 dependency checks say.
 """
 import asyncio
+import re
+from contextlib import asynccontextmanager
+from pathlib import Path
 
+import pytest
 from fastapi import Response
 
 from app.api import health
 from app.api.routers import system
 from app.retrieval import qdrant_store
+
+
+class _Cursor:
+    def __init__(self, rows):
+        self._rows = rows
+
+    async def fetchall(self):
+        return self._rows
+
+
+def _database(monkeypatch, missing=(), fails=False):
+    """The appdata pool, with these tables missing (Postgres does the filtering; the fake returns what it
+    would). Every test in this file gets one with nothing missing: these tests are about the other sources,
+    and without it the schema source would read whatever database the machine running them happens to have."""
+
+    @asynccontextmanager
+    async def get_connection():
+        if fails:
+            raise ConnectionError("appdata unreachable")
+
+        class _Conn:
+            async def execute(self, _sql, _params=None):
+                return _Cursor([(name,) for name in missing])
+
+        yield _Conn()
+
+    monkeypatch.setattr(health.sql_store, "get_connection", get_connection)
+
+
+@pytest.fixture(autouse=True)
+def _complete_schema(monkeypatch):
+    _database(monkeypatch)
 
 
 def _status(state, expected=None, found=None):
@@ -161,3 +197,80 @@ async def test_an_unreachable_dependency_still_makes_the_api_unready_whatever_th
     body = await system.health_ready(response)
 
     assert response.status_code == 503 and body.status == "degraded" and body.warnings == []
+
+
+# --- a database that predates the schema scripts ----------------------------------------------------
+# Langfuse traces `e0ca1456` and `de85f4e8` (GRAPH_PATTERNS.md pattern 81): `postgres-init/` runs on a fresh
+# volume only, the dev database was missing seven tables, and /health/ready said "ready" while a tool failed
+# with UndefinedTable, the duplicate-call guard ran degraded, nothing was metered and the budget check failed
+# open on every turn.
+
+
+async def test_missing_tables_are_named_with_the_scripts_that_create_them_in_order(monkeypatch):
+    monkeypatch.setattr(qdrant_store, "identity_status", _status("absent"))
+    _ml(monkeypatch, {"models": {}})
+    _database(monkeypatch, missing=["usage_events", "support_ticket_comments", "tool_call_dedup"])
+
+    (warning,) = await health.readiness_warnings()
+
+    assert "missing 3 table(s)" in warning
+    assert "tool_call_dedup, support_ticket_comments, usage_events" in warning
+    order = [warning.index(f"postgres-init/{s}") for s in ("13-tool-call-dedup.sql", "15-append-notes-as-rows.sql", "19-usage-events.sql")]
+    assert order == sorted(order)
+
+
+async def test_the_warning_cautions_about_the_script_that_drops_columns(monkeypatch):
+    monkeypatch.setattr(qdrant_store, "identity_status", _status("absent"))
+    _ml(monkeypatch, {"models": {}})
+    _database(monkeypatch, missing=["support_ticket_comments"])
+    assert "drops the `notes` columns" in (await health.readiness_warnings())[0]
+
+    _database(monkeypatch, missing=["usage_events"])
+    assert "drops" not in (await health.readiness_warnings())[0]
+
+
+async def test_a_complete_schema_says_nothing(monkeypatch):
+    monkeypatch.setattr(qdrant_store, "identity_status", _status("absent"))
+    _ml(monkeypatch, {"models": {}})
+    assert await health.readiness_warnings() == []
+
+
+async def test_an_unreachable_database_adds_no_warning_because_the_dependency_check_reports_it(monkeypatch):
+    monkeypatch.setattr(qdrant_store, "identity_status", _status("absent"))
+    _ml(monkeypatch, {"models": {}})
+    _database(monkeypatch, fails=True)
+    assert await health.readiness_warnings() == []
+
+
+async def test_a_missing_table_never_makes_the_api_unready(monkeypatch):
+    _database(monkeypatch, missing=["usage_events"])
+    monkeypatch.setattr(qdrant_store, "identity_status", _status("absent"))
+    _ml(monkeypatch, {"models": {}})
+
+    async def healthy():
+        return {"qdrant": True, "appdata_postgres": True, "checkpointer_postgres": True, "redis": True, "ml_service": True}
+
+    monkeypatch.setattr(health, "check_dependencies", healthy)
+    response = Response()
+    body = await system.health_ready(response)
+
+    assert response.status_code == 200 and body.status == "ready"
+    assert any("usage_events" in w for w in body.warnings)
+
+
+_INIT = Path(__file__).resolve().parents[2] / "postgres-init"
+_CREATE = re.compile(r"CREATE TABLE(?: IF NOT EXISTS)?\s+(\w+)", re.IGNORECASE)
+# Not in the list on purpose: superseded by 16 and read by nothing, and the billing package's scripts, which have their own tool.
+_NOT_LISTED = {"12-tenant-budget-reservations.sql", "20-credit-wallet.sql", "22-billing.sql", "24-billing-usage-events.sql", "25-billing-export-outbox.sql"}
+
+
+def test_the_list_of_tables_is_exactly_what_the_scripts_create():
+    """So a new script cannot add a table that no warning knows about, and a renamed table cannot leave a
+    warning that sends someone to apply the wrong file."""
+    created = {
+        (table, script.name)
+        for script in sorted(_INIT.glob("*.sql"))
+        if script.name not in _NOT_LISTED
+        for table in _CREATE.findall(script.read_text())
+    }
+    assert created == set(health.APPDATA_TABLES)

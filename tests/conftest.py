@@ -101,7 +101,9 @@ from opentelemetry.sdk.metrics import MeterProvider
 from opentelemetry.sdk.metrics.export import InMemoryMetricReader
 
 from app.agent.graph import build as graph_build
+from app.api import identity
 from app.core import classification, moderation
+from app.core.config import settings
 from app.retrieval.embedding_identity import EmbeddingIdentity
 
 TEST_CTX = {"tenant": "ecorp", "principal": "test-user", "claims": {}}
@@ -379,6 +381,26 @@ def mock_model_pricing(monkeypatch):
     monkeypatch.setattr(pricing, "_fetch_model_info", _free_local_model)
     yield
     pricing.reset_pricing_state()
+
+
+@pytest.fixture(autouse=True)
+def header_auth_mode(monkeypatch):
+    """The hermetic suite runs the API in HEADER mode, chosen explicitly (specs/018, task T059).
+
+    Identity mode is the product default: the API trusts only the signed identity the authlimit front door adds, and refuses a request without
+    one. Every API test written before that existed sends `X-Tenant-Id` / `X-Principal-Id`, so each one must say that it means header mode;
+    this says it once, for all of them, and nothing else about those tests changes. A test of identity mode asks for `identity_mode` below.
+    `settings` is a plain object read per request (app/api/deps.py::get_ctx), so there is no cache to clear."""
+    monkeypatch.setattr(settings, "auth_mode", "headers")
+
+
+@pytest.fixture
+def identity_mode(monkeypatch):
+    """Opt a test back in to the default: identity mode, with no verifier built yet, so the test installs its own (tests/api/test_deps_auth_modes.py
+    shows how) and none leaks into the next test."""
+    monkeypatch.setattr(settings, "auth_mode", "identity")
+    monkeypatch.setattr(identity, "_verifier", None)
+    monkeypatch.setattr(identity, "_keys", None)
 
 
 def pytest_sessionfinish(session, exitstatus):

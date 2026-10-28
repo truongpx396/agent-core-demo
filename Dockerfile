@@ -38,7 +38,7 @@ FROM python:3.13-slim@sha256:57b29a7c050c4e679e4bea572e14b3965cf4b5839de2da49d55
 # is pinned the same way. 0.12.24 rather than the newest because the 0.13 line was days old when this was written (Dependabot's
 # cooldown now applies that rule to its own bumps). It is copied into the builder stage only. As its own named stage so that
 # Dependabot, which reads `FROM` lines, can see and bump it.
-FROM ghcr.io/astral-sh/uv:0.12.24@sha256:3af4716e991d6956a41e573eab705d0ee08500cd829ed30293eb8472f372c65a AS uv
+FROM ghcr.io/astral-sh/uv:0.13.5@sha256:32a7bb39b496babbd997b0a39a4d66c126bdaf5661b302bf6f06abda8deca6ff AS uv
 
 # ---- builder: dependencies only, never shipped ------------------------------------------------------------------------------
 FROM base AS builder
@@ -127,12 +127,12 @@ COPY app/ ./app/
 #   skills/, subagents/ — the catalogs `load_skills()` / `load_subagents()` scan
 #       (`SKILLS_DIR` / `SUBAGENTS_DIR`, relative to WORKDIR); an absent
 #       directory is `{}`, not an error.
-#   scripts/ — `opensandbox_mcp_bridge.py`, which `load_sandbox_tools()` spawns
-#       with this interpreter (no bridge: zero sandbox tools, with only a
-#       logged warning), plus `python -m scripts.index_skills` / `seed` and the
+#   scripts/ — `python -m scripts.index_skills` / `seed` and the
 #       cron jobs (`ops_digest`, `followup_sweep`, `tool_call_dedup_sweep`) that
 #       an operator runs inside the container. The whole package ships rather
 #       than a hand-picked list that would drift the next time one is added.
+#       (`load_sandbox_tools()` needs no file from here any more: it runs the
+#       installed `opensandbox_mcp` package, `python -m opensandbox_mcp`.)
 # tests/test_dockerfile_runtime_files.py fails if one of these stops being copied
 # (or is dropped by .dockerignore); CI's `docker-build` job runs the built image
 # to prove they actually landed.

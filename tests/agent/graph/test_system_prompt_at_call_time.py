@@ -104,8 +104,8 @@ async def test_a_compaction_breadcrumb_is_not_mistaken_for_a_legacy_prompt():
 
 
 async def test_dropping_a_legacy_prompt_does_not_move_the_context_off_the_question():
-    """Retrieved context is spliced in right before the turn's question, at an index recorded
-    before the call is built. Removing messages ahead of it shifts that index, so it is re-located."""
+    """Retrieved context rides on the turn's question, which is found by an index recorded before the
+    call is built. Removing messages ahead of it shifts that index, so it is re-located."""
     saver, thread = MemorySaver(), str(uuid.uuid4())
     seen = []
 
@@ -118,6 +118,6 @@ async def test_dropping_a_legacy_prompt_does_not_move_the_context_off_the_questi
     await g.ainvoke({"messages": [HumanMessage(content="what is the refund policy")]}, config=cfg(thread))
 
     call_ = seen[0]
-    question_at = next(i for i, m in enumerate(call_) if isinstance(m, HumanMessage))
+    question = next(m for m in call_ if isinstance(m, HumanMessage))
     assert call_[0].content == "You are the CURRENT prompt."
-    assert "REFUND POLICY TEXT" in call_[question_at - 1].content
+    assert "REFUND POLICY TEXT" in question.content and question.content.index("REFUND POLICY TEXT") < question.content.index("what is the refund policy")

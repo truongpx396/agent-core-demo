@@ -167,7 +167,8 @@ cannot be judged or safely changed later.
 
 ## Architecture & Technology Constraints
 
-- **Runtime**: Python 3.13 (Dockerfile and CI). Tool, store, and client I/O is async-first. The
+- **Runtime**: Python 3.13 (Dockerfile and CI) for the app. A deployable program in another language is allowed only under
+  "Non-Python services" below. Tool, store, and client I/O is async-first. The
   durable checkpointer (`AsyncPostgresSaver`) MUST be opened on the same event loop that uses it.
   `MemorySaver` is for tests and ephemeral subagent runs only.
 - **LLM access**: every chat and embedding call goes through the LiteLLM proxy
@@ -230,6 +231,25 @@ cannot be judged or safely changed later.
   - Principles I, II and IV apply to it unchanged: tenant scoping inside its own queries, no
     module that defines or serves a tool may import it or its integration package, and its
     writes are idempotent at the target.
+- **Non-Python services**: a deployable program in a language other than Python (today `services/authlimit/`, Go) follows
+  these rules.
+  - It lives in its own directory `services/<name>/` with its own module manifest and lock file, its own tests, its own
+    Dockerfile and its own CI job. The Dockerfile has a build stage and a minimal runtime stage, both pinned by digest; what
+    ships runs as a non-root user and carries no shell or package manager.
+  - It imports nothing from the app and the app imports nothing from it. They meet only over an HTTP contract documented
+    under `specs/<n>/contracts/`. The only files both sides read are declared (shared test vectors, JSON registries) and are
+    read by tests, never by the other side's runtime code.
+  - The boundary is enforced in both directions by a test that fails the build (today
+    `tests/core/test_authlimit_boundary.py`), not by convention.
+  - Principles I, V, VI and VII apply to it unchanged: tenant identity comes only from a verified token; every dependency
+    failure has a stated policy, a metric and, where a person could be unaware, an alert (its metric names live in one file
+    the alert-drift test reads); a token, key or claim value other than tenant and principal ids never reaches a log, metric
+    label or error body; its default test suite is hermetic.
+  - Where it implements a rule the Python side also implements (token verification), both implementations are held to the
+    same cases by shared vectors that both run, so they cannot drift.
+  - Its secrets (signing keys) are mounted at run time from outside the repository; they are never baked into an image or
+    committed.
+  - A further language or service needs its own Complexity Tracking entry in its plan.
 
 ## Development Workflow & Quality Gates
 
@@ -275,4 +295,4 @@ states the intent and the conflicting document MUST be corrected.
 - **Runtime guidance**: day-to-day development guidance for agents and contributors lives in
   `CLAUDE.md` and `.claude/rules/`; those files MUST NOT contradict this constitution.
 
-**Version**: 1.3.0 | **Ratified**: 2026-10-01 | **Last Amended**: 2026-10-22
+**Version**: 1.4.0 | **Ratified**: 2026-10-01 | **Last Amended**: 2026-10-27

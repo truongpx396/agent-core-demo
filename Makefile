@@ -1,4 +1,4 @@
-.PHONY: model-eval model-eval-all model-eval-baseline model-eval-data model-eval-verify router-label labelset-calibrate test-billing-package help up up-app sandbox-up sandbox-build pull-models pull-strong-model probe-tools ingest index-skills reembed chat chat-hitl serve mcp-serve mcp-serve-ops telegram telegram-support telegram-sales agent-worker agent-worker-support agent-worker-ops agent-worker-sales restart-all fake-llm ingest-worker ops-digest followup-sweep tool-call-dedup-sweep usage-events-sweep usage-events-carry-over billing-migrate billing-migrate-status billing-inbox-sweep billing-export-worker billing-usage-sweep usage-reconcile usage-reconcile-worker budget-policy litellm-key gateway-check test test-integration test-live test-sandbox lint typecheck eval promptfoo promptfoo-redteam deepeval garak garak-full trivy trivy-image semgrep checkov sonar-up sonar-down sonar-scan zap-baseline zap-api-scan zap-view defectdojo-up defectdojo-down defectdojo-import loadtest-queued loadtest-queued-headless strix strix-app strix-view logs down clean clear-cache clear-streams clear-checkpoints clear-langfuse clear-litellm clear-all obs-up obs-down obs-logs obs-clean
+.PHONY: model-eval model-eval-all model-eval-baseline model-eval-data model-eval-verify router-label labelset-calibrate test-billing-package help up up-app sandbox-up sandbox-build pull-models pull-strong-model probe-tools ingest index-skills reembed chat chat-hitl serve mcp-serve mcp-serve-ops mcp-gateway-secrets mcp-gateway-up mcp-gateway-bootstrap mcp-gateway-ca mcp-gateway-smoke mcp-gateway-down authlimit-test authlimit-build authlimit-keys authlimit-keys-ensure authlimit-up authlimit-up-app authlimit-down authlimit-down-app authlimit-smoke authlimit-latency authlimit-mutants authlimit-revoke telegram telegram-support telegram-sales agent-worker agent-worker-support agent-worker-ops agent-worker-sales restart-all fake-llm ingest-worker ops-digest followup-sweep tool-call-dedup-sweep usage-events-sweep usage-events-carry-over billing-migrate billing-migrate-status billing-inbox-sweep billing-export-worker billing-usage-sweep usage-reconcile usage-reconcile-worker budget-policy litellm-key gateway-check test test-integration test-live test-sandbox lint typecheck eval promptfoo promptfoo-redteam deepeval garak garak-full trivy trivy-image semgrep checkov sonar-up sonar-down sonar-scan zap-baseline zap-api-scan zap-view defectdojo-up defectdojo-down defectdojo-import loadtest-queued loadtest-queued-headless strix strix-app strix-view logs down clean clear-cache clear-streams clear-checkpoints clear-langfuse clear-litellm clear-all obs-up obs-down obs-logs obs-clean
 
 # Pinned DefectDojo release — see `defectdojo-up`'s own comment for why this
 # is a plain git clone into ~/.cache (NOT vendored into this repo, same
@@ -18,6 +18,16 @@ export PYTHONPATH := $(CURDIR)/packages/billing/src:$(CURDIR)/docker/ml-service$
 
 DEFECTDOJO_VERSION := 3.3.100
 DEFECTDOJO_DIR := $(HOME)/.cache/agent-core-demo-defectdojo
+
+# The MCP gateway stack's generated secrets (the Casdoor database and admin passwords) live OUTSIDE the repo, in a private directory, and are
+# handed to compose as a second --env-file; `.env` is passed first when it exists so every other variable keeps coming from it.
+GATEWAY_DIR     := $(HOME)/.cache/agent-core-demo-mcp-gateway
+GATEWAY_SECRETS := $(GATEWAY_DIR)/secrets.env
+
+# The authlimit service's internal signing keys (specs/018) also live OUTSIDE the repo, in a private directory created with the host user's
+# ownership (so the container, which runs as that user, can read what only its owner may). Never committed, never in an image.
+AUTHLIMIT_DIR      := $(HOME)/.cache/agent-core-demo-authlimit
+AUTHLIMIT_KEYS_DIR := $(AUTHLIMIT_DIR)/keys
 
 # Every compose file lives under deploy/compose/, but they were written with
 # repo-root-relative paths (`./observability/...`, `./postgres-init`,
@@ -60,7 +70,7 @@ pull-models:  ## Download the chat model (qwen2.5:7b, about 4.7 GB), the small m
 pull-strong-model:  ## Download the dev stand-in for the escalation alias (chat-strong): a LOCAL 14B model, about 9 GB (a size up from the 7B chat model). Only needed once ROUTER_MODE is shadow or on
 	ollama pull qwen2.5:14b
 
-probe-tools:  ## Does the configured chat model emit tool calls the app can use? 22 labelled prompts against the app's real tools plus 4 open-ended ones that must not loop; about 2 minutes on a native Ollama (`ARGS=--no-loops` is the seconds-long tool half). Run it after ANY change to a chat alias's model or repeat_penalty: make probe-tools [ARGS="--alias chat-strong"] [ARGS="--model qwen2.5:7b --repeat-penalty 1.3 1.1"] (GRAPH_PATTERNS.md pattern 73)
+probe-tools:  ## Does the configured chat model emit tool calls the app can use? 25 labelled prompts against the app's real tools plus 4 open-ended ones that must not loop; about 2 minutes on a native Ollama (`ARGS=--no-loops` is the seconds-long tool half). Run it after ANY change to a chat alias's model or repeat_penalty: make probe-tools [ARGS="--alias chat-strong"] [ARGS="--model qwen2.5:7b --repeat-penalty 1.3 1.1"] (GRAPH_PATTERNS.md pattern 73)
 	python -m scripts.toolcall_probe $(ARGS)
 
 ingest:  ## Embed sample docs and upsert them into Qdrant
@@ -92,14 +102,76 @@ serve:  ## Start the FastAPI service (http://localhost:8000/docs)
 	# measurably slowing down/timing out ordinary chat turns.
 	uvicorn app.api.main:app --host 0.0.0.0 --port 8000 --reload --reload-dir app
 
-mcp-serve:  ## Start the MCP server exposing query_employees (stdio transport; needs `make up`)
+mcp-serve:  ## Start the MCP server exposing query_employees (stdio transport; needs `make up`, and MCP_TENANT + MCP_PRINCIPAL in .env or exported: the identity it acts for, never a tool argument)
 	python -m app.mcp.server
 
-mcp-inspect:  ## Launch the MCP Inspector against app/mcp/server.py for interactive testing
+mcp-inspect:  ## Launch the MCP Inspector against app/mcp/server.py for interactive testing (set MCP_TENANT + MCP_PRINCIPAL first, as for mcp-serve)
 	mcp dev app/mcp/server.py
 
-mcp-serve-ops:  ## Start the MCP server exposing fetch_metrics_summary/list_recent_incidents (stdio transport; needs `make up`) — see app/mcp/ops_server.py
+mcp-serve-ops:  ## Start the MCP server exposing fetch_metrics_summary/list_recent_incidents (stdio transport; needs `make up`, and MCP_PRINCIPAL in .env or exported) — see app/mcp/ops_server.py
 	python -m app.mcp.ops_server
+
+# GATEWAY_COMPOSE is defined after COMPOSE (which the command line may override, as the tests of this stack do).
+# AUTHLIMIT_UID/GID run the authlimit containers as the host user (see the service in docker-compose.yml); AUTHLIMIT_KEYS_DIR is the key directory.
+GATEWAY_ENV = AUTHLIMIT_UID=$$(id -u) AUTHLIMIT_GID=$$(id -g) AUTHLIMIT_KEYS_DIR=$(AUTHLIMIT_KEYS_DIR)
+GATEWAY_COMPOSE_CMD = $(COMPOSE) $(if $(wildcard .env),--env-file .env) --env-file $(GATEWAY_SECRETS) --profile gateway
+GATEWAY_COMPOSE = $(GATEWAY_ENV) $(GATEWAY_COMPOSE_CMD)
+
+mcp-gateway-secrets:  # internal: create the generated passwords once (never overwritten)
+	@mkdir -p $(GATEWAY_DIR) && chmod 700 $(GATEWAY_DIR)
+	@test -f $(GATEWAY_SECRETS) || { ( umask 077; printf 'CASDOOR_DB_PASSWORD=%s\nCASDOOR_ADMIN_PASSWORD=%s\n' "$$(openssl rand -hex 16)" "$$(openssl rand -hex 16)" > $(GATEWAY_SECRETS) ) && echo "created $(GATEWAY_SECRETS) (the Casdoor admin password is in it)"; }
+
+mcp-gateway-up: mcp-gateway-secrets authlimit-keys-ensure  ## Start the MCP gateway stack (specs/017): Casdoor + its Postgres, the OAuth-protected gateway and a Caddy with local TLS on https://mcp.localhost:8443. Needs `make up` (the app database). Then `make mcp-gateway-bootstrap`
+	$(GATEWAY_COMPOSE) up -d --build --no-deps casdoor-db casdoor mcp-gateway authlimit authlimit-echo caddy-gateway
+
+mcp-gateway-bootstrap: mcp-gateway-secrets  ## Create (idempotently) the Casdoor organizations, applications, scopes and demo users the gateway expects, and print the `claude mcp add` commands. ARGS="--tenant acme --tenant other-co" adds tenants (default: ecorp)
+	@. $(GATEWAY_SECRETS) && export CASDOOR_ADMIN_PASSWORD && $(GATEWAY_COMPOSE) exec -T -e CASDOOR_ADMIN_PASSWORD mcp-gateway python -m scripts.mcp_gateway_bootstrap $(ARGS)
+
+mcp-gateway-ca: mcp-gateway-secrets  ## Export Caddy's local root certificate so a client can trust https://*.localhost:8443 (prints the NODE_EXTRA_CA_CERTS line for Claude Code)
+	$(GATEWAY_COMPOSE) cp caddy-gateway:/data/caddy/pki/authorities/local/root.crt $(GATEWAY_DIR)/caddy-root.crt
+	@echo "export NODE_EXTRA_CA_CERTS=$(GATEWAY_DIR)/caddy-root.crt   # before starting Claude Code"
+
+mcp-gateway-smoke: mcp-gateway-secrets  ## The OAuth + MCP end-to-end check against the running gateway stack, as a client does it (throwaway users, deleted after). Run it after `make mcp-gateway-ca` and `make mcp-gateway-bootstrap`, and after any change to the Casdoor digest. A manual tier, like test-sandbox: never CI
+	@. $(GATEWAY_SECRETS) && export CASDOOR_ADMIN_PASSWORD && python -m scripts.mcp_gateway_smoke --ca $(GATEWAY_DIR)/caddy-root.crt
+
+mcp-gateway-down: mcp-gateway-secrets  ## Stop and remove the gateway stack's containers (its volumes stay: the Casdoor database and Caddy's local CA)
+	$(GATEWAY_COMPOSE) rm -sf caddy-gateway authlimit authlimit-echo mcp-gateway casdoor casdoor-db
+
+authlimit-test:  ## Go vet + the authlimit service's own tests with the race detector (specs/018; no Docker, no services; needs Go)
+	cd services/authlimit && go vet ./... && go test -race ./...
+
+authlimit-build:  ## Build the authlimit service image (distroless, non-root, no shell)
+	docker build -t authlimit:dev services/authlimit
+
+authlimit-keys: authlimit-build  ## Manage the internal signing keys outside the repo. ARGS="init" (default, once) | "rotate --overlap 10m" | "list". Runs as you, so the files are yours (mode 600) and the container, which runs as you too, can read them
+	@mkdir -p $(AUTHLIMIT_DIR) && chmod 700 $(AUTHLIMIT_DIR)
+	@docker run --rm --user "$$(id -u):$$(id -g)" -v $(AUTHLIMIT_DIR):/work authlimit:dev keys $(or $(ARGS),init) --dir /work/keys
+
+authlimit-keys-ensure:  # internal: create the first signing key if there is none (never replaces one)
+	@test -f $(AUTHLIMIT_KEYS_DIR)/keyset.json || $(MAKE) --no-print-directory authlimit-keys
+
+authlimit-up: mcp-gateway-up  ## The authlimit stack: same as mcp-gateway-up (the MCP routes always go through authlimit) - Casdoor, authlimit x2, the MCP gateway, a stub upstream and Caddy on https://{api,mcp,auth}.localhost:8443. Needs `make up` (Redis, Postgres); then `make mcp-gateway-bootstrap`
+
+authlimit-up-app: mcp-gateway-secrets authlimit-keys-ensure  ## The authlimit stack with the REAL API behind the door instead of the echo stub (spec 018): the API in identity mode (it trusts only the signed identity the door adds), one agent worker, Caddy pointed at it. Needs `make up`; then `make mcp-gateway-bootstrap` and `make mcp-gateway-ca`. The web UI is at https://api.localhost:8443/
+	AUTH_MODE=identity AUTHLIMIT_UPSTREAM=api:8000 $(GATEWAY_COMPOSE) --profile app up -d --build --no-deps casdoor-db casdoor authlimit authlimit-echo mcp-gateway api agent-worker caddy-gateway
+
+authlimit-down-app: mcp-gateway-secrets  ## Stop what authlimit-up-app started, the API and its worker included (the next `--profile app up` brings the API back in header mode)
+	$(GATEWAY_COMPOSE) --profile app rm -sf caddy-gateway authlimit authlimit-echo mcp-gateway casdoor casdoor-db api agent-worker
+
+authlimit-down: mcp-gateway-down  ## Stop the authlimit stack's containers (same as mcp-gateway-down)
+
+authlimit-smoke: mcp-gateway-secrets  ## The end-to-end check of the front door as a client sees it: sign-in, refusal, rate limit, revocation, replica kill, Casdoor outage, key rotation (throwaway users, deleted after). Run after `make authlimit-up`, `make mcp-gateway-ca` and `make mcp-gateway-bootstrap`. A manual tier like mcp-gateway-smoke: never CI
+	@. $(GATEWAY_SECRETS) && export CASDOOR_ADMIN_PASSWORD && $(GATEWAY_ENV) python -m scripts.authlimit_smoke --ca $(GATEWAY_DIR)/caddy-root.crt --keys-dir $(AUTHLIMIT_KEYS_DIR) --compose '$(GATEWAY_COMPOSE_CMD)' $(ARGS)
+
+authlimit-latency:  ## How much time the front door's check adds to a request: a checked route against a public one, same connection, alternating (specs/018 SC-008). Run after `make authlimit-up` and `make mcp-gateway-bootstrap`. ARGS="-n 1000 --path /chat/sessions"
+	@. $(GATEWAY_SECRETS) && export CASDOOR_ADMIN_PASSWORD && python -m scripts.authlimit_latency --ca $(GATEWAY_DIR)/caddy-root.crt $(ARGS)
+
+authlimit-mutants:  ## Apply each deliberate defect of the authlimit service's mutation list and require a test to fail (specs/018 SC-010). Edits the source in place and restores it; run on a clean tree. Needs Go
+	python scripts/authlimit_mutants.py
+
+authlimit-revoke:  ## Void every token issued to a person, on every authlimit replica within seconds: make authlimit-revoke TENANT=ecorp SUB=<the person's id>   (`authlimit revoke --list` shows them)
+	@test -n "$(TENANT)" -a -n "$(SUB)" || { echo "usage: make authlimit-revoke TENANT=<tenant> SUB=<subject>"; exit 2; }
+	$(GATEWAY_COMPOSE) exec -T --index 1 authlimit /authlimit revoke --tenant "$(TENANT)" --sub "$(SUB)"
 
 telegram:  ## Start the Telegram bot channel for the Ecorp domain (needs TELEGRAM_BOT_TOKEN in .env; see app/channels/telegram.py)
 	python -m app.channels.telegram
@@ -473,11 +545,23 @@ loadtest-queued-headless:  ## Fixed 20-user, 2-minute headless run of the queued
 		--headless --users 20 --spawn-rate 5 --run-time 2m \
 		--csv loadtest/results-queued/loadtest --html loadtest/results-queued/report.html
 
-strix:  ## Autonomous AI pentest of this repo's SOURCE (static) — needs Docker, `pipx install strix-agent` once (pipx isolates it from this repo's own .venv, the pip-conflict concern `make garak` solves with a second venv instead), and a CLOUD LLM key (STRIX_LLM/LLM_API_KEY — NOT the local Ollama the rest of this app runs on). Only ever point it at a target you own or have written authorization to test.
-	strix --target . --scan-mode quick
+# Strix reads neither `.env` nor anything `make` could hand it: a variable reaches it only when it is exported in the shell
+# (or stored in ~/.strix/cli-config.json), so a STRIX_LLM written in `.env` alone gives "STRIX_LLM is not set". Load JUST the
+# names it documents (the model, its key and base URL, and the two optional web-search keys), not the whole file: the file also
+# carries OPENAI_API_BASE (the local LiteLLM proxy), which Strix reads as an alias of LLM_API_BASE and would send the scan's
+# cloud-model calls to, and every other secret in it, which a pentest agent has no use for. The aliases are unset for the
+# same reason, in case the shell exported them. A non-empty value in `.env` wins over one already exported; an empty
+# `NAME=` line is ignored, and the last of two lines wins. The file is READ, never evaluated: a value is taken literally
+# (one pair of matching quotes is stripped; no `$VAR`, no inline `# comment`), so a key with a space or a `;` in it is data
+# and not a command the shell would run.
+STRIX_ENV = for n in STRIX_LLM LLM_API_KEY LLM_API_BASE EXA_API_KEY PERPLEXITY_API_KEY; do v=$$(sed -n -E "s/^$$n=(.+)$$/\1/p" .env 2>/dev/null | tail -n 1); case "$$v" in \"*\") v=$${v\#\"}; v=$${v%\"};; \'*\') v=$${v\#\'}; v=$${v%\'};; esac; [ -n "$$v" ] && export "$$n=$$v"; done; env -u OPENAI_API_BASE -u LITELLM_BASE_URL -u OLLAMA_API_BASE
+
+# make strix ARGS="--instruction 'This is my own repo; I am the owner and authorize a defensive security review of its source.' --max-budget 1"
+strix:  ## Autonomous AI pentest of this repo's SOURCE (static) — needs Docker, `pipx install strix-agent` once (pipx isolates it from this repo's own .venv, the pip-conflict concern `make garak` solves with a second venv instead), and a CLOUD LLM key (STRIX_LLM/LLM_API_KEY, read from .env or your shell — NOT the local Ollama the rest of this app runs on). Only ever point it at a target you own or have written authorization to test. Extra Strix flags go in ARGS: make strix ARGS="--instruction 'This is my own repo; ...'" (or --instruction-file, --max-budget 1)
+	$(STRIX_ENV) strix --target . --scan-mode quick $(ARGS)
 
 strix-app:  ## Same tool, but black-box against the RUNNING app + its OpenAPI spec (needs `make up` + `make serve`/`make up-app`, and `make ingest` for real data to probe) — dynamic testing, not just a source read
-	strix --target http://localhost:8000/openapi.json --target http://localhost:8000 --scan-mode quick
+	$(STRIX_ENV) strix --target http://localhost:8000/openapi.json --target http://localhost:8000 --scan-mode quick $(ARGS)
 
 strix-view:  ## Open the local dashboard (findings, repro steps, agent graph) for the most recent `make strix`/`make strix-app` run
 	strix view

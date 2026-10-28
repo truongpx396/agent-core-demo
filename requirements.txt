@@ -68,7 +68,9 @@ opentelemetry-exporter-otlp-proto-http>=1.27,<2
 
 # Hybrid retrieval (app/embeddings.py) — local/ONNX BM25 sparse embedding +
 # cross-encoder reranker, no torch/sentence-transformers dependency.
-fastembed>=0.8.0,<1
+# >=0.9.1: the first release whose Pillow bound is `<14`. 0.8.x and 0.9.0 declare `pillow<13`, which held Pillow at 12.3.0 and with it
+# three CRITICAL Pillow CVEs that are fixed only in 13.0.0 (the Trivy hard gate was red on main for them for 16 runs, 2026-10-23 to 2026-10-28).
+fastembed>=0.9.1,<1
 
 # Structured-data tool (app/sql_store.py) — psycopg 3, not psycopg2 —
 # plus psycopg_pool for a real connection pool (pattern 31), not a fresh
@@ -82,12 +84,12 @@ psycopg[binary,pool]>=3.1,<4
 # redis-py has bundled async support since 4.2.
 redis>=5.0,<9
 
-# MCP: app/mcp_server.py (server, exposing query_employees) AND
-# app/mcp_client.py (client, consuming a remote MCP tool catalog). Pinned
-# to the last stable 1.x line: mcp==2.0.0 removed mcp.server.fastmcp in a
-# rewrite (verified empirically — ModuleNotFoundError on 2.0.0), so this
-# app stays on 1.29.0's documented, standard FastMCP/ClientSession API.
-mcp[cli]==1.29.0
+# MCP: app/mcp/server.py + ops_server.py (servers this app publishes, on `mcp.server.MCPServer`) AND app/mcp/client.py +
+# connection.py (the client that consumes a remote server's tools, on `ClientSession`). The 2.x line: 1.x is in maintenance
+# (security fixes only) and 2.x is where the protocol is going (the 2026-07-28 revision). It was held on 1.x while the sandbox
+# bridge below imported `mcp.server.fastmcp`, which 2.x removed; opensandbox-mcp 1.1 moved to `MCPServer` and requires
+# `mcp[cli]>=2,<3`, so nothing holds it back now. tests/core/test_mcp_sdk_pin.py fails if that stops being true.
+mcp[cli]==2.3.0
 
 # Per-tenant HTTP rate limiting (app/rate_limit.py) — Redis-backed sliding
 # window over the SAME Redis this app already depends on. Used directly
@@ -140,9 +142,10 @@ crawl4ai==0.9.3
 # OpenSandbox MCP bridge (app/domains/sandbox_tools.py, GRAPH_PATTERNS.md
 # pattern 50) — a real stdio MCP SERVER (not a library this app calls
 # directly) that app/mcp/client.py::load_remote_tools spawns as a
-# subprocess, exactly like the existing "one connection per call" pattern
-# already documented there. Bridges to a separately-run `opensandbox-server`
-# (see `make sandbox-serve`, README) — this pin is just the bridge CLI
-# itself; the sandbox server and the Docker daemon it drives are
-# operational prerequisites, not Python dependencies.
-opensandbox-mcp==0.1.1
+# subprocess (`python -m opensandbox_mcp`) and keeps one connection to (app/mcp/connection.py). Bridges to a separately-run
+# `opensandbox-server` (see `make sandbox-up`, README) — this pin is the bridge
+# itself and the opensandbox SDK it brings (`opensandbox>=1.1.1`); the sandbox server and the Docker daemon it
+# drives are operational prerequisites, not Python dependencies.
+# 1.1 is the first release on mcp 2.x and the first whose CLI has `--use-server-proxy`, which the
+# wrapper script this repo carried until then existed to add.
+opensandbox-mcp==1.1.1

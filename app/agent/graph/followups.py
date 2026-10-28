@@ -8,6 +8,7 @@ from langchain_core.runnables import RunnableConfig
 
 from app.agent.cost import metering
 from app.agent.graph.state import State
+from app.agent.graph.utils import without_tools
 from app.core import gateway
 from app.core.config import CHAT_MODEL
 
@@ -26,7 +27,10 @@ def make_suggest_followups_node(llm, model_alias: str = CHAT_MODEL):
 
     Only reached once a turn is confirmed final (route_after_check's
     non-retry branch), so it never runs on an answer about to be retried.
+
+    Sends no tool schemas (`utils.without_tools`): one sentence in, a few questions out.
     """
+    llm = without_tools(llm)
 
     async def suggest_followups(state: State, config: RunnableConfig | None = None) -> dict:
         """Suggests follow-ups only for a GROUNDED answer (`used_citations`

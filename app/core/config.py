@@ -195,6 +195,15 @@ class Settings(BillingSettings):
     # not just eventually removed by delete_memories (pattern 33).
     memory_retention_days: int = 365
 
+    # Send every tool to the chat model as a strict-mode schema (app/core/tool_schema.py). A provider that supports OpenAI's
+    # "strict" function calling then decodes the arguments against it (only real enum values, only declared fields). The local
+    # Ollama path does not: LiteLLM hands `tools` to it untouched and it ignores the key, so there strict buys nothing and
+    # costs something. It lists every argument as required (an optional one as nullable), and the smallest model CI runs
+    # (`qwen2.5:1.5b`) answered 9 of the probe's 19 tool prompts with it against 12 without (`qwen2.5:7b`, which `chat` is: 19 and
+    # 19). So it is OFF until the chat alias points at a provider that enforces it; turn it on together with that change
+    # (pattern 74). The tools' own validation is the same either way.
+    tool_calls_strict: bool = False
+
     # Per-run cost ceiling (graph/routing.py::should_continue, pattern 35) —
     # a HARD stop before the next tool/LLM call, independent of
     # MAX_TOKENS_PER_TURN (a token cap bounds work; a dollar cap bounds what
@@ -386,14 +395,6 @@ class Settings(BillingSettings):
     # sink nobody's on-call actually depends on.
     slack_webhook_url: str = ""
 
-    # API-layer protection (app/api/main.py) — one client/tenant must not
-    # flood the shared Redis Streams queue or starve other tenants. Per-tenant
-    # (X-Tenant-Id), backed by the same Redis, not in-process memory (which
-    # would stop working once more than one `uvicorn` process runs, pattern
-    # 43). Fails OPEN if Redis is unreachable, same posture as
-    # semantic_cache.py/moderation.py.
-    rate_limit_per_minute: int = 30
-
     # How long POST /chat/stream/queued's own submission-dedup window stays
     # open (app/job_queue/queue.py::claim_or_get_existing_submission) — an
     # identical (thread_id, text, images) resubmission within this window
@@ -536,6 +537,30 @@ class Settings(BillingSettings):
     # A real multi-origin deployment narrows this (see deploy/env/prod.env.example).
     cors_allowed_origins: str = "*"
 
+    # How the API learns WHO is calling (app/api/deps.py::get_ctx; specs/018). In `identity` mode (the default) it trusts one thing: the
+    # short-lived signed identity the front door (the authlimit service) puts on a request it has verified, checked against the front
+    # door's published public keys (app/core/internal_identity.py). The client's own X-Tenant-Id / X-Principal-Id are ignored. In `headers`
+    # mode it trusts those two headers as it always did: for the hermetic tests and for running the API directly with no front door, and
+    # NEVER for a deployment a stranger can reach (a client can send any header value). It is announced loudly: a startup warning, the gauge
+    # `agent_api_auth_mode` and the alert `ApiHeaderAuthMode`. Chosen explicitly, never inferred: an unset variable is `identity`.
+    auth_mode: Literal["identity", "headers"] = "identity"
+    # Where the front door publishes the public half of its signing keys (`/internal/jwks.json` on the authlimit service). Required in
+    # `identity` mode: the API refuses to START without it (app/core/internal_identity.py::check_settings), not on the first request.
+    authlimit_keys_url: str = ""
+    # How long a fetched key set is trusted before the next fetch. A key that was rotated in is picked up on the next unknown `kid` regardless
+    # (at most one fetch every ten seconds, so a caller cannot turn made-up key ids into load on the front door).
+    authlimit_keys_cache_seconds: int = Field(default=60, ge=10, le=3600)
+    # How much longer the last key set keeps being trusted when the front door cannot be reached to refresh it. Zero means not at all (every
+    # failed refresh is an outage). The cost of waiting is that a key withdrawn for compromise stays trusted for this long; the benefit is that
+    # one dead authlimit replica behind a round-robin name does not turn every request into a 503. Past it the API refuses (503), never guesses.
+    authlimit_keys_stale_grace_seconds: int = Field(default=600, ge=0, le=3600)
+    # The built-in web page's sign-in (app/api/static/auth.js; identity mode only): where the authorization server is (the `iss` a token carries),
+    # the audience the page asks the token for (RFC 8707 `resource`; the front door refuses a token for any other), and the scope. They must be
+    # what the front door was started with (AUTHLIMIT_ISSUER, AUTHLIMIT_AUDIENCE, AUTHLIMIT_REQUIRED_SCOPE); the defaults are the local stack's.
+    web_auth_issuer: str = "https://auth.localhost:8443"
+    web_auth_audience: str = "https://api.localhost:8443"
+    web_auth_scope: str = "api:chat"
+
     # POST /ingest/upload's per-file cap, enforced before any MinIO write —
     # an unbounded upload is a memory/storage exhaustion vector.
     max_upload_size_mb: int = 25
@@ -560,8 +585,47 @@ class Settings(BillingSettings):
     # from a real error. `make sandbox-up` publishes this exact port.
     opensandbox_mcp_domain: str = "localhost:8090"
 
+    # Who a PUBLISHED MCP server (app/mcp/server.py, ops_server.py) acts for — set by whoever
+    # launches it (the `env` block of Claude Desktop's / Cursor's server entry, or this file for
+    # `make mcp-serve`), never by a tool argument the connected model would fill in
+    # (app/mcp/identity.py, GRAPH_PATTERNS.md pattern 21). Empty means the server refuses to start.
+    # The operations server's data is not tenant-scoped, so it needs only the principal.
+    mcp_tenant: str = ""
+    mcp_principal: str = ""
+
+    # The MCP gateway (app/mcp/gateway.py, specs/017): the two published servers over Streamable HTTP, for clients that are not a child
+    # process of the person using them, with the identity taken from a verified OAuth 2.1 access token on EVERY request instead of
+    # from the launcher's environment. The service is a resource server only; the tokens come from an authorization server it is
+    # pointed at (Casdoor in deploy/compose/docker-compose.yml's `gateway` profile, any OIDC provider that signs RS256 would do).
+    #
+    # The origin clients reach the gateway at, no path: each server's resource URI (the audience a token must carry) is this plus
+    # its path, e.g. https://mcp.localhost:8443/ecorp/mcp. It is also the only Host/Origin the gateway answers to (DNS-rebinding guard).
+    mcp_gateway_public_url: str = "https://mcp.localhost:8443"
+    # The authorization server's issuer EXACTLY as it appears in a token's `iss` (a public name, e.g. https://auth.localhost:8443),
+    # and where to fetch its signing keys. They are two settings because inside Docker the keys are reached by an in-network name
+    # (http://casdoor:8000/.well-known/jwks) while the issuer is the public one. Either empty means the gateway refuses to start.
+    mcp_gateway_issuer: str = ""
+    mcp_gateway_jwks_url: str = ""
+    # Which claims name the tenant and the principal. Casdoor's `owner` is the organization (the tenant) and `sub` is a stable user id.
+    mcp_gateway_tenant_claim: str = "owner"
+    mcp_gateway_principal_claim: str = "sub"
+    # Tenants (comma-separated; a Casdoor organization each) allowed on the operations server, whose metrics and incident log are the
+    # deployment's, not a tenant's: any tenant's user could otherwise read them. Empty means nobody (fail closed).
+    mcp_gateway_ops_tenants: str = ""
+    # How long the signing keys are cached. A key the authorization server rotates is picked up on the next unknown `kid` regardless.
+    mcp_gateway_jwks_cache_seconds: int = Field(default=300, ge=30)
+
+    # The most text one remote MCP tool call (app/mcp/client.py) or one sandbox result (app/domains/sandbox_session.py) may hand
+    # the model; the middle of anything longer is replaced by a marker that says how much (app/core/output_limits.py, specs/009
+    # A3). 20,000 is the page reader's own cap (app/ingestion/web_crawler.py), so no tool returns more than a crawled page can.
+    mcp_tool_output_max_chars: int = Field(default=20_000, ge=200)
+
+    # The longest `command`, `script`, `path` or file `content` the model may send a sandbox tool. A validation error names the
+    # limit, so the model can shorten and retry; unbounded, one runaway generation becomes one runaway call.
+    sandbox_arg_max_chars: int = Field(default=20_000, ge=100)
+
     # Bearer token `opensandbox-mcp` sends OpenSandbox's server
-    # (sandbox_tools.py appends `--api-key`). docker-compose.yml's
+    # (sandbox_tools.py hands it over in the bridge's environment). docker-compose.yml's
     # opensandbox-server sets the same value via OPENSANDBOX_SERVER_API_KEY,
     # which overrides the TOML's `server.api_key`. Required: current
     # opensandbox-server releases refuse to start without one set — no
@@ -668,7 +732,6 @@ MINIO_ACCESS_KEY = settings.minio_access_key
 MINIO_SECRET_KEY = settings.minio_secret_key
 MINIO_BUCKET = settings.minio_bucket
 MINIO_SECURE = settings.minio_secure
-RATE_LIMIT_PER_MINUTE = settings.rate_limit_per_minute
 CHAT_SUBMIT_DEDUP_TTL_SECONDS = settings.chat_submit_dedup_ttl_seconds
 CHAT_FIRST_RESPONSE_DEADLINE_SECONDS = settings.chat_first_response_deadline_seconds
 INGEST_FIRST_RESPONSE_DEADLINE_SECONDS = settings.ingest_first_response_deadline_seconds
@@ -686,6 +749,8 @@ MAX_UPLOAD_SIZE_MB = settings.max_upload_size_mb
 MAX_UPLOAD_FILES_PER_REQUEST = settings.max_upload_files_per_request
 OPENSANDBOX_MCP_DOMAIN = settings.opensandbox_mcp_domain
 OPENSANDBOX_API_KEY = settings.opensandbox_api_key
+MCP_TOOL_OUTPUT_MAX_CHARS = settings.mcp_tool_output_max_chars
+SANDBOX_ARG_MAX_CHARS = settings.sandbox_arg_max_chars
 SANDBOX_IMAGE = settings.sandbox_image
 SANDBOX_TTL_SECONDS = settings.sandbox_ttl_seconds
 CRAWL4AI_SERVER_URL = settings.crawl4ai_server_url

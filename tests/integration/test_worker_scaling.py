@@ -385,10 +385,10 @@ class TestScaledWorkersAbsorbConcurrentLoad:
             expected = a * b
             headers = {
                 # Own synthetic tenant per request, same reasoning
-                # loadtest/locustfile_queued.py's QueuedTurnUser gives: bypasses
-                # the per-tenant rate limiter (app/api/rate_limit.py) so
-                # this test measures the worker/queue's own concurrency
-                # ceiling, not the rate limiter doing its job.
+                # loadtest/locustfile_queued.py's QueuedTurnUser gives: each
+                # request is its own tenant, as real load is. (The API used to
+                # throttle one tenant's turns here; that limit is the front
+                # door's now, spec 018, and this test calls the API directly.)
                 "X-Tenant-Id": f"loadtest-{i}",
                 "X-Principal-Id": f"user-{i}",
             }
@@ -466,9 +466,9 @@ class TestScaledWorkersHandleHITLAndSubagentDelegation:
         async def _one_turn(i: int) -> tuple[int, str, int]:
             # Own synthetic tenant per request too, not just principal — same
             # reasoning TestScaledWorkersAbsorbConcurrentLoad's own headers
-            # comment gives: bypasses the per-tenant rate limiter
-            # (app/api/rate_limit.py, default 30/min) so this measures HITL
-            # concurrency itself. Verified directly: a first attempt sharing
+            # comment gives: each request is its own tenant. The API used to
+            # throttle one tenant at 30/min, which is what this was written to
+            # avoid. Verified directly, then: a first attempt sharing
             # one tenant across all n got every request past the first ~30
             # rejected with 429 — not a HITL bug, the rate limiter correctly
             # doing its job against traffic shaped like one real tenant.

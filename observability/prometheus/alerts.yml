@@ -355,14 +355,18 @@ groups:
             (agent_moderation_total) — could be a real attack or an
             overly strict moderation rule.
 
-      - alert: RateLimitRejectionSpike
+      - alert: WebhookRateLimitRejectionSpike
         expr: sum(rate(agent_rate_limit_exceeded_total[5m])) > 1
         for: 5m
         labels:
           severity: warning
         annotations:
-          summary: "Sustained per-tenant rate-limit rejections"
-          description: "agent_rate_limit_exceeded_total has been climbing over 1/sec for 5m."
+          summary: "Sustained payment-webhook rate-limit rejections"
+          description: >-
+            The webhook route's per-source-address limit (app/api/rate_limit.py) has been rejecting over 1 request/sec
+            for 5m (agent_rate_limit_exceeded_total): a provider redelivering a backlog faster than the ceiling, or a
+            stranger flooding forged requests. The signature check still stands either way. Turn limits are the front
+            door's (agent_authlimit_requests_total{outcome="limited"}), not this counter.
 
       - alert: RetrievalDegraded
         expr: sum(rate(agent_retrieval_degraded_total[15m])) > 0
@@ -407,6 +411,177 @@ groups:
             app/domains/notify.py's own docstring), so a human may be
             going unnotified about real, already-applied business state.
             Check SLACK_WEBHOOK_URL / var/team_channel.log permissions.
+
+      - alert: SandboxToolsUnavailable
+        expr: increase(agent_sandbox_unavailable_total[15m]) > 0
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "The code sandbox is unavailable; turns are going on without it"
+          description: >-
+            agent_sandbox_unavailable_total{reason} increased for 15m — the sandbox
+            tool catalog could not be loaded (app/domains/sandbox_tools.py), so the
+            ops, support and sales sandbox tools are missing from the turn and the
+            model works without them. reason=connection or timeout: opensandbox-server
+            (`make sandbox-up`) is down or still booting; circuit_open: that has been
+            true for several calls in a row; other: the bridge itself cannot start
+            (opensandbox-mcp not installed in the image, an SDK it cannot
+            import). The turn does not fail, which is why this is an alert and not an
+            error rate. specs/009 A9.
+
+      - alert: McpToolCatalogChanged
+        expr: increase(agent_mcp_tool_pin_failures_total[1h]) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "A remote MCP server's tools no longer match what this app pinned"
+          description: >-
+            agent_mcp_tool_pin_failures_total{dependency,reason} increased — a tool the
+            app pinned by name and by a hash of its description and input schema is
+            either offered differently (reason=changed) or no longer offered
+            (reason=missing), so it was left out and the feature behind it is off.
+            The usual cause is an upgrade of the dependency that provides the server
+            (opensandbox-mcp): read what changed in its tool descriptions before
+            re-pinning in app/domains/sandbox_tools.py, because that text is what the
+            model is told to do. The test that fails on the same drift is
+            tests/domains/test_sandbox_tool_pins.py.
+
+      - alert: McpGatewayCannotCheckTokens
+        expr: increase(agent_mcp_gateway_requests_total{outcome="jwks_unavailable"}[10m]) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "The MCP gateway cannot confirm its authorization server's signing keys, so it refuses every caller"
+          description: >-
+            agent_mcp_gateway_requests_total{outcome="jwks_unavailable"} increased for 5m —
+            app/mcp/gateway_auth.py::JwksCache could not fetch the JWKS
+            (MCP_GATEWAY_JWKS_URL) and the keys it holds are older than
+            MCP_GATEWAY_JWKS_CACHE_SECONDS, so no token can be verified. It fails closed
+            on purpose, and to a client that looks like an expired login (401), not an
+            outage, which is why this alert exists: the metric is the only place it
+            shows. Check the authorization server (Casdoor: `docker compose logs casdoor`)
+            and the gateway's /readyz, which goes 503 on the same condition so a load
+            balancer stops sending it traffic. specs/017.
+
+      # --- the authlimit service (specs/018): the front door's identity check and rate limiter. Metrics are defined in
+      # services/authlimit/internal/telemetry/metrics.go; tests/core/test_alert_rules.py reads that file, so a typo here fails the build.
+      - alert: AuthlimitCannotCheckTokens
+        expr: increase(agent_authlimit_requests_total{reason="keys_unavailable"}[10m]) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "authlimit cannot confirm Casdoor's signing keys, so it refuses every request"
+          description: >-
+            agent_authlimit_requests_total{reason="keys_unavailable"} increased for 5m — a replica's copy of the authorization
+            server's keys is older than AUTHLIMIT_JWKS_CACHE_SECONDS plus the stale grace (AUTHLIMIT_JWKS_STALE_GRACE_SECONDS, 6 h by
+            default), so no token can be verified. It fails closed on purpose (503 auth_unavailable, the replica reports not ready), and
+            to the people calling the API that is an outage of everything behind the door. This alert is the end of a story whose
+            beginning is AuthlimitKeysStale: if you are reading this, that one has been firing for hours. Check Casdoor
+            (`docker compose logs casdoor`) and `docker compose logs authlimit` for jwks_refresh_failed. specs/018.
+
+      - alert: AuthlimitKeysStale
+        expr: max(agent_authlimit_keys_age_seconds) > 600
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "authlimit has been serving from a stale copy of Casdoor's signing keys"
+          description: >-
+            agent_authlimit_keys_age_seconds is above 10 minutes for 5m: the keys are normally refreshed every
+            AUTHLIMIT_JWKS_CACHE_SECONDS (5 minutes), so refreshes are failing. Requests are still being checked against the last keys
+            the replica fetched, inside the stale grace; the cost of waiting is that a key Casdoor has withdrawn for compromise is still
+            trusted, and that after the grace every request is refused (AuthlimitCannotCheckTokens). A replica that has NEVER fetched
+            keys reports the time since it started, so it fires here too. Check Casdoor and the network between them. specs/018.
+
+      - alert: AuthlimitLimiterStoreDown
+        expr: increase(agent_authlimit_store_errors_total{store="limiter"}[10m]) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "authlimit's rate limits are NOT being enforced (its store is down or too slow)"
+          description: >-
+            agent_authlimit_store_errors_total{store="limiter"} increased for 5m — calls to Redis failed or took longer than
+            AUTHLIMIT_REDIS_TIMEOUT_MS. The limiter fails OPEN by design (a protection must not become an outage), so requests are being
+            served with no per-tenant or per-person limit, and that is silent to everyone but this alert. Check Redis
+            (`docker compose ps redis`, `redis-cli ping`) and its latency. specs/018.
+
+      - alert: AuthlimitRevocationStale
+        expr: max(agent_authlimit_revocation_age_seconds) > 30
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "an authlimit replica's copy of the revocation list is stale"
+          description: >-
+            agent_authlimit_revocation_age_seconds is above AUTHLIMIT_REVOCATION_MAX_STALENESS_SECONDS (30 s by default) for 2m: a replica
+            cannot reload the revoked-people list from Redis. Under the default policy (closed) it then refuses requests (503), which is
+            the loud outcome; under AUTHLIMIT_REVOCATION_UNAVAILABLE=open it SERVES with its last copy, and a person revoked since then
+            is not refused on that replica. Check Redis. specs/018.
+
+      - alert: AuthlimitReplicasDown
+        expr: (sum(agent_authlimit_ready) < 2) or (absent(agent_authlimit_ready) and count(agent_authlimit_ready offset 30m) > 0)
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "fewer than two authlimit replicas are ready"
+          description: >-
+            Two replicas run by default, so one failure does not take the front door down; with fewer than two reporting ready for 5m the
+            next failure does (Caddy answers 502 or 503 for everything behind the check, and the API is unreachable). The second half of
+            the expression fires when every replica has vanished after reporting half an hour ago; it deliberately does NOT fire when the
+            service has never reported (production does not run it yet). If you run a different number of replicas, change the 2.
+            `docker compose ps authlimit`, `docker compose logs authlimit`; `curl` cannot reach /readyz from outside, it is internal.
+            specs/018.
+
+      # The API's side of the same door (specs/018): how it learns who is calling, and whether it can still check.
+      - alert: ApiHeaderAuthMode
+        expr: agent_api_auth_mode{mode="headers"} == 1
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "The API is trusting X-Tenant-Id and X-Principal-Id as sent (AUTH_MODE=headers)"
+          description: >-
+            An API process has reported agent_api_auth_mode{mode="headers"} for 10m. In header mode any client can act as any tenant by
+            saying so: it is for the hermetic tests and for running the API alone on a developer's machine, and it must never face the
+            internet. If this fires on a deployment, set AUTH_MODE=identity (and AUTHLIMIT_KEYS_URL) and restart; if the process is a
+            developer's own, this alert is not for them. Each process re-reports every minute, so this clears about five minutes after the
+            last one is gone. specs/018.
+
+      - alert: ApiIdentityKeysRefreshFailing
+        # `unless`, not `and ... == 0`: before the first success the `ok` series does not exist, and a comparison against a missing series is an
+        # empty result, so the one case that matters most (the API has never been able to fetch the keys) would never fire.
+        expr: increase(agent_api_identity_key_refresh_total{result="error"}[10m]) > 0 unless increase(agent_api_identity_key_refresh_total{result="ok"}[10m]) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "The API cannot fetch the front door's public keys"
+          description: >-
+            agent_api_identity_key_refresh_total has recorded errors and no success for the last 10m: AUTHLIMIT_KEYS_URL is unreachable
+            or answering something that is not a key set. Requests are still checked against the last keys the API fetched, for
+            AUTHLIMIT_KEYS_STALE_GRACE_SECONDS (10 minutes by default); the cost of waiting is that a key withdrawn for compromise is still
+            trusted, and after the grace every request is refused (ApiCannotCheckIdentity). Check `docker compose ps authlimit` and
+            `docker compose logs api`, which says internal_identity_keys_fetch_failed with the error class. specs/018.
+
+      - alert: ApiCannotCheckIdentity
+        expr: increase(agent_api_identity_total{outcome="keys_unavailable"}[10m]) > 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "The API is refusing every request: it cannot confirm the front door's keys"
+          description: >-
+            agent_api_identity_total{outcome="keys_unavailable"} increased for 2m: the API's copy of the front door's public keys is older
+            than AUTHLIMIT_KEYS_CACHE_SECONDS plus the stale grace and cannot be refreshed, so no identity can be checked. It fails closed
+            on purpose and answers 503 auth_unavailable (not 401), so a client retries instead of logging in again. To the people calling
+            the API this is an outage of everything behind the door. This is the end of a story whose beginning is
+            ApiIdentityKeysRefreshFailing. specs/018.
 
       - alert: WorkerUnreachable
         expr: increase(agent_worker_unreachable_total[10m]) > 0

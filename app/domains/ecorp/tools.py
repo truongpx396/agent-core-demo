@@ -29,6 +29,7 @@ from pydantic import BaseModel, Field, field_validator
 from app.agent.tools.builtin import ToolCapability, Topic
 from app.core.tool_idempotency import idempotent
 from app.core.tool_runtime import NO_CTX_REFUSAL, arun_with_timeout, ctx_or_refuse
+from app.core.tool_schema import ToolArgs
 from app.domains.ecorp.store import (
     MAX_MEMORY_CONTENT_CHARS,
     MAX_NOTE_CONTENT_CHARS,
@@ -134,12 +135,13 @@ async def remember(
     )
 
 
-class QueryEmployeesArgs(BaseModel):
+class QueryEmployeesArgs(ToolArgs):
+    # Required but nullable (see ToolArgs): `null` means "do not narrow by this".
     department: Department | None = Field(
-        default=None, description="Optional filter. One of: Engineering, Support, Sales."
+        ..., description="Filter: one of Engineering, Support, Sales. Pass null for any department."
     )
     name_contains: str | None = Field(
-        default=None, description="Optional case-insensitive substring match on name."
+        ..., description="Case-insensitive substring match on name. Pass null for any name."
     )
 
 

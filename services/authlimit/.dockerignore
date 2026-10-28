@@ -1,0 +1,12 @@
+# What does not belong in the build context: VCS data, editor files, test binaries, and anything that could carry a secret.
+.git
+.gitignore
+*.test
+*.out
+*.pem
+*.key
+keys/
+.env
+.env.*
+Dockerfile
+.dockerignore

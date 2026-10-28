@@ -43,7 +43,12 @@ level = "INFO"
 
 [runtime]
 type = "docker"
-execd_image = "opensandbox/execd:v1.0.22"
+# The execd and egress images are on the SAME release line as the server (docker/opensandbox-server.Dockerfile), the SDK and the MCP
+# bridge (requirements-lock.txt): since 1.1.0 OpenSandbox ships every artifact at one version from one tag (`release-1.1.1`), with
+# a Sigstore-signed BOM (docs/releases/1.1.1.yaml in the OpenSandbox repo) as the authority for the image digests used below.
+# `name:tag@sha256:...` keeps the version readable and the content immutable; the daemon resolves it by digest.
+# tests/core/test_sandbox_release_line.py fails when the line drifts. To move up: take the new tag and BOM digests together.
+execd_image = "opensandbox/execd:release-1.1.1@sha256:cda2bc35409bbf57561599b316cafb899598f7dce671332e7ceda14eb1cfeded"
 
 [storage]
 # Allowlist of host path prefixes permitted for bind mounts.
@@ -82,7 +87,7 @@ seccomp_profile = ""
 mode = "direct"
 
 [egress]
-image = "opensandbox/egress:v1.1.7"
+image = "opensandbox/egress:release-1.1.1@sha256:bce2cc2e4dc3a3594678b91ac29efb0669fccebfdfc137727018d3b087fbb13a"
 mode = "dns"
 readiness_timeout_seconds = 30.0
 

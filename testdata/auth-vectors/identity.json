@@ -1,0 +1,25 @@
+{
+  "audience": "agent-core-api",
+  "description": "A real internal identity minted by services/authlimit (go test ./internal/identity -update-golden), with the public key set that verifies it. No private key is kept. For PR 2's Python verifier (app/core/internal_identity.py).",
+  "expect": {
+    "principal": "user-1",
+    "scope": "api:chat",
+    "tenant": "ecorp"
+  },
+  "issuer": "urn:agent-core:authlimit",
+  "jwks": {
+    "keys": [
+      {
+        "kty": "OKP",
+        "crv": "Ed25519",
+        "x": "Vm3RgMdLK3_Dn1UzNjPlG6CSuZrRn3tQoYDqqlRfQf4",
+        "kid": "golden",
+        "use": "sig",
+        "alg": "EdDSA"
+      }
+    ]
+  },
+  "now": 1790000000,
+  "token": "eyJhbGciOiJFZERTQSIsImtpZCI6ImdvbGRlbiIsInR5cCI6ImF1dGhsaW1pdC1pZGVudGl0eStqd3QifQ.eyJhdWQiOiJhZ2VudC1jb3JlLWFwaSIsImV4cCI6MTc5MDAwMDAzMCwiaWF0IjoxNzkwMDAwMDAwLCJpc3MiOiJ1cm46YWdlbnQtY29yZTphdXRobGltaXQiLCJqdGkiOiI1d2lwVEZZZTFxUDltSTJJNXVXdU5nIiwibmJmIjoxNzkwMDAwMDAwLCJzY29wZSI6ImFwaTpjaGF0Iiwic3ViIjoidXNlci0xIiwidGVuYW50IjoiZWNvcnAifQ.BjdysegZiai13txIjYvcprNO49BrlxYU1WAAsjsPAiX3jEDxwdgShQsDd4spyV27mhMohoKiioM9Ki2SDq5mCQ",
+  "typ": "authlimit-identity+jwt"
+}

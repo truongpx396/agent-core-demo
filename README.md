@@ -25,7 +25,7 @@ changing model provider is a LiteLLM config change, not a code change.
 - **Skills and subagents** — a searchable `SKILL.md` catalog loaded on demand, and isolated read-only subagent runs.
 - **Guardrails** — input moderation (patterns + an ML classifier), secret scrubbing on tool output, nine independent safety budgets, a golden-set eval gate.
 - **Interfaces** — CLI, HTTP API, web UI and Telegram, all on one streaming core.
-- **Operable** — queue workers that scale independently of the API, real dependency health checks, per-tenant rate limits and cost caps, Terraform + automated deploys.
+- **Operable** — queue workers that scale independently of the API, real dependency health checks, per-tenant and per-person rate limits at the front door and cost caps, Terraform + automated deploys.
 
 Pattern-by-pattern design notes, each with the bug that motivated it: [GRAPH_PATTERNS.md](GRAPH_PATTERNS.md).
 
@@ -232,12 +232,17 @@ export of each model call, their reconciliation, and operator CLIs. It imports n
 | `GET /usage` | The caller's tenant cost, `budgets` (every spend limit that applies, with spent, remaining and `resets_at`) and `credits` (the wallet, or `null` when credits are off or the tenant has none) |
 | `POST /ingest/upload` · `GET /ingest/stream/{job_id}` | Upload PDF/DOCX/text to the ingest worker · follow its progress |
 
-Interactive docs at `/docs`. Every request needs `X-Tenant-Id` and `X-Principal-Id` (422 without them),
-stamped into a `SecurityCtx` that scopes everything the request can see or touch. `X-Domain` is
-optional (default `ecorp`; an unknown value is a 422) and routes the turn to that domain's worker pool.
-**These headers are a trusted seam for a gateway to fill in, not authentication.**
+Interactive docs at `/docs`. Who is calling is stamped into a `SecurityCtx` that scopes everything the request can see or touch, and
+`AUTH_MODE` decides where it comes from. In **`identity`** (the default) the API trusts only the signed `X-Internal-Identity` that the
+authlimit front door ("Front door: authlimit" under "MCP, crawling and the sandbox" below) adds to a request it has verified, checks it against the front door's published keys
+(`AUTHLIMIT_KEYS_URL`, required: the API does not start without it), and **ignores** `X-Tenant-Id` / `X-Principal-Id`; a request with no valid
+identity is a 401, and a 503 when the keys cannot be confirmed. In **`headers`** mode (what `.env.example` selects, for running the API alone on
+your machine and for the tests) every request needs `X-Tenant-Id` and `X-Principal-Id` (422 without them) and they are trusted as sent: **never
+use it where a stranger can reach the API**; it is announced at startup, in the gauge `agent_api_auth_mode` and by the alert `ApiHeaderAuthMode`.
+`X-Domain` is optional (default `ecorp`; an unknown value is a 422) and routes the turn to that domain's worker pool.
 
 ```bash
+# header mode (AUTH_MODE=headers, the .env.example default):
 curl -s -N -X POST http://localhost:8000/chat/stream/queued \
   -H "Content-Type: application/json" \
   -H "X-Tenant-Id: ecorp" -H "X-Principal-Id: demo-user" \
@@ -252,7 +257,7 @@ Use `X-Tenant-Id: ecorp` to see what `make ingest` seeded; another tenant sees n
 - **Memory:** reuse a `thread_id` to continue a conversation; Langfuse groups traces by it.
 - **Ownership:** a `thread_id` belongs to whoever sends on it first (tenant + principal + domain). Send, resume or cancel from anyone else gets the same 404 an unknown id gets. Switching identity needs a new `thread_id`; `telegram:<chat id>` ids are reserved for the Telegram channel. The check lives at the API; the worker doesn't repeat it (pattern 17).
 - **Resubmits:** an identical `(thread_id, message, images)` within `CHAT_SUBMIT_DEDUP_TTL_SECONDS` (10) streams the first attempt's turn instead of starting a second.
-- **Limits:** `RATE_LIMIT_PER_MINUTE` per tenant (30, Redis-backed) on turn-creating endpoints; CORS via `CORS_ALLOWED_ORIGINS`.
+- **Limits:** the API does not limit turns itself: per-tenant and per-person limits are the front door's (`services/authlimit`, see "Front door: authlimit" below), as a token bucket. **The production Caddyfile does not route through it yet** (spec 018, the wiring is a later step), so until it does a production deployment has no limit on turns. The API keeps one limit of its own, per source address, on the payment webhook (`BILLING_WEBHOOK_RATE_LIMIT_PER_MINUTE`); CORS via `CORS_ALLOWED_ORIGINS`.
 - **Metrics** are pushed over OTLP, not served: the API has no `/metrics` route.
 
 ### Web UI
@@ -343,8 +348,38 @@ The call is shaped like the TypeSafe **Jev / System One** decision interface (`{
 
 ### MCP, crawling and the sandbox
 
-- **MCP server** (`make mcp-serve`, `make mcp-serve-ops`): exposes `query_employees` and the ops domain's metrics/incidents over stdio. MCP has no header seam, so `tenant`/`principal` are explicit arguments, checked by the same fail-closed policy.
-- **MCP client** (`app/mcp/client.py::load_remote_tools`): binds an external server's tools into the graph. A remote tool not named in `capability_overrides` defaults to `outward`; the remote's own annotations are never trusted.
+- **MCP server** (`make mcp-serve`, `make mcp-serve-ops`): exposes `query_employees` and the ops domain's metrics/incidents over stdio. MCP has no header seam, so the identity is the **launcher's**, never a tool argument the connected assistant could fill in: set `MCP_TENANT` and `MCP_PRINCIPAL` (the ops server needs only the principal) in `.env`, or in the `env` block of the client's server entry. The entry runs `python -m app.mcp.server` from the repo root with, for example:
+
+  ```json
+  "env": { "PYTHONPATH": "/path/to/agent-core-demo/packages/billing/src", "MCP_TENANT": "ecorp", "MCP_PRINCIPAL": "alice" }
+  ```
+
+  A server started without them exits and says why on stderr. The tools declare themselves read-only, and each call writes one `mcp_tool_call` audit line (who, which tool, outcome, duration; never an argument) as JSON on stderr. It checks the same fail-closed policy but does not authenticate whoever starts the process; there is no networked transport (patterns 21 and 78).
+- **MCP gateway** (`make mcp-gateway-up`, specs/017): the same two servers over **Streamable HTTP behind OAuth 2.1**, for clients that are not a child process of the person using them (a remote agent, Claude Code, several replicas). The gateway (`app/mcp/gateway.py`) is a resource server only: each request carries a bearer token whose audience is that endpoint's URL (`/ecorp/mcp`, scope `ecorp:read`; `/ops/mcp`, scope `ops:read`, operator tenants only), and the tenant and principal a tool acts for are the token's `owner` and `sub` claims, never an argument and never `MCP_TENANT`. It is stateless, so `--scale mcp-gateway=N` behind Caddy load-balances. The `gateway` compose profile is a local stack: Casdoor (authorization server) on its own Postgres, the gateway, and a Caddy with local TLS on `https://mcp.localhost:8443`; it needs `make up` for the app database.
+
+  ```bash
+  make mcp-gateway-up           # Casdoor + gateway + Caddy (generates the passwords once, outside the repo)
+  make mcp-gateway-bootstrap    # organizations, applications, scopes, demo users; prints the `claude mcp add` commands
+  make mcp-gateway-ca           # export Caddy's root certificate; prints the NODE_EXTRA_CA_CERTS line
+  make mcp-gateway-smoke        # the OAuth + MCP end-to-end check as a client does it (17 checks)
+  ```
+
+  Nothing that writes is behind it: both tools are read-only, and the sandbox is deliberately not reachable this way (an outside caller does not pass through the agent's approval gate). Not connected to Claude Code itself; production DNS/TLS and an identity provider are not built. Per-tenant rate limits and token revocation now come from the **authlimit** service in front of it (next bullet). Contract, measurements and the full list of gaps: `specs/017-mcp-gateway/`.
+- **Front door: authlimit** (`services/authlimit/`, specs/018): a small Go service that Caddy asks about every request (`forward_auth`) before it reaches the chat API or the MCP routes. It verifies the Casdoor access token **offline** (signature against cached keys, algorithm from an allow-list, issuer, audience, expiry, scope, a lifetime cap), charges a **token bucket per tenant and per person** in Redis, refuses **revoked** people, and answers with a **30-second Ed25519-signed identity** that Caddy copies onto the request after removing the caller's `Authorization` header. Two replicas by default behind Caddy; state is only Redis, so any number works. On the MCP routes it runs **limit-only**: the MCP gateway still verifies the token itself (the MCP specification requires it), so a request with no or a bad token is passed through and answered by the gateway's own 401. Fails **closed** where it is a security check (no usable keys, an untrustworthy revocation list: 503) and **open** where it is a protection (the limiter's store down: served, counted, alerted). The Python API verifies that identity (`AUTH_MODE=identity`, `app/core/internal_identity.py`; see "HTTP API" above); until the local chat-API site is repointed at the API (a later part of spec 018's PR 2) it still fronts a stub that echoes what it received.
+
+  ```bash
+  make authlimit-test           # go vet + the service's own tests with the race detector (needs Go; no Docker)
+  make authlimit-up             # = mcp-gateway-up: Casdoor, authlimit x2, the MCP gateway, a stub upstream, Caddy on https://{api,mcp,auth}.localhost:8443
+  make mcp-gateway-bootstrap    # now also an API application per tenant; access tokens last 7 days (--token-hours)
+  make authlimit-smoke          # the end-to-end check as a client sees it; ARGS=--all adds replica kill, observe mode, key rotation, Casdoor outage
+  make authlimit-revoke TENANT=ecorp SUB=<subject>   # void a person's tokens on every replica within seconds
+  make authlimit-keys ARGS=rotate                    # rotate the signing key (keys live outside the repo)
+  make authlimit-latency        # what the check adds to a request (about half a millisecond on a development stack)
+  make authlimit-mutants        # 26 deliberate defects, each must fail a test
+  ```
+
+  Measured on this repository's stack (research R6, R21): the check adds a median of 0.4 ms (p95 0.8 ms); revocation reaches every replica in about 3 s; a killed replica fails no request; a Casdoor outage is survived for a bounded grace (6 h by default), after which everything is refused. Not built: Cloudflare and per-address limits, a production identity provider, mutual TLS between Caddy and the service. Contract, threat model and the full list of gaps: `specs/018-authlimit-edge-auth/`.
+- **MCP client** (`app/mcp/client.py::load_remote_tools`): binds an external server's tools into the graph. A remote tool not named in `capability_overrides` defaults to `outward`; the remote's own annotations are never trusted. What the remote says is input: a catalog can be pinned by a hash of what the model is shown (the sandbox bridge is: 5 of its 19 tools), replies are scrubbed and cut to `MCP_TOOL_OUTPUT_MAX_CHARS` (head and tail kept), and one long-lived connection per server (`app/mcp/connection.py`) replaces a process per call. A call that may have reached the server is never sent twice (pattern 78).
 - **Web crawling**: [crawl4ai](https://github.com/unclecode/crawl4ai) renders JS-heavy pages in a headless browser (`app/ingestion/web_crawler.py`; needs the `crawl4ai` container and `CRAWL4AI_API_TOKEN`). Three `outward` tools use it: `enrich_lead_from_website` (sales), `fetch_external_reference` (support), `check_vendor_status_page` (ops).
 - **Sandbox**: [OpenSandbox](https://github.com/opensandbox-group/OpenSandbox) over MCP gives every domain isolated code execution (`make sandbox-up`, needs `OPENSANDBOX_API_KEY`). The model never sees OpenSandbox's raw ~19-tool API: `app/domains/sandbox_session.py` wraps it as four flat tools (`run_command_in_sandbox`, `run_python_in_sandbox`, `read_sandbox_file`, `write_sandbox_file`), because the raw catalog made a small model hallucinate sandbox ids (pattern 50). Sandboxes are per tenant and conversation.
 - **Crawled text is untrusted.** `app/core/untrusted.py::frame_untrusted` wraps it in `<retrieved_document>` delimiters the system prompt calls data, not instructions, and a closing tag inside the page cannot end the frame. Framing marks the boundary; the approval gate stops a model that follows it anyway (pattern 12).
@@ -394,6 +429,9 @@ omission, not a policy check, is what "sandboxed" means. Skills (`skills/*/SKILL
 
 `postgres-init/*.sql` runs automatically on a **fresh** volume only, in dev and prod. On an existing
 volume, apply each file you lack by hand, in order (`psql -U langfuse -d appdata -f postgres-init/NN-….sql`).
+`GET /health/ready` lists the tables the app uses that the database lacks, and the scripts that create them, under `warnings` (it stays `ready`: the tables are
+spread over features, and a restart cannot fix one). Without that, a database that predates a script failed one tool at a time (`UndefinedTable`), ran the
+duplicate-call guard degraded, metered nothing and let the budget check fail open on every turn, each a warning in a log. It checks tables, not columns (`11`, `14`).
 The four billing scripts (`20`, `22`, `24`, `25`) are the billing package's, which ships a tool for them: `make billing-migrate` (see [Credit billing](#credit-billing-optional)). Run it before deploying a version that changes them.
 Upgrading across the move of the meter into the package (spec 013) has an order of its own: [packages/billing/docs/RUNBOOK.md](packages/billing/docs/RUNBOOK.md#upgrading-from-the-apps-own-billing-spec-013).
 
@@ -423,7 +461,7 @@ that nothing in the app depends on:
 |---|---|
 | otel-collector | Receives every process's OTLP push; one Prometheus scrape target (`:8889`) |
 | Prometheus | Scrapes the collector, Qdrant, LiteLLM, and the Postgres/Redis exporters |
-| Alertmanager | Routes [`alerts.yml`](observability/prometheus/alerts.yml): error rate, p95 latency, tool errors, tenant budget, moderation and rate-limit spikes, degradation, checkpoint issues, unreachable workers. Locally **no notification channel is wired** (alerts show in the UI only). Production mounts `alertmanager.prod.yml` (Slack, severity-routed) and **refuses to start** without `ALERTMANAGER_SLACK_WEBHOOK_URL`, so a deployment can't be quietly alert-deaf; add a receiver there to page someone |
+| Alertmanager | Routes [`alerts.yml`](observability/prometheus/alerts.yml): error rate, p95 latency, tool errors, tenant budget, moderation and webhook rate-limit spikes, degradation, checkpoint issues, unreachable workers. Locally **no notification channel is wired** (alerts show in the UI only). Production mounts `alertmanager.prod.yml` (Slack, severity-routed) and **refuses to start** without `ALERTMANAGER_SLACK_WEBHOOK_URL`, so a deployment can't be quietly alert-deaf; add a receiver there to page someone |
 | Loki + Promtail | Ship the app containers' JSON logs |
 | Grafana | Two provisioned dashboards, **Agent Core Overview** and **Agent Core Infra & Logs** |
 
@@ -464,7 +502,7 @@ Run `make eval` and `make promptfoo` after any prompt, model-alias or retrieval 
 | [Locust](https://locust.io/) | Load on the queued chat path | `make loadtest-up`, `make loadtest-queued` | Manual |
 
 - Trivy scans `requirements-lock.txt`, not `requirements.txt`: version ranges resolve to nothing a CVE database can match.
-- Strix needs `pipx install strix-agent` and a **paid cloud LLM key** (`STRIX_LLM`/`LLM_API_KEY`). The Strix and ZAP workflows are `workflow_dispatch` only: they cost money or attack their target.
+- Strix needs `pipx install strix-agent` and a **cloud LLM key** (`STRIX_LLM`/`LLM_API_KEY`, in `.env` or exported; `make` passes it just those five names and never the local LiteLLM proxy's URL). Extra flags go in `ARGS`: `make strix ARGS="--instruction '…' --max-budget 1"`. The Strix and ZAP workflows are `workflow_dispatch` only: they cost money or attack their target.
 - **Only point Strix or ZAP's active mode at a system you own or have written permission to test.**
 - Findings shift with each CVE-database update; read current ones in the Security tab or by running the target.
 
@@ -507,6 +545,8 @@ measurements put acted-on AI comments at roughly 6–19%, so treat it as a promp
 | `make budget-policy ARGS="…"` | Per-tenant / per-person spend-limit overrides (a plan limit, a personal limit, a suspend with `0`, `none` to lift a cap); a worker applies it within `BUDGET_POLICY_REFRESH_SECONDS` |
 | `make credits` · `make credit-reconcile` · `make billing-migrate` | Billing: the wallet CLI · was every usage charged? · apply the package's schema ([Credit billing](#credit-billing-optional)) |
 | `make mcp-serve[-ops]` · `make mcp-inspect` | MCP servers · MCP Inspector |
+| `make mcp-gateway-up` · `-bootstrap` · `-ca` · `-smoke` · `-down` | The MCP gateway stack: Casdoor + OAuth-protected servers + Caddy (local) |
+| `make authlimit-test` · `-up` · `-keys` · `-smoke` · `-revoke` · `-latency` · `-mutants` | The authlimit front door (see the MCP gateway section above): its tests · the stack · signing keys · the end-to-end check · revoke a person · added latency · mutation list |
 | `make lint` · `make typecheck` · `make test` | The CI gates |
 | `make obs-up` · `make obs-down` | Observability stack |
 | `make sandbox-up` | OpenSandbox server (opt-in) |
@@ -523,7 +563,7 @@ The compose files live in `deploy/compose/` but resolve their paths and `.env` f
 ```
 app/
   agent/       the agent: graph/ (LangGraph), runtime/ (turns, streaming, sessions), tools/ (built-ins, catalogs, run_subagent), cost/ (usage meter, spend caps), manifest.py
-  api/         FastAPI app (main.py mounts routers/: chat, ingest, usage, system), deps.py (identity headers), schemas, health, rate limiting, built-in web UI (static/index.html)
+  api/         FastAPI app (main.py mounts routers/: chat, ingest, usage, system), deps.py (who is calling, by `AUTH_MODE`), identity.py (the verifier and the 401/503 answer), schemas, health, the webhook rate limit, built-in web UI (static/index.html)
   channels/    CLI (chat.py) and Telegram gateway
   core/        what every package uses: config, security (SecurityCtx/Policy), metrics, errors, scrubbing, SQL pool, LLM gateway contract, tool timeout and idempotency
   domains/     support/, ops/, sales/ (store + tools + domain each), registry, shared sandbox tools
@@ -553,7 +593,7 @@ promptfoo/ garak/ loadtest/   prompt checks (with the repo's only package.json a
 **Not built** (reasoning for each is in [GRAPH_PATTERNS.md](GRAPH_PATTERNS.md#extending-further)):
 
 - **Crash-restart and autoscaling for workers.** Workers shut down gracefully and compose can `--scale` them, but nothing restarts a crashed one or scales on queue depth.
-- **Real authentication.** The identity headers are a seam, not authentication.
+- **Real authentication in the shipped production proxy.** The API verifies a signed identity (`AUTH_MODE=identity`) and the front door that issues it exists and runs in the local stack; the production Caddyfile and compose are not wired to it yet, so a production deployment still has no authentication in front of the API.
 - **Per-action authorization within a tenant.** Every principal in a tenant has the same write capability.
 - **Several domains in one process.** Each domain runs as its own process; only the API routes per request.
 - **A vision model that also does tool calling.** Small local vision models do one or the other; the `vision` alias is a slot, not a verified default. Moderation screens text only, and only the HTTP API accepts images.
