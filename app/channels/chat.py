@@ -1,14 +1,26 @@
 """Interactive CLI for the LangGraph agent.
 
-Thin front-end over `app.agent.runtime.core` — demonstrates streaming, memory (thread_id),
-and Langfuse tracing. The same runtime backs the FastAPI service (`app.api.main`).
+A front door onto the queue, like the HTTP API and the Telegram channel: each turn is published
+to the domain's requests stream and the events an `agent_worker.py` publishes back are rendered
+(`app/job_queue/producer.py`, pattern 43). This process never runs the graph, so `make chat` needs
+`make up`'s Redis and a worker for the domain (`make agent-worker`); without one the turn ends,
+after `CHAT_FIRST_RESPONSE_DEADLINE_SECONDS`, with an error that says so. What the worker does for
+every turn — the per-thread lock, crash reclaim, tracing, the spend meter — it does for this one.
 
-Uses astream_events v2: prints raw tokens as they arrive AND shows a visible
-indicator whenever a tool is called, so you can see the agent "thinking".
+`AGENT_DOMAIN` (default `ecorp`) picks which domain's worker pool the turns go to, so
+`AGENT_DOMAIN=support make chat` talks to the support copilot.
 
-`--hitl` gates every tool call behind an approve/reject prompt (see app/agent/graph/core.py's
-human_approval) — a runnable, self-contained example of driving the
-`interrupt()` pause/resume cycle through this app's real streaming path.
+Prints raw tokens as they arrive AND shows a visible indicator whenever a tool is called, so you
+can see the agent "thinking" — the event stream is the same one `astream_events` v2 yields,
+relayed through Redis.
+
+`--hitl` gates every tool call behind an approve/reject prompt (see app/agent/graph/hitl.py's
+human_approval) — a runnable, self-contained example of the `interrupt()` pause/resume cycle
+through the queue: the turn ends at `approval_required`, and the answer is a `resume` job.
+
+Ctrl-C or end-of-input in the middle of a turn asks the worker to stop it (`cancel_turn`). The
+turn is no longer this process's to kill, so without that a worker would run it to the end —
+including a tool call the person was about to be asked to approve.
 
 Run with: `make chat`, `make chat-hitl`, or `python -m app.channels.chat --hitl`
 """
@@ -18,12 +30,10 @@ import sys
 import uuid
 from contextlib import aclosing
 
-from langfuse.decorators import langfuse_context
-
-from app.agent.runtime.core import init_graph_async
-from app.agent.runtime.stream import astream_events_resume, astream_events_turn
-from app.core.config import DEFAULT_TENANT
+from app.core.config import AGENT_DOMAIN, DEFAULT_TENANT
 from app.core.security import SecurityCtx
+from app.domains.registry import resolve_domain
+from app.job_queue.producer import cancel_turn, stream_resume, stream_turn
 
 # Local dev ctx: this process IS the trusted boundary (no network hop, no
 # untrusted client to spoof it), unlike app/api/deps.py's header extraction.
@@ -56,10 +66,10 @@ def _format_call(name: str, args: dict) -> str:
 
 
 async def _render_stream(events) -> bool:
-    """Render one astream_events_turn/astream_events_resume call's events.
+    """Render one turn's or resume's events (`stream_turn`/`stream_resume`).
 
     Returns True if the run paused awaiting tool-call approval (the caller
-    should prompt and call astream_events_resume), False once the turn has
+    should prompt and call `stream_resume`), False once the turn has
     actually finished (or errored)."""
     # `aclosing`: `approval_required` returns before the stream is exhausted (it is the stream's
     # last event, but its generators are still open), and a bare `async for` would leave the
@@ -86,16 +96,29 @@ async def _render_stream(events) -> bool:
     return False
 
 
+async def _stop_turn(thread_id: str) -> None:
+    """Best effort, on the way out of an interrupted turn: the person is leaving, and a Redis
+    that is also down is not worth burying the interrupt under."""
+    try:
+        await cancel_turn(thread_id, _LOCAL_CTX, domain=AGENT_DOMAIN)
+    except Exception as exc:  # noqa: BLE001 - cleanup on the way out must not replace the interrupt
+        print(f"\n{_DIM}  [could not ask the worker to stop the turn: {type(exc).__name__}]{_RESET}")
+
+
 async def _async_turn(text: str, thread_id: str, hitl: bool = False) -> None:
     print("bot> ", end="", flush=True)
-    needs_approval = await _render_stream(
-        astream_events_turn(text, thread_id, _LOCAL_CTX, require_approval=hitl)
-    )
-    while needs_approval:
-        decision = input("Approve? [y/N] ").strip().lower() == "y"
+    try:
         needs_approval = await _render_stream(
-            astream_events_resume(thread_id, decision, _LOCAL_CTX)
+            stream_turn(text, thread_id, _LOCAL_CTX, domain=AGENT_DOMAIN, require_approval=hitl)
         )
+        while needs_approval:
+            decision = input("Approve? [y/N] ").strip().lower() == "y"
+            needs_approval = await _render_stream(
+                stream_resume(thread_id, decision, _LOCAL_CTX, domain=AGENT_DOMAIN)
+            )
+    except (asyncio.CancelledError, KeyboardInterrupt, EOFError):
+        await _stop_turn(thread_id)
+        raise
 
 
 async def async_main(hitl: bool = False) -> None:
@@ -105,13 +128,15 @@ async def async_main(hitl: bool = False) -> None:
     graph/hitl.py's human_approval) — the streaming event protocol's own
     opt-in HITL mechanism.
     """
-    # Opens the durable checkpointer on THIS loop before any graph call —
-    # it must be bound to the same loop driving it (see app/agent/runtime/core.py). No-op
-    # if the singleton is already initialized.
-    await init_graph_async()
+    # Fails loud on a typo'd AGENT_DOMAIN: a stream no pool reads would only
+    # show up as a 30 second wait and an error.
+    manifest, _ = resolve_domain(AGENT_DOMAIN)
     thread_id = str(uuid.uuid4())
     mode = " with HITL tool approval" if hitl else ""
-    print(f"Local RAG agent ready{mode} (astream_events v2). Type 'exit' to quit.\n")
+    print(
+        f"Local RAG agent ready{mode} ({manifest.name} domain, through the queue: "
+        "needs a running `make agent-worker`). Type 'exit' to quit.\n"
+    )
     while True:
         try:
             text = input("you> ").strip()
@@ -121,12 +146,10 @@ async def async_main(hitl: bool = False) -> None:
             break
         if not text:
             continue
-        await _async_turn(text, thread_id, hitl=hitl)
-
-    try:
-        langfuse_context.flush()
-    except Exception:  # noqa: BLE001, S110 - best-effort flush on the way out
-        pass
+        try:
+            await _async_turn(text, thread_id, hitl=hitl)
+        except (EOFError, KeyboardInterrupt):
+            break  # input ended at an approval prompt; `_async_turn` already stopped the turn
     print("Bye!")
 
 

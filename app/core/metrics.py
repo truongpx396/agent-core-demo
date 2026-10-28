@@ -369,6 +369,17 @@ agent_unattended_pause_total = Counter(
     "astream_events_turn's approval_required/astream_events_resume flow)",
 )
 
+agent_unattended_job_paused_total = Counter(
+    "agent_unattended_job_paused_total",
+    "An unattended job (a Telegram message) that reached its channel as approval_required instead of "
+    "being declined by the worker, so the channel cancelled the pause itself "
+    "(app/channels/telegram.py::_decline_pause). The worker declines a pause for such a job "
+    "(agent_unattended_pause_total counts those), so this should stay at zero: a count means a worker "
+    "that predates the `unattended` flag ran the job, which is a rolling deploy that upgraded the "
+    "channel before its workers (GRAPH_PATTERNS.md 87). Nothing ran and nothing is left paused, which "
+    "is why it is a counter and not an alert",
+)
+
 agent_retrieval_degraded_total = Counter(
     "agent_retrieval_degraded_total",
     "Hybrid retrieval stages that failed and degraded (app/retrieval/qdrant_store.py::hybrid_search)",

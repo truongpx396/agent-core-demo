@@ -1,15 +1,15 @@
 """Name -> (AgentManifest, DomainPlugin) lookup, consulted two ways:
-- Per-process: telegram.py/agent_worker.py read AGENT_DOMAIN once at
-  startup and resolve it here — that process/worker pool serves exactly
-  one domain for its life.
+- Per-process: agent_worker.py, telegram.py and the CLI (chat.py) read
+  AGENT_DOMAIN once at startup and resolve it here. The worker builds its
+  graph from the result and serves exactly one domain for its life; the two
+  channels only validate the name (a typo fails at startup rather than as a
+  wait for a worker pool that does not exist) and publish their turns to that
+  domain's stream. Neither channel builds a graph.
 - Per-request: app/api/deps.py's `get_domain` validates the caller's
   `X-Domain` header against this registry's keys, and the queued chat
   endpoints (app/api/routers/chat.py) route onto that
   domain's own Redis Stream — which domain a MESSAGE is for, letting one
   API process serve every domain a worker pool is running.
-
-Deliberately NOT consulted by app/channels/chat.py, which keeps defaulting
-to Ecorp unchanged (see runtime.py's init_graph_async docstring).
 """
 from app.agent.manifest import AgentManifest, DomainPlugin
 from app.domains.ecorp.domain import ECORP_DOMAIN_PLUGIN, ECORP_MANIFEST

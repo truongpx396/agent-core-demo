@@ -24,15 +24,17 @@ changing model provider is a LiteLLM config change, not a code change.
 - **Tools** — calculator, hybrid search, a fixed (never text-to-SQL) Postgres query, clarification, web crawling, an isolated code sandbox; MCP as both server and client.
 - **Skills and subagents** — a searchable `SKILL.md` catalog loaded on demand, and isolated read-only subagent runs.
 - **Guardrails** — input moderation (patterns + an ML classifier), secret scrubbing on tool output, nine independent safety budgets, a golden-set eval gate.
-- **Interfaces** — CLI, HTTP API, web UI and Telegram, all on one streaming core.
+- **Interfaces** — CLI, HTTP API, web UI and Telegram, all publishing to one queue that one worker pool runs through one streaming core.
 - **Operable** — queue workers that scale independently of the API, real dependency health checks, per-tenant and per-person rate limits at the front door and cost caps, Terraform + automated deploys.
 
 Pattern-by-pattern design notes, each with the bug that motivated it: [GRAPH_PATTERNS.md](GRAPH_PATTERNS.md).
 
 ## Architecture
 
-Every HTTP turn goes through a Redis Streams queue: the API serves SSE, `agent-worker` processes run the
-graph, and each tier scales on its own. The CLI and Telegram channel call the same runtime in-process.
+Every turn goes through a Redis Streams queue, whichever front door it came in through: the API serves
+SSE, the CLI and the Telegram channel publish and read back, and `agent-worker` processes run the graph, so
+each tier scales on its own. No front door runs the graph in its own process, which is why the per-thread
+lock, crash reclaim and the dead-letter archive cover all of them (pattern 87).
 
 ```mermaid
 flowchart TB
@@ -47,14 +49,14 @@ flowchart TB
         Queued["POST /chat/stream/queued<br/>/resume, /cancel"]
     end
 
-    CLI --> Runtime["Shared runtime<br/>(app/agent/runtime/core.py)"]
     WebUI --> Queued
-    Telegram --> Runtime
+    CLI --> TurnQueue
+    Telegram --> TurnQueue
     ExtMCP -. MCP stdio .-> MCPServer["app/mcp/server.py"]
 
     Queued --> TurnQueue[("Redis: turn queue")]
     TurnQueue --> AgentWorker["agent-worker pool"]
-    AgentWorker --> Runtime
+    AgentWorker --> Runtime["Shared runtime<br/>(app/agent/runtime/core.py)"]
 
     Runtime --> Moderate
 
@@ -141,6 +143,7 @@ docker compose up -d litellm
 
 make ingest          # sample docs -> Qdrant
 make index-skills    # skill catalog -> its own Qdrant collection
+make agent-worker    # keeps running, so use a second terminal: every chat front door (CLI, web UI, Telegram) publishes its turns to it
 make chat            # CLI agent; `make chat-hitl` adds approval prompts
 ```
 
@@ -538,10 +541,10 @@ measurements put acted-on AI comments at roughly 6–19%, so treat it as a promp
 | `make up-app` | `make up` plus the containerized `api`, `agent-worker`s and `ingest-worker` |
 | `make pull-models` · `make ingest` · `make index-skills` | Pull Ollama models · seed docs · index skills |
 | `make reembed COLLECTION_NAME=docs` | Rebuild a vector collection under the current embedding identity and swap it in atomically (`ARGS=--dry-run` first; [Embedding models](#embedding-models-and-swapping-them)) |
-| `make chat` · `make chat-hitl` | CLI agent · CLI with approval prompts |
+| `make chat` · `make chat-hitl` | CLI agent · CLI with approval prompts (both need a worker for the domain: `AGENT_DOMAIN` picks it) |
 | `make serve` | API + web UI on :8000 |
 | `make agent-worker[-support\|-ops\|-sales]` · `make ingest-worker` | Queue consumers |
-| `make telegram[-support\|-sales]` | Telegram gateway for a domain (needs `TELEGRAM_BOT_TOKEN`) |
+| `make telegram[-support\|-sales]` | Telegram gateway for a domain (needs `TELEGRAM_BOT_TOKEN` and that domain's worker) |
 | `make usage-events-carry-over` · `make usage-events-sweep` | One-time copy of `usage_ledger` history into `usage_events` (`ARGS=--dry-run` first) · delete events past `USAGE_EVENT_RETENTION_DAYS` (floor 35; nothing schedules it) |
 | `make ops-digest` · `make followup-sweep` · `make tool-call-dedup-sweep` | One-shot jobs meant for cron (nothing schedules them) |
 | `make litellm-key ARGS="…"` | Mint or inspect the app's scoped, budget-capped LiteLLM key ([Gateway backstop](#gateway-backstop)) |
@@ -567,11 +570,11 @@ The compose files live in `deploy/compose/` but resolve their paths and `.env` f
 app/
   agent/       the agent: graph/ (LangGraph), runtime/ (turns, streaming, sessions), tools/ (built-ins, catalogs, run_subagent), cost/ (usage meter, spend caps), manifest.py
   api/         FastAPI app (main.py mounts routers/: chat, ingest, usage, system), deps.py (who is calling, by `AUTH_MODE`), identity.py (the verifier and the 401/503 answer), schemas, health, the webhook rate limit, built-in web UI (static/index.html)
-  channels/    CLI (chat.py) and Telegram gateway
+  channels/    CLI (chat.py) and Telegram gateway: front doors that publish their turns to the queue and never run the graph
   core/        what every package uses: config, security (SecurityCtx/Policy), metrics, errors, scrubbing, SQL pool, LLM gateway contract, tool timeout and idempotency
   domains/     support/, ops/, sales/ (store + tools + domain each), registry, shared sandbox tools
   ingestion/   chunking, ingestor, crawler, object store, ingest worker
-  job_queue/   Redis Streams queue, agent worker, reclaim
+  job_queue/   Redis Streams queue, agent worker, reclaim, producer (what the CLI and Telegram publish through)
   mcp/         server, ops_server, client
   retrieval/   embeddings, Qdrant store, semantic cache, memory deletion
 scripts/       seed, eval, cron jobs, ops_investigate, defectdojo import; ai_review/ is the PR-review tool (a package)
@@ -620,7 +623,8 @@ shipped proxy alone, the human deciding can be anyone who sets the right headers
 ## Troubleshooting
 
 - **`make ingest` fails to embed:** run `make up` and `make pull-models` first.
-- **No Langfuse traces:** put the keys in `.env`, run `docker compose up -d litellm`, restart `make chat`.
+- **No Langfuse traces:** put the keys in `.env`, run `docker compose up -d litellm`, restart `make agent-worker` (the worker runs the turn, whichever front door sent it).
+- **`make chat` or the Telegram bot answers "No response ... is an agent-worker running for this domain?":** nothing picked the turn up. Start the worker for that domain (`make agent-worker`, or `-support`/`-ops`/`-sales`); the channel's `AGENT_DOMAIN` and the worker's must match.
 - **Turns are slow:** the chat model is `qwen2.5:7b` (about 40 tokens/s on an M4 Pro; a cold load adds about 3 s). A smaller one is faster but silently drops tool calls (`make probe-tools` shows how many), so measure before swapping one in; a bigger one goes in `litellm-config.yaml`. A cold model can exceed `REQUEST_TIMEOUT_SECONDS` (60 s, `app/agent/runtime/core.py`) on the first call; retry.
 - **No Grafana data or a Prometheus target is down:** `make obs-up` and `make up` are independent; both must run. See http://localhost:9090/targets. A target that predates a LiteLLM config change needs `docker compose up -d litellm`.
 - **Readiness returns 503:** the body names the failing dependency, for example `ml-service` still downloading its models on first start.
