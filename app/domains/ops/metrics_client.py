@@ -67,7 +67,7 @@ CHECKS: tuple[MetricCheck, ...] = (
     ),
     MetricCheck(
         name="rate_limit_rejections_per_sec",
-        description="Per-tenant rate-limit rejections per second (5m)",
+        description="Payment-webhook rate-limit rejections per second (5m)",
         expr="sum(rate(agent_rate_limit_exceeded_total[5m]))",
         threshold=1,
     ),

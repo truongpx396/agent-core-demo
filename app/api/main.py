@@ -61,7 +61,7 @@ from fastapi import (
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.agent.runtime.core import close_checkpointer_pool, init_graph_async
-from app.api.rate_limit import TenantRateLimitMiddleware
+from app.api.rate_limit import WebhookRateLimitMiddleware
 from app.api.routers import chat, ingest, system, usage
 from app.billing_integration import http as billing_http
 from app.core import sql_store
@@ -112,10 +112,10 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Core AI Stack Demo", version="1.0.0", lifespan=lifespan)
 
-# Per-tenant, Redis-backed — plain Starlette middleware, not a per-route
-# decorator, since this app's tests call every handler directly as a plain
-# function (see app/api/rate_limit.py).
-app.add_middleware(TenantRateLimitMiddleware)
+# The payment webhook's per-address limit, the only limit this process enforces itself. How fast a tenant or a person may start turns is the front
+# door's job (the authlimit service, spec 018). Plain Starlette middleware, not a per-route decorator, since this app's tests call every handler
+# directly as a plain function (see app/api/rate_limit.py).
+app.add_middleware(WebhookRateLimitMiddleware)
 
 # "*" (default) is fine for a local demo — the web UI is same-origin and
 # never touches CORS. A real multi-origin deployment sets

@@ -40,6 +40,10 @@ func TestEveryRouteTheAPIServesIsInTheDefaultTable(t *testing.T) {
 		{"GET", "/chat/sessions/abc-123/pending_approval", Read},
 		{"GET", "/usage", Read},
 		{"GET", "/ingest/stream/job-9", Read},
+		{"GET", "/openapi.json", Read}, // FastAPI's own pages: verified, and never charged to a person's turn bucket
+		{"GET", "/docs", Read},
+		{"GET", "/docs/oauth2-redirect", Read},
+		{"GET", "/redoc", Read},
 		{"POST", "/ecorp/mcp", MCP},
 		{"GET", "/ecorp/mcp", MCP},
 		{"DELETE", "/ops/mcp", MCP},

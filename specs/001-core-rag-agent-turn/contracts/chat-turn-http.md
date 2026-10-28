@@ -63,6 +63,11 @@ address if absent), moving window of `RATE_LIMIT_PER_MINUTE` (default 30). Over 
 **429** `{"detail": "Rate limit exceeded: 30 requests per minute per tenant"}` and
 `agent_rate_limit_exceeded_total` increments. If the limiter's Redis is down it **fails open**.
 
+> **Superseded by spec 018.** The API no longer runs this middleware or the `RATE_LIMIT_PER_MINUTE` setting. A tenant's and a person's turns are
+> limited at the front door (`services/authlimit`) as a token bucket, which answers **429** with `Retry-After` and the `rate_limited` error code
+> before the request reaches the API. The API's only remaining limit is per source address on `/billing/webhooks/*`, and
+> `agent_rate_limit_exceeded_total` now counts only that.
+
 **Status codes**
 
 | Code | When |

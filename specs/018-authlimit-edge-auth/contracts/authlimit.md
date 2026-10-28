@@ -35,6 +35,13 @@ The route class comes from `X-Forwarded-Method` and the path of `X-Forwarded-Uri
 
 Default buckets (`routes.json`; capacity and refill per minute): a chat turn or upload, tenant 10 / 30, person 5 / 10; an MCP route, tenant 60 / 120, person 30 / 60 (an MCP tool is a cheap read and one client session makes several requests).
 
+### A.1 Agreement with the MCP gateway's verifier
+
+In the `mcp` class a token the service cannot identify is passed on to the gateway uncounted (the gateway answers 401 with its metadata), so the service must never be **stricter** than the gateway or a token would be served without being charged to any bucket. Both verifiers run the same vectors (`testdata/auth-vectors/`, profiles `identify` and `mcp`; `tests/mcp/test_gateway_vectors.py` for the gateway) and agreed on all 37 on the first run: T066 found no case to fix, and the gateway's verifier was not changed. Two differences are known and deliberate:
+
+- **The gateway checks less than the chat profile**: no scope, no issue time, no lifetime cap (it checks its own audience instead). The limit-only profile checks the same as the gateway, so this is the same set seen from both ends.
+- **Clock tolerance is not in the vectors.** The gateway's is a constant 5 seconds; the service's is `AUTHLIMIT_CLOCK_LEEWAY` (10 seconds by default). While the service's is at least the gateway's, nothing the gateway accepts at the edge of expiry escapes counting. Lowering the setting below 5 seconds opens a window of the difference in which a just-expired token is served uncounted; a test pins the default relationship, not an operator's override.
+
 Error body: `{"code": "...", "message": "...", "details": {...}}`, `Content-Type: application/json`. Messages never contain a token, claim or exception text. Codes are listed in `services/authlimit/errorcodes.json`.
 
 Other endpoints (not routed publicly by Caddy): `GET /healthz` (liveness, always 200 while the process runs), `GET /readyz` (200 or 503; ready means a usable signing key, usable external keys within the grace, and, under policy `closed`, a revocation copy within its ceiling), `GET /internal/jwks.json` (public internal keys, OKP/Ed25519 JWKS).

@@ -2,8 +2,8 @@
 
 One file of tokens, read by two verifiers in two languages, so they cannot quietly disagree about what a valid token is:
 
-- the Go service, `services/authlimit/internal/extjwt` (this PR);
-- the MCP gateway's Python verifier, `app/mcp/gateway_auth.py` (PR 2, task T065).
+- the Go service, `services/authlimit/internal/extjwt`;
+- the MCP gateway's Python verifier, `app/mcp/gateway_auth.py` (`tests/mcp/test_gateway_vectors.py`, which also freezes the clock at `now`).
 
 `vectors.json` is the cases, `jwks.json` is the public key set that verifies them. Both are produced by `scripts/gen_auth_vectors.py`.
 
@@ -38,7 +38,7 @@ Each `expect` entry is `{"result": "valid", "tenant", "principal"}` or `{"result
 
 **The limit-only profile never refuses a token the MCP gateway accepts.** If it did, that token would pass through to the gateway without
 being counted against any bucket: a way around the limiter. `scripts/gen_auth_vectors.py` refuses to write a file that breaks this, and
-the tests of both verifiers re-check it. (The reverse is fine: limit-only mode may accept a token the gateway then refuses.)
+the tests of both verifiers re-check it. (Clock tolerance is the one thing the vectors cannot show: see `specs/018-authlimit-edge-auth/contracts/authlimit.md`, A.1.) (The reverse is fine: limit-only mode may accept a token the gateway then refuses.)
 
 In particular a token with no issue time is valid for `identify`. The service then treats its issue time as 0, so any revocation of that
 person voids it: the safe direction.
