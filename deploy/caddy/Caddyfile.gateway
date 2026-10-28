@@ -103,7 +103,8 @@ https://mcp.localhost:8443 {
 #   else  authlimit's own answer (401, 403, 429, 503) goes straight back to the client and the API is never called.
 #
 # {$AUTHLIMIT_UPSTREAM} is the service behind the check: the stub that echoes what it received (`authlimit-echo:8000`, the default, which
-# is how `make authlimit-smoke` sees what a real API would have been given) or the API itself (`api:8000`).
+# is how `make authlimit-smoke` sees exactly what a real API would have been given) or the API itself (`api:8000`, which is what
+# `make authlimit-up-app` sets, with the API in identity mode so it trusts only the identity this door adds).
 https://api.localhost:8443 {
 	tls internal
 

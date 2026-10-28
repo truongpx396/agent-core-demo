@@ -786,7 +786,15 @@ services:
     restart: unless-stopped
     ports:
       - "8000:8000"
-    environment: *app-env
+    environment:
+      <<: *app-env
+      # Who is calling (spec 018). Header mode by default HERE because this role is published straight on :8000 with nothing in front of it
+      # (`--profile app` alone): it trusts X-Tenant-Id / X-Principal-Id as sent, loudly (a startup warning, agent_api_auth_mode). `make
+      # authlimit-up-app` sets AUTH_MODE=identity and points Caddy at this service, after which only the signed identity the front door adds
+      # is trusted and a request that skips Caddy and comes straight to :8000 is a 401. The keys address is the authlimit service by its
+      # in-network name (no dependency on it: the API starts first and answers 503 until the keys can be fetched, instead of not starting).
+      AUTH_MODE: ${AUTH_MODE:-headers}
+      AUTHLIMIT_KEYS_URL: ${AUTHLIMIT_KEYS_URL:-http://authlimit:8080/internal/jwks.json}
     extra_hosts:
       - "host.docker.internal:host-gateway"   # so OTEL_EXPORTER_OTLP_ENDPOINT resolves on native Linux Docker too
     depends_on:
