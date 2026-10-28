@@ -795,6 +795,9 @@ services:
       # in-network name (no dependency on it: the API starts first and answers 503 until the keys can be fetched, instead of not starting).
       AUTH_MODE: ${AUTH_MODE:-headers}
       AUTHLIMIT_KEYS_URL: ${AUTHLIMIT_KEYS_URL:-http://authlimit:8080/internal/jwks.json}
+      # The two timings of the API's copy of those keys, passed through so the smoke can shorten them (the defaults are Settings' own).
+      AUTHLIMIT_KEYS_CACHE_SECONDS: ${AUTHLIMIT_KEYS_CACHE_SECONDS:-60}
+      AUTHLIMIT_KEYS_STALE_GRACE_SECONDS: ${AUTHLIMIT_KEYS_STALE_GRACE_SECONDS:-600}
       # What the built-in page signs in against: the SAME names and defaults the authlimit service reads, so one override changes both.
       WEB_AUTH_ISSUER: ${AUTHLIMIT_ISSUER:-https://auth.localhost:8443}
       WEB_AUTH_AUDIENCE: ${AUTHLIMIT_AUDIENCE:-https://api.localhost:8443}
