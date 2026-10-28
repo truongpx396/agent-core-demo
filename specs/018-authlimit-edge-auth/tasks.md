@@ -204,7 +204,7 @@ Start from `main` after PR 1 merges (or stack on PR 1's branch and restack after
 
 - [X] T070 [P] Update docs: `README.md` (architecture, make targets, the sign-in and header-mode notes), `CLAUDE.md` (where things live: `services/authlimit/`, `app/core/internal_identity.py`), the numbered patterns for the API-side lessons (take next free numbers), `specs/018-.../research.md` "Results" with the measured numbers, and every "Extending Further" / Roadmap entry the change closes or opens (the in-flight turn cap).
 - [X] T071 Run the targeted Python checks and fix findings: `pytest tests/core/test_config_auth_mode.py tests/core/test_error_codes_authlimit.py tests/core/test_internal_identity.py tests/api tests/mcp/test_gateway_vectors.py tests/core/test_alert_rules.py tests/core/test_compose_gateway.py -q`; `ruff check .` on touched files; `mypy` on the touched modules if it runs quickly, else leave to CI and say so. Do not run the full suite locally.
-- [ ] T072 Count PR 2's hand-written lines as in T053 and record them; name the pieces split off first (production wiring T069, then refresh handling in the UI).
+- [X] T072 Count PR 2's hand-written lines as in T053 and record them; name the pieces split off first (production wiring T069, then refresh handling in the UI).
 - [ ] T073 Commit PR 2 (`feat:` subject; body states failure mode, root cause, what is left undone, and the `.env` note from spec A9; attribution line), push, open the PR against `main` (or against PR 1's branch if stacked, and say so), report CI with `gh pr checks`, and do not call it done while checks are pending or red.
 
 ---

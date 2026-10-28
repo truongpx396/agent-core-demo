@@ -240,3 +240,15 @@ Run the same way as R21 (an isolated Compose project, the maintainer's own stack
 | The web page in Chromium, two tenants, `make authlimit-web-check` | 28 of 28: signed-out box, hidden pickers, Casdoor's own form, no code or token in the address bar or history, token in `sessionStorage` only, a chat turn answered with the signed-in tenant's rows only, the request carrying a Bearer and neither identity header, reload keeps the login, sign-out clears the conversation, a refused token returns to the sign-in box saying so | FR-030 |
 
 **Still unmeasured:** Casdoor's behaviour for a user who belongs to two organizations (the page asks for one); a refresh token in the page (not built: a 7-day access token and sign-in again); the page under a Content-Security-Policy (none is set); production Caddy and compose wiring (T069, not part of this run); behaviour under load.
+
+**Size of PR 2 (task T072).** Part B was delivered as five pull requests instead of one, because the first estimate (the task list's single "PR 2") would have been about 3,700 lines. Lines added and deleted as GitHub counts them, tests and docs included:
+
+| PR | Tasks | Added | Deleted | Roughly tests |
+|---|---|---|---|---|
+| #206 drop the in-API limiter, route-table drift, MCP verifier vectors | T063-T066 | 389 | 242 | 230 |
+| #207 settings, error codes, the identity verifier | T055-T057 | 986 | 6 | 600 |
+| #208 `get_ctx` by mode, announcement, alerts | T058-T060, T067 | 751 | 101 | 430 |
+| #209 the real API in the local stack, the page's sign-in | T061, T062 | 857 | 21 | 450 |
+| #210 the smoke against the real API, the page in a browser, docs | T068, T070-T072 | 728 | 21 | 220 |
+
+The first split was by theme (what is removed or checked, what is added, what is switched), the second (#209/#210) by "the thing" against "the proof of the thing". The one piece cut out entirely is **production wiring (T069)**, which the delivery plan named as the first cut: the deploy workflow builds and pushes the app image only (`.github/workflows/deploy.yml`), no production identity provider exists (spec 017 T021), and turning identity mode on in production would make the deployed API refuse every request until one does. It needs the maintainer's decision, not a guess, and is the only task of Part B not done.
