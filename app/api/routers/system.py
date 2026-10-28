@@ -7,6 +7,7 @@ from fastapi.responses import HTMLResponse
 from app.api import (
     health as health_checks,  # `health` is also this module's own liveness endpoint name below
 )
+from app.api import web_auth
 from app.api.schemas import HealthResponse, ReadinessResponse
 
 router = APIRouter()
@@ -22,7 +23,14 @@ def ui() -> str:
     disk per request (not cached) so editing the file and refreshing is
     enough during development — this isn't a hot path.
     """
-    return _UI_HTML_PATH.read_text()
+    return web_auth.render(_UI_HTML_PATH.read_text())
+
+
+@router.get("/static/auth.js", include_in_schema=False)
+def ui_sign_in_script() -> Response:
+    """The page's sign-in (authorization code with PKCE; see app/api/web_auth.py). Public by design: it is code, not data, and it must load
+    BEFORE anyone can sign in. Hidden from the OpenAPI document because it is part of the page, not of the API. Read per request, like the page."""
+    return Response(web_auth.script(), media_type="text/javascript", headers={"Cache-Control": "no-cache"})
 
 
 @router.get("/health", response_model=HealthResponse)

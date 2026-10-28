@@ -105,9 +105,22 @@ class Casdoor:
         return password
 
     def ensure_application(
-        self, name: str, organization: str, scope: str, description: str, redirect_uris: list[str], token_hours: int, kind: str = "MCP"
+        self,
+        name: str,
+        organization: str,
+        scope: str,
+        description: str,
+        redirect_uris: list[str],
+        token_hours: int,
+        kind: str = "MCP",
+        client_id: str | None = None,
     ) -> str:
-        """Create or update the application; returns its client id (kept on a re-run, so a client already registered with it still works)."""
+        """Create or update the application; returns its client id.
+
+        Normally the id is generated once and KEPT on a re-run, so a client already registered with it still works. When the caller NAMES an id
+        (`client_id`, used for the chat API's applications) that id is the one the application has, created or changed to it: the built-in web
+        page finds a tenant's client by the rule `api-<tenant>` (app/api/web_auth.py) instead of being told every tenant's random id, and a
+        client id is not a secret."""
         existing = self.read("/api/get-application", id=f"admin/{name}")
         record = {
             "owner": "admin",
@@ -127,10 +140,11 @@ class Casdoor:
             "scopes": [{"name": scope, "displayName": scope, "description": description}],
         }
         if existing:
-            record = {**existing, **record, "clientId": existing["clientId"], "clientSecret": existing["clientSecret"]}
+            kept = client_id or existing["clientId"]
+            record = {**existing, **record, "clientId": kept, "clientSecret": existing["clientSecret"]}
             self.write("/api/update-application", record, id=f"admin/{name}")
-            return existing["clientId"]
-        client_id = secrets.token_hex(10)
+            return kept
+        client_id = client_id or secrets.token_hex(10)
         self.write("/api/add-application", {**record, "clientId": client_id, "clientSecret": secrets.token_hex(20)})
         print(f"created application {name}")
         return client_id
@@ -171,7 +185,14 @@ def main(argv: list[str] | None = None) -> None:
             commands.append(("ecorp" if tenant == "ecorp" else f"ecorp-{tenant}", tenant, "/ecorp/mcp", client_id, "alice", user_password))
             # The chat API (specs/018): the page signs in at its own root URL; the smoke check signs in at its own callback.
             api_client_id = casdoor.ensure_application(
-                f"api-{tenant}", tenant, "api:chat", f"chat API for {tenant}", [f"{api_public}/", API_SMOKE_CALLBACK], args.token_hours, kind="API"
+                f"api-{tenant}",
+                tenant,
+                "api:chat",
+                f"chat API for {tenant}",
+                [f"{api_public}/", API_SMOKE_CALLBACK],
+                args.token_hours,
+                kind="API",
+                client_id=f"api-{tenant}",  # the rule the web page uses to find a tenant's client (app/api/web_auth.py::CLIENT_ID_PREFIX)
             )
             api_clients.append((tenant, api_client_id))
         casdoor.ensure_organization(args.ops_org)

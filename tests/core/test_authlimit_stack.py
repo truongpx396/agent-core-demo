@@ -224,9 +224,13 @@ def test_the_gateway_stack_target_starts_authlimit_and_makes_sure_a_key_exists_f
     assert "authlimit authlimit-echo caddy-gateway" in up.group(2)
     assert "AUTHLIMIT_KEYS_DIR=$(AUTHLIMIT_KEYS_DIR)" in makefile, "compose must be told where the host's key directory is"
     assert "AUTHLIMIT_DIR      := $(HOME)/.cache/agent-core-demo-authlimit" in makefile
-    for target in ("authlimit-test", "authlimit-build", "authlimit-keys", "authlimit-up", "authlimit-down", "authlimit-smoke", "authlimit-revoke"):
+    phony = makefile.split("\n", 1)[0].removeprefix(".PHONY:").split()
+    for target in (
+        "authlimit-test", "authlimit-build", "authlimit-keys", "authlimit-up", "authlimit-up-app", "authlimit-down", "authlimit-down-app",
+        "authlimit-smoke", "authlimit-revoke",
+    ):
         assert re.search(rf"^{target}:", makefile, re.MULTILINE), target
-        assert target in makefile.split("\n", 1)[0], f"{target} must be in .PHONY"
+        assert target in phony, f"{target} must be in .PHONY (as a whole word: authlimit-up is a prefix of authlimit-up-app)"
 
 
 def test_keys_are_created_as_the_host_user_by_the_binary_itself_never_by_a_shell_pipeline():
@@ -246,3 +250,71 @@ def test_caddy_only_declares_a_plain_url_public_so_authlimits_stricter_reading_a
     assert "not expression" in matcher and "{http.request.uri}" in matcher
     for needle in ("%", r"\\", r"\.\.", "//"):
         assert needle in matcher, f"the guard must refuse {needle!r} in a public URL"
+
+
+# --- the real API behind the door (specs/018, task T061) --------------------------------------------------------------------------------
+
+
+def _makefile_recipe(target: str) -> str:
+    """The text of one Makefile target: its line and the tab-indented recipe lines under it."""
+    lines = (REPO / "Makefile").read_text().splitlines()
+    start = next(i for i, line in enumerate(lines) if line.startswith(f"{target}:"))
+    body = [lines[start]]
+    for line in lines[start + 1 :]:
+        if not line.startswith("\t"):
+            break
+        body.append(line)
+    return "\n".join(body)
+
+
+def test_the_compose_api_is_header_mode_unless_the_app_stack_target_says_otherwise():
+    """`--profile app` alone publishes the API on :8000 with nothing in front of it, so it must keep working there (header mode, announced
+    loudly at startup); only the target that puts the door in front of it flips the mode."""
+    env = _services()["api"]["environment"]
+
+    assert env["AUTH_MODE"] == "${AUTH_MODE:-headers}"
+
+
+def test_the_compose_api_reaches_the_doors_published_keys_by_the_services_in_network_name():
+    from types import SimpleNamespace
+
+    from app.core.internal_identity import check_settings
+
+    default = _services()["api"]["environment"]["AUTHLIMIT_KEYS_URL"]
+    address = re.fullmatch(r"\$\{AUTHLIMIT_KEYS_URL:-(.+)\}", default)
+
+    assert address, default
+    url = address.group(1)
+    assert url == "http://authlimit:8080/internal/jwks.json", "the service name, its listen port, and the path the service publishes"
+    check_settings(SimpleNamespace(auth_mode="identity", authlimit_keys_url=url))  # the startup check accepts it: plain http to a dotless name
+
+
+def test_the_api_does_not_depend_on_the_door_so_the_app_profile_alone_still_starts():
+    """A dependency on a service in the `gateway` profile would make `--profile app` fail to start without it."""
+    assert "authlimit" not in _services()["api"]["depends_on"]
+
+
+def test_the_workers_are_not_told_an_auth_mode_because_only_the_api_has_a_caller_to_check():
+    assert "AUTH_MODE" not in _services()["agent-worker"]["environment"]
+
+
+def test_the_app_stack_target_puts_the_real_api_behind_the_door_in_identity_mode():
+    recipe = _makefile_recipe("authlimit-up-app")
+
+    assert "AUTH_MODE=identity" in recipe
+    assert "AUTHLIMIT_UPSTREAM=api:8000" in recipe
+    assert "--profile app" in recipe and "--profile gateway" in recipe.replace("$(GATEWAY_COMPOSE)", "--profile gateway")
+    for service in ("api", "agent-worker", "caddy-gateway", "authlimit", "casdoor"):
+        assert f" {service}" in recipe, service
+    assert "authlimit-keys-ensure" in recipe.splitlines()[0], "a signing key must exist before the door starts"
+
+
+def test_the_stub_stays_the_default_upstream_because_the_smoke_reads_what_an_api_would_have_been_given():
+    assert _services()["caddy-gateway"]["environment"]["AUTHLIMIT_UPSTREAM"] == "${AUTHLIMIT_UPSTREAM:-authlimit-echo:8000}"
+    assert "AUTHLIMIT_UPSTREAM" not in _makefile_recipe("authlimit-up"), "the plain stack target keeps the stub"
+
+
+def test_taking_the_app_stack_down_removes_the_api_it_started_so_header_mode_is_what_comes_back():
+    recipe = _makefile_recipe("authlimit-down-app")
+
+    assert "--profile app" in recipe and " api" in recipe and " agent-worker" in recipe and " caddy-gateway" in recipe
