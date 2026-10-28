@@ -21,7 +21,7 @@ changing model provider is a LiteLLM config change, not a code change.
 - **Mandatory approval** — any `mutating`/`outward` tool call pauses for a human decision. No flag turns this off.
 - **Exactly-once side effects** — writes are keyed by the provider's `tool_call_id`, so a retry, a crash-reclaim or a double-submit cannot write, send or spend twice.
 - **Semantic cache** — repeated questions skip retrieval and the LLM; a turn that called a non-read-only tool is never cached.
-- **Tools** — calculator, hybrid search, a fixed (never text-to-SQL) Postgres query, clarification, web crawling, an isolated code sandbox; MCP as both server and client.
+- **Tools** — calculator, hybrid search, a fixed (never text-to-SQL) Postgres query, clarification, web crawling and (support, ops, sales) web search, an isolated code sandbox; MCP as both server and client.
 - **Skills and subagents** — a searchable `SKILL.md` catalog loaded on demand, and isolated read-only subagent runs.
 - **Guardrails** — input moderation (patterns + an ML classifier), secret scrubbing on tool output, nine independent safety budgets, a golden-set eval gate.
 - **Interfaces** — CLI, HTTP API, web UI and Telegram, all publishing to one queue that one worker pool runs through one streaming core.
@@ -73,25 +73,37 @@ flowchart TB
     TurnQueue --> AgentWorker["agent-worker pool"]
     AgentWorker --> Runtime["Shared runtime<br/>(app/agent/runtime/core.py)"]
 
-    Runtime --> Moderate
+    Runtime --> Validate
 
-    subgraph agent_sg["LangGraph agent — 19 nodes, safety budgets, approval gate"]
+    subgraph agent_sg["LangGraph agent — 20 nodes, safety budgets, approval gate"]
+        Validate["validate_input"]
         Moderate["moderate_input"]
         CacheCheck{"semantic cache hit?"}
+        Compact["compact_history"]
+        Route["route_model<br/>(off by default)"]
         Retrieve["retrieve_context"]
         AgentNode["agent (LLM call)"]
-        ToolsNode["tools"]
+        BatchGuard["tool_batch_guard"]
         HITL["human_approval (pause)"]
+        ToolsNode["tools"]
+        NoAnswer["no_answer<br/>(a budget fired)"]
         Output["check_output + citations"]
+        Retry["retry_output"]
+        Finish["suggest_followups +<br/>write_semantic_cache<br/>(in parallel)"]
     end
 
-    Moderate --> CacheCheck
-    CacheCheck -- miss --> Retrieve --> AgentNode
+    Validate --> Moderate --> CacheCheck
+    CacheCheck -- miss --> Compact --> Route --> Retrieve --> AgentNode
     CacheCheck -- hit --> Output
-    AgentNode -- tool call --> ToolsNode
-    ToolsNode -- mutating --> HITL --> AgentNode
-    ToolsNode -- read-only --> AgentNode
+    AgentNode -- invalid tool batch --> BatchGuard --> AgentNode
+    AgentNode -- mutating or outward tool --> HITL
+    HITL -- approved --> ToolsNode
+    HITL -- rejected --> AgentNode
+    AgentNode -- read-only tool --> ToolsNode --> AgentNode
+    AgentNode -- budget exit --> NoAnswer
     AgentNode -- final answer --> Output
+    Output -- answer rejected --> Retry --> AgentNode
+    Output -- answer stands --> Finish
 
     MCPServer --> SQL["app/core/sql_store.py"]
     MCPGateway --> SQL
@@ -100,6 +112,7 @@ flowchart TB
     Retrieve --> Qdrant[("Qdrant<br/>hybrid search")]
     Retrieve -. rerank .-> MLService["ml-service<br/>(reranker, Prompt Guard)"]
     Moderate -. classify .-> MLService
+    Route -. label .-> MLService
     AgentNode --> LiteLLM["LiteLLM proxy"] --> LLM[("LLM provider<br/>Ollama in dev, hosted in prod")]
     Runtime --> Checkpointer[("Postgres: checkpoints")]
     Runtime --> Langfuse["Langfuse tracing"]
@@ -119,7 +132,7 @@ The front door (`services/authlimit/`, see "Front door: authlimit" below) is wha
 signed identity the API trusts. The design is the same in production, but the prod Caddyfile and compose are not wired to it yet
 ([Deploying](#deploying-to-production)); with `make serve` (`AUTH_MODE=headers`) the web UI calls the API directly instead.
 The OTLP edge stands for every process that pushes metrics: the API and each worker replica
-(GRAPH_PATTERNS.md pattern 43). The node-by-node flow, including budget exits and the retry loop, is in
+(GRAPH_PATTERNS.md pattern 43). The node-by-node flow, including the refusal and dead-end exits (`reject_*`, `context_window_exceeded`, `retry_exhausted`), is in
 [GRAPH_PATTERNS.md](GRAPH_PATTERNS.md#graph-flow).
 
 ## Environments
@@ -287,7 +300,7 @@ Use `X-Tenant-Id: ecorp` to see what `make ingest` seeded; another tenant sees n
 ### Web UI
 
 `make serve`, then open http://localhost:8000/. It drives the full approve/reject flow and is covered by a
-real-browser test (`tests/live/test_chat_ui.py`, pattern 48).
+real-browser test (`tests/live/test_chat_ui.py`, pattern 48). Behind the front door (`make authlimit-up-app`) the page signs in through Casdoor and sends the token; `make authlimit-web-check` drives that in a browser.
 
 ### Ingestion
 
@@ -474,13 +487,15 @@ Upgrading across the move of the meter into the package (spec 013) has an order 
 | `14-tool-call-id-columns` | `tool_call_id UNIQUE` on tickets, incidents, follow-ups | Creating those rows fails |
 | `15-append-notes-as-rows` | `support_ticket_comments`, `crm_lead_notes` | Adding a comment or note fails. **Drops `support_tickets.notes` and `crm_leads.notes` with no data carried over** — copy first |
 | `16-tenant-budget-holds` | One budget hold per in-flight turn | The daily cap stops counting running turns; the reserve fails open |
+| `17-usage-ledger-indexes` | Indexes on the retired `usage_ledger` | Nothing that matters: the caps read `usage_events` now |
+| `18-budget-policies` | Per-tenant and per-person limit overrides (`make budget-policy`) | Overrides are ignored, with one warning; the limits come from `Settings` alone |
 | `19-usage-events` | One immutable row per model call: **the spend the dollar caps and `GET /usage` sum** | No call is metered (`UsageEventTableMissing`) **and the caps' spend read fails**: under the default `BUDGET_CHECK_FAILURE_POLICY=open` every turn runs unchecked and `TenantAllowanceUnenforced` pages. Apply it **before** deploying the change that reads the caps from it, then run `make usage-events-carry-over` |
 | `20`, `22`, `24`, `25` (billing) | The package's wallet, webhook inbox, usage record and export outbox | Billing writes fail and are counted and paged; the agent's own meter is unaffected. Apply with `make billing-migrate` |
 
 ## Observability
 
 - **Logs:** structlog JSON from every service, with `request_id`/`thread_id` on each line (pattern 14).
-- **Metrics:** 25+ OpenTelemetry counters and histograms (`app/core/metrics.py`), **pushed** over OTLP by the API and every worker replica to one otel-collector (pattern 11).
+- **Metrics:** 70+ OpenTelemetry counters and histograms (`app/core/metrics.py`), **pushed** over OTLP by the API and every worker replica to one otel-collector (pattern 11).
 - **Traces:** Langfuse, grouped by `thread_id`.
 - **Cost:** one usage event per model call (tenant- and principal-scoped, with the concrete model behind each alias) is what the dollar caps sum ([COST_GOVERNANCE.md](COST_GOVERNANCE.md), patterns 38, 51).
 
@@ -493,7 +508,7 @@ that nothing in the app depends on:
 | Prometheus | Scrapes the collector, Qdrant, LiteLLM, and the Postgres/Redis exporters |
 | Alertmanager | Routes [`alerts.yml`](observability/prometheus/alerts.yml): error rate, p95 latency, tool errors, tenant budget, moderation and webhook rate-limit spikes, degradation, checkpoint issues, unreachable workers. Locally **no notification channel is wired** (alerts show in the UI only). Production mounts `alertmanager.prod.yml` (Slack, severity-routed) and **refuses to start** without `ALERTMANAGER_SLACK_WEBHOOK_URL`, so a deployment can't be quietly alert-deaf; add a receiver there to page someone |
 | Loki + Promtail | Ship the app containers' JSON logs |
-| Grafana | Two provisioned dashboards, **Agent Core Overview** and **Agent Core Infra & Logs** |
+| Grafana | Seven provisioned dashboards: **Agent Core Overview**, **Infra**, **Logs**, **Credit Billing**, and Docker/host, Postgres and Redis views |
 
 `make obs-down` keeps data; `make obs-clean` drops it. Config lives in [`observability/`](observability/).
 Prod runs the same stack on its own droplet ([infra/README.md](infra/README.md)).
