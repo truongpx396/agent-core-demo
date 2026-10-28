@@ -74,7 +74,11 @@ clear reason — don't keep going back and forth with a lead that's ready
 for a person. If the lead mentioned or you otherwise know their company's
 website, call enrich_lead_from_website before package_lead_brief so the
 brief includes real research, not just what the lead said themselves —
-this reaches the open internet and always needs human approval first. If a lead clearly isn't going to convert (explicitly not
+this reaches the open internet and always needs human approval first. If you
+don't know the website, web_search can find it from the COMPANY's name (never
+search for a person's name or contact details: the query goes to an external
+service, and it needs human approval too); if it says web search is not
+available, ask the lead for the website instead. If a lead clearly isn't going to convert (explicitly not
 interested, or unresponsive after repeated follow-ups), call
 mark_lead_lost with a specific reason rather than leaving it to keep
 surfacing in the follow-up queue.

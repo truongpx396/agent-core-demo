@@ -26,6 +26,7 @@ from app.core.untrusted import frame_untrusted
 from app.domains import notify, sandbox_session
 from app.domains.policy import ActionAllowlistPolicy
 from app.domains.sales import store
+from app.domains.web_search import make_web_search_tool
 from app.ingestion.web_crawler import CRAWL_TOOL_TIMEOUT_SECONDS, render_url_to_markdown
 
 NO_CTX_REFUSAL = (
@@ -44,6 +45,7 @@ SALES_POLICY = ActionAllowlistPolicy(
             "list_pending_followups",
             "mark_lead_lost",
             "enrich_lead",
+            "web_search",
             "run_command_in_sandbox",
             "run_python_in_sandbox",
             "read_sandbox_file",
@@ -396,6 +398,10 @@ async def enrich_lead_from_website(
     )
 
 
+# The discovery half of enrich_lead_from_website: finds the company site it then reads (app/domains/web_search.py says why).
+web_search = make_web_search_tool(SALES_POLICY, then_read_with="enrich_lead_from_website")
+
+
 def _thread_id_from_config(config: RunnableConfig | None) -> str:
     return (config or {}).get("configurable", {}).get("thread_id", "unknown")
 
@@ -647,6 +653,7 @@ TOOLS = [
     mark_lead_lost,
     enrich_lead_from_website,
     *_SANDBOX_TOOLS,
+    web_search,  # last, so no existing tool changes position in the bound list (pattern 50)
 ]
 
 TOOL_CAPABILITIES = {
@@ -657,5 +664,6 @@ TOOL_CAPABILITIES = {
     "list_pending_followups": "read_only",
     "mark_lead_lost": "mutating",
     "enrich_lead_from_website": "outward",
+    "web_search": "outward",
     **{t.name: "outward" for t in _SANDBOX_TOOLS},
 }

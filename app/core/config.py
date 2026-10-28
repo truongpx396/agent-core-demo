@@ -645,6 +645,20 @@ class Settings(BillingSettings):
     # connection-resets instead of a clear auth error.
     crawl4ai_api_token: str = ""
 
+    # API key for serper.dev (a Google Search API), the backend of the `web_search` tool
+    # (app/core/serper.py, app/domains/web_search.py). Optional and OFF when empty, like Langfuse and the
+    # Slack webhook: the core runs fully offline, and with no key the tool is still declared (the tool list
+    # must not change between deploys, or a thread paused on an approval for it could not resume) but
+    # answers that web search is not configured, without a network call. Every search spends one of the
+    # account's credits, so this is a billed dependency, not a free one.
+    serper_api_key: str = ""
+
+    # How many results one `web_search` call hands the model, and asks Serper for. A ceiling on the third-party
+    # text that enters the prompt (constitution Principle V/VI), not a quality knob: the model reads titles and
+    # snippets, and the tool that follows up on one (fetch_external_reference and its siblings) reads the page.
+    # 10 is Serper's own default page size; asking for more costs more credits per search.
+    web_search_max_results: int = Field(default=5, ge=1, le=10)
+
     # OTel metrics export (app/core/telemetry.py) — OTLP/HTTP base URL (no
     # /v1/metrics suffix; configure_telemetry appends it). Points at the
     # shared otel-collector in a real deployment; localhost:4318 matches
@@ -755,4 +769,6 @@ SANDBOX_IMAGE = settings.sandbox_image
 SANDBOX_TTL_SECONDS = settings.sandbox_ttl_seconds
 CRAWL4AI_SERVER_URL = settings.crawl4ai_server_url
 CRAWL4AI_API_TOKEN = settings.crawl4ai_api_token
+SERPER_API_KEY = settings.serper_api_key
+WEB_SEARCH_MAX_RESULTS = settings.web_search_max_results
 OTEL_EXPORTER_OTLP_ENDPOINT = settings.otel_exporter_otlp_endpoint

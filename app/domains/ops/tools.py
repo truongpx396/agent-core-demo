@@ -30,6 +30,7 @@ from app.core.untrusted import frame_untrusted
 from app.domains import notify, sandbox_session
 from app.domains.ops import metrics_client, store
 from app.domains.policy import ActionAllowlistPolicy
+from app.domains.web_search import make_web_search_tool
 from app.ingestion.web_crawler import CRAWL_TOOL_TIMEOUT_SECONDS, render_url_to_markdown
 
 NO_CTX_REFUSAL = (
@@ -47,6 +48,7 @@ OPS_POLICY = ActionAllowlistPolicy(
             "list_recent_incidents",
             "resolve_incident",
             "check_vendor_status",
+            "web_search",
             "run_command_in_sandbox",
             "run_python_in_sandbox",
             "read_sandbox_file",
@@ -296,6 +298,10 @@ async def check_vendor_status_page(
     )
 
 
+# The discovery half of check_vendor_status_page: finds the vendor's status page it then reads (app/domains/web_search.py says why).
+web_search = make_web_search_tool(OPS_POLICY, then_read_with="check_vendor_status_page")
+
+
 def _thread_id_from_config(config: RunnableConfig | None) -> str:
     return (config or {}).get("configurable", {}).get("thread_id", "unknown")
 
@@ -543,6 +549,7 @@ TOOLS = [
     resolve_incident,
     check_vendor_status_page,
     *_SANDBOX_TOOLS,
+    web_search,  # last, so no existing tool changes position in the bound list (pattern 50)
 ]
 
 TOOL_CAPABILITIES = {
@@ -552,5 +559,6 @@ TOOL_CAPABILITIES = {
     "list_recent_incidents": "read_only",
     "resolve_incident": "mutating",
     "check_vendor_status_page": "outward",
+    "web_search": "outward",
     **{t.name: "outward" for t in _SANDBOX_TOOLS},
 }

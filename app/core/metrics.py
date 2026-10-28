@@ -651,7 +651,7 @@ agent_tool_retry_total = Counter(
     "can run well ahead of agent_circuit_breaker_opened_total under a brief blip "
     "every retry recovers from before the breaker ever trips.",
     ["dependency"],
-)  # dependency: opensandbox_mcp | crawl4ai
+)  # dependency: opensandbox_mcp | crawl4ai | serper
 
 agent_circuit_breaker_opened_total = Counter(
     "agent_circuit_breaker_opened_total",
@@ -684,6 +684,19 @@ agent_circuit_breaker_half_open_total = Counter(
     "never gets hit with a burst the instant its cooldown expires.",
     ["dependency"],
 )
+
+agent_web_search_total = Counter(
+    "agent_web_search_total",
+    "One `web_search` call's outcome (app/core/serper.py), counted once per call that got as far as the client. ok / no_results "
+    "are answers. not_configured: SERPER_API_KEY is empty, so no request was made. blank_query: refused locally, because "
+    "serper.dev answers a blank query with unrelated results and spends a credit on it (measured). auth_failed (401/403; a wrong "
+    "key is a measured 403) and rejected (any other 4xx; an account out of credits is expected to land here, which is NOT "
+    "verified, as there is no safe way to exhaust one) need an operator: the feature is off until someone fixes the key or "
+    "the account, and the turn does not fail, which is why they are alerted (WebSearchProviderRefusing). rate_limited (429), "
+    "unavailable (5xx, a timeout, a dropped connection), circuit_open (the breaker is rejecting calls after repeated connection "
+    "failures) and bad_response (200 but not the documented shape) are the provider or the network being unwell.",
+    ["outcome"],
+)  # outcome: ok | no_results | not_configured | blank_query | auth_failed | rejected | rate_limited | unavailable | circuit_open | bad_response
 
 agent_mcp_tool_pin_failures_total = Counter(
     "agent_mcp_tool_pin_failures_total",

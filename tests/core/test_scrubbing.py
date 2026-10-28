@@ -52,6 +52,18 @@ class TestBoundSecrets:
         assert "my-actual-configured-key-xyz" not in result
         assert "[REDACTED]" in result
 
+    def test_the_web_search_api_key_is_redacted_if_a_tool_result_ever_echoes_it(self, monkeypatch):
+        """`web_search` sends SERPER_API_KEY in a header and never prints it (app/core/serper.py), but a provider error body or a snippet that quotes
+        it would otherwise reach the model and the trace verbatim: a hex key matches none of the generic credential patterns."""
+        import app.core.config as config
+
+        monkeypatch.setattr(config, "SERPER_API_KEY", "0123456789abcdef0123456789abcdef01234567")
+
+        result = scrubbing.scrub("provider said: bad key 0123456789abcdef0123456789abcdef01234567")
+
+        assert "0123456789abcdef0123456789abcdef01234567" not in result
+        assert "[REDACTED]" in result
+
     def test_unset_secrets_are_never_scrubbed_as_empty_string(self, monkeypatch):
         """An unset secret is "" in this app's Settings defaults —
         scrubbing "" would corrupt every tool result by inserting
