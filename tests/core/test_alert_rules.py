@@ -110,6 +110,29 @@ def test_a_gateway_that_cannot_check_any_token_has_an_alert():
     assert "agent_mcp_gateway_requests_total" in rule["expr"] and 'outcome="jwks_unavailable"' in rule["expr"]
 
 
+def test_an_api_left_in_header_mode_has_an_alert_that_says_never_on_the_internet():
+    """Header mode trusts headers any client can set. It is announced at startup, but a warning in a log is read once; the gauge keeps saying it
+    (specs/018) and this rule is what makes someone read it."""
+    (rule,) = [r for r in _rules() if r["alert"] == "ApiHeaderAuthMode"]
+
+    assert rule["expr"] == 'agent_api_auth_mode{mode="headers"} == 1'
+    assert rule["for"] == "10m" and rule["labels"]["severity"] == "warning"
+    assert "internet" in rule["annotations"]["description"] and "AUTH_MODE=identity" in rule["annotations"]["description"]
+
+
+def test_an_api_that_cannot_check_any_identity_has_an_alert_and_so_has_the_failure_before_it():
+    """The API fails closed when the front door's keys cannot be confirmed current, answering 503. That is invisible to the people it hurts as
+    anything but 'the app is down', so the counter's `keys_unavailable` outcome is the only place the outage shows; and the refresh errors
+    that precede it are the early warning, since the grace is what keeps one dead replica from being an outage."""
+    rules = {r["alert"]: r for r in _rules()}
+
+    assert 'agent_api_identity_total{outcome="keys_unavailable"}' in rules["ApiCannotCheckIdentity"]["expr"]
+    assert rules["ApiCannotCheckIdentity"]["labels"]["severity"] == "critical"
+    refresh = rules["ApiIdentityKeysRefreshFailing"]["expr"]
+    assert 'result="error"' in refresh and 'result="ok"' in refresh, "errors with NO success: one failed fetch among good ones is not a page"
+    assert " unless " in refresh, "an absent `ok` series (never fetched) must still fire: `and ... == 0` would be an empty result there"
+
+
 def test_a_worker_pool_that_answers_nothing_has_an_alert():
     rules = {rule["alert"]: rule for rule in _rules()}
 

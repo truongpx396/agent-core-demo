@@ -538,6 +538,51 @@ groups:
             `docker compose ps authlimit`, `docker compose logs authlimit`; `curl` cannot reach /readyz from outside, it is internal.
             specs/018.
 
+      # The API's side of the same door (specs/018): how it learns who is calling, and whether it can still check.
+      - alert: ApiHeaderAuthMode
+        expr: agent_api_auth_mode{mode="headers"} == 1
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "The API is trusting X-Tenant-Id and X-Principal-Id as sent (AUTH_MODE=headers)"
+          description: >-
+            An API process has reported agent_api_auth_mode{mode="headers"} for 10m. In header mode any client can act as any tenant by
+            saying so: it is for the hermetic tests and for running the API alone on a developer's machine, and it must never face the
+            internet. If this fires on a deployment, set AUTH_MODE=identity (and AUTHLIMIT_KEYS_URL) and restart; if the process is a
+            developer's own, this alert is not for them. Each process re-reports every minute, so this clears about five minutes after the
+            last one is gone. specs/018.
+
+      - alert: ApiIdentityKeysRefreshFailing
+        # `unless`, not `and ... == 0`: before the first success the `ok` series does not exist, and a comparison against a missing series is an
+        # empty result, so the one case that matters most (the API has never been able to fetch the keys) would never fire.
+        expr: increase(agent_api_identity_key_refresh_total{result="error"}[10m]) > 0 unless increase(agent_api_identity_key_refresh_total{result="ok"}[10m]) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "The API cannot fetch the front door's public keys"
+          description: >-
+            agent_api_identity_key_refresh_total has recorded errors and no success for the last 10m: AUTHLIMIT_KEYS_URL is unreachable
+            or answering something that is not a key set. Requests are still checked against the last keys the API fetched, for
+            AUTHLIMIT_KEYS_STALE_GRACE_SECONDS (10 minutes by default); the cost of waiting is that a key withdrawn for compromise is still
+            trusted, and after the grace every request is refused (ApiCannotCheckIdentity). Check `docker compose ps authlimit` and
+            `docker compose logs api`, which says internal_identity_keys_fetch_failed with the error class. specs/018.
+
+      - alert: ApiCannotCheckIdentity
+        expr: increase(agent_api_identity_total{outcome="keys_unavailable"}[10m]) > 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "The API is refusing every request: it cannot confirm the front door's keys"
+          description: >-
+            agent_api_identity_total{outcome="keys_unavailable"} increased for 2m: the API's copy of the front door's public keys is older
+            than AUTHLIMIT_KEYS_CACHE_SECONDS plus the stale grace and cannot be refreshed, so no identity can be checked. It fails closed
+            on purpose and answers 503 auth_unavailable (not 401), so a client retries instead of logging in again. To the people calling
+            the API this is an outage of everything behind the door. This is the end of a story whose beginning is
+            ApiIdentityKeysRefreshFailing. specs/018.
+
       - alert: WorkerUnreachable
         expr: increase(agent_worker_unreachable_total[10m]) > 0
         for: 5m
