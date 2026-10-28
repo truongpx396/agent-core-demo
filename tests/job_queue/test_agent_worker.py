@@ -40,6 +40,7 @@ def _entry(
     require_approval=False,
     images=None,
     approved=True,
+    unattended=False,
 ):
     ctx = ctx or {"tenant": "ecorp", "principal": "p1", "claims": {}}
     if kind == "turn":
@@ -51,6 +52,7 @@ def _entry(
             "ctx": ctx,
             "require_approval": require_approval,
             "images": images or [],
+            "unattended": unattended,
         }
     elif kind == "resume":
         payload = {
@@ -64,6 +66,8 @@ def _entry(
         payload = {"kind": "cancel", "request_id": request_id, "thread_id": thread_id, "ctx": ctx}
     else:
         payload = {"kind": kind, "request_id": request_id, "thread_id": thread_id, "ctx": ctx}
+        if unattended:
+            payload["unattended"] = True
     return "1-0", {"payload": json.dumps(payload)}
 
 
@@ -311,6 +315,136 @@ class TestProcessRequestTurnContinue:
         assert client.acked == [entry_id]
 
 
+class TestUnattendedJobs:
+    """A job published with `unattended=True` (the Telegram channel: nobody to show an approval
+    to) must run through the decline loop wherever the worker runs it. The plain entry points
+    would end such a job at an `approval_required` its channel cannot answer and leave the
+    conversation paused (pattern 8), so each test makes the plain one fail the test if it is
+    reached."""
+
+    @staticmethod
+    def _refuse(name):
+        async def refuse(*args, **kwargs):
+            raise AssertionError(f"{name} is the attended path; an unattended job must not take it")
+            yield  # pragma: no cover
+
+        return refuse
+
+    async def test_an_unattended_turn_runs_through_the_decline_loop(self, monkeypatch):
+        captured = {}
+
+        async def fake_unattended(text, thread_id, ctx, require_approval=False, images=None):
+            captured.update(text=text, thread_id=thread_id, ctx=ctx, require_approval=require_approval)
+            yield {"type": "token", "content": "No, I can't do that."}
+            yield {"type": "done"}
+
+        monkeypatch.setattr(agent_worker, "astream_events_turn_unattended", fake_unattended)
+        monkeypatch.setattr(agent_worker, "astream_events_turn", self._refuse("astream_events_turn"))
+        client = FakeRedis()
+        ctx = {"tenant": "ecorp", "principal": "telegram:42", "claims": {}}
+        entry_id, fields = _entry(
+            request_id="r20", text="save a note", thread_id="telegram:7", ctx=ctx, unattended=True
+        )
+
+        await agent_worker.process_request(client, entry_id, fields)
+
+        assert captured == {
+            "text": "save a note",
+            "thread_id": "telegram:7",
+            "ctx": ctx,
+            "require_approval": False,
+        }
+        events = [json.loads(f["payload"]) for _, f in client.streams[results_stream_key("r20")]]
+        assert events == [{"type": "token", "content": "No, I can't do that."}, {"type": "done"}]
+        assert client.acked == [entry_id]
+
+    async def test_an_unattended_continue_runs_through_the_decline_loop_too(self, monkeypatch):
+        captured = {}
+
+        async def fake_continue_unattended(thread_id, ctx):
+            captured.update(thread_id=thread_id, ctx=ctx)
+            yield {"type": "done"}
+
+        monkeypatch.setattr(
+            agent_worker, "astream_events_continue_turn_unattended", fake_continue_unattended
+        )
+        monkeypatch.setattr(
+            agent_worker, "astream_events_continue_turn", self._refuse("astream_events_continue_turn")
+        )
+        client = FakeRedis()
+        entry_id, fields = _entry(kind="turn_continue", request_id="r21", thread_id="telegram:7", unattended=True)
+
+        await agent_worker.process_request(client, entry_id, fields)
+
+        assert captured["thread_id"] == "telegram:7"
+        events = [json.loads(f["payload"]) for _, f in client.streams[results_stream_key("r21")]]
+        assert events == [{"type": "done"}]
+
+    async def test_a_job_with_no_flag_stays_on_the_attended_path(self, monkeypatch):
+        """The HTTP API's jobs, and any entry published before the flag existed."""
+
+        async def fake_turn(text, thread_id, ctx, require_approval=False, images=None, cancel_check=None):
+            yield {"type": "approval_required", "tool_calls": []}
+
+        monkeypatch.setattr(agent_worker, "astream_events_turn", fake_turn)
+        monkeypatch.setattr(
+            agent_worker, "astream_events_turn_unattended", self._refuse("astream_events_turn_unattended")
+        )
+        client = FakeRedis()
+        _, fields = _entry(request_id="r22")
+        payload = json.loads(fields["payload"])
+        del payload["unattended"]
+        entry_id = "1-0"
+
+        await agent_worker.process_request(client, entry_id, {"payload": json.dumps(payload)})
+
+        events = [json.loads(f["payload"]) for _, f in client.streams[results_stream_key("r22")]]
+        assert events == [{"type": "approval_required", "tool_calls": []}]
+
+    @pytest.mark.parametrize(
+        ("messages", "expected_kind"),
+        [
+            ([], "turn"),  # nothing checkpointed yet: restart the turn
+            ([HumanMessage(content="hi"), ToolMessage(content="ok", name="add_note", tool_call_id="c1")], "turn_continue"),
+        ],
+        ids=["retried fresh", "continued"],
+    )
+    async def test_a_reclaimed_unattended_turn_is_retried_unattended(self, monkeypatch, messages, expected_kind):
+        """The flag rides on the payload through `republish_job`, so the retry — whichever way
+        `_classify_reclaimed_turn` chose to run it — reaches the worker still unattended."""
+        client = FakeRedis()
+        entry_id, fields = _entry(request_id="r23", thread_id="telegram:7", unattended=True)
+        graph = FakeGraph({"telegram:7": messages} if messages else {})
+
+        await agent_worker._handle_reclaimed_job(client, entry_id, fields, graph=graph)
+
+        (republished,) = client.streams[agent_worker.REQUESTS_STREAM]
+        payload = json.loads(republished[1]["payload"])
+        assert payload["kind"] == expected_kind
+        assert payload["unattended"] is True
+
+        # ...and the worker that picks the retry up takes the unattended entry point.
+        reached = []
+
+        async def fake_turn_unattended(*args, **kwargs):
+            reached.append("turn")
+            yield {"type": "done"}
+
+        async def fake_continue_unattended(*args, **kwargs):
+            reached.append("turn_continue")
+            yield {"type": "done"}
+
+        monkeypatch.setattr(agent_worker, "astream_events_turn_unattended", fake_turn_unattended)
+        monkeypatch.setattr(agent_worker, "astream_events_continue_turn_unattended", fake_continue_unattended)
+        monkeypatch.setattr(agent_worker, "astream_events_turn", self._refuse("astream_events_turn"))
+        monkeypatch.setattr(
+            agent_worker, "astream_events_continue_turn", self._refuse("astream_events_continue_turn")
+        )
+        await agent_worker.process_request(client, republished[0], republished[1])
+
+        assert reached == [expected_kind]
+
+
 class TestProcessRequestResume:
     async def test_dispatches_to_astream_events_resume_with_the_right_args(self, monkeypatch):
         captured = {}
@@ -405,14 +539,18 @@ class TestTheStreamIsClosedBeforeAPublishFailureIsSeen:
     Checked straight after the failure surfaces, with no loop turn in between."""
 
     @pytest.mark.parametrize(
-        ("handler", "entry_point"),
+        ("handler", "entry_point", "unattended"),
         [
-            ("_process_turn", "astream_events_turn"),
-            ("_process_turn_continue", "astream_events_continue_turn"),
-            ("_process_resume", "astream_events_resume"),
+            ("_process_turn", "astream_events_turn", False),
+            ("_process_turn", "astream_events_turn_unattended", True),
+            ("_process_turn_continue", "astream_events_continue_turn", False),
+            ("_process_turn_continue", "astream_events_continue_turn_unattended", True),
+            ("_process_resume", "astream_events_resume", False),
         ],
     )
-    async def test_every_handler_closes_its_stream_when_publishing_fails(self, monkeypatch, handler, entry_point):
+    async def test_every_handler_closes_its_stream_when_publishing_fails(
+        self, monkeypatch, handler, entry_point, unattended
+    ):
         closed = []
 
         async def fake_stream(*args, **kwargs):
@@ -435,6 +573,7 @@ class TestTheStreamIsClosedBeforeAPublishFailureIsSeen:
             "text": "hi",
             "approved": True,
             "ctx": {"tenant": "ecorp", "principal": "p1", "claims": {}},
+            "unattended": unattended,
         }
 
         with pytest.raises(ConnectionError):

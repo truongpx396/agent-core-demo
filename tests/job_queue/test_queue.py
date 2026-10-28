@@ -201,7 +201,23 @@ class TestPublishRequest:
             "ctx": {"tenant": "ecorp", "principal": "p1", "claims": {}},
             "require_approval": True,
             "images": [],
+            "unattended": False,
         }
+
+    async def test_an_unattended_job_says_so_on_the_payload_the_worker_reads(self):
+        """The worker picks `astream_events_turn_unattended` off this flag; a job that lost it
+        would end at an `approval_required` its channel cannot answer."""
+        client = FakeRedis()
+        await queue.publish_request(
+            client,
+            request_id="r1",
+            text="hello",
+            thread_id="t1",
+            ctx={"tenant": "ecorp", "principal": "p1", "claims": {}},
+            unattended=True,
+        )
+        payload = json.loads(client.streams[queue.requests_stream_key("ecorp")][0][1]["payload"])
+        assert payload["unattended"] is True
 
     async def test_carries_images_when_attached(self):
         client = FakeRedis()

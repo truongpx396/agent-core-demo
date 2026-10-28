@@ -131,6 +131,93 @@ class TestAstreamEventsTurnUnattended:
         assert closed == ["turn"]
 
 
+class TestAstreamEventsContinueTurnUnattended:
+    """`astream_events_continue_turn_unattended` is what the queue worker runs when it retries a
+    crashed unattended turn (a Telegram message) after the worker that began it died. The retry
+    is the same decline loop as the first attempt — they share `_decline_every_pause` — because a
+    continuation that reached an approval gate and forwarded the pause would end the job at an
+    `approval_required` its channel cannot answer and leave the conversation paused (pattern 8).
+    Like the class above, these replace the stream entry points rather than drive a real graph:
+    the forwarding and the ceiling are what is under test."""
+
+    async def test_forwards_every_event_unchanged_when_never_paused(self, monkeypatch):
+        async def fake_continue(thread_id, ctx, cancel_check=None):
+            yield {"type": "token", "content": "hi"}
+            yield {"type": "done"}
+
+        monkeypatch.setattr(stream_module, "astream_events_continue_turn", fake_continue)
+
+        events = [e async for e in stream_module.astream_events_continue_turn_unattended("t1", TEST_CTX)]
+
+        assert events == [{"type": "token", "content": "hi"}, {"type": "done"}]
+
+    async def test_declines_a_pause_the_continuation_reaches_and_never_approves(self, monkeypatch):
+        async def fake_continue(thread_id, ctx, cancel_check=None):
+            yield {"type": "approval_required", "tool_calls": [{"name": "add_note", "args": {}}]}
+
+        resumed_with = []
+
+        async def fake_resume(thread_id, approved, ctx, *, admitted=False):
+            resumed_with.append((approved, admitted))
+            yield {"type": "done"}
+
+        monkeypatch.setattr(stream_module, "astream_events_continue_turn", fake_continue)
+        monkeypatch.setattr(stream_module, "astream_events_resume", fake_resume)
+        before = _count(metrics.agent_unattended_pause_total)
+
+        events = [e async for e in stream_module.astream_events_continue_turn_unattended("t1", TEST_CTX)]
+
+        # The pause itself is swallowed; only the decline's own events reach the channel.
+        assert events == [{"type": "done"}]
+        assert resumed_with == [(False, True)]  # declined, and as a step of an already-admitted request
+        assert _count(metrics.agent_unattended_pause_total) == before + 1
+
+    async def test_a_model_that_keeps_asking_ends_in_a_cancel_and_an_explanation(self, monkeypatch):
+        """The ceiling and the cancel are the shared loop's, not re-implemented per entry point."""
+
+        async def fake_continue(thread_id, ctx, cancel_check=None):
+            yield {"type": "approval_required", "tool_calls": [{"name": "add_note", "args": {}}]}
+
+        async def fake_resume(thread_id, approved, ctx, *, admitted=False):
+            yield {"type": "approval_required", "tool_calls": [{"name": "add_note", "args": {}}]}
+
+        cancelled = []
+
+        async def fake_cancel_run(thread_id, ctx):
+            cancelled.append(thread_id)
+            return True
+
+        monkeypatch.setattr(stream_module, "astream_events_continue_turn", fake_continue)
+        monkeypatch.setattr(stream_module, "astream_events_resume", fake_resume)
+        monkeypatch.setattr(stream_module, "cancel_run", fake_cancel_run)
+        monkeypatch.setattr(stream_module, "UNATTENDED_MAX_DECLINE_ROUNDS", 2)
+
+        events = [e async for e in stream_module.astream_events_continue_turn_unattended("t1", TEST_CTX)]
+
+        assert cancelled == ["t1"]  # the conversation is not left paused
+        assert [e["type"] for e in events] == ["token", "done"]
+        assert "add_note" in events[0]["content"]
+        assert "person's approval" in events[0]["content"]
+
+    async def test_a_consumer_that_stops_early_closes_the_continuation_it_holds_open(self, monkeypatch):
+        closed = []
+
+        async def fake_continue(thread_id, ctx, cancel_check=None):
+            try:
+                yield {"type": "token", "content": "hi"}
+                yield {"type": "done"}
+            finally:
+                closed.append("continue")
+
+        monkeypatch.setattr(stream_module, "astream_events_continue_turn", fake_continue)
+
+        stream = stream_module.astream_events_continue_turn_unattended("t1", TEST_CTX)
+        assert (await stream.__anext__())["type"] == "token"
+        await stream.aclose()
+
+        assert closed == ["continue"]
+
+
 class _ScriptedModel(BaseChatModel):
     """Returns its scripted messages in order. Deliberately has no streaming
     implementation, so `astream_events` falls back to `ainvoke`:

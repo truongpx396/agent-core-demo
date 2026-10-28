@@ -648,7 +648,8 @@ async def astream_events_turn(
     mirrors app/agent/graph/core.py's opt-in HITL gate (should_continue): a tool call
     pauses instead of executing, and the caller resumes via
     astream_events_resume(thread_id, approved, ctx) — see
-    app/channels/chat.py's `--hitl` mode. `images` (pattern 44) is
+    app/channels/chat.py's `--hitl` mode, which does it through the queue
+    (a `resume` job) rather than by calling this module. `images` (pattern 44) is
     optional. `cancel_check` forwards to `_run_graph_stream`; only
     agent_worker.py's turn-job dispatch passes one (wired to a Redis flag
     via `POST /chat/cancel`).
@@ -802,6 +803,40 @@ async def astream_events_turn_unattended(
     approval and was not done. Exactly one terminal event is yielded either
     way. Fails closed throughout: a declined or cancelled action never runs.
     """
+    async with aclosing(
+        _decline_every_pause(
+            astream_events_turn(text, thread_id, ctx, require_approval=require_approval, images=images),
+            thread_id,
+            ctx,
+        )
+    ) as events:
+        async for event in events:
+            yield event
+
+
+async def astream_events_continue_turn_unattended(thread_id: str, ctx: SecurityCtx):
+    """`astream_events_continue_turn`, with `astream_events_turn_unattended`'s decline loop.
+
+    The reclaim path (`agent_worker.py`) continues a crashed turn through this when the job
+    was unattended (a Telegram message). Continuing through the plain function would hand an
+    `approval_required` to a channel that cannot answer it and leave the conversation paused
+    — the stranded-pause bug the decline loop exists to prevent (pattern 8) — so a retry has
+    to be as unattended as the first attempt was.
+    """
+    async with aclosing(
+        _decline_every_pause(astream_events_continue_turn(thread_id, ctx), thread_id, ctx)
+    ) as events:
+        async for event in events:
+            yield event
+
+
+async def _decline_every_pause(first_run, thread_id: str, ctx: SecurityCtx):
+    """Forwards `first_run`'s events, then declines each approval pause it ends at.
+
+    The one implementation behind `astream_events_turn_unattended` and
+    `astream_events_continue_turn_unattended`, so a new unattended entry point cannot drift
+    from the ceiling and the cancel-on-ceiling behaviour documented on the first of them.
+    """
     paused = False
     pending_tools: list[str] = []
 
@@ -823,9 +858,7 @@ async def astream_events_turn_unattended(
                     continue
                 yield event
 
-    async with aclosing(
-        _drain(astream_events_turn(text, thread_id, ctx, require_approval=require_approval, images=images))
-    ) as events:
+    async with aclosing(_drain(first_run)) as events:
         async for event in events:
             yield event
 
