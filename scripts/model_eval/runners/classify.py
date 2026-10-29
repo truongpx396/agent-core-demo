@@ -1,25 +1,26 @@
 """Evaluating a router on prompts whose outcomes are known (specs/014 Story 3, T072).
 
-A router answers one question per prompt, "does this prompt need the stronger model?", and what that answer is worth is a fact about two
-specific models and a judge, so it can only be measured against LABELLED OUTCOMES (`make router-label`, `routing.py`). The report gives the
-yes/no quality (accuracy, macro-F1, calibration) and what the decision is for: how much of the gap between the local and the strong model
-comes back as a function of how many prompts are escalated (the cost-quality curve, `suites.ClassifierSuite`), next to a router that picks at
-random and one that escalates the longest prompts first. A router that does not beat both is not worth turning on, and the report says so in
-numbers.
+A router answers "does this prompt need the stronger model?", and what that is worth is a fact about two
+models and a judge, so it is measured only against LABELLED OUTCOMES (`make router-label`, `routing.py`). The
+report gives the yes/no quality (accuracy, macro-F1, calibration) and what the decision is for: how much of
+the local-vs-strong gap returns as a function of how many prompts are escalated (the cost-quality curve,
+`suites.ClassifierSuite`), next to a random router and one escalating the longest prompts first. A router that
+beats neither is not worth turning on, and the report says so in numbers.
 
-NO OUTCOMES, NO NUMBER. Without a labelled outcomes file there is nothing to measure routing quality against, and the run ends with the
-reason ("unmeasured") and no report at all: a figure computed from nothing would be worse than none (FR-011).
+No outcomes, no number: without a labelled outcomes file the run ends with the reason ("unmeasured") and no
+report (FR-011); a figure computed from nothing is worse than none.
 
-A LABEL SET IS NOT A ROUTER. `--dataset route-topics` hands the run to `topics.py`, which scores a label set on sentences with a known topic
-(specs/015); everything below is about routers and outcomes.
+A label set is not a router: `--dataset route-topics` hands the run to `topics.py`, which scores a label set
+on sentences with a known topic (specs/015). Everything below is about routers and outcomes.
 
-WHAT CAN BE EVALUATED. Anything with a `scores(texts)` method (`ClassifierBackend`): the two built-in controls (`constant`, `random-router`),
-the app's own router (`rules-and-labels-*`), or a backend handed to `run(backend=...)`.
-That last one is the extension point for a new router (for example rules plus topic labels): it is scored, timed and compared exactly like
-the others. The trained-head trainer that used to be here was removed on purpose once the first real run showed the labels could not support
-any router (ENGINEERING_PATTERNS.md pattern 69); it is in the history of the pull request that removed it.
+What can be evaluated: anything with a `scores(texts)` method (`ClassifierBackend`): the built-in controls
+(`constant`, `random-router`), the app's own router (`rules-and-labels-*`), or a backend passed to
+`run(backend=...)`, the extension point for a new router, scored, timed and compared like the others. The
+trained-head trainer that used to be here was removed once the first real run showed the labels could not
+support any router (ENGINEERING_PATTERNS.md pattern 69); it is in the removing PR's history.
 
-LATENCY. p50/p95 of one prompt at a time, and a warning when p95 exceeds 50 ms: SC-009's budget for the whole routing call on the reference machine.
+Latency: p50/p95 of one prompt at a time, with a warning when p95 exceeds 50 ms, SC-009's budget for the whole
+routing call on the reference machine.
 """
 import time
 from collections.abc import Collection, Sequence

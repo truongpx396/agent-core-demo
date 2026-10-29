@@ -1,18 +1,14 @@
-"""Cron-callable retention sweep for the usage events
-(app/agent/cost/usage_events_retention.py, postgres-init/19-usage-events.sql).
+"""Cron-callable retention sweep for the usage events (app/agent/cost/usage_events_retention.py,
+postgres-init/19-usage-events.sql). Nothing trimmed that table (spec D7 promised a job), and since specs/010
+T030b the dollar caps and reconciliation read it. This deletes events older than `USAGE_EVENT_RETENTION_DAYS`
+(400 by default; the setting enforces a floor of 35 days so a calendar-month cap or reconciliation window
+never loses spend still inside it). Billing keeps its own record with its own retention
+(`credit-billing-usage-sweep`); nothing here touches it.
 
-Nothing ever trimmed that table (spec D7 promised a job and none was built), and since specs/010 T030b the dollar caps and the
-reconciliation read it. This deletes events older than `USAGE_EVENT_RETENTION_DAYS` (400 by default; the setting enforces a floor
-of 35 days so a calendar-month cap or a reconciliation window can never lose spend that is still inside it). Billing keeps its own record
-of a call with its own retention (`credit-billing-usage-sweep`); nothing here touches it.
-
-Same "fixed pipeline, not an agent turn" shape as the sweeps before it (`python -m credit_billing.cli.inbox_sweep`), and like them it is deliberately NOT run by
-anything automatically: this is the table spend is read from, so wire it to real cron once your retention policy is decided, e.g.
-
-    30 3 * * 0 cd /path/to/agent-core-demo && python -m scripts.usage_events_sweep
-
-If you need rows older than the window (audit, invoicing), export them first. Idempotent: a re-run before more events age out
-deletes nothing.
+Like the sweeps before it (`python -m credit_billing.cli.inbox_sweep`), a fixed pipeline, deliberately NOT run
+automatically: spend is read from this table, so wire it to cron once your retention policy is decided, e.g.
+`30 3 * * 0 cd /path/to/agent-core-demo && python -m scripts.usage_events_sweep`. Export older rows first if
+you need them (audit, invoicing). A re-run before more events age out deletes nothing.
 """
 import asyncio
 import logging

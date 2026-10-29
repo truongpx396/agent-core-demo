@@ -1,31 +1,23 @@
-"""A real opensandbox-mcp round trip for app/domains/sandbox_session.py
-(GRAPH_PATTERNS.md pattern 50) — the fake-free counterpart to
-tests/domains/test_sandbox_session.py, which (correctly, for a fast/
-hermetic suite) mocks the raw tools' `.invoke(...)` entirely. Shared logic
-behind every domain's sandbox trio (ops/support/sales), so this file
-doesn't test through any one domain's own tool layer — `get_or_create_sandbox_id`
-directly, same as the hermetic counterpart.
+"""A real opensandbox-mcp round trip for app/domains/sandbox_session.py (GRAPH_PATTERNS.md pattern 50): the
+fake-free counterpart to tests/domains/test_sandbox_session.py, which (correctly, for a fast hermetic suite)
+mocks the raw tools' `.invoke(...)`. It is the shared logic behind every domain's sandbox trio
+(ops/support/sales), so it tests `get_or_create_sandbox_id` directly rather than through one domain's tool
+layer, like the hermetic counterpart.
 
-Hard-asserts success for `get_or_create_sandbox_id` — an EARLIER version of
-this test deliberately didn't, chasing what looked like a real, twice-
-reproduced timing race (sandbox creation succeeding server-side but the
-client's readiness poll occasionally hanging). That diagnosis was wrong:
-the actual cause, found by tracing the real request URLs in debug-level
-httpx logs, is that the OpenSandbox SDK's `ConnectionConfig.use_server_proxy`
-defaults to `False`, and `opensandbox-mcp==0.1.1`'s own CLI has no flag/env
-var to override it — so the client (a bare host process,
-app/domains/sandbox_tools.py) tried to reach each sandbox directly at its
-Docker bridge-network IP (e.g. `172.19.0.13:port`), an address genuinely
-UNREACHABLE from the host on Docker Desktop for Mac, not merely slow.
-Confirmed directly: a raw `Sandbox.create()` call hung 44+ seconds with
-`use_server_proxy=False` against that unreachable address, then completed
-in under 1.2s with `use_server_proxy=True`. Fixed via
-`--use-server-proxy` (release 1.1 of the packaged CLI; until then a wrapper
-script forced it) — `app/domains/sandbox_tools.py` now launches
-`python -m opensandbox_mcp ... --use-server-proxy`. With the real bug
-fixed, this test's whole suite (both tests) now completes in ~5s
-end-to-end, reliably — hard-asserting success is the correct bar again,
-not a flakiness risk.
+It hard-asserts success for `get_or_create_sandbox_id`. An EARLIER version deliberately didn't, chasing what
+looked like a twice-reproduced timing race (sandbox creation succeeding server-side but the client's readiness
+poll sometimes hanging). That diagnosis was wrong. Tracing the real request URLs in debug-level httpx logs
+showed that the OpenSandbox SDK's `ConnectionConfig.use_server_proxy` defaults to `False` and
+`opensandbox-mcp==0.1.1`'s CLI had no flag or env var to override it. So the client (a bare host process,
+app/domains/sandbox_tools.py) tried to reach each sandbox directly at its Docker bridge-network IP (e.g.
+`172.19.0.13:port`), genuinely UNREACHABLE from the host on Docker Desktop for Mac, not merely slow. Confirmed
+directly: a raw `Sandbox.create()` hung 44+ seconds with `use_server_proxy=False` against that address and
+completed in under 1.2s with `use_server_proxy=True`.
+
+Fixed via `--use-server-proxy` (release 1.1 of the packaged CLI; until then a wrapper script forced it), and
+`app/domains/sandbox_tools.py` now launches `python -m opensandbox_mcp ... --use-server-proxy`. With the real
+bug fixed, both tests complete in ~5s end to end, reliably, so hard-asserting success is the correct bar
+again, not a flakiness risk.
 """
 import importlib.util
 

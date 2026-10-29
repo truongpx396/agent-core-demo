@@ -1,48 +1,40 @@
 """One long-lived stdio connection to a remote MCP server, shared by every call on an event loop.
 
-`app/mcp/client.py` used to open a fresh connection for every call: spawn the server's process, run the protocol handshake, make
-one call, tear it all down. For the sandbox that is a Python interpreter importing the OpenSandbox SDK, up to four times for one
-`run_python_in_sandbox` (list, create, write, run). A connection kept open pays that once per process.
+`app/mcp/client.py` used to spawn the server, handshake, make one call and tear down, for every call; for the
+sandbox that is a Python interpreter importing the OpenSandbox SDK up to four times per
+`run_python_in_sandbox`. A kept-open connection pays that once per process.
 
 ## Who owns the connection
 
-`stdio_client` and `ClientSession` are async context managers built on task groups, which must be entered and exited by the SAME
-task; a request handler that opened one could not hand it to the next request. So one dedicated task per connection (the "owner")
-enters both, publishes the session, and sleeps until told to stop. Callers use the session from their own tasks, many at once: the
-protocol multiplexes requests on the one pipe (measured: five concurrent calls, 12 ms). The owner starts in an EMPTY context, so it
-does not keep the trace or request id of whichever request happened to open it.
+`stdio_client` and `ClientSession` are task-group context managers that must be entered and exited by the SAME
+task. So one dedicated "owner" task per connection enters both, publishes the session and sleeps until told to
+stop. Callers use the session from their own tasks, many at once (the protocol multiplexes on one pipe). The
+owner starts in an EMPTY context so it keeps no request's trace or id.
 
-## What a failure does (and does not) do
+## What a failure does (measured on mcp 2.3.0, not assumed)
 
-Measured against a real server on mcp 2.3.0, not assumed: a call that times out locally leaves the session usable; a server that
-dies while a call is in flight fails that call with `MCPError(CONNECTION_CLOSED)`; and a call made AFTER the server died fails with
-the very same error, before anything is sent. The SDK gives the two no different exception, and a lost call must never be
-sent twice, so the connection has to find out another way whether a call could have reached the server. The consequences:
+A local timeout leaves the session usable. A server that dies mid-call fails that call with
+`MCPError(CONNECTION_CLOSED)`, and so does a call made AFTER it died, before anything is sent. The SDK gives
+the two no different exception, and a lost call must never be sent twice, so:
+- A dead connection is dropped and the next call starts a new one (`agent_mcp_connection_events_total`).
+- Before a call that is not safe to repeat, the connection pings the server. A ping that finds it closed
+  proves the call was never sent, so it is sent once on a fresh connection. A server dying between the ping
+  and the call fails the call rather than repeating it.
+- A call IN FLIGHT when the server died is never replayed: it may have completed before the reply was lost,
+  and a sandbox command or file write is not safe twice (constitution Principle IV; `app/core/resilience.py`
+  retries only what "never landed"). The caller gets `ConnectionError` and the next call reconnects. A
+  read-only listing is replayed without the ping.
+- Three local timeouts in a row mean the server is wedged, not slow: the connection is recycled.
 
-  * A connection found dead is dropped and the next call starts a new one (`agent_mcp_connection_events_total`).
-  * Before a call that is not safe to repeat, the connection pings the server (about a millisecond on a local pipe). A ping that
-    finds the connection closed proves the call was never sent, so it is sent once on a fresh connection; a dead server executes
-    nothing. A server that dies between the ping and the call is the only gap, and it fails the call instead of repeating it.
-  * A call that was IN FLIGHT when the server died is NOT replayed, whatever it was. It may have run to completion before the
-    reply was lost, and a sandbox command or file write is not safe to run twice (constitution Principle IV; the same reason
-    `app/core/resilience.py` retries only what "never landed"). The caller gets `ConnectionError`, and the next call reconnects.
-    A read-only listing, which cannot do harm twice, is replayed without the ping.
-  * Three calls in a row that time out locally, with no success between, mean the server is wedged rather than slow: the
-    connection is recycled, so a hung bridge costs one respawn instead of every later call waiting out its own timeout.
-
-The server on the other end may run a different MCP SDK from this process, so the handshake is `initialize()` (protocol
-2025-11-25), the one every server understands, and not the SDK's `Client` class. Measured on mcp 2.3.0 against the real
-opensandbox-mcp 1.1.1 bridge and this repo's own servers: `Client` probes `server/discover` and settles on 2026-07-28 cleanly (no
-noise on the child's stderr, about 0.3 s), but that revision REMOVES `ping` (`send_ping()` answers `MCPError(-32601, Method not
-found)`), and the no-replay guard above rests on it. Adopting `Client` means choosing another liveness probe first; its
-`mode="legacy"` would only reproduce what this does today.
+The handshake is `initialize()` (protocol 2025-11-25), not the SDK's `Client` class, because the server may
+run a different SDK. `Client` settles on 2026-07-28, which REMOVES `ping` (`send_ping()` answers -32601), and
+the no-replay guard rests on it. Adopting `Client` means choosing another liveness probe first.
 
 ## Lifetime
 
-A connection belongs to the event loop that opened it (its streams are bound to it), so they are kept per loop, and
-`close_all_connections()` closes the current loop's at shutdown (`app/api/main.py`'s lifespan, `agent_worker`'s exit). A loop that
-ends without closing them (`asyncio.run` in a script) cancels the owner on its way out, which terminates the child; a server whose
-parent vanishes exits on end-of-input anyway.
+A connection belongs to the event loop that opened it, so they are kept per loop; `close_all_connections()`
+closes the current loop's at shutdown (API lifespan, worker exit). A loop that ends without closing them
+cancels the owner, which terminates the child; a server whose parent vanishes exits on end-of-input anyway.
 """
 import asyncio
 import contextvars

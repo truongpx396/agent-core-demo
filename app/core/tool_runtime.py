@@ -26,33 +26,27 @@ _TOOL_EXECUTOR = concurrent.futures.ThreadPoolExecutor(
 
 
 async def arun_with_timeout(func, *args, _timeout_seconds: float | None = None, **kwargs):
-    """Await `func(*args, **kwargs)` and stop waiting after `_timeout_seconds`
-    (default TOOL_TIMEOUT_SECONDS). Raised TimeoutError is caught by
-    ToolNode's `handle_tool_errors=friendly_tool_error` in app/agent/graph/core.py
-    and surfaced to the agent like any other tool exception.
+    """Await `func(*args, **kwargs)` and stop waiting after `_timeout_seconds` (default TOOL_TIMEOUT_SECONDS).
+    The raised TimeoutError is caught by ToolNode's `handle_tool_errors=friendly_tool_error`
+    (app/agent/graph/core.py) and surfaced to the agent like any tool exception.
 
-    Every tool in this app uses this now (not `run_with_timeout` below),
-    wrapping a real coroutine with `asyncio.wait_for` since every tool impl
-    now awaits an async client. `run_with_timeout` still exists for the one
-    caller with no running event loop to await on (see its own docstring).
+    Every tool uses this (not `run_with_timeout` below), wrapping a real coroutine with `asyncio.wait_for`,
+    since every tool impl awaits an async client. `run_with_timeout` remains for the one caller with no
+    running event loop (see its docstring).
 
-    `_timeout_seconds` is keyword-only, resolved fresh per call rather than
-    a plain default — a `= TOOL_TIMEOUT_SECONDS` default is bound once at
-    definition time and would stop honoring
-    `monkeypatch.setattr(tools, "TOOL_TIMEOUT_SECONDS", ...)` (caught by
-    tests/agent/graph/test_safety_budgets.py). `run_subagent` is the one caller
-    that overrides it, to SUBAGENT_TIMEOUT_SECONDS.
+    `_timeout_seconds` is keyword-only and resolved per call rather than a plain default: a `=
+    TOOL_TIMEOUT_SECONDS` default binds at definition time and would stop honoring `monkeypatch.setattr(tools,
+    "TOOL_TIMEOUT_SECONDS", ...)` (caught by tests/agent/graph/test_safety_budgets.py). `run_subagent` is the
+    one caller that overrides it, to SUBAGENT_TIMEOUT_SECONDS.
 
-    Soft timeout: `asyncio.wait_for` cancels the awaiting task, not
-    necessarily whatever `func` is awaiting underneath — cancellation only
-    takes effect at `func`'s next `await` point, so a call stuck in a
-    non-cancellable operation can outlive this timeout in the background.
+    Soft timeout: `asyncio.wait_for` cancels the awaiting task, not necessarily whatever `func` awaits
+    underneath. Cancellation only takes effect at `func`'s next `await`, so a call stuck in a non-cancellable
+    operation can outlive this timeout in the background.
 
-    Result is scrubbed (app/core/scrubbing.py, GRAPH_PATTERNS.md pattern 32)
-    before returning — the one chokepoint every tool impl funnels through,
-    so secrets in a raw result never reach the model or a trace.
-    `run_subagent` returns a state dict here (scrubbing skips non-str
-    results) and scrubs its extracted answer text separately.
+    The result is scrubbed (app/core/scrubbing.py, GRAPH_PATTERNS.md pattern 32) before returning: the one
+    chokepoint every tool impl funnels through, so secrets in a raw result never reach the model or a trace.
+    `run_subagent` returns a state dict here (scrubbing skips non-str results) and scrubs its extracted answer
+    text separately.
     """
     timeout = _timeout_seconds if _timeout_seconds is not None else TOOL_TIMEOUT_SECONDS
     try:

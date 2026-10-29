@@ -1,26 +1,26 @@
 """`POST /billing/webhooks/{provider}`: money in (specs/010-credit-billing-readiness, T021).
 
-This module is the billing core's own inbound path (spec 011): it lived in `app/api/routers/` until the core had to
-be installable without the agent app, and it needs only FastAPI, the core's settings and the core's metrics. It does
-not wire itself to a database: the agent app mounts it through `app/billing_integration/http.py`, and importing
-that package is what gives the core its connection. The per-source rate limit stays a host middleware keyed on the
-path prefix (`app/api/rate_limit.py`).
+This is the billing core's own inbound path (spec 011). It lived in `app/api/routers/` until the core had to
+be installable without the agent app, and needs only FastAPI, the core's settings and the core's metrics. It
+doesn't wire itself to a database: the agent app mounts it through `app/billing_integration/http.py`, and
+importing that package gives the core its connection. The per-source rate limit stays a host middleware keyed
+on the path prefix (`app/api/rate_limit.py`).
 
-This route is deliberately NOT behind the tenant-identity headers (`deps.get_ctx`): a payment provider cannot
+The route is deliberately NOT behind the tenant-identity headers (`deps.get_ctx`): a payment provider can't
 send them, so the caller is unauthenticated and its authenticity is the provider's SIGNATURE and nothing else.
-It is built for that, in the order the contract fixes (contracts/billing-provider-port.md):
+It runs the steps in the order contracts/billing-provider-port.md fixes:
 
-  1. A provider that is not configured is a 404, counted. (A configured one with no secret never gets this far:
-     settings refuse to load, so the process does not start. See `validate_configuration`.)
-  2. The body is size-capped BEFORE it is read: an unauthenticated endpoint must not buffer what it is sent.
-  3. The adapter verifies the signature before anything is stored or decided; a bad one is a 400, counted, and
-     NOTHING is stored (not even an inbox row: a forger does not get to fill the table).
-  4-7. `webhooks.process_event`: dedupe in the inbox, resolve the tenant through the link the app wrote, apply in
-     one transaction, and answer 2xx only after the commit. Anything that fails before that is a 5xx, so the
-     provider retries.
+1. A provider that isn't configured is a 404, counted. (A configured one with no secret never gets this far:
+   settings refuse to load, so the process doesn't start. See `validate_configuration`.)
+2. The body is size-capped BEFORE it is read: an unauthenticated endpoint must not buffer what it is sent.
+3. The adapter verifies the signature before anything is stored or decided. A bad one is a 400, counted, and
+   NOTHING is stored (not even an inbox row: a forger doesn't get to fill the table).
+4. Steps 4-7 are `webhooks.process_event`: dedupe in the inbox, resolve the tenant through the link the app
+   wrote, apply in one transaction, and answer 2xx only after the commit. Anything failing before that is a
+   5xx, so the provider retries.
 
-The response body says nothing about WHY (no tenant, no balance, no reason): the caller is a stranger until the
-signature verifies, and even then it is a machine that only needs the status code.
+The response body says nothing about WHY (no tenant, no balance, no reason): the caller is a stranger until
+the signature verifies, and even then is a machine that needs only the status code.
 """
 import logging
 

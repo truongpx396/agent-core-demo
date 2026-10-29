@@ -47,9 +47,10 @@ def test_a_rejected_credential_is_never_printed_back_by_the_apps_settings(monkey
 
 
 def test_the_comment_in_env_example_names_the_adapters_that_exist_and_an_unbuilt_name_still_refuses_to_start():
-    """`.env.example` tells the operator which providers can go in BILLING_PROVIDERS. When an adapter is registered or removed
-    this fails, which is the prompt to rewrite that comment (and the settings' comment in config.py) instead of leaving it to
-    mislead. (Stripe's landed first, then Polar's; PayPal's is the one still unbuilt, so it is the example of a name that refuses.)"""
+    """`.env.example` tells the operator which providers can go in BILLING_PROVIDERS. When an adapter is
+    registered or removed this fails, which is the prompt to rewrite that comment (and the settings' comment
+    in config.py) instead of leaving it to mislead.
+    """
     assert set(providers.FACTORIES) == {"fake", "stripe", "polar"}
     with pytest.raises(providers.UnknownProvider):
         providers.build_configured(("paypal",), {"paypal": "whsec_x"})

@@ -1,16 +1,14 @@
-"""The billing-event retention sweep against a REAL Postgres (credit_billing/retention.py; the sibling of the agent app's, specs/010 T030c3,
-moved by specs/013).
+"""The billing-event retention sweep against a REAL Postgres (credit_billing/retention.py; specs/010 T030c3,
+moved by specs/013). tests/test_retention.py proves the statements and loop through a scripted connection;
+only a real database shows what they DO to the schema:
+- only events past the cutoff go, across batches, and a re-run deletes nothing more;
+- the append-only trigger lets the delete through only because the sweep says so inside its own transaction;
+- the export outbox's foreign key doesn't block a `sent` event (both go together), and an event whose export
+  never finished (`pending`, `failed`, `expired`) is KEPT and counted whatever its age;
+- the wallet is untouched: a debit keeps its `usage_event_id` and the balance doesn't move.
 
-tests/test_retention.py proves the statements' shape and the loop through a scripted connection. What only a real database shows is what they
-DO to the shipped schema, and the sweep's safety rests on it:
-
-  * only events past the cutoff go, across batches, and a re-run deletes nothing more;
-  * the append-only trigger lets the delete through only because the sweep says so inside its own transaction;
-  * the foreign key from the export outbox does not block a `sent` event (both go together) and an event whose export never
-    finished (`pending`, `failed`, `expired`) is KEPT and counted, whatever its age;
-  * the wallet is untouched: a debit keeps its `usage_event_id` and the balance does not move.
-
-The sweep spans tenants by design, and the container is shared across tests and xdist workers, so each test counts only ITS tenant's rows.
+The sweep spans tenants and the container is shared across tests and workers, so each test counts only ITS
+tenant's rows.
 """
 import uuid
 from contextlib import asynccontextmanager

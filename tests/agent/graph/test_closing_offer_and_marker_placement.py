@@ -1,17 +1,14 @@
-"""Regression tests for Langfuse trace `1e46b2c8` (2026-10-21, "what is working hours of ecorp ?").
+"""Regression tests for Langfuse trace `1e46b2c8` (2026-10-21, "what is working hours of ecorp ?"). The model
+answered correctly from the retrieved source three times, and the user was told "I described what I'd do
+instead of actually doing it". Two heuristics rejected a good answer:
+1. The sentence splitter bound a marker written AFTER the full stop (`... are free. [1]`) to the NEXT
+   sentence, so a correct citation was judged against unrelated text (`misattributed`).
+2. A closing "Would you like more information or should I proceed...?" made a complete answer `deferred`, and
+   retries couldn't remove it: the prompt forbids that question twice and qwen2.5:3b writes it anyway.
 
-The model answered correctly, from the retrieved source, three times in a row, and the user was
-told "I described what I'd do instead of actually doing it". Two heuristics rejected a good answer:
-
-1. The sentence splitter bound a marker written AFTER the full stop (`... are free. [1]`) to the
-   NEXT sentence, so a correct citation was judged against unrelated text (`misattributed`).
-2. A closing "Would you like more information or should I proceed...?" turned an otherwise complete
-   answer into a `deferred` rejection, and its retries could not remove it: the system prompt
-   already forbids that question twice and qwen2.5:3b writes it anyway.
-
-The fix judges the sentence a marker belongs to, and repairs a closing offer mechanically (the way a
-missing marker is already repaired) only when what is left is a real answer. A reply that is nothing
-BUT an offer, or that narrates a tool it never called, is still rejected.
+The fix judges the sentence a marker belongs to, and repairs a closing offer mechanically (as a missing marker
+already is) only when what is left is a real answer. A reply that is nothing BUT an offer, or narrates a tool
+it never called, is still rejected.
 """
 import uuid
 

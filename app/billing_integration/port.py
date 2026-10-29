@@ -1,27 +1,30 @@
-"""The one module host code imports to use billing (specs/011-billing-module-boundary, D19; widened by specs/013-billing-owns-the-meter).
+"""The one module host code imports to use billing (specs/011-billing-module-boundary, D19; widened by
+specs/013-billing-owns-the-meter).
 
-Outside `packages/billing/src/credit_billing/` and `app/billing_integration/` nothing under `app/` or `scripts/` imports `credit_billing`
-(tests/billing/test_billing_core_boundary.py enforces it), so this is where the agent app meets billing. The agent hands it plain facts and gets
-plain answers; rating, the wallet, the export and the gate's policy are all the package's:
+Outside `packages/billing/src/credit_billing/` and `app/billing_integration/`, nothing under `app/` or
+`scripts/` imports `credit_billing` (tests/billing/test_billing_core_boundary.py enforces it), so this is
+where the agent app meets billing. The agent hands it plain facts and gets plain answers; rating, the wallet,
+the export and the gate's policy are the package's:
 
-  * `record_usage_in(conn, Usage(...))` is called once per metered model call, inside the transaction that records the agent's own usage event
-    (`app/agent/cost/usage_events.py`). The package rates it, keeps its own record, debits the wallet and queues an export, and never raises for a
-    fault. With billing not configured it does nothing.
-  * `admit(tenant, reserved_usd=...)` asks the credit gate whether the tenant may start another turn (`app/agent/cost/budgets.py`). With enforcement
-    off it reads nothing.
-  * `credit_summary(tenant)` is what `GET /usage` shows of the wallet, or None.
+  * `record_usage_in(conn, Usage(...))`: once per metered model call, inside the transaction that records the
+    agent's own usage event (`app/agent/cost/usage_events.py`). The package rates it, keeps its own record,
+    debits the wallet and queues an export, and never raises for a fault. With billing not configured it does
+    nothing.
+  * `admit(tenant, reserved_usd=...)`: asks the credit gate whether the tenant may start another turn
+    (`app/agent/cost/budgets.py`). With enforcement off it reads nothing.
+  * `credit_summary(tenant)`: what `GET /usage` shows of the wallet, or None.
 
-`billing` is the implementation in use. Today it is `InProcessBilling`, a thin call into the package over the same pool as the caller. A
-network client implementing the same `BillingPort` would be selected here, and a test installs a stub here
-(`monkeypatch.setattr(billing_port, "billing", stub)`): it is a module-level name read at CALL time, which is the repo's idiom for a seam a
-test replaces. The functions below add nothing; they exist so call sites read as "the billing port" and so the implementation is looked up on
-every call.
+`billing` is the implementation in use: today `InProcessBilling`, a thin call into the package over the
+caller's pool. A network client implementing the same `BillingPort` would be selected here, and a test
+installs a stub with `monkeypatch.setattr(billing_port, "billing", stub)`: a module-level name read at CALL
+time, the repo's idiom for a seam a test replaces. The functions below add nothing; they let call sites read
+as "the billing port" and look the implementation up on every call.
 
-Importing this module imports the `app.billing_integration` package first, and that wires the package to the agent's connection pool. A host
-path that reaches billing through here cannot reach it unwired.
+Importing this module first imports the `app.billing_integration` package, which wires the package to the
+agent's pool, so a host path reaching billing through here can't reach it unwired.
 
-`Usage`, `Recorded`, `Admission`, `CreditSummary` and `Balance` are the plain data types of the contract, re-exported so a host module never
-needs the package.
+`Usage`, `Recorded`, `Admission`, `CreditSummary` and `Balance` are the contract's plain data types,
+re-exported so a host module never needs the package.
 """
 import logging
 from collections.abc import Awaitable, Callable

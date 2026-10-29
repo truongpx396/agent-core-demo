@@ -47,9 +47,9 @@ target-version = "py311"
 src = [".", "packages/billing/src", "docker/ml-service"]
 
 [tool.ruff.lint]
-# Deliberately no "E"/pycodestyle line-length rule: this codebase's
-# docstrings/comments are its documentation, intentionally long-form (see
-# GRAPH_PATTERNS.md), not code wrapped to a column limit.
+# Deliberately no "E"/pycodestyle line-length rule: docstrings and comments
+# are wrapped by hand at about 110 columns and explain why, not what (see
+# CLAUDE.md, "Working rules"); a hard limit would only force mechanical re-wrapping.
 # F/I/UP: pyflakes, isort, pyupgrade — uncontroversial correctness/hygiene.
 # B: flake8-bugbear, minus B008 (FastAPI's Depends()/File() call as an
 # argument default is the framework's own idiom, not a bug).

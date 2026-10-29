@@ -1,59 +1,62 @@
-"""Recording billable usage: rate it, keep it, charge it, queue it for export, in the caller's transaction (specs/013-billing-owns-the-meter).
+"""Recording billable usage: rate it, keep it, charge it, queue it for export, in the caller's transaction
+(specs/013-billing-owns-the-meter).
 
-A host application meters its own usage in whatever shape suits it (the agent app: one row per model call, read by its spend caps).
-Billing needs a record it can rate, charge, export and reconcile without knowing that shape, so the host hands the package one plain
-value per unit of usage and the package does the rest. This module is that one call, and it is everything a second project needs to
-write instead of writing a meter's billing half:
+A host meters its own usage in whatever shape suits it (the agent: one row per model call, read by its spend
+caps). Billing needs a record it can rate, charge, export and reconcile without knowing that shape, so the
+host hands over one plain value per unit of usage and this module does the rest:
 
 ```python
-await billing.record_usage_in(conn, Usage(tenant="acme", event_id="call-123", kind="chat", cost_usd=0.0123, model="gpt", tokens=150))
+await billing.record_usage_in(
+    conn, Usage(tenant="acme", event_id="call-123", kind="chat", cost_usd=0.0123, model="gpt", tokens=150)
+)
 ```
 
-## What one call does, in order, all on the caller's connection
+## What one call does, in order, on the caller's connection
 
-  1. **Nothing, if nothing is billing.** With no `CREDITS_PER_USD` and no enabled provider that bills on usage there is no use for the
-     record, so no statement is issued (`Recorded("off")`). A deployment that has not set billing up pays for one list lookup.
-  2. **Rates** the cost: `credits = round_half_up(cost_usd x CREDITS_PER_USD x MARKUP, 6)`. The cost is first rounded to the column's
-     twelve places and THAT figure is what is stored and multiplied, so the row reproduces its own credits exactly
-     (`credits == credits_for_cost(cost_usd, credits_per_usd, markup)` for every stored row). An unpriced call (`cost_usd=None`) has
-     NULL credits and debits nothing: unknown is never silently free.
-  3. **Records** the usage in `billing_usage_events` (24) with `ON CONFLICT (tenant, event_id) DO NOTHING`. A repeat of the same
-     `(tenant, event_id)` stops here: it inserts, debits and queues nothing (`Recorded("duplicate")`), which is what makes a replayed
-     call safe. The tenant is part of the key, so two tenants may use the same id.
-  4. **Debits** the tenant's wallet for the credits, keyed by the event id (`credits.debit_in`). A tenant with no wallet costs one indexed
-     lookup and nothing else. The debit's own idempotency key is the same event id, so the two layers agree.
-  5. **Queues** the event for every enabled provider that bills on usage and that the tenant is linked to, in `billing_export_outbox`
-     (25), so the event and its pending export cannot disagree about what exists.
+1. **Nothing, if nothing is billing.** With no `CREDITS_PER_USD` and no enabled usage-billing provider, no
+   statement is issued (`Recorded("off")`).
+2. **Rates** the cost: `credits = round_half_up(cost_usd x CREDITS_PER_USD x MARKUP, 6)`. The cost is first
+   rounded to the column's twelve places and THAT figure is stored and multiplied, so a row reproduces its own
+   credits exactly. An unpriced call (`cost_usd=None`) has NULL credits and debits nothing: unknown is never
+   silently free.
+3. **Records** it in `billing_usage_events` (24) with `ON CONFLICT (tenant, event_id) DO NOTHING`. A repeat of
+   the same `(tenant, event_id)` stops here, inserting, debiting and queuing nothing
+   (`Recorded("duplicate")`), which makes a replayed call safe. Two tenants may use the same id.
+4. **Debits** the tenant's wallet, keyed by the event id (`credits.debit_in`); a tenant with no wallet costs
+   one indexed lookup.
+5. **Queues** the event in `billing_export_outbox` (25) for every enabled usage-billing provider the tenant is
+   linked to, so the event and its pending export can't disagree.
 
 ## It never raises for an operational fault
 
-The caller has already recorded its own usage (the agent's `usage_events` row is what its caps sum), so a fault here must not take that
-record, or the turn it belongs to, down with it. But a billing record that is not written is lost revenue that nobody is told about by a
-log line, so every way it can fail is counted and alerted:
+The caller already recorded its own usage, so a fault here must not take that record, or its turn, down. But
+an unwritten billing record is lost revenue that a log line won't surface, so every failure is counted and
+alerted:
+- the whole body runs in one savepoint; a fault in the record itself (missing table, unreachable database)
+  undoes only this call's writes and counts `agent_cost_governance_degraded_total{path="billing_event_write"}`
+  -> BillingEventWriteFailing;
+- **the debit has its own savepoint**: a wallet fault undoes only the debit and the event is kept WITH its
+  credits. The missing charge is visible (`credit-billing-reconcile` lists it) and replayable, since the
+  debit's key IS the event id. Counted as `{path="credit_debit"}` -> CreditDebitFailing. One all-or-nothing
+  body would turn a wallet outage into a lost record, and a lost record can't be repaired while an uncharged
+  one can;
+- **queuing has its own savepoint** for the same reason: `{path="export_enqueue"}` ->
+  UsageExportEnqueueFailing.
 
-  * the whole body runs in one savepoint; a fault in the record itself (the table is missing, the database is unreachable) undoes
-    only what this call wrote and is counted as `agent_cost_governance_degraded_total{path="billing_event_write"}` -> BillingEventWriteFailing;
-  * **the debit runs in its own savepoint**: a wallet fault undoes only the debit, and the event is kept WITH its credits. The missing charge
-    is visible (`credit-billing-reconcile` lists it) and replayable: the debit's key IS the event id and the row holds every figure it needs.
-    Counted as `{path="credit_debit"}` -> CreditDebitFailing. The alternative, one all-or-nothing body, would turn a wallet outage into a
-    loss of the record, and a lost record cannot be repaired while an uncharged one can;
-  * **queuing runs in its own savepoint** for the same reason: counted as `{path="export_enqueue"}` -> UsageExportEnqueueFailing.
-
-Invalid input (a blank tenant, id or kind, a negative or non-finite cost) is not raised either, for the same reason: it is counted as
-`billing_event_write` and logged by field name (never by value). A caller that wants to fail loudly on a programming error validates
-before calling.
+Invalid input (blank tenant, id or kind; negative or non-finite cost) isn't raised either: it is counted as
+`billing_event_write` and logged by field name, never value. A caller that wants to fail loudly validates
+first.
 
 ## Contract a caller must honour
 
-  * `event_id` identifies the unit of usage within its tenant and MUST be stable across retries of the same unit (the agent derives it
-    from the model response's own id), and unique across the tenants of one instance if a usage-billing provider is enabled: the provider
-    deduplicates on the id alone.
-  * The call must be made on the connection and in the transaction that records the caller's own event, so the two commit or roll back
-    together and a replay that finds the caller's event already there never reaches this function. "After the caller's own statement" is the
-    point: psycopg opens a transaction at a connection's first statement, so this function's savepoints then nest inside it. Called on a
-    connection with NO open transaction, its outermost block is the transaction and commits when it exits, which is right for a caller that
-    has nothing else to keep atomic and wrong for one that thought it did.
-  * `cost_usd` is the caller's figure: only the caller knows its model prices.
+- `event_id` identifies the unit within its tenant and MUST be stable across retries (the agent derives it
+  from the model response's id). Keep it unique across the tenants of one instance if a usage-billing provider
+  is enabled, since the provider deduplicates on the id alone.
+- Call on the connection and in the transaction that records the caller's own event, after its own statement,
+  so the two commit or roll back together and a replay never reaches here. psycopg opens a transaction at a
+  connection's first statement, so these savepoints nest inside it; on a connection with NO open transaction,
+  the outermost block is the transaction and commits on exit.
+- `cost_usd` is the caller's figure: only the caller knows its model prices.
 
 Imports nothing from `app` (enforced by tests/test_boundary.py).
 """

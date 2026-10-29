@@ -226,8 +226,9 @@ class _Recording(httpx.AsyncBaseTransport):
 
 
 async def test_the_official_openai_sdk_with_default_arguments_parses_the_response():
-    """The SDK requests base64 when the caller does not say otherwise and decodes it itself; if our base64 were wrong this returns garbage
-    or raises. It also proves LiteLLM's openai/ provider (which uses this SDK) can talk to the endpoint."""
+    """The SDK requests base64 when the caller does not say otherwise and decodes it itself; if our base64 were
+    wrong this returns garbage or raises.
+    """
     app = _app()
     transport = _Recording(app)
     async with app.router.lifespan_context(app):

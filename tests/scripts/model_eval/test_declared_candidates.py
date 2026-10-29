@@ -35,9 +35,10 @@ def test_a_missing_candidates_file_is_an_empty_declaration_not_an_error(tmp_path
 
 
 def test_the_classifier_candidates_are_the_label_set_models_and_the_apps_own_router():
-    """The in-process HEAD candidates went with the head trainer and the `service` candidate with the head path (spec 016); what is declared is the
-    two models that serve label sets (specs/015) and the app's own router, which is the baseline. A new router is handed to the runner and gets a
-    declaration when it is wired to a command."""
+    """The in-process HEAD candidates went with the head trainer and the `service` candidate with the head path
+    (spec 016); what is declared is the two models that serve label sets (specs/015) and the app's own router,
+    which is the baseline.
+    """
     declared = cli.declared("classifier")
 
     assert [(c.name, c.path) for c in declared] == [

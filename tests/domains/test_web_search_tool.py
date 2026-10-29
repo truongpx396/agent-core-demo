@@ -98,8 +98,9 @@ async def test_a_result_cannot_close_its_own_frame_from_inside(search_returns):
 
 
 async def test_a_result_is_never_numbered_like_a_knowledge_base_citation(search_returns):
-    """`[1]` in an answer is mapped to the knowledge base's citation records (graph/citations.py). A web result numbered, or quoting a number, the
-    same way would be attributed to an unrelated document. The tool does not number, and defuses a bracketed number a snippet brings along."""
+    """`[1]` in an answer is mapped to the knowledge base's citation records (graph/citations.py). A web result
+    numbered, or quoting a number, the same way would be attributed to an unrelated document.
+    """
     search_returns([_hit(title="Release [2] notes", snippet="See [1] and [23] for details; [sic] stays")])
 
     content = str((await _call(_tool())).content)

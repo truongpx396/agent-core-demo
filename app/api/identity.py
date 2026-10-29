@@ -1,16 +1,18 @@
-"""The API's side of "who is calling": the verifier it asks, the refusal it answers with, and the announcement of the mode it runs in (specs/018).
-
-`app/core/internal_identity.py` is the check itself and knows nothing of HTTP. This is what the API adds around it:
-
-  * one verifier per process, built the first time a request needs it from the settings (keys address, cache seconds, grace) and closed at
-    shutdown. The HTTP client inside it belongs to the event loop that serves requests, so it is made there and not at import time.
-  * `AuthRefused`, raised by `get_ctx` and turned by `auth_refused_handler` into the canonical envelope the front door itself answers with
-    (`{code, message, details}`, the same words: tests/core/test_error_codes_authlimit.py), with the headers a client expects: a 401 carries
-    `WWW-Authenticate: Bearer realm="agent-core-api"`, a 503 carries `Retry-After: 30`. The message is the registry's and never says why
-    (a caller learns that it is not authenticated, not whether its identity was expired or forged: the counted outcome says that, to the operator).
-  * the loud announcement of header mode: a startup warning and the gauge `agent_api_auth_mode{mode}`, kept alive by `keep_announcing_auth_mode`.
-    The collector forgets a series five minutes after its last update (the same reason the usage reconciler re-sets its gauge every minute), so
-    a gauge set once at startup would vanish and the alert on it (ApiHeaderAuthMode) could never see ten minutes of header mode.
+"""The API's side of "who is calling": the verifier it asks, the refusal it answers with, and the announcement of
+the mode it runs in (specs/018). `app/core/internal_identity.py` is the check itself and knows nothing of
+HTTP; this adds:
+- one verifier per process, built on first use from the settings (keys address, cache seconds, grace) and
+  closed at shutdown. Its HTTP client belongs to the loop that serves requests, so it is made there, not at
+  import.
+- `AuthRefused`, raised by `get_ctx` and turned by `auth_refused_handler` into the envelope the front door
+  answers with (`{code, message, details}`, tests/core/test_error_codes_authlimit.py): a 401 carries
+  `WWW-Authenticate: Bearer realm="agent-core-api"`, a 503 `Retry-After: 30`. The message never says why (a
+  caller learns it is not authenticated, not whether its identity was expired or forged; the counted outcome
+  tells the operator).
+- the loud announcement of header mode: a startup warning and the gauge `agent_api_auth_mode{mode}`, kept
+  alive by `keep_announcing_auth_mode`. The collector forgets a series five minutes after its last update (as
+  the usage reconciler's gauge), so a gauge set once would vanish and ApiHeaderAuthMode could never see ten
+  minutes of header mode.
 """
 import asyncio
 import logging

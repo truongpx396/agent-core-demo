@@ -1,18 +1,17 @@
 """The in-flight budget holds: what keeps N concurrent turns from all passing the same stale cap check.
 
-A turn that passed `budgets.check` reserves `MAX_COST_USD_PER_TURN` for its duration (`reserve_budget`) and gives it back when it
-ends (`release_budget_reservation`, always, in a `finally`); a sibling turn for the same tenant adds the tenant's in-flight total
-(`in_flight_reservation`) to what the usage events say was already spent. Without the hold, N turns racing one tenant would all read
-the same stale "spent so far", all pass, and all proceed: a check-then-act race. It is about concurrency, not history: a hold is
-a row in `tenant_budget_holds` (postgres-init/16) with its own timestamp, and one that outlives its turn ages out on its own clock.
+A turn that passed `budgets.check` reserves `MAX_COST_USD_PER_TURN` for its duration (`reserve_budget`) and
+releases it when it ends (`release_budget_reservation`, always, in a `finally`); a sibling turn for the tenant
+adds the tenant's in-flight total (`in_flight_reservation`) to what the usage events say was spent. Without
+the hold, N turns racing one tenant all read the same stale "spent so far" and all proceed. It is about
+concurrency, not history: a hold is a row in `tenant_budget_holds` (postgres-init/16) with its own timestamp,
+and one that outlives its turn ages out on its own clock.
 
-This used to live in `usage_ledger.py`, beside the per-turn ledger the caps read. That module is gone (specs/010 T030c3): nothing
-writes the ledger since T030c2, the caps sum the usage events (`app/agent/cost/spend.py`), and its retention sweep was replaced by the
-events' (`app/agent/cost/usage_events_retention.py`). The holds had never had anything to do with the ledger except sharing its file.
-The `usage_ledger` TABLE stays as read-only history that `scripts/usage_events_carry_over.py` can copy into the events; dropping it
-is a later, separate, destructive migration.
+This left `usage_ledger.py` when that module went (specs/010 T030c3; the caps sum `spend.py`, retention is
+`usage_events_retention.py`). The `usage_ledger` TABLE stays as read-only history that
+`scripts/usage_events_carry_over.py` can copy; dropping it is a later destructive migration.
 
-Every function here fails OPEN (a hold that cannot be written or read must not block a turn) and counts the failure
+Every function fails OPEN (a hold that can't be written or read must not block a turn) and counts the failure
 (`agent_cost_governance_degraded_total{path="reservation"}`).
 """
 import logging
@@ -37,28 +36,20 @@ RESERVATION_STALE_AFTER_MINUTES = 5
 
 
 async def reserve_budget(ctx: SecurityCtx | None, amount_usd: float) -> str | None:
-    """Records a hold of `amount_usd` against `ctx`'s tenant — one row for this
-    turn, with its own timestamp — called right before a turn that passed
-    `budgets.check_tenant_daily`'s check actually starts spending. Closes the gap
-    between "checked" and "recorded": the calls this turn has yet to
-    make aren't in usage_events yet (each call's event lands when the call returns), so without a
-    hold a sibling turn racing the same tenant would see nearly the SAME "spent
-    so far" and pass the check too. Always paired with
-    `release_budget_reservation` once the turn ends (success, failure, or
-    timeout) — callers use a `finally` for that, same shape as
-    `app/job_queue/queue.py::acquire_thread_lock`'s own release contract.
+    """Hold `amount_usd` against `ctx`'s tenant for one turn, taken just before it starts spending.
 
-    Returns the hold's id — hand it back to `release_budget_reservation` — or
-    None if nothing was reserved (invalid ctx, non-positive amount, or the write
-    failed). Best-effort, same fail-open posture as every other write in this
-    module: a reservation failure must not block a turn, it just means this one
-    turn's spend goes unprotected against a concurrent sibling, exactly the
-    pre-reservation behavior.
+    Closes the gap between "checked" and "recorded": this turn's remaining calls aren't events yet, so without
+    a hold a sibling turn racing the same tenant reads nearly the same "spent so far" and passes too. Always
+    paired with `release_budget_reservation` in a `finally`, as with
+    `app/job_queue/queue.py::acquire_thread_lock`.
 
-    The sweep and the insert share one transaction (`get_connection` is one —
-    see core/sql_store.py). The sweep removes this tenant's abandoned holds so the
-    table doesn't grow; the read already ignores them, so it is housekeeping,
-    not correctness."""
+    Returns the hold id, or None if nothing was reserved (invalid ctx, non-positive amount, write failed).
+    Best-effort and fail-open like every write here: a failure just leaves this turn unprotected against a
+    concurrent sibling.
+
+    The sweep of this tenant's abandoned holds shares the insert's transaction (`get_connection` is one, see
+    core/sql_store.py). It is housekeeping, not correctness: the read already ignores stale holds.
+    """
     if not valid_ctx(ctx) or amount_usd <= 0:
         return None
     hold_id = str(uuid.uuid4())

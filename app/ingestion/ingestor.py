@@ -112,33 +112,24 @@ async def ingest_text(
     topic: str | None = None,
     on_progress: Callable[[int, int], Awaitable[None]] | None = None,
 ) -> int:
-    """Chunk, embed, and upsert `text` as one or more Qdrant points — the
-    shared core every `ingest_*` entry point funnels through. Returns the
-    number of child chunks written (0 for blank/whitespace text).
+    """Chunk, embed and upsert `text` as one or more Qdrant points: the shared core every `ingest_*` entry point
+    funnels through. Returns the number of child chunks written (0 for blank text).
 
-    Sparse vectors are computed in one batched call for the whole document
-    (local ONNX, ~0.5s for 5700 chunks). Dense vectors — the real
-    bottleneck, an HTTP round trip per batch — are embedded
-    `EMBED_BATCH_SIZE` chunks at a time so there's a natural per-batch
-    checkpoint for progress reporting (~28 checkpoints for 5700 chunks
-    instead of one all-or-nothing wait); the ~10x wall-clock win (13min ->
-    75s on a real 5700-chunk doc) comes from batching itself
-    (`embed_documents`), not from this splitting.
+    Sparse vectors are computed in one batched call for the whole document (local ONNX, ~0.5s for 5700
+    chunks). Dense vectors, the real bottleneck (an HTTP round trip per batch), are embedded
+    `EMBED_BATCH_SIZE` chunks at a time, which gives a per-batch checkpoint for progress (~28 for 5700 chunks
+    instead of one all-or-nothing wait). The ~10x wall-clock win (13min -> 75s on a real 5700-chunk doc) comes
+    from batching itself (`embed_documents`), not from this splitting.
 
-    `on_progress(chunks_embedded, chunks_total)`, if given, is awaited
-    after each dense batch (`app/ingestion/ingest_worker.py` uses this for
-    the upload UI's progress bar); never called for 0 chunks. Plain
-    `async def` callback, awaited directly — no thread-bridging needed
-    since this function and `embed_documents`/`qdrant_store.upsert` all run on
-    the caller's own event loop.
+    `on_progress(chunks_embedded, chunks_total)`, if given, is awaited after each dense batch (the upload UI's
+    progress bar, via `ingest_worker.py`) and never called for 0 chunks. It is a plain `async def`, awaited
+    directly, since this function and `embed_documents`/`qdrant_store.upsert` all run on the caller's event
+    loop.
 
-    Safe to call twice with byte-identical `text`/`source`/`ctx` — every
-    point's id is derived from that content (`_content_point_id`), not a
-    random draw, so a repeat (a retried ingest job, a client's
-    double-submitted upload) upserts onto the SAME ids instead of creating
-    duplicates. This is what makes it safe for `app/ingestion/ingest_worker.py`'s
-    own reclaim loop to auto-retry a crashed job rather than only ever
-    dead-lettering it.
+    Safe to call twice with byte-identical `text`/`source`/`ctx`: every point id is derived from that content
+    (`_content_point_id`), so a repeat (a retried ingest job, a double-submitted upload) upserts onto the SAME
+    ids instead of duplicating. That is what lets `ingest_worker.py`'s reclaim loop auto-retry a crashed job
+    instead of only dead-lettering it.
     """
     if not valid_ctx(ctx):
         metrics.agent_ingest_refused_total.labels(reason="no_ctx").inc()

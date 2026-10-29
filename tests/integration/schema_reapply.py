@@ -1,17 +1,17 @@
-"""Re-applying a `postgres-init/NN-*.sql` migration to the SHARED integration database without causing a deadlock.
+"""Re-applying a `postgres-init/NN-*.sql` migration to the SHARED integration database without a deadlock.
 
-Several tests check that a migration "can be applied twice" (an operator re-running it by hand must not fail). Re-running
-the DDL is not harmless on a database other xdist workers are writing to: `CREATE INDEX IF NOT EXISTS` takes a SHARE lock on
-its table, `CREATE OR REPLACE TRIGGER` a SHARE ROW EXCLUSIVE one, and `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` an ACCESS
-EXCLUSIVE one even when the column is already there. A concurrent test holding a row lock on one table and waiting for another
-forms a cycle with the script, and Postgres kills one side with `DeadlockDetected`. Which side is a matter of timing, so the
-failure appeared in an unrelated test (a webhook test failed with `DeadlockDetected` instead of its injected `RuntimeError`).
+Several tests check a migration "can be applied twice", but re-running DDL isn't harmless while other xdist
+workers write: `CREATE INDEX IF NOT EXISTS` takes a SHARE lock, `CREATE OR REPLACE TRIGGER` SHARE ROW
+EXCLUSIVE, and `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` ACCESS EXCLUSIVE even when the column exists. A test
+holding a row lock on one table and waiting for another forms a cycle with the script and Postgres kills one
+side with `DeadlockDetected`, by timing, so it surfaced in an unrelated test (a webhook test failed with
+`DeadlockDetected` instead of its injected `RuntimeError`).
 
-The fix is to make THIS session the one that always gives up. Postgres runs its deadlock check only after a session has waited
-`deadlock_timeout` (1 s by default). A `lock_timeout` shorter than that makes the re-apply abandon a wait before any check runs:
-it rolls back, which dissolves the cycle, and the other transaction (waiting for at most `lock_timeout`) simply continues. The
-script is idempotent, so trying again is exactly what the test is about. A `DeadlockDetected` is NOT retried: with the timeout in
-place it cannot happen, and if it does the assumption is wrong and the test should say so.
+The fix makes THIS session always give up: Postgres runs its deadlock check only after a wait of
+`deadlock_timeout` (1 s by default), so a shorter `lock_timeout` abandons the wait first, rolls back
+(dissolving the cycle) and lets the other transaction continue. The script is idempotent, so trying again is
+the point. A `DeadlockDetected` is NOT retried: with the timeout it can't happen, and if it does the
+assumption is wrong and the test should say so.
 """
 import asyncio
 import random
@@ -35,9 +35,9 @@ def script_sql(name: str) -> str:
 
 
 async def reapply(url: str, name: str, *, attempts: int = ATTEMPTS) -> int:
-    """Applies `postgres-init/<name>` to the database at `url` and returns how many tries it took (1 = no contention).
-
-    Each try is a fresh connection and one implicit transaction: a try that times out on a lock is rolled back whole."""
+    """Applies `postgres-init/<name>` to the database at `url` and returns how many tries it took (1 = no
+    contention).
+    """
     sql = script_sql(name)
     for attempt in range(1, attempts + 1):
         try:

@@ -1,13 +1,13 @@
-"""Routing outcomes: what the local and the strong model scored on each route prompt, and the label a head learns from them (specs/014 C5).
+"""Routing outcomes: what the local and the strong model scored on each route prompt, and the label a head learns
+from them (specs/014 C5). A row is `{"id", "local", "strong", "judge"}`: the judge's 0-1 score of each model's
+answer to prompt `id`, and the judge's alias. A score may be `null` (the call timed out, the model errored, or
+the judge twice failed): RECORDED AS MISSING, never zero, because zero says "worthless" and missing says
+"unknown"; a router tuned on invented zeros learns the prompts a flaky model failed on, not the ones it is bad
+at.
 
-An outcome row is `{"id", "local", "strong", "judge"}`: the judge's 0-1 score of each model's answer to the prompt `id`, and the alias of the
-judge that gave them. A score may be `null`: the call timed out, the model errored, or the judge twice failed to produce a score. That is
-RECORDED AS MISSING and never as zero, because zero says "the answer was worthless" and a missing score says "we do not know"; a router tuned
-on invented zeros learns to route the prompts a flaky model failed on, not the prompts it is bad at.
-
-A label is a fact about two specific models and one specific judge (a prompt that needs the 7B model with one judge may not with another), so
-outcomes are produced per operator into an ignored directory and are never part of a dataset's manifest hash. Everything a head records about
-where its labels came from is therefore the sha256 of the exact file it was trained on.
+A label is a fact about two models and one judge (a prompt needing the 7B model with one judge may not with
+another), so outcomes are produced per operator into an ignored directory, never in a dataset's manifest hash.
+A head therefore records where its labels came from as the sha256 of the exact file it trained on.
 """
 import hashlib
 import json

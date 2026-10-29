@@ -1,13 +1,15 @@
-"""Every local model in the dev gateway config states a price, and the per-person budget the configs name is the one the script creates.
+"""Every local model in the dev gateway config states a price, and the per-person budget the configs name is the
+one the script creates.
 
-Why a price at all: a local model costs no money, but a model LiteLLM has no price for is `null` to the app (every call counted unpriced, and
-`UNPRICED_MODEL_POLICY=block` would refuse it), and a model priced at exactly 0 is skipped by LiteLLM's budget checks, so neither the app key's
-`max_budget` nor the per-person budget could trip on it. Measured on the 1.94.1 image before the prices were added: `chat`, `chat-backup` and
-`embed` reported 0 and `vision` null. These are shadow prices, not a bill (litellm-config.yaml says so at the top); this file keeps them
-real, plain numbers the app can read.
+Why a price for a free local model: a model LiteLLM has no price for is `null` to the app (every call counted
+unpriced, and `UNPRICED_MODEL_POLICY=block` would refuse it), and a model priced at exactly 0 is skipped by
+LiteLLM's budget checks, so neither the app key's `max_budget` nor the per-person budget could trip. Measured
+on the 1.94.1 image before the prices were added: `chat`, `chat-backup` and `embed` reported 0 and `vision`
+null. These are shadow prices, not a bill (litellm-config.yaml says so); this file keeps them real, plain
+numbers the app can read.
 
-Static, reading YAML. That LiteLLM then computes spend from them was run against its Router in a scratch script when this was written (a price in
-`model_info` gave 10 x 1e-7 + 20 x 2e-7 = 5e-6; a model with none gave nothing); a mock cannot show it.
+Static, reading YAML. That LiteLLM computes spend from them was run against its Router in a scratch script (a
+`model_info` price gave 10 x 1e-7 + 20 x 2e-7 = 5e-6; a model with none gave nothing); a mock can't show it.
 """
 from collections import defaultdict
 from pathlib import Path

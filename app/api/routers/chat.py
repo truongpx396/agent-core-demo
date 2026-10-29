@@ -40,34 +40,24 @@ router = APIRouter()
 def _queued_sse_response(
     client, request_id: str, *, first_event_deadline_seconds: float = CHAT_FIRST_RESPONSE_DEADLINE_SECONDS
 ) -> StreamingResponse:
-    """Shared by every queue-backed endpoint below (new turn, resume,
-    cancel): relay one job's results stream as SSE frames.
+    """Shared by every queue-backed endpoint below (new turn, resume, cancel): relay one job's results stream as
+    SSE frames.
 
-    Deliberately does NOT eagerly delete the results stream on a terminal
-    event (an earlier version did) — real bug, found via a test exercising
-    `POST /chat/stream/queued`'s own submission dedup
-    (`claim_or_get_existing_submission`): a dedup HIT means two independent
-    callers can legitimately read the exact SAME `request_id`'s results
-    stream, one having started well after the other. Eager deletion
-    assumed exactly one reader ever existed per `request_id` — true before
-    dedup, false now — so whichever reader saw the terminal event FIRST
-    deleted the stream out from under the other, which then read an empty
-    stream forever (a real client would eventually time out; the hermetic
-    test that caught this, using a non-blocking fake Redis, hung outright).
-    `RESULTS_STREAM_TTL_SECONDS` already bounds a stream's lifetime
-    regardless (`queue.py::publish_result` refreshes it on every write) —
-    relying on that alone costs a few minutes of otherwise-idle Redis
-    memory per turn, in exchange for correctness under a second reader
-    arriving at any point before that TTL elapses.
+    It deliberately does NOT delete the results stream on a terminal event (an earlier version did). Real bug,
+    found by a test of `POST /chat/stream/queued`'s submission dedup (`claim_or_get_existing_submission`): on
+    a dedup HIT, two independent callers can legitimately read the SAME `request_id`'s stream, one starting
+    well after the other. Eager deletion assumed one reader per `request_id`, so whichever saw the terminal
+    event first deleted the stream out from under the other, which then read an empty stream forever (a real
+    client would time out; the hermetic test, using a non-blocking fake Redis, hung outright).
+    `RESULTS_STREAM_TTL_SECONDS` already bounds a stream's life (`queue.py::publish_result` refreshes it on
+    every write); relying on that costs a few minutes of idle Redis memory per turn and stays correct when a
+    second reader arrives any time before the TTL.
 
-    `first_event_deadline_seconds` (`queue.py::read_results`'s own param):
-    bounds only the wait for the FIRST event ever published to this
-    request_id's stream — closes a real hang when nobody is ever going to
-    publish anything (no agent-worker running for this domain at all, or
-    a submission-dedup claim left pointing at a request_id whose own
-    publish then failed — see `chat_stream_queued`'s compensating delete
-    below). A legitimately slow-but-alive turn is unaffected: this clears
-    the instant the worker's first real event arrives.
+    `first_event_deadline_seconds` (`queue.py::read_results`'s param) bounds only the wait for the FIRST event
+    ever published to this `request_id`'s stream. It closes a real hang when nothing will ever be published
+    (no agent-worker for this domain, or a dedup claim left pointing at a request_id whose publish failed, see
+    `chat_stream_queued`'s compensating delete below). A slow-but-alive turn is unaffected: the bound clears
+    when the worker's first event arrives.
     """
 
     async def generate():

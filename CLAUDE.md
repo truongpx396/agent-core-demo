@@ -108,7 +108,9 @@ they delete volumes or kill running processes.
   uniqueness, tenant-scoped SQL, tests). Don't add one without it.
 - Tune a limit or flag through `app/core/config.py` `Settings` and add it to `.env.example`.
 - A broad `except Exception` needs `# noqa: BLE001 - <reason>`; every `# type: ignore[...]` and
-  `# noqa` carries a reason. Comments here are long-form on purpose — explain why.
+  `# noqa` carries a reason. Comments explain *why* (the failure that motivated the code), not
+  what; keep them short, point at the bug or pattern number, and leave the long reasoning to the
+  pattern docs.
 - A bug fix lands with a regression test that fails without it, plus the matching
   `GRAPH_PATTERNS.md` (or the owning package's pattern file) / README update. Disclose a gap you
   leave open rather than omitting it.
@@ -124,8 +126,7 @@ they delete volumes or kill running processes.
   that, propose a split before writing code — Spec Kit's task phases are natural PR boundaries —
   and say so when it genuinely can't be split.
 - Files: ~500 lines is a prompt to ask whether a module has two responsibilities, not a hard cap.
-  It doesn't apply to test files, and this repo's long docstrings are intentional. Split by
-  responsibility, never mechanically (no `foo_part2.py`).
+  It doesn't apply to test files. Split by responsibility, never mechanically (no `foo_part2.py`).
 - Verify claims about third-party behavior against the installed source or a real run — the repo
   has been bitten by plausible-sounding assumptions (LangGraph resume semantics, redis-py
   timeouts, psycopg transactions).

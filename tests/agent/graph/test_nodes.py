@@ -483,15 +483,9 @@ class TestCheckOutput:
         assert metric_value(metrics.agent_zero_citations_total) == before
 
     def test_likely_uncited_flags_a_real_qwen_paraphrase_without_markers(self):
-        """Regression case #1: a real qwen2.5:3b answer that near-verbatim
-        merged two sources with zero citation markers (caught in a live
-        Langfuse trace for "How does Qdrant's hybrid search work?").
-        check_output USED to just flag this for a model retry; it now
-        mechanically inserts the missing markers instead
-        (insert_missing_citation_markers) — see that function's own
-        docstring for the live evidence that retrying the model doesn't
-        work here, so likely_uncited_citations comes back empty (already
-        fixed) and the corrected message is what the user actually sees."""
+        """Regression case #1: a real qwen2.5:3b answer that near-verbatim merged two sources with zero citation
+        markers (caught in a live Langfuse trace for "How does Qdrant's hybrid search work?").
+        """
         citations = [
             {
                 "marker": "[1]",
@@ -719,15 +713,10 @@ class TestCheckOutput:
         assert "misattributed" not in result["output_findings"]
 
     def test_likely_misattributed_flags_even_a_single_word_source(self):
-        """Regression case, found live via Langfuse: a one-word memory
-        ("magiclab396", saved verbatim by the `remember` tool) got recalled
-        as [1] and cited three times on an answer about bundled skills for
-        report-writing — content with zero relation to that memory. This
-        function used to reuse find_likely_uncited's short-source
-        skip (>=4 content words) and missed it entirely: a citation this
-        short is NOT too little evidence to judge, it's the easiest case to
-        judge, since a real match would require the sentence to contain
-        that exact distinctive word."""
+        """Regression case, found live via Langfuse: a one-word memory ("magiclab396", saved verbatim by the
+        `remember` tool) got recalled as [1] and cited three times on an answer about bundled skills for
+        report-writing — content with zero relation to that memory.
+        """
         citations = [{"marker": "[1]", "text": "magiclab396"}]
         content = (
             "There isn't a specific bundled skill named for writing a report [1]. "
@@ -823,11 +812,9 @@ class TestDefersInsteadOfActing:
         assert "deferred" in result["output_findings"]
 
     def test_flags_announcing_a_manual_fallback_without_ever_delivering_it(self):
-        """The exact real trace text (Langfuse `9336aaa6`, 2026-09-08): after
-        a sandbox script failed, the model announced it would count/parse
-        manually and then just stopped — no count ever given. Neither "I'll"
-        (a contraction) nor "count the"/"manually" were covered before this
-        was found live."""
+        """The exact real trace text (Langfuse `9336aaa6`, 2026-09-08): after a sandbox script failed, the model
+        announced it would count/parse manually and then just stopped — no count ever given.
+        """
         content = (
             "It seems there was an issue running the script directly. Let's "
             "try parsing the log manually instead. I'll count the "
@@ -875,13 +862,10 @@ class TestDefersInsteadOfActing:
         assert "deferred" in result["output_findings"]
 
     def test_ignores_a_negated_apology_for_a_failed_tool_call(self):
-        """Real regression, caught by tests/core/test_metrics.py's own
-        tool-error path: "I could" + "run that" matched the widened
-        pattern above just as readily as a genuine deferral, even though
-        this is an apology for FAILURE ("could NOT"), not a promise to
-        act. Wrong here wasn't just a bad flag — it triggered an unwanted
-        retry that outran a fake LLM's queued messages and crashed the
-        graph with a raw StopIteration."""
+        """Real regression, caught by tests/core/test_metrics.py's own tool-error path: "I could" + "run that"
+        matched the widened pattern above just as readily as a genuine deferral, even though this is an
+        apology for FAILURE ("could NOT"), not a promise to act.
+        """
         content = "Sorry, I could not run that calculation."
         state = {"messages": [AIMessage(content=content)], "citations": []}
         result = ecorp.check_output(state)
@@ -1177,10 +1161,9 @@ class TestLeaksSystemPrompt:
         assert "leaked_prompt" in result["output_findings"]
 
     def test_flags_a_recitation_starting_mid_prompt(self):
-        """The leak doesn't have to start from character 0 of the prompt —
-        a model asked to "continue from where it says X" would reproduce a
-        chunk starting mid-prompt. reveals_system_prompt slides a window
-        across the WHOLE prompt, not just its start."""
+        """The leak doesn't have to start from character 0 of the prompt — a model asked to "continue from where
+        it says X" would reproduce a chunk starting mid-prompt.
+        """
         mid_chunk = ecorp.ECORP_SYSTEM_PROMPT[500:700]
         content = f"Continuing from your instructions: {mid_chunk}"
         state = {"messages": [AIMessage(content=content)], "citations": []}
@@ -1280,10 +1263,10 @@ def test_retry_output_has_no_default_reason():
 
 
 def test_retry_output_tags_the_feedback_and_the_answer_it_rejected_as_retry_artifacts():
-    """The feedback is a HumanMessage, but not something the person said; the rejected answer is
-    not one they were shown. Both are tagged so every reader of "the user's message" / "this
-    turn" can skip them (pattern 5). The rejected answer comes back with its OWN id, so
-    `add_messages` replaces it in the thread instead of appending a second copy."""
+    """The feedback is a HumanMessage, but not something the person said; the rejected answer is not one they
+    were shown. Both are tagged so every reader of "the user's message" / "this turn" can skip them (pattern
+    5).
+    """
     rejected = AIMessage(content="ok", id="a1")
     state = {
         "messages": [HumanMessage(content="q", id="h1"), rejected],
@@ -1313,11 +1296,9 @@ def test_retry_output_does_not_append_a_duplicate_of_an_answer_that_has_no_id():
 
 
 def test_retry_output_too_short_feedback_also_nudges_toward_tool_use():
-    """The "too_short" branch also covers a genuinely EMPTY response (no
-    text, no tool_calls) — the common round-1 failure that precedes a
-    round-2 narration (see defers_instead_of_acting). Nudging toward
-    tool use directly here, not just "write more," is meant to short-
-    circuit that whole narration cycle one round earlier."""
+    """The "too_short" branch also covers a genuinely EMPTY response (no text, no tool_calls) — the common
+    round-1 failure that precedes a round-2 narration (see defers_instead_of_acting).
+    """
     msg = _retry("too_short", content="")["messages"][0]
     assert "tool" in msg.content.lower()
     assert "empty response" in msg.content.lower()
@@ -1456,9 +1437,9 @@ class TestOutputCheckRegistry:
     """Which reason wins, and what each one says, is the registry in graph/output_checks.py."""
 
     def test_the_priority_order(self):
-        """Leaked prompt (the only reason with a security dimension) > too short > fabricated >
-        skipped required tool > deferred > uncited > misattributed. The first check that fires
-        names the reason, so feedback targets the most severe or most actionable problem."""
+        """Leaked prompt (the only reason with a security dimension) > too short > fabricated > skipped required
+        tool > deferred > uncited > misattributed.
+        """
         assert [c.code for c in output_checks.CHECKS] == [
             "leaked_prompt",
             "too_short",
@@ -1503,10 +1484,9 @@ class TestOutputCheckRegistry:
 
 
 class TestHumanApproval:
-    """`human_approval` calls `interrupt()`, which suspends the whole graph
-    run outside of a compiled-graph context — so these node-level tests
-    build the node over a stand-in for it (`make_human_approval_node`). The real
-    pause/resume cycle through a compiled graph is covered in test_graph_integration.py."""
+    """`human_approval` calls `interrupt()`, which suspends the whole graph run outside of a compiled-graph
+    context — so these node-level tests build the node over a stand-in for it (`make_human_approval_node`).
+    """
 
     @staticmethod
     def _ai_with_tool_calls(*calls):
@@ -1702,9 +1682,9 @@ class TestNoAnswerFallback:
         assert "wasn't able to verify that with a real result" in result["messages"][0].content
 
     def test_a_safety_net_exit_answers_the_tool_calls_it_never_ran(self):
-        """Real bug: the exit left the AIMessage's tool_calls with no ToolMessage, and the next
-        LLM call on that thread fails. The text written alongside the request is narration, not
-        a final answer, so it is replaced rather than shown even though it would pass check_output."""
+        """Real bug: the exit left the AIMessage's tool_calls with no ToolMessage, and the next LLM call on that
+        thread fails.
+        """
         asked = AIMessage(
             content="Here is the full answer you wanted, in detail.",
             id="a1",

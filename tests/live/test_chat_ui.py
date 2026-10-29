@@ -1,43 +1,22 @@
-"""Browser E2E against the built-in web UI (app/api/static/index.html) —
-the one client this app ships that a Python-level test can't drive, since
-its whole job is rendering a real browser's `fetch()`-based SSE parsing
-(see that file's own module comment: "no build step, no CDN dependency").
-Needs `real_stack` (tests/live/conftest.py): a real uvicorn + agent-worker
-pointed at real Postgres/Redis/Qdrant/Ollama, since the page actually calls
-`POST /chat/stream/queued` and `POST /chat/resume` (see its own `send()`/
-`resume()`) — both real only through the real Redis queue + a real
-agent-worker process, never in-process.
+"""Browser E2E against the built-in web UI (app/api/static/index.html), the one client this app ships that a
+Python-level test can't drive, since its job is a real browser's `fetch()`-based SSE parsing. Needs
+`real_stack` (tests/live/conftest.py): the page calls `POST /chat/stream/queued` and `POST /chat/resume`,
+which work only through the real Redis queue and a real agent-worker.
 
-Generous timeouts throughout (`RESPONSE_TIMEOUT_MS`): a small, real,
-CPU-bound model genuinely takes longer per turn than this suite's usual
-sub-second fake-LLM tests, and a mutating-tool turn below waits through TWO
-full model round trips (the initial tool-call decision, then the
-post-approval synthesis of the tool result into a final answer).
-`RESPONSE_TIMEOUT_MS` must stay comfortably ABOVE
-`tests/live/conftest.py::real_stack`'s own `REQUEST_TIMEOUT_SECONDS`
-override, or this suite's own assertion times out first and reports a
-misleading "element never appeared" instead of the real app-level
-`[error: Request exceeded Ns timeout]` text that actually explains a slow
-turn — verified directly: a real CI run measured a single real
-`qwen2.5:1.5b` tool-calling turn taking 67.7s end to end.
+Timeouts are generous (`RESPONSE_TIMEOUT_MS`): a small CPU-bound model takes far longer than the suite's
+fake-LLM tests, and a mutating-tool turn waits through TWO model round trips (the tool-call decision, then
+synthesis after approval). It must stay comfortably ABOVE `real_stack`'s `REQUEST_TIMEOUT_SECONDS` override,
+or the assertion times out first with a misleading "element never appeared" instead of the app's `[error:
+Request exceeded Ns timeout]`. A CI run measured one `qwen2.5:1.5b` tool-calling turn at 67.7s end to end.
+`MULTI_STEP_RESPONSE_TIMEOUT_MS` is wider still, for skill and subagent turns that chain several model calls.
 
-The agentic-feature tests below (the approved `remember` write, citations, a
-skill, a subagent) use `real_stack_with_retrieval` instead of `real_stack` —
-the one difference is a REAL embedding model + seeded Qdrant (see that
-fixture's own docstring), needed because `search_docs`/`skill_search` are both
-Qdrant-backed and return nothing real against `real_stack`'s deliberately
-unembedded setup, and because `remember` embeds what it stores: against
-`real_stack` it fails with a 404 for the embedding model, the model asks for it
-again, and the second approval pause leaves the Approve button on screen (see
-the `remember` test below). Each names its tool/skill/subagent explicitly in the
-prompt, same low-risk posture as the calculator/remember tests above —
-this suite is about proving the real integration works end to end, not
-about testing whether a 1.5B model can infer intent on its own.
-`MULTI_STEP_RESPONSE_TIMEOUT_MS` is wider still: a skill or subagent turn
-chains multiple real model calls (skill_search -> use_skill -> the
-skill's own tool calls, or the parent's tool-call decision -> a full
-NESTED subagent turn -> the parent's synthesis of that result), not just
-the one/two RESPONSE_TIMEOUT_MS already budgets for.
+The agentic tests below (approved `remember` write, citations, a skill, a subagent) use
+`real_stack_with_retrieval`: a REAL embedding model plus seeded Qdrant. `search_docs`/`skill_search` return
+nothing real against `real_stack`'s unembedded setup, and `remember` embeds what it stores: there it fails
+with a 404 for the embedding model, the model asks again, and the second approval pause leaves the Approve
+button on screen (see the `remember` test). Each prompt names its tool/skill/subagent, the same low-risk
+posture as the calculator/remember tests: this proves the integration works end to end, not that a 1.5B model
+can infer intent.
 """
 import re
 import time
@@ -89,16 +68,7 @@ def _send(page: Page, text: str) -> None:
 
 
 def _answer_of_the_finished_turn(page: Page, timeout_ms: int = RESPONSE_TIMEOUT_MS):
-    """The assistant's answer locator, returned the moment the turn has ENDED, not after a fixed wait.
-
-    Asserting `to_contain_text(..., timeout=<the whole turn budget>)` on a live locator keeps polling for
-    that whole budget even after the agent has stopped for good, so a turn that goes wrong costs the full
-    timeout and says nothing about why. Real instance (a CI run of this suite, 2026-10-04): the model hit
-    `human_approval` and paused at 13:41:40, nobody could answer, and `test_a_skill_is_found_and_followed`
-    went on waiting for "17" until its 600 s limit expired at 13:52:49 (~11 minutes, about half of the
-    whole `test-live` job). Waiting for the turn to END first makes that fail in the time the turn took,
-    and a pause is reported as what it is, with the tool the agent was waiting to run.
-    """
+    """The assistant's answer locator, returned the moment the turn has ENDED, not after a fixed wait."""
     page.wait_for_function(_TURN_IS_OVER, timeout=timeout_ms, polling=500)
     paused = page.locator(".approval .approval-question")
     if paused.count():
@@ -119,25 +89,8 @@ def test_sending_a_message_streams_a_real_answer_via_the_calculator_tool(page: P
 def test_a_mutating_tool_call_pauses_for_approval_and_resumes_on_approve(
     page: Page, real_stack_with_retrieval: str
 ):
-    """Drives the REAL approve/reject round trip
-    (`renderApprovalButtons`/`resume()` → `POST /chat/resume`) — the flow
-    README.md's own "Built-in web UI" section still (incorrectly, as of
-    this test) describes as unbuilt. Uses `remember`, not `add_note`: both
-    are mutating tools gated by the same mandatory human_approval pause
-    (GRAPH_PATTERNS.md pattern 15), but `remember` needs no `topic` value
-    the small model might get wrong, keeping this test's real, imperfect
-    tool-argument generation as low-risk as this scenario allows.
-
-    Needs `real_stack_with_retrieval`, not `real_stack`: `remember` embeds the
-    text it stores (`app/domains/ecorp/store.py::remember_impl`), and `real_stack`
-    runs with no real embedding model. Reproduced locally and read off the CI
-    logs: the approved `remember` call failed immediately with the embedding
-    model's 404, the 3B model reacted by asking for `remember` again, that
-    second call paused for approval again, and the test then waited the full
-    timeout for an Approve button that never went away — passing only on the
-    runs where the model happened not to retry. With a real embedder the
-    approved write succeeds and the turn ends after the one pause this test is
-    about.
+    """Drives the REAL approve/reject round trip (`renderApprovalButtons`/`resume()` → `POST /chat/resume`) — the
+    flow README.md's own "Built-in web UI" section still (incorrectly, as of this test) describes as unbuilt.
     """
     page.goto(real_stack_with_retrieval)
 
@@ -167,23 +120,20 @@ def test_a_mutating_tool_call_pauses_for_approval_and_resumes_on_approve(
 
 
 def test_a_read_only_tool_call_returns_real_data(page: Page, real_stack: str):
-    """query_employees, not calculator — proves the browser round trip
-    works for a tool whose result comes from a real Postgres row
-    (postgres-init/02-appdata.sql's seeded `employees` table), not just
-    arithmetic the model could plausibly fake. Read-only (TOOL_CAPABILITIES),
-    so no approval pause — needs no `real_stack_with_retrieval`, unlike the
-    tests below.
+    """query_employees, not calculator: proves the browser round trip for a tool whose result comes from a real
+    Postgres row (postgres-init/02-appdata.sql's seeded `employees`), not arithmetic the model could fake.
+    Read-only (TOOL_CAPABILITIES), so no approval pause and no `real_stack_with_retrieval`.
 
     The question is asked BY NAME on purpose. It used to be "Who is Ecorp's Support Lead?", which needs the
-    model to turn a job title into `department=Support`; qwen2.5:3b does not do that reliably, and the gate
-    went red on it from 2026-10-24 (the call it made was `name_contains="Support Lead"`, which matches nobody).
-    Measured on 2026-10-28 against the Ollama this fixture pulls: of nine phrasings of a role question the 3B
-    got none right, seven of them dropped as malformed tool-call JSON; of eight variants of the name question
-    below it got all eight right, and its answer after the tool's real output named the person in all eight.
-    That is a limit of the 3B, not of the tool: qwen2.5:7b, the chat model, got seven of nine role questions
-    right. Whether a model can map a title to a department is not what this test is for. "Dana Whitfield" is
-    still proof of the round trip: the surname exists only in the database row (the question gives the first
-    name alone)."""
+    model to turn a job title into `department=Support`; qwen2.5:3b doesn't do that reliably, and the gate
+    went red on it from 2026-10-24 (it called `name_contains="Support Lead"`, matching nobody). Measured
+    2026-10-28 against the Ollama this fixture pulls: of nine phrasings of a role question the 3B got none
+    right (seven dropped as malformed tool-call JSON), while all eight variants of the name question were
+    right and named the person after the tool output. That is the 3B's limit, not the tool's (qwen2.5:7b, the
+    chat model, got seven of nine role questions right), and mapping a title to a department is not what this
+    test is for. "Dana Whitfield" still proves the round trip: the surname exists only in the database row
+    (the question gives the first name alone).
+    """
     page.goto(real_stack)
 
     _send(page, "Is there anyone named Dana at Ecorp? Use the query_employees tool.")
@@ -193,13 +143,9 @@ def test_a_read_only_tool_call_returns_real_data(page: Page, real_stack: str):
 
 
 def test_a_grounded_answer_shows_a_real_citation(page: Page, real_stack_with_retrieval: str):
-    """search_docs against a REAL embedding + a REAL seeded Qdrant
-    (real_stack_with_retrieval, backed by scripts/seed.py's sample docs) —
-    proves retrieval and the citations UI (`renderCitations`,
-    app/api/static/index.html) work end to end, not just that search_docs
-    returns SOMETHING. "Ecorp: Support Hours" (scripts/sample_docs.py) is
-    the source doc; its own text is asserted, not just marker presence, so
-    a citation box rendering with the WRONG source still fails this test.
+    """search_docs against a REAL embedding + a REAL seeded Qdrant (real_stack_with_retrieval, backed by
+    scripts/seed.py's sample docs) — proves retrieval and the citations UI (`renderCitations`,
+    app/api/static/index.html) work end to end, not just that search_docs returns SOMETHING.
     """
     page.goto(real_stack_with_retrieval)
 
@@ -252,18 +198,10 @@ def test_a_skill_is_found_and_followed(page: Page, real_stack_with_retrieval: st
 # model that stops halfway is a visible signal instead of a red gate, like deepeval.
 @pytest.mark.advisory
 def test_a_subagent_delegates_and_returns_a_real_answer(page: Page, real_stack_with_retrieval: str):
-    """run_subagent (GRAPH_PATTERNS.md pattern 46) — delegates to the
-    bundled `researcher` subagent (subagents/researcher/AGENT.md, visible
-    on the default Ecorp domain this test already runs against), which
-    itself calls query_employees in a NESTED graph run this conversation
-    never sees directly. Asserting the real employee name in the PARENT
-    turn's own final answer is what actually proves delegation completed
-    and its result was folded back in, not just that run_subagent was
-    invoked. real_stack_with_retrieval is used for its real embedding
-    model, not because this specific task needs search_docs — `researcher`
-    also offers search_docs, and keeping ONE fixture for every agentic
-    test here (rather than a THIRD variant with an embedding model but no
-    seeded data) is the simpler, still-correct choice."""
+    """run_subagent (GRAPH_PATTERNS.md pattern 46) — delegates to the bundled `researcher` subagent
+    (subagents/researcher/AGENT.md, visible on the default Ecorp domain this test already runs against), which
+    itself calls query_employees in a NESTED graph run this conversation never sees directly.
+    """
     page.goto(real_stack_with_retrieval)
 
     # The delegated task names the tool and the filter on purpose, the same way the sibling

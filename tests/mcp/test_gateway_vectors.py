@@ -1,19 +1,19 @@
-"""The MCP gateway's verifier against the shared external-token vectors (specs/018, tasks T065 and T066).
+"""The MCP gateway's verifier against the shared external-token vectors (specs/018, T065 and T066).
+`testdata/auth-vectors/` is one file of tokens read by two verifiers in two languages, the Go service at the
+front door (`services/authlimit/internal/extjwt`) and `app/mcp/gateway_auth.py`. Each vector says what the
+`mcp` profile must conclude, so the two can't quietly disagree about a valid token. A vector's reason for the
+`mcp` profile is informational (the gateway counts its own words); only `result` is compared.
 
-`testdata/auth-vectors/` is one file of tokens read by two verifiers in two languages: the Go service at the front door
-(`services/authlimit/internal/extjwt`) and this one, `app/mcp/gateway_auth.py`. Each vector says what the `mcp` profile must conclude, so the
-two cannot quietly disagree about what a valid token is. The reason a vector gives for the `mcp` profile is informational (the gateway counts its
-own words); only `result` is compared.
+Beyond tidiness: the front door runs limit-only mode (profile `identify`) on the MCP routes, and the vectors
+README's rule is that this mode never refuses a token the gateway accepts, since such a token would reach the
+gateway without being charged to any bucket, a way around the limiter.
+`test_the_limit_only_profile_never_refuses_what_the_gateway_accepts` re-checks that from the data; the Go
+tests check it from theirs.
 
-Why it matters beyond tidiness. The front door runs in limit-only mode on the MCP routes (profile `identify`), and the rule the vectors README
-states is that this mode never refuses a token the gateway accepts: a token it refused would reach the gateway without being charged to any
-bucket, a way around the limiter. `test_the_limit_only_profile_never_refuses_what_the_gateway_accepts` re-checks that rule from the data, and
-the Go tests check it from theirs.
-
-No network and no real clock. The signing keys are the vectors' `jwks.json`, served to the gateway's own `JwksCache` through a mock transport
-(the same approach as tests/mcp/test_gateway_keys.py). PyJWT reads the wall clock inside `jwt.api_jwt` for `exp`, `nbf` and `iat`, so the test
-replaces the `datetime` it imports with one that answers the file's `now`: every `exp` in the file is relative to that instant and none ever
-expires, which is the point of putting the clock in the file.
+No network, no real clock. The keys are the vectors' `jwks.json`, served to the gateway's `JwksCache` through
+a mock transport (as tests/mcp/test_gateway_keys.py). PyJWT reads the wall clock in `jwt.api_jwt` for `exp`,
+`nbf` and `iat`, so the test replaces its `datetime` with one answering the file's `now`: every `exp` is
+relative to that instant and none ever expires, which is why the clock is in the file.
 """
 import inspect
 import json

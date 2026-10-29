@@ -81,9 +81,9 @@ def _marginal_screen_baseline(n=67, seed=11) -> ItemData:
 
 
 def test_a_random_screen_is_not_judged_on_recall_because_at_the_threshold_it_recalls_about_as_much_as_a_real_one():
-    """Regression: `make model-eval-verify` failed on the committed prompt-guard baseline ("random-scores expected worse, observed
-    inconclusive"). A screen that scores at random flags about half of everything at 0.5, so its recall is ~0.5, which is no worse than a
-    real screen's 0.47. The control was wrong, not the harness: it must be judged on ranking and false alarms."""
+    """Regression: `make model-eval-verify` failed on the committed prompt-guard baseline ("random-scores
+    expected worse, observed inconclusive").
+    """
     suite = ScreenSuite(0.5)
     baseline = _marginal_screen_baseline()
     point = suite.compute(baseline, np.arange(len(baseline)))

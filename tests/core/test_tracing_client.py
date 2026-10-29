@@ -1,21 +1,15 @@
-"""One Langfuse client per process, not one per turn.
+"""One Langfuse client per process, not one per turn. `_open_trace` built `Langfuse()` every turn and
+`_run_graph_stream`'s `finally` built ANOTHER just to `.flush()` it. Each construction starts three background
+threads nothing stops (measured on SDK 2.60.10, keys set or not), so a worker gained six threads per turn (60
+after ten) and never gave one back (spec 008, B18).
 
-`_open_trace` built `Langfuse()` for every turn and `_run_graph_stream`'s
-`finally` built ANOTHER just to call `.flush()` on it. Each construction starts
-three background threads that nothing ever stops — measured against the installed
-SDK (2.60.10), keys set or not: +3 threads per client, so a worker gained six
-threads per turn (60 after ten) and never gave one back (spec 008, B18).
+The flush was also wrong: `Langfuse.flush()` joins THAT instance's own queue, so flushing a new client flushed
+an empty queue and never the trace's events. A correct flush blocks until the queue drains, so it can't run on
+the event loop either: the SDK's background consumer sends events as they arrive, and the shared client is
+flushed and shut down once, at process exit.
 
-The flush was also wrong, not just wasteful: `Langfuse.flush()` joins THAT
-instance's own ingestion queue, so flushing a brand-new client flushed an empty
-queue and never the trace's events — the comment's promise ("so the trace is sent
-even if the caller exits immediately") had never been kept. A correct flush
-blocks until the queue drains, so it cannot be called on the event loop either:
-events are sent by the SDK's own background consumer as they arrive, and the
-shared client is flushed and shut down once, at process exit.
-
-The leak itself is checked against the real SDK, since a counting fake cannot show
-threads; behaviour around it is checked with a fake.
+The leak is checked against the real SDK, since a counting fake can't show threads; behaviour around it uses a
+fake.
 """
 import logging
 import threading

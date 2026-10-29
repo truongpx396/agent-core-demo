@@ -1,59 +1,35 @@
-"""Pure helper logic behind each domain's three sandbox tools
-(run_command_in_sandbox, read_sandbox_file, write_sandbox_file), wrapped
-per domain in app/domains/{ops,support,sales}/tools.py — built on
-OpenSandbox's raw MCP catalog (app/domains/sandbox_tools.py, pattern 50)
-instead of exposing that catalog to the LLM directly.
+"""Pure helper logic behind each domain's three sandbox tools (`run_command_in_sandbox`, `read_sandbox_file`,
+`write_sandbox_file`), wrapped per domain in app/domains/{ops,support,sales}/tools.py over OpenSandbox's raw
+MCP catalog (sandbox_tools.py, pattern 50). Domain-agnostic, hence not under ops/.
 
-Domain-agnostic on purpose: nothing below is ops-specific, hence living
-under app/domains/ rather than app/domains/ops/.
+Why it exists: a small local model (qwen2.5:3b) given the raw ~19-tool catalog (stateful create -> connect ->
+run, nested schemas) failed reproducibly: it invented a sandbox_id, then looped on `sandbox_connect` with no
+args until the no-progress net (pattern 34) cut it off. A prompt-only fix didn't help; it is an
+instruction-following ceiling. So sandbox access gets the shape of every other tool, one flat string arg, with
+create/reuse/connect handled in code. The model never sees a sandbox_id.
 
-## Why this exists
-Handing a small local model (qwen2.5:3b) OpenSandbox's raw ~19-tool
-catalog (stateful create -> connect -> run, nested schemas) produced
-reproducible failures: it hallucinated a sandbox_id, then looped on
-sandbox_connect with no args until the no-progress safety net (pattern 34)
-cut it short. A prompt-only fix didn't help — a real instruction-following
-ceiling, not a prompting problem. Every other tool in this app is 1-3 flat
-fields; this module gives sandbox access the same shape — one flat string
-arg per tool, full create/reuse/connect lifecycle handled here in code.
-The model never sees a sandbox_id or calls sandbox_create/sandbox_connect.
+Per-conversation reuse, server-side: each (tenant, conversation) pair gets ONE sandbox, tagged
+`{SANDBOX_TENANT_KEY: sha(tenant), SANDBOX_THREAD_KEY: sha(thread_id)}` and found again via `sandbox_list`'s
+metadata filter. The lookup is server-side, not a process-local dict, so a resume on a different worker still
+finds it (pattern 43).
 
-## Per-conversation reuse, server-side
-Each (tenant, conversation) pair gets ONE sandbox, tagged with
-`{SANDBOX_TENANT_KEY: sha(tenant), SANDBOX_THREAD_KEY: sha(thread_id)}` at
-creation and found again via sandbox_list's metadata filter — a server-side
-lookup, not a process-local dict, so it stays correct across this app's
-horizontally-scaled workers (pattern 43): a resume picked up by a different
-worker than the one that created the sandbox still finds it.
+The tags hash the RAW values and never rewrite them. It used to squeeze the conversation id into OpenSandbox's
+value rules (bad characters to `-`, cut to 63), so `telegram:12345` and `telegram-12345` resolved to ONE
+sandbox and the tenant was never looked at (spec 009 B24; Principle I). A hash always satisfies the rules,
+keeps a chat id out of the sandbox service in the clear, and differs whenever the input does. Tenant and
+conversation are separate tags so no pair reads as another. After the filtered lookup the returned tags are
+compared again, so a service that ignored the filter still can't hand one conversation another's files; an
+entry with no readable tags is not reused.
 
-The tags are hashes of the RAW values, never a rewrite of them. This used to
-tag the conversation id after squeezing it into OpenSandbox's metadata-value
-rules (every disallowed character became `-`, cut to 63), which made
-`telegram:12345` and `telegram-12345` — and any two ids sharing their first 63
-characters — resolve to ONE sandbox, and never looked at the tenant at all, so
-the same id under two tenants shared one too (spec 009 B24; Principle I). A
-hash always satisfies the value rules (hex), keeps a chat id out of the sandbox
-service in the clear, and differs whenever the input does. The tenant and the
-conversation are separate tags rather than one concatenation so no pair of
-values can be read as another. After the filtered lookup the tags on what came
-back are compared again, so a service that ignored the filter still can't hand
-one conversation another's files; an entry with no readable tags is not reused.
+`connect_if_missing=True` goes on every `command_run`/`file_read`/`file_write`: `load_remote_tools` spawns a
+fresh opensandbox-mcp subprocess per call (app/mcp/client.py), so the bridge's registry never persists and
+later calls would 404.
 
-`connect_if_missing=True` is passed on every command_run/file_read/
-file_write call unconditionally: `load_remote_tools` spawns a fresh
-opensandbox-mcp subprocess per call (app/mcp/client.py), so the bridge's
-local sandbox registry never persists between calls anyway — every call
-after the creating one would otherwise 404 regardless of sandbox_id.
-
-## Response shapes
-Confirmed live against a real opensandbox-server (port 8090, `make
-sandbox-up`):
-- sandbox_create -> `{"sandbox_id": ..., "info": {...}}`
-- sandbox_list -> `{"sandbox_infos": [{"id": ..., "status": {"state": "RUNNING", ...}, "metadata": {...}, ...}], "pagination": {...}}`
-- command_run -> Execution: `{"exit_code": int|None, "logs": {"stdout": [{"text": ...}], "stderr": [{"text": ...}]}, ...}`
-- file_read -> `{"path": ..., "content": ...}`
-- file_write -> `{"status": "written"}`
-Tested against these shapes in tests/domains/test_sandbox_session.py.
+Response shapes (confirmed against a real opensandbox-server, `make sandbox-up`;
+tests/domains/test_sandbox_session.py): sandbox_create `{"sandbox_id", "info"}`; sandbox_list
+`{"sandbox_infos": [{"id", "status": {"state"}, "metadata"}], "pagination"}`; command_run `{"exit_code":
+int|None, "logs": {"stdout": [{"text"}], "stderr": [{"text"}]}}`; file_read `{"path", "content"}`; file_write
+`{"status": "written"}`.
 """
 import hashlib
 import json
@@ -104,26 +80,17 @@ _raw_sandbox_tools_cache: dict[str, BaseTool] = {}
 
 
 async def load_raw_sandbox_tools() -> dict[str, BaseTool]:
-    """OpenSandbox's raw MCP tool catalog as a {name: tool} lookup, empty
-    if opensandbox-mcp isn't installed/reachable. Called per-call by each
-    domain's tools.py wrapper, NOT at module import time.
+    """OpenSandbox's raw MCP tool catalog as a {name: tool} lookup, empty if opensandbox-mcp isn't installed or
+    reachable. Called per call by each domain's tools.py wrapper, NOT at import.
 
-    Self-healing: a successful (non-empty) result is cached for the
-    process's life; an empty result is never cached, so calls made while
-    opensandbox-mcp is unreachable keep retrying instead of latching onto
-    a permanent empty cache. Fixes a real bug: this used to cache a `None`
-    sentinel at import time, so a dev server that booted before
-    opensandbox-server finished starting made every sandbox tool invisible
-    for that process's whole life, with the model hallucinating a
-    nonexistent tool name to route around the gap (Langfuse trace
-    806125c9). Every caller shares the same dict; nothing mutates it.
-
-    `load_sandbox_tools` itself (app/domains/sandbox_tools.py) now also
-    retries a bare connection failure once and circuit-breaks after
-    repeated ones, so a still-booting opensandbox-server is more often
-    resolved WITHIN one of these calls, not just eventually across many —
-    this cache's own "never latch onto empty" behavior remains the
-    fallback for whatever that retry doesn't catch."""
+    Self-healing: a non-empty result is cached for the process life; an empty result never is, so calls made
+    while opensandbox-mcp is unreachable keep retrying. This used to cache a `None` sentinel at import time,
+    so a dev server that booted before opensandbox-server finished starting lost every sandbox tool for its
+    whole life, and the model invented a tool name to route around the gap (Langfuse trace 806125c9). All
+    callers share one dict; nothing mutates it. `load_sandbox_tools` also retries a bare connection failure
+    once and circuit-breaks after repeated ones, so a booting server is usually resolved within one call; the
+    never-cache-empty rule remains the fallback.
+    """
     global _raw_sandbox_tools_cache
     if not _raw_sandbox_tools_cache:
         raw_tools, _capabilities = await load_sandbox_tools()

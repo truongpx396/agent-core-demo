@@ -147,18 +147,22 @@ class ScreenSuite(Suite):
 
 
 class ClassifierSuite(Suite):
-    """A routing classifier on prompts whose outcomes are known: does it send the right prompts to the stronger model?
+    """A routing classifier on prompts whose outcomes are known: does it send the right prompts to the stronger
+    model?
 
-    Arrays per item: `score` (the head's probability that the prompt needs the stronger model), `label` (1 iff the strong model scored at least
-    the margin above the local one, `routing.label`), `q_local` and `q_strong` (the judge's 0-1 score of each model's answer), `words` (the
-    prompt's length in words, for the length router it must beat).
+    Arrays per item: `score` (the head's probability that the prompt needs the stronger model), `label` (1 iff
+    the strong model scored at least the margin above the local one, `routing.label`), `q_local` and
+    `q_strong` (the judge's 0-1 score of each answer), `words` (prompt length, for the length router it must
+    beat).
 
-    `accuracy`, `macro_f1` and `ece` judge the yes/no decision at the threshold. The routing metrics judge what the decision is FOR: escalate the
-    top share `p` of prompts by score and see how much of the gap between the local and the strong model comes back (RouteLLM's performance gap
-    recovered, PGR). `apgr` averages that over the fixed grid, `cpt50`/`cpt90` are the smallest share of prompts that must go to the stronger
-    model to recover half / 90% of the gap (LOWER is better: the cheaper the better), and `apgr_vs_length` is the head's APGR minus the APGR of
-    a router that escalates the longest prompts first, recomputed on every resample, so "beats the length router" has a confidence interval.
-    A random router recovers exactly the share it escalates (APGR 0.5), so "beats random" is `apgr` above 0.5 and needs no second curve.
+    `accuracy`, `macro_f1` and `ece` judge the yes/no decision at the threshold. The routing metrics judge
+    what it is FOR: escalate the top share `p` of prompts by score and see how much of the local-vs-strong gap
+    returns (RouteLLM's performance gap recovered, PGR). `apgr` averages that over the grid; `cpt50`/`cpt90`
+    are the smallest share that must go to the stronger model to recover half / 90% of the gap (LOWER is
+    better); `apgr_vs_length` is the head's APGR minus that of a router escalating the longest prompts first,
+    recomputed on every resample, so "beats the length router" has a confidence interval. A random router
+    recovers exactly the share it escalates (APGR 0.5), so "beats random" is `apgr` above 0.5 and needs no
+    second curve.
     """
 
     kind = "classifier"
@@ -219,18 +223,19 @@ def fast_macro_f1(label: np.ndarray, predicted: np.ndarray) -> float:
 
 
 class IntentSuite(Suite):
-    """Scores an intent / topic classifier on a standard intent set, out-of-scope examples apart from in-scope ones (specs/014 T072).
+    """Scores an intent / topic classifier on a standard intent set, out-of-scope examples apart from in-scope
+    ones (specs/014 T072). It says nothing about routing: it asks whether the classifier gives a sensible
+    answer on a task with a known answer, needing no stronger model and no labelling. CLINC's out-of-scope
+    examples are reported SEPARATELY, because a request matching no intent is what a router meets daily and
+    "none of these" must be a possible answer.
 
-    It says nothing about routing. It answers "does this classifier produce a sensible answer on a task with a known answer?", which can be checked
-    with no stronger model and no labelling. CLINC's out-of-scope examples are reported SEPARATELY from the in-scope ones: a request that matches no
-    intent is the case a router meets every day, and "none of these" must be a possible answer.
+    The runner for a label set is `runners/topics.py` (`route-topics`, specs/015). The CLINC pin
+    (`public.load_clinc`) has no runner: the one that trained a head on it was removed with the head trainer
+    (PR 179), and the measurement that chose the centroid is in specs/015/research.md.
 
-    The runner for a label set is `runners/topics.py` (`route-topics`, specs/015). The CLINC pin (`public.load_clinc`) has no runner: the one that trained
-    a head on it was removed with the head trainer (pull request 179), and the measurement that chose the centroid is reproduced in specs/015/research.md.
-
-    Arrays per item: `pred` (predicted intent), `label` (true intent; -1 for an out-of-scope item), `confidence` (the classifier's top
-    probability or similarity), `oos` (1 for an out-of-scope item) and `oos_threshold` (the same value in every row; the confidence below which
-    the classifier says "none of these", chosen on the validation split, never on the test split).
+    Arrays per item: `pred`, `label` (-1 for out-of-scope), `confidence` (top probability or similarity),
+    `oos` (1 for out-of-scope) and `oos_threshold` (the same in every row: the confidence below which it says
+    "none of these", chosen on the validation split, never the test split).
     """
 
     kind = "classifier"

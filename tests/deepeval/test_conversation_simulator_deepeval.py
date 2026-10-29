@@ -1,99 +1,46 @@
-"""Multi-turn conversation quality against the real graph, via deepeval's
-`ConversationSimulator` — `@pytest.mark.deepeval`, `make deepeval`. See
-GRAPH_PATTERNS.md pattern 48 for the full writeup.
+"""Multi-turn conversation quality against the real graph, via deepeval's `ConversationSimulator`
+(`@pytest.mark.deepeval`, `make deepeval`; GRAPH_PATTERNS.md pattern 48).
 
-Distinct from `test_rag_quality_deepeval.py` (single isolated turn) and
-every other tier in this suite: a simulated persona (deepeval's own
-`ConversationSimulator`, role-playing a customer via the SAME judge model)
-drives a multi-turn conversation against this app's REAL, checkpointed
-graph — one stable `thread_id` across every turn, so LangGraph's real
-checkpointer (not a mock) carries state exactly the way a real Telegram/API
-conversation would. Only this can catch cross-turn failures: does the
-assistant stay in character over several turns (`RoleAdherenceMetric`), does
-it recall/stay consistent with what was already established
+Unlike `test_rag_quality_deepeval.py` (one isolated turn), a simulated persona (role-played by the SAME judge
+model) drives a multi-turn conversation against the REAL checkpointed graph with one stable `thread_id`, so
+LangGraph's real checkpointer carries state as in a Telegram/API conversation. Only this catches cross-turn
+failures: does the assistant stay in character (`RoleAdherenceMetric`) and recall what was established
 (`KnowledgeRetentionMetric`)?
 
-TWO real, disclosed findings from actually running this, not assumed from
-deepeval's docs:
+Two real, disclosed findings:
 
-1. **A naive `model_callback` breaks the instant the simulated user's
-   message causes a MUTATING tool call.** `asyncio.run(graph.ainvoke())`'s returned
-   `messages[-1]` at that point is the tool-calling `AIMessage` itself —
-   legitimately empty `.content` (LangGraph's `human_approval` interrupt,
-   pattern 36, has paused the run for approval; the real answer doesn't
-   exist yet). Reproduced 3/3 with `qwen2.5:3b` calling `remember`
-   mid-conversation instead of answering directly. `model_callback` below
-   checks `asyncio.run(graph.aget_state(config)).next` and auto-approves
-   (`Command(resume=True)`) before reading the final answer — this is a
-   real integration requirement for ANY external harness driving this
-   graph across turns, not a deepeval-specific workaround.
+1. **A naive `model_callback` breaks when the simulated user triggers a MUTATING tool call.** `messages[-1]`
+   is then the tool-calling `AIMessage` with legitimately empty `.content` (the `human_approval` interrupt,
+   pattern 36, paused the run). Reproduced 3/3 with `qwen2.5:3b` calling `remember`. `model_callback` checks
+   `graph.aget_state(config).next` and auto-approves (`Command(resume=True)`) before reading the answer. This
+   is a real requirement for ANY external harness driving this graph across turns, not a deepeval workaround.
+2. **The target model adopted a customer's FALSE premise instead of correcting it from its own context.** The
+   persona asserted support hours were "Monday and Thursday afternoons" (`_CONTEXT` says Monday-Friday
+   9am-5pm); `qwen2.5:3b` affirmed it, across runs. Unlike the adversarial injection defense in
+   `test_prompt_injection_via_retrieval.py` (which held), this is an ordinary leading question the model got
+   wrong. Not remediated here; disclosed so it isn't lost.
 
-2. **The target model itself uncritically adopted a customer's FALSE
-   premise instead of correcting it against its own retrieved context** —
-   a real target-model finding, not a judge artifact. The simulated
-   persona asserted Ecorp's support hours were "Monday and Thursday
-   afternoons" (nowhere in `_CONTEXT`, which says Monday-Friday 9am-5pm);
-   the real `qwen2.5:3b` answer affirmed that fabricated schedule back
-   ("it would be processed according to their usual schedule of Monday and
-   Thursday afternoons") instead of citing its own grounded context, which
-   directly contradicted it. Reproduced across runs. Distinct from
-   `test_prompt_injection_via_retrieval.py`'s adversarial-injection defense
-   (which held) — this is an ordinary, non-adversarial leading question the
-   model still got wrong. Not remediated here (out of scope for adding
-   deepeval) — disclosed so it isn't lost.
+The small-judge caveat of pattern 48 applies again: `RoleAdherenceMetric` scored a verbose-but-on-topic
+response 0.67/PASS while its `reason` read like a critical review, and `KnowledgeRetentionMetric` scored 0.0
+with a directionally coherent `reason`. Not a clean pass/fail signal; read the reasons by hand.
 
-The now-familiar small-local-judge caveat (GRAPH_PATTERNS.md pattern 48's
-promptfoo-redteam and single-turn-deepeval findings) applied here too, a
-third time, with a third distinct grading mechanism: `RoleAdherenceMetric`
-scored a verbose-but-on-topic response 0.67/PASS while its own `reason`
-read like a critical review, and `KnowledgeRetentionMetric` scored 0.0 with
-a `reason` that was at least directionally coherent this time (unlike the
-flat self-contradictions seen in the single-turn probe) — still not
-something to trust as a clean pass/fail signal. Read the reasons by hand.
+Judge: `deepeval_conversation_judge` (tests/deepeval/conftest.py), Groq's `openai/gpt-oss-120b`
+(`GROQ_API_KEY`). Unlike `test_rag_quality_deepeval.py` this file did NOT move to Gemini:
+`KnowledgeRetentionMetric` requests a Dict-typed structured-output schema that Gemini's `response_schema`
+rejects (CI run 35230147154, PR #41). It plays both roles, simulating the customer (`simulator_model=judge`)
+and grading the two metrics.
 
-JUDGE MODEL (2026-09-16, then 2026-09-17, then 2026-09-18): `judge` below
-is `deepeval_conversation_judge` (tests/deepeval/conftest.py), Groq's
-`openai/gpt-oss-120b` — the same target/judge split
-`test_rag_quality_deepeval.py` got, see that file's own JUDGE MODEL
-paragraph for the "stronger grader" reasoning. UNLIKE that file, this one
-did NOT move to Gemini on 2026-09-17: real run 35230147154 (PR #41) hit a
-hard `google.genai.errors.ClientError: 400 INVALID_ARGUMENT ...
-"additional_properties"` on both tests below — `KnowledgeRetentionMetric`
-unconditionally requests a Dict-typed structured-output schema
-(`deepeval.metrics.knowledge_retention.schema.Knowledge.data`), and
-Gemini's `response_schema` doesn't support that JSON Schema keyword at
-all, for any Gemini model — confirmed by reading deepeval's own schema
-class, not guessed from the error text. So this file keeps its own
-separate `deepeval_conversation_judge` fixture (`GROQ_API_KEY`) rather
-than sharing `deepeval_judge` (Gemini) with the other two deepeval files —
-see tests/deepeval/conftest.py's own module docstring for the full
-writeup. Applies to BOTH of `judge`'s roles in this file: simulating the
-customer persona (`simulator_model=judge` below) and grading the two
-metrics — this file already reused one model for both roles before any of
-this, so the fixture swap preserves that shape rather than introducing a
-third separate knob nobody asked for.
+CI: `test_case.flaky = True` as in `test_rag_quality_deepeval.py`: `assert_test` warns instead of raising on a
+failed metric (verified in `deepeval==4.2.0`). A genuine crash (the interrupt-unaware callback, the
+simulator's API) still fails the job, since `flaky` swallows only a failed METRIC score.
 
-CI WIRING (2026-09-16): `test_case.flaky = True` below is the same
-mechanism `test_rag_quality_deepeval.py` uses — see that file's own
-docstring for how `assert_test` actually handles it (`warnings.warn`
-instead of `AssertionError` on a failed metric, verified directly in the
-installed `deepeval==4.2.0` source). A genuine crash anywhere in this
-file's own real integration findings above (the interrupt-unaware
-`model_callback`, the ConversationSimulator's own real API) still fails
-the CI job for real — `flaky` only swallows a failed METRIC score, never
-an exception.
+No system prompt needs seeding: the agent node puts the domain's prompt first on every call, so a graph built
+directly is never un-guided (an earlier version of this suite ran that way for weeks before it was noticed).
 
-The system prompt needs no seeding here: the agent node puts the domain's prompt first on every call, so a graph built directly is never an un-guided agent (an earlier version of this suite ran exactly that, for weeks, before it was noticed).
-
-Two scenarios, not one, as of the same day, sharing `_make_model_callback`
-rather than duplicating its human_approval logic per test: the
-original scenario above stresses `KnowledgeRetentionMetric` (does the
-assistant recall its own earlier answer across an on-topic follow-up);
-`test_conversation_resists_off_topic_persona_pressure` stresses
-`RoleAdherenceMetric` from a different angle — does the assistant stay a
-Tier-1 support copilot when the persona tries to steer it into an
-unrelated request after a real answer, rather than just staying on-topic
-because the conversation itself never left the topic.
+Two scenarios share `_make_model_callback` (the `human_approval` logic): one stresses
+`KnowledgeRetentionMetric` (recall of its own earlier answer across a follow-up);
+`test_conversation_resists_off_topic_persona_pressure` stresses `RoleAdherenceMetric` (staying a Tier-1
+support copilot when the persona steers into an unrelated request after a real answer).
 """
 
 import pytest

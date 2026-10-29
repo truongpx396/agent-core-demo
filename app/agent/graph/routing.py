@@ -58,42 +58,30 @@ def should_continue(
 ]:
     """Did the LLM call a tool, give a final answer, or hit a safety budget?
 
-    Checked in order: iteration/token/cost caps (turn-wide safety nets,
-    checked first regardless of what the LLM said) -> is this a tool call
-    -> a malformed batch (`batch_problem`: too many calls, a name that isn't
-    one of this domain's tools, or `use_skill` before `skill_search`) ->
-    human approval. The batch check runs BEFORE human_approval deliberately:
-    none of those is a real tool call a human could meaningfully approve, so
-    they all go to `tool_batch_guard`, which answers every call and loops back
-    to `agent` for a self-correcting retry instead of surfacing garbage for review.
+    Checked in order: iteration/token/cost caps (turn-wide safety nets, first whatever the LLM said) -> is
+    this a tool call -> a malformed batch (`batch_problem`: too many calls, a name that isn't one of this
+    domain's tools, or `use_skill` before `skill_search`) -> human approval. The batch check runs BEFORE
+    human_approval on purpose: none of those is a real call a human could meaningfully approve, so all go to
+    `tool_batch_guard`, which answers every call and loops back to `agent` for a self-correcting retry instead
+    of surfacing garbage for review.
 
-    Two independent reasons route to `human_approval`, only one optional:
-    - `require_approval` on state — opt-in (default False), see
-      `chat.py`'s `--hitl` mode.
-    - Any pending tool_call whose declared capability (`tool_capabilities`,
-      the calling domain's own mapping) isn't "read_only" — mandatory,
-      never skippable via `require_approval=False`. An *undeclared* tool is
-      treated as "outward," so forgetting to register a capability fails
-      toward extra caution.
+    Two independent reasons route to `human_approval`, one optional:
+    - `require_approval` on state: opt-in (default False), see `chat.py`'s `--hitl` mode.
+    - Any pending tool_call whose declared capability (`tool_capabilities`, the calling domain's mapping)
+      isn't "read_only": mandatory, never skippable via `require_approval=False`. An *undeclared* tool counts
+      as "outward", so forgetting to register one fails toward caution.
 
-    `tool_capabilities`/`valid_tool_names` are the calling domain's own;
-    `build_graph` binds them via `functools.partial` (pattern 23). There is no
-    shared default: "a registered tool" and its tier only mean something
-    relative to one domain.
-    `max_iterations`/`max_tokens`/`max_cost_usd` default to this module's
-    own constants, added so a NESTED subagent run (pattern 46) can bind its
-    own smaller MAX_SUBAGENT_* ceiling the same way, independent of the
-    parent turn's remaining budget. Stays a plain module-level function
-    (not a factory) so it's directly callable with just `state`, like every
-    other routing function here.
+    `tool_capabilities`/`valid_tool_names` are the calling domain's; `build_graph` binds them with
+    `functools.partial` (pattern 23). There is no shared default: a registered tool and its tier only mean
+    something relative to one domain. `max_iterations`/`max_tokens`/`max_cost_usd` default to this module's
+    constants so a NESTED subagent run (pattern 46) can bind its own smaller MAX_SUBAGENT_* ceiling the same
+    way. It stays a plain module-level function so it is callable with just `state`, like every routing
+    function here.
 
-    All four safety-net exits below route to `"no_answer"`, not `END` —
-    `no_answer_fallback` turns "a budget fired before check_output ever
-    ran" into a real user-visible message instead of ending on `agent`'s
-    last AIMessage, often empty (a model that fails to produce a tool call
-    or content still burns tokens doing it). Same "empty final AIMessage
-    means a safety net tripped" signal `run_subagent` already uses for a
-    nested run; this is the top-level equivalent.
+    All four safety-net exits route to `"no_answer"`, not `END`: `no_answer_fallback` turns "a budget fired
+    before check_output ran" into a user-visible message instead of ending on `agent`'s last, often empty,
+    AIMessage (a model that produces no tool call or content still burns tokens). It is the top-level twin of
+    the empty-final-AIMessage signal `run_subagent` uses for a nested run.
     """
     # The gateway's content guardrail refused the call (`agent` wrote the refusal): that IS the
     # turn's answer. Routed to `no_answer`, which ends the turn without a retry, follow-ups or a
@@ -152,22 +140,20 @@ def check_output(
     enforce_citations: bool = True,
     skill_required_tools: tuple[str, ...] = (),
 ) -> dict:
-    """Judge the final answer: strip a fabricated reference footer, cut a closing offer off a
-    complete answer, repair a missing citation marker, then run every check in
-    `graph/output_checks.py`'s registry.
-
-    Returns `used_citations`/`ungrounded_claims_count` for the answer as it will be shown,
-    `output_findings` (every check that fired, `{code: detail}`), `last_retry_reason` (the first by
-    priority, or None) and `retry_reason_repeat_count`; plus a corrected `messages` entry when the
-    footer or a closing offer was stripped or a marker inserted.
+    """Judge the final answer: strip a fabricated reference footer, cut a closing offer off a complete answer,
+    repair a missing citation marker, then run every check in `graph/output_checks.py`'s registry. Returns
+    `used_citations`/`ungrounded_claims_count` for the answer as shown, `output_findings` (`{code: detail}` of
+    every check that fired), `last_retry_reason` (the first by priority, or None),
+    `retry_reason_repeat_count`, and a corrected `messages` entry when a footer or offer was stripped or a
+    marker inserted.
 
     `system_prompt`, `enforce_citations` and `skill_required_tools` are the calling domain's, bound by
-    `build_graph` via `functools.partial`. `enforce_citations=False` (a nested subagent run) turns the
-    two citation checks off: no uncited or misattributed finding, and no `[n]` marker is ever
-    inserted. A subagent is told NOT to use bracket markers (they would name its own sources, which
-    mean nothing to the parent), so judging or "repairing" its answer by them contradicted its own
+    `build_graph` via `functools.partial`. `enforce_citations=False` (a nested subagent run) turns both
+    citation checks off and inserts no `[n]` marker: a subagent is told NOT to use bracket markers (they'd
+    name its own sources, meaningless to the parent), so judging or "repairing" by them contradicted its
     prompt and put a stray `[1]` in the text handed back. Every other check still applies.
-    `skill_required_tools` is the subset of `SKILL_REQUIRED_TOOL_MARKERS` this domain actually has."""
+    `skill_required_tools` is the subset of `SKILL_REQUIRED_TOOL_MARKERS` this domain has.
+    """
     last = state["messages"][-1]
     content = getattr(last, "content", "") or ""
     citations = state.get("citations") or []

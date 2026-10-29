@@ -1,17 +1,18 @@
 """The schema the package ships (spec 011 D20, D22; spec 012).
 
-The wallet and the webhook inbox are two plain SQL scripts that live INSIDE the package (`credit_billing/sql/`), so installing the
-package carries its schema with it. They are written to be idempotent (`CREATE ... IF NOT EXISTS`), keep their numbers (`20-`, `22-`)
-so a host that also has other numbered scripts can slot them in order, and open with `\\connect appdata`, which is a `psql` meta-command:
-it is correct as an init script and must be removed by anything that applies the text some other way. `executable()` is that removal,
-and it is deliberately strict: it removes exactly `\\connect <database>` and refuses any other line that starts with a backslash,
-because a meta-command it does not understand (`\\set`, `\\if`) dropped silently would change what the script does.
+The wallet and the webhook inbox are two plain SQL scripts INSIDE the package (`credit_billing/sql/`), so
+installing it carries its schema. They are idempotent (`CREATE ... IF NOT EXISTS`), keep their numbers (`20-`,
+`22-`) so a host with other numbered scripts can slot them in order, and open with `\\connect appdata`, a
+`psql` meta-command that is right as an init script and must be removed by anything applying the text another
+way. `executable()` removes exactly `\\connect <database>` and refuses any other line starting with a
+backslash, because dropping a meta-command it doesn't understand (`\\set`, `\\if`) would silently change what
+the script does.
 
-The agent app keeps byte-equal COPIES under `postgres-init/` because docker-compose, the deploy rsync and its test containers read
-that fixed path; a test fails if either copy drifts (tests/core/test_billing_package_copies.py in the repo).
+The agent app keeps byte-equal COPIES under `postgres-init/` because docker-compose, the deploy rsync and its
+test containers read that fixed path; tests/core/test_billing_package_copies.py fails if either drifts.
 
-Applying them to a database that already exists, recording what was applied, and reporting what is pending is `credit_billing.migrate`
-(the `credit-billing-migrate` command, spec 012). This module only says what is shipped, in what order, and how to read it.
+Applying them to an existing database, recording what ran and reporting what is pending is
+`credit_billing.migrate` (spec 012). This module only says what is shipped, in what order, and how to read it.
 """
 import re
 from importlib import resources

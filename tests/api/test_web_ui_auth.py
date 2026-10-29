@@ -1,17 +1,18 @@
-"""The built-in web page's sign-in (specs/018, task T062): what the server tells the page, the script it loads, and what that script does.
+"""The built-in web page's sign-in (specs/018, T062): what the server tells the page, the script it loads, and
+what that script does. Three layers, cheapest first:
+  * the server side, in Python: the <meta> tag the page is rendered with (its value cannot break out of the
+    attribute), the script's route (public, not in the API document), and that header mode is told nothing
+    about an authorization server;
+  * guards on the text of the page and script for properties that must not be quietly dropped (no third-party
+    script, the token only in sessionStorage and only in an Authorization header). These are greps: they catch
+    a deletion, not a bug;
+  * the script RUN under Node (skipped, never failed, without it) against a small DOM stub: the PKCE challenge
+    is the SHA-256 of the stored verifier, a `state` that comes back changed ends the sign-in without any
+    request, the code is cleaned from the address bar BEFORE it is exchanged, a 401 from this origin (and only
+    it) forgets the token, and header mode is left as it was. No package, no network.
 
-Three layers, cheapest first:
-  * the server side, in Python: the <meta> tag the page is rendered with (and that its value cannot break out of the attribute), the script's route
-    (public, and not part of the API document), and that header mode is told nothing about an authorization server;
-  * guards on the text of the page and the script for the properties that must not be quietly dropped (no third-party script, the token only in
-    sessionStorage and only in an Authorization header). These are greps: they catch a deletion, not a bug;
-  * the script RUN, under Node when it is on the machine, against a small DOM stub: the PKCE challenge really is the SHA-256 of the stored
-    verifier, a `state` that does not come back unchanged ends the sign-in without any request, the code is cleaned from the address bar BEFORE it is
-    exchanged, a 401 from this origin (and only this origin) forgets the token, and header mode is left exactly as it was. Skipped, never failed,
-    without Node. It uses no package and no network; the repo's one Node toolchain (promptfoo/) is not involved.
-
-The real proof that a person can sign in with a real browser against a real Casdoor is `scripts/authlimit_web_check.py`, a manual tier like the
-other end-to-end checks of this stack.
+The real proof, a person signing in with a real browser against a real Casdoor, is
+`scripts/authlimit_web_check.py`, a manual tier.
 """
 import html
 import json

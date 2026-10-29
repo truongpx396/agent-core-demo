@@ -1,48 +1,27 @@
-"""Exactly-once guard for every "mutating"/"outward" tool (TOOL_CAPABILITIES,
-app/agent/tools/builtin.py) — closes the gap `app/job_queue/agent_worker.py`'s
-reclaim loop left open: a reclaimed `"resume"` job re-invokes whichever
-tool calls were already pending at its `human_approval` pause, under the
-SAME `tool_call_id`s (the pause happens before those calls run, and
-`Command(resume=...)` continues that exact checkpointed state) — without
-this, retrying one risked re-sending an email, re-creating a ticket, or any
-other already-applied side effect a SECOND time.
+"""Exactly-once guard for every "mutating"/"outward" tool (TOOL_CAPABILITIES, app/agent/tools/builtin.py). It
+closes the gap agent_worker.py's reclaim loop left: a reclaimed `"resume"` job re-invokes the tool calls
+pending at its `human_approval` pause under the SAME `tool_call_id`s (the pause is before they run, and
+`Command(resume=...)` continues that exact state). Without this, a retry risked re-sending an email or
+re-creating a ticket.
 
-Persisted in the same `appdata` Postgres database as core/sql_store.py
-(`tool_call_dedup` table, postgres-init/13-tool-call-dedup.sql). Keyed by
-`tool_call_id` alone: the LLM provider assigns a fresh one per tool call it
-decides to make, so two invocations sharing an id are, by construction, the
-SAME logical invocation being attempted again — never two different
-intended actions colliding.
+Persisted in the `appdata` Postgres (`tool_call_dedup`, postgres-init/13-tool-call-dedup.sql), keyed by
+`tool_call_id` alone: the provider assigns a fresh one per tool call, so two invocations sharing an id are, by
+construction, the SAME invocation attempted again.
 
-Scope, deliberately narrow: this makes ONE invocation exactly-once. It does
-NOT make a whole crashed "turn" safe to blindly retry via a fresh
-`astream_events_turn` call — that re-asks the LLM, which gets brand-new
-tool_call_ids unrelated to whatever the crashed attempt did, so dedup here
-can never "catch" that case. `agent_worker.py` instead reclaims a crashed
-"turn" by CONTINUING its exact checkpointed run
-(`astream_events_continue_turn`, `graph.astream_events(None, ...)`) rather
-than restarting it — same reasoning as this module's own opening
-paragraph, generalized from "resume" to any crashed turn; see
-`_classify_reclaimed_turn`'s and `astream_events_continue_turn`'s own
-docstrings.
+Scope, deliberately narrow: this makes ONE invocation exactly-once. It does NOT make a whole crashed "turn"
+safe to retry through a fresh `astream_events_turn`, which re-asks the LLM and gets new ids this can't connect
+to the crashed attempt. agent_worker.py instead reclaims a crashed turn by CONTINUING its checkpointed run
+(`astream_events_continue_turn`; see `_classify_reclaimed_turn`).
 
-Fails OPEN on its own storage failure — same posture, and same reason, as
-`app/agent/cost/budget_holds.py`/`app/agent/runtime/sessions.py`'s own `get_connection()`
-callers (see tests/conftest.py's `mock_appdata_postgres` docstring): a
-dedup-store outage must degrade to "run the tool, unprotected" rather than
-block every mutating/outward tool call in the app on it. This is a
-defense-in-depth layer for a rare compounding failure (a crash-recovery
-retry landing exactly while the dedup store is ALSO down), never a
-precondition for a tool call to work at all.
+Fails OPEN on its own storage failure, with the same posture as `app/agent/cost/budget_holds.py` and
+`app/agent/runtime/sessions.py` (see `mock_appdata_postgres` in tests/conftest.py): a dedup-store outage must
+degrade to "run the tool, unprotected" rather than block every mutating tool. It is defense in depth for a
+rare compound failure, not a precondition.
 
-A second, DIFFERENT gap this module cannot close by keying on
-`tool_call_id`: `fn()`'s own soft timeout (`arun_with_timeout`) firing
-AFTER its underlying write already committed on the far side, but before
-this module's own closing `UPDATE` runs. A retry from there arrives under
-a BRAND NEW tool_call_id (a fresh LLM decision), which no tool_call_id
-keyed defense can ever recognize as "the same one again" — see
-`MutatingToolTimedOut`'s own docstring for how this is handled instead
-(steering the agent to verify, not deduplicating after the fact).
+A different gap that keying on `tool_call_id` can't close: `fn()`'s soft timeout (`arun_with_timeout`) firing
+AFTER its write committed remotely but before this module's closing `UPDATE`. The retry arrives under a NEW
+tool_call_id (a fresh LLM decision) that no id-keyed defense recognises. `MutatingToolTimedOut` handles it by
+steering the agent to verify, not by deduplicating.
 """
 import logging
 from collections.abc import Awaitable, Callable
@@ -61,29 +40,20 @@ def _thread_id_from_config(config: RunnableConfig | None) -> str | None:
 
 
 class MutatingToolTimedOut(Exception):
-    """Raised by `idempotent()` in place of the `TimeoutError` `fn()`
-    itself raised, when that `fn()` is a mutating/outward tool's own
-    `arun_with_timeout(...)` call.
+    """Raised by `idempotent()` in place of the `TimeoutError` `fn()` itself raised, when `fn()` is a
+    mutating/outward tool's own `arun_with_timeout(...)` call.
 
-    Why this needs its own type: `arun_with_timeout`'s own docstring
-    already names the risk — `asyncio.wait_for` cancels the AWAITING
-    task, not necessarily whatever `fn()` is awaiting underneath, so the
-    real side effect (an INSERT, a Qdrant upsert) can commit on the far
-    side of a slow store even though this call reports failure. That's a
-    DIFFERENT window than the crash-replay race this module's own
-    `idempotent`/`_claim_or_cached_result` docstrings already discuss:
-    those are about the SAME tool_call_id being seen twice. Here, the
-    agent sees a plain tool failure and, if it decides to retry, does so
-    with a BRAND NEW tool_call_id — one `tool_call_dedup`'s own
-    tool_call_id-keyed claim has never seen before, so it can't catch a
-    second real side effect this way no matter how it's hardened.
+    It needs its own type because `arun_with_timeout`'s docstring already names the risk: `asyncio.wait_for`
+    cancels the AWAITING task, not necessarily whatever `fn()` awaits underneath, so the real side effect (an
+    INSERT, a Qdrant upsert) can commit on the far side of a slow store even though this call reports failure.
+    That is a DIFFERENT window from the crash-replay race the `idempotent`/`_claim_or_cached_result`
+    docstrings discuss (the SAME tool_call_id seen twice): the agent sees a plain tool failure and, if it
+    retries, does so under a BRAND NEW tool_call_id that `tool_call_dedup`'s id-keyed claim has never seen, so
+    no hardening of it can catch a second real side effect.
 
-    `graph/utils.py::friendly_tool_error` special-cases this type to
-    steer the agent toward checking whether the effect already landed
-    (e.g. a matching list/status/read tool) instead of blindly retrying —
-    the one general defense that works regardless of which specific
-    mutating/outward tool this was, without needing a per-tool business
-    key.
+    `graph/utils.py::friendly_tool_error` special-cases this type to steer the agent toward checking whether
+    the effect already landed (a matching list/status/read tool) instead of blindly retrying: the one general
+    defense that works for any mutating/outward tool, with no per-tool business key.
     """
 
     def __init__(self, tool_name: str):
@@ -124,32 +94,22 @@ async def idempotent(
     tool_name: str,
     fn: Callable[[], Awaitable[str]],
 ) -> str:
-    """Runs `fn()` (a tool's own real `arun_with_timeout(...)` call) at
-    most once per `tool_call_id`, ever. A second call with an id already
-    seen returns the FIRST call's own result without running `fn` again —
-    the actual side effect (an email, a ticket, a note) only ever happens
-    once, regardless of how many times this specific tool call gets
-    replayed.
+    """Run `fn()` (a tool's own real `arun_with_timeout(...)` call) at most once per `tool_call_id`, ever. A
+    second call with an id already seen returns the FIRST call's result without running `fn` again, so the
+    side effect (an email, a ticket, a note) happens once however many times the call is replayed.
 
-    Mechanics: an unconditional `INSERT ... ON CONFLICT DO NOTHING` on
-    `tool_call_id` (the primary key) is the atomic claim — whichever
-    caller's INSERT actually lands owns running `fn`; every other caller
-    sees no row inserted and instead reads back whatever's there.
+    Mechanics: an unconditional `INSERT ... ON CONFLICT DO NOTHING` on `tool_call_id` (the primary key) is the
+    atomic claim. Whichever caller's INSERT lands owns running `fn`; every other caller sees no row inserted
+    and reads back what is there.
 
-    Narrow accepted race: if the row read back has `result IS NULL` (the
-    winner's `fn()` is still running, or died before ever completing the
-    closing UPDATE), this caller runs `fn()` itself too rather than
-    blocking or looping — a real double-run is possible in that exact
-    window. Accepted because nothing in this app today can actually put two
-    callers in that window concurrently: the only real caller of this
-    (`app/job_queue/agent_worker.py`'s reclaim path) only ever retries a
-    job well after `AGENT_WORKER_RECLAIM_IDLE_SECONDS` of the ORIGINAL
-    attempt going silent (presumed dead, not concurrently running), and
-    `queue.py::acquire_thread_lock` already rules out two jobs for the same
-    thread_id — hence the same tool_call_id — running at once in the first
-    place. A future caller invoking this from an actually-concurrent
-    context would need to close that window for real (e.g. block-and-poll,
-    or a proper `SELECT ... FOR UPDATE`) — not needed for what exists today.
+    Narrow accepted race: if the row read back has `result IS NULL` (the winner's `fn()` is still running, or
+    died before the closing UPDATE), this caller runs `fn()` itself rather than blocking or looping, so a
+    double run is possible in that exact window. Accepted because nothing today can put two callers there
+    concurrently: the only real caller (`app/job_queue/agent_worker.py`'s reclaim path) retries a job only
+    well after `AGENT_WORKER_RECLAIM_IDLE_SECONDS` of the ORIGINAL attempt going silent (presumed dead, not
+    concurrently running), and `queue.py::acquire_thread_lock` already rules out two jobs for the same
+    thread_id, hence the same tool_call_id. A future caller invoking this concurrently would need to close
+    that window (block-and-poll, or a proper `SELECT ... FOR UPDATE`).
     """
     try:
         cached = await _claim_or_cached_result(tool_call_id, ctx, config, tool_name)

@@ -148,9 +148,7 @@ def test_the_ledger_module_is_gone_so_a_stale_caller_fails_loudly():
 
 
 async def test_a_cap_reads_the_events_through_this_module(monkeypatch):
-    """The wiring: `budgets` asks `spend`, so events summed here refuse a turn. Under the old ledger read this went
-    through the ledger's own `get_connection`, which the suite's autouse guard made raise, so the check would FAIL OPEN
-    and the turn would be served: this test fails without the change."""
+    """The wiring: `budgets` asks `spend`, so events summed here refuse a turn."""
     _use(monkeypatch, _Connection(row=(900, Decimal("6.50"))))
 
     async def no_holds(tenant):

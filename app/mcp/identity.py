@@ -1,28 +1,26 @@
 """Who a PUBLISHED MCP server acts for: never an argument the model fills in. Two sources, one rule.
 
-`app/mcp/server.py` and `app/mcp/ops_server.py` used to take `tenant` and `principal` as tool arguments, because MCP has no
-`RunnableConfig` and nothing upstream stamps a context for it. That put the isolation boundary in the one place an attacker
-reaches: a desktop assistant connected to the server fills those arguments in itself, so a page it read, or a message it was
-sent, could ask for another tenant's rows and get them. This repo's own rule for every other tool is "take `tenant`/`principal`
-from `ctx`, never from an argument the model can set" (`.claude/rules/side-effect-tools.md`); this module is that rule for the
-one place a tool is reached without a `ctx`.
+`app/mcp/server.py` and `ops_server.py` used to take `tenant` and `principal` as tool arguments, because MCP
+has no `RunnableConfig` and nothing upstream stamps a context. That put the isolation boundary where an
+attacker reaches: a desktop assistant fills those arguments itself, so a page it read or a message it was sent
+could ask for another tenant's rows and get them. The repo's rule for every other tool is "take
+`tenant`/`principal` from `ctx`, never from an argument" (`.claude/rules/side-effect-tools.md`); this module
+applies it where a tool is reached without a `ctx`.
 
-An `IdentitySource` is a zero-argument callable that returns the `SecurityCtx` a call acts under, or raises `IdentityMissing`.
-The tools take one when they are built (`build_server(identity)` in each server module), so which source a process uses is a
-choice made where the server is constructed, not a mode a tool can be talked out of:
+An `IdentitySource` is a zero-argument callable returning the `SecurityCtx` a call acts under, or raising
+`IdentityMissing`. Tools take one when built (`build_server(identity)` in each server module), so the source
+is a choice made at construction, not a mode a tool can be talked out of:
+- `launcher_ctx` (stdio, `make mcp-serve`): the identity belongs to whoever STARTS the process (the client's
+  `env` block, or `.env`): `MCP_TENANT` and `MCP_PRINCIPAL`. Over stdio the person who owns the machine starts
+  the process, which is why the environment is the right place to bind it; it still doesn't authenticate them.
+- `token_source` (the gateway, `app/mcp/gateway.py`, specs/017): the identity comes from the verified OAuth
+  2.1 access token of THIS request (claims validated by `gateway_auth.py`). A network service's environment
+  says nothing about the caller, so it is never consulted; every request is its own identity.
 
-  * `launcher_ctx` (stdio, `make mcp-serve`): the identity belongs to whoever STARTS the process, the `env` block of the client's
-    server entry (Claude Desktop, Cursor) or `.env`. The server reads `MCP_TENANT` and `MCP_PRINCIPAL` (`app/core/config.py`).
-    Over standard input and output the process is started by the person who owns the machine, which is what makes the
-    environment the right place to bind it; it still does not authenticate that person.
-  * `token_source` (the gateway, `app/mcp/gateway.py`, specs/017): the identity comes from the verified OAuth 2.1 access token of
-    THIS request, read from the claims `app/mcp/gateway_auth.py` validated. A network service has no launcher: its environment
-    says nothing about who is calling, so it is never consulted there. Every request is its own identity (stateless HTTP).
-
-Either fails closed. A stdio server's `main()` calls `launcher_ctx()` first and exits before serving anything when the identity is
-missing; a tool called without one (the `mcp dev` inspector imports the module without going through `main()`) returns a refusal
-instead of an unscoped result. A gateway request with no usable tenant and principal in its token is refused the same way, and the
-transport already answered 401 before a tool could run if there was no valid token at all.
+Either fails closed. A stdio `main()` calls `launcher_ctx()` first and exits before serving if the identity is
+missing; a tool called without one (the `mcp dev` inspector imports the module without `main()`) returns a
+refusal, not an unscoped result. A gateway request whose token lacks a usable tenant and principal is refused
+the same way (no valid token at all was already a 401).
 """
 from collections.abc import Callable
 

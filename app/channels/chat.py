@@ -1,26 +1,25 @@
 """Interactive CLI for the LangGraph agent.
 
-A front door onto the queue, like the HTTP API and the Telegram channel: each turn is published
-to the domain's requests stream and the events an `agent_worker.py` publishes back are rendered
-(`app/job_queue/producer.py`, pattern 43). This process never runs the graph, so `make chat` needs
-`make up`'s Redis and a worker for the domain (`make agent-worker`); without one the turn ends,
-after `CHAT_FIRST_RESPONSE_DEADLINE_SECONDS`, with an error that says so. What the worker does for
-every turn — the per-thread lock, crash reclaim, tracing, the spend meter — it does for this one.
+A front door onto the queue, like the HTTP API and the Telegram channel: each turn is published to the
+domain's requests stream and the events an `agent_worker.py` publishes back are rendered
+(`app/job_queue/producer.py`, pattern 43). This process never runs the graph, so `make chat` needs `make up`'s
+Redis and a worker for the domain (`make agent-worker`); without one the turn ends, after
+`CHAT_FIRST_RESPONSE_DEADLINE_SECONDS`, with an error that says so. What the worker does for every turn (the
+per-thread lock, crash reclaim, tracing, the spend meter) it does for this one.
 
-`AGENT_DOMAIN` (default `ecorp`) picks which domain's worker pool the turns go to, so
-`AGENT_DOMAIN=support make chat` talks to the support copilot.
+`AGENT_DOMAIN` (default `ecorp`) picks which domain's worker pool gets the turns: `AGENT_DOMAIN=support make
+chat` talks to the support copilot.
 
-Prints raw tokens as they arrive AND shows a visible indicator whenever a tool is called, so you
-can see the agent "thinking" — the event stream is the same one `astream_events` v2 yields,
-relayed through Redis.
+Raw tokens print as they arrive, with a visible indicator whenever a tool is called, so you can watch the
+agent work; the event stream is the one `astream_events` v2 yields, relayed through Redis.
 
-`--hitl` gates every tool call behind an approve/reject prompt (see app/agent/graph/hitl.py's
-human_approval) — a runnable, self-contained example of the `interrupt()` pause/resume cycle
-through the queue: the turn ends at `approval_required`, and the answer is a `resume` job.
+`--hitl` gates every tool call behind an approve/reject prompt (app/agent/graph/hitl.py's human_approval): a
+runnable example of the `interrupt()` pause/resume cycle through the queue, where the turn ends at
+`approval_required` and the answer is a `resume` job.
 
-Ctrl-C or end-of-input in the middle of a turn asks the worker to stop it (`cancel_turn`). The
-turn is no longer this process's to kill, so without that a worker would run it to the end —
-including a tool call the person was about to be asked to approve.
+Ctrl-C or end-of-input mid-turn asks the worker to stop it (`cancel_turn`). The turn is no longer this
+process's to kill, so without that a worker would run it to the end, including a tool call the person was
+about to be asked to approve.
 
 Run with: `make chat`, `make chat-hitl`, or `python -m app.channels.chat --hitl`
 """

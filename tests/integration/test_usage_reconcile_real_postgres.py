@@ -156,8 +156,9 @@ class TestADeletedEvent:
         assert await reconcile_for(gateway, other) == []
 
     async def test_a_tenant_whose_every_event_is_gone_is_named_because_the_gateways_end_user_carries_its_name(self, appdata_url):
-        """The end user names the person (`tenant:<tenant>/user:<principal>`), so the tenant is read off the id: nothing in the database has to
-        remember it. This is the worst shape a lost meter takes (spend at the gateway, no event left), and it is reported by name."""
+        """The end user names the person (`tenant:<tenant>/user:<principal>`), so the tenant is read off the id:
+        nothing in the database has to remember it.
+        """
         gone = tenant_name()
         only = await turn(gone, 0.05)
         gateway = await gateway_seen(appdata_url, gone)

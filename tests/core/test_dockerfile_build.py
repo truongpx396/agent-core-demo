@@ -1,21 +1,18 @@
-"""The shape of the two images production runs (ENGINEERING_PATTERNS.md pattern 76): the root `Dockerfile` (the api and both worker roles) and
-`docker/ml-service.Dockerfile`. Both are built the same way, so one set of tests runs over both.
+"""The shape of the two production images (ENGINEERING_PATTERNS.md pattern 76): the root `Dockerfile` (api and
+both worker roles) and `docker/ml-service.Dockerfile`, built the same way, so one set of tests covers both.
+Four stages each: `base` (Python image, pinned by digest), `uv` (installer, pinned by digest), `builder`
+(installs dependencies into a virtualenv; thrown away) and `runtime` (the LAST stage, so what `docker build .`
+and every compose `build:` produce; it copies the virtualenv in and ships no installer).
 
-Four stages each: `base` (the Python image, pinned by digest), `uv` (the installer, pinned by digest), `builder` (installs the dependencies
-into a virtualenv; thrown away) and `runtime` (the LAST stage, so what `docker build .` and every compose `build:` produce; it copies the
-virtualenv in and ships no installer).
-
-A TEXT test of the Dockerfiles, like tests/core/test_dockerfile_runtime_files.py: no Docker needed. It cannot prove an image works; that is
-CI's `docker-build` job (which builds the app image and runs it) and the integration tier (which builds and starts the ML service). What it
-adds is a failure in the default suite the moment one of these properties is edited away, each of which is easy to lose in a refactor and
-invisible until an incident or a slow week:
-
-  * the stage that ships is the LAST one, and the builder, with uv in it, never is;
-  * the Python image and uv are pinned by digest, to the SAME digests in both files (so a bump is one change made twice, and a test fails
-    if only one is made), and each is a named `FROM` stage so Dependabot, which reads `FROM` lines, can propose the bump;
-  * the installs use a cache mount and not `--no-cache-dir` (that flag made a lock change re-download every package);
-  * the dependency file is installed from a bind mount, so the step reruns exactly when its content changes;
-  * the shipped stage has no installer and takes its dependencies from the builder.
+A TEXT test, like tests/core/test_dockerfile_runtime_files.py: no Docker needed. It can't prove an image works
+(CI's `docker-build` job and the integration tier do); it fails in the default suite the moment one of these
+easily lost properties is edited away:
+- the stage that ships is the LAST one, and the builder, with uv in it, never is;
+- the Python image and uv are pinned by digest, to the SAME digests in both files (a bump is one change made
+  twice, and a test fails if only one is made), each a named `FROM` stage so Dependabot can propose the bump;
+- installs use a cache mount, not `--no-cache-dir` (that made a lock change re-download every package);
+- the dependency file is installed from a bind mount, so the step reruns exactly when its content changes;
+- the shipped stage has no installer and takes its dependencies from the builder.
 """
 import re
 from pathlib import Path

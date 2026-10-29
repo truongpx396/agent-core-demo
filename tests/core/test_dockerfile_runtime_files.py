@@ -1,21 +1,15 @@
-"""The container image must contain every file the app reads at runtime.
+"""The container image must contain every file the app reads at runtime. The Dockerfile used to `COPY app/` and
+nothing else, but skills (`skills/*/SKILL.md`), subagents (`subagents/*/AGENT.md`) and the `scripts/` package
+all live OUTSIDE `app/` and each degrades quietly when missing (so did the sandbox bridge, until it became a
+packaged module): `load_skills()`/`load_subagents()` return `{}` without the directory and
+`load_sandbox_tools()` returns no tools when the bridge can't start. The API and worker containers booted
+healthy with no skills, no delegation and no sandbox, measured against the built image (spec 007 B16, 009 B23,
+006).
 
-The Dockerfile used to `COPY app/` and nothing else. Skills (`skills/*/SKILL.md`),
-subagents (`subagents/*/AGENT.md`) and the `scripts/` package all live OUTSIDE `app/`, and each
-degrades quietly when missing (so did the sandbox bridge, until it became a packaged
-module): `load_skills()` / `load_subagents()` return
-`{}` when the directory is absent, and `load_sandbox_tools()` returns no tools
-when the bridge process can't start. So the API and worker containers booted
-healthy and simply had no skills, no delegation and no sandbox — measured
-against the built image, not inferred (spec 007 B16, 009 B23, 006).
-
-This is a TEXT test of the build inputs: the Dockerfile's `COPY` lines and the
-`.dockerignore` patterns. It cannot prove the files really land in the image —
-that is what CI's `docker-build` job does by running the built image. What it
-adds is a failure in the default suite, without Docker, the moment someone moves
-a catalog, renames the bridge, or adds an ignore pattern that would drop them.
-The set of paths is DERIVED from the code's own settings rather than listed
-here, so the test follows the app instead of duplicating it.
+A TEXT test of the build inputs (the Dockerfile's `COPY` lines and `.dockerignore`): it can't prove the files
+land in the image (CI's `docker-build` job runs it), but fails in the default suite, without Docker, the
+moment someone moves a catalog, renames the bridge or adds an ignore pattern that drops them. The paths are
+DERIVED from the code's own settings, not listed here, so the test follows the app.
 """
 import re
 from pathlib import Path

@@ -1,78 +1,39 @@
-"""Fixtures for tests/deepeval/ — LLM-judged quality checks
-(`@pytest.mark.deepeval`, `make deepeval`; see GRAPH_PATTERNS.md pattern 48
-for the full design writeup). Split out of `tests/live/conftest.py`
-2026-09-16 alongside this package itself: these tests are manual-only
-(never swept into `test-live`'s own `-m "llm or e2e"` selection) and need
-their own TARGET/JUDGE model knobs, distinct from `tests/live/`'s
-CI-speed `TEST_LLM_MODEL`.
+"""Fixtures for tests/deepeval/: LLM-judged quality checks (`@pytest.mark.deepeval`, `make deepeval`;
+GRAPH_PATTERNS.md pattern 48). Manual-only (never in `test-live`'s `-m "llm or e2e"`), with their own
+TARGET/JUDGE knobs, distinct from `tests/live/`'s CI-speed `TEST_LLM_MODEL`.
 
-`deepeval_ollama` — the TARGET model (`DEEPEVAL_MODEL`, the real graph's
-own `CHAT_MODEL`, monkeypatched in by each test file's own
-`real_ollama_chat_model` fixture). Stays local/offline, same reasoning as
-promptfoo's `PROMPTFOO_MODEL`: a finding needs to be about the model this
-app actually deploys, not a smaller CI-speed stand-in.
+`deepeval_ollama`: the TARGET (`DEEPEVAL_MODEL`, the graph's `CHAT_MODEL`, monkeypatched in by each file's
+`real_ollama_chat_model` fixture). It stays local, like promptfoo's `PROMPTFOO_MODEL`: a finding must be about
+the model this app deploys.
 
-`deepeval_judge` — the GRADER, a SEPARATE knob from `deepeval_ollama`
-(`DEEPEVAL_JUDGE_MODEL`) — same target/judge split as promptfoo's
-`PROMPTFOO_MODEL`/`PROMPTFOO_REDTEAM_MODEL` (GRAPH_PATTERNS.md pattern 48),
-fixed 2026-09-16 for the identical reason: strengthening the grader
-shouldn't require also changing what's under test. Originally just a
-bigger LOCAL model (qwen2.5:3b doing double duty as both target and judge)
-— real, verified finding from that setup: FaithfulnessMetric scored a
-hand-verified good answer 0.0 with a `reason` that contradicted its own
-score outright. Moved 2026-09-16 to Groq's `openai/gpt-oss-120b`, then
-2026-09-17 to `gemini-3.1-flash-lite` via deepeval's own native
-`GeminiModel` — THE SAME model `promptfoo/redteam.yaml`'s
-`redteam.provider` already uses (`google:gemini-3.1-flash-lite`), so this
-is now one deliberate offline-by-default exception with a single shared
-API key (`GOOGLE_API_KEY`, already a repo secret for
-`.github/workflows/redteam.yml`) rather than two separate ones — no new
-secret needed, unlike the Groq detour. Needs `pip install google-genai`
-(requirements-dev.txt; `.github/workflows/ci.yml`'s own `deepeval` job
-installs it too) — not pulled in by a plain `pip install deepeval` the
-same way `OllamaModel`'s `ollama` package isn't either. Fails fast with a
-clear message if `GOOGLE_API_KEY` isn't set, rather than an opaque 401
-mid-test, same posture `redteam.yml`'s own explicit key-check step takes.
-Used by `test_rag_quality_deepeval.py`/`test_tool_correctness_deepeval.py`
-only — see `deepeval_conversation_judge` below for why
-`test_conversation_simulator_deepeval.py` can't use it.
+`deepeval_judge`: the GRADER, a separate knob (`DEEPEVAL_JUDGE_MODEL`), the same split as promptfoo's
+`PROMPTFOO_MODEL`/`PROMPTFOO_REDTEAM_MODEL`, so strengthening the grader doesn't change what is under test. A
+local judge was tried first: `FaithfulnessMetric` scored a hand-verified good answer 0.0 with a `reason`
+contradicting its score. It is now `gemini-3.1-flash-lite` via deepeval's `GeminiModel`, the model
+`promptfoo/redteam.yaml` uses, so there is one offline-by-default exception and one shared key
+(`GOOGLE_API_KEY`, already a secret for `.github/workflows/redteam.yml`). It needs `google-genai`
+(requirements-dev.txt; ci.yml's `deepeval` job installs it) and fails fast with a clear message if the key is
+unset. Used by the RAG-quality and tool-correctness files.
 
-Both judge fixtures below answer through a FAILOVER CHAIN (tests/deepeval/
-fallback.py; `_with_fallbacks` here): the primary, then other models on the
-same provider (`DEFAULT_*_FALLBACKS`, each with its own free-tier quota), then
-the optional free backup providers (tests/deepeval/backup_providers.py: Plugsky,
-then OpenRouter, each enabled by its own key). A hand-over happens ONLY once the
-primary's own retry policy (deepeval.models.retry_policy — a few attempts with
-backoff) has given up on a rate limit OR a transient overload, and only for
-those. With no backup key set and `none` fallbacks, a fixture behaves exactly as
-it always did — additive, never a new hard requirement.
+`deepeval_conversation_judge`: a THIRD knob, Groq's `openai/gpt-oss-120b`
+(`DEEPEVAL_CONVERSATION_JUDGE_MODEL`, needs `GROQ_API_KEY`). CI run 35230147154 (PR #41) crashed both
+conversation-simulator tests on Gemini with `400 INVALID_ARGUMENT ... "additional_properties"`:
+`KnowledgeRetentionMetric` always requests structured output against a `Dict[...]` schema, Pydantic renders it
+as `additionalProperties`, and Gemini's `response_schema` (a restricted OpenAPI-3.0 subset) rejects that
+keyword for every Gemini model. A structural limit, not a version issue. The other two files never hit a Dict
+schema and stay on `deepeval_judge`.
 
-The first version of this (a single Plugsky backup, widened for 503s after PR
-#44) could not engage on the very case it existed for: deepeval's tenacity
-policy has `reraise=False`, so when its attempts run out the exception that
-reaches here is `tenacity.RetryError` with the real `RateLimitError` inside,
-which the old classifier did not look into. A real CI run (PR #101) hit Groq's
-per-day token limit with `PLUGSKY_API_KEY` set and the backup never engaged.
-fallback.py looks inside, and has the tests the old code never had.
+Both judges answer through a FAILOVER CHAIN (tests/deepeval/fallback.py; `_with_fallbacks` here): the primary,
+then other models on the same provider (`DEFAULT_*_FALLBACKS`, each with its own free-tier quota), then the
+optional free backup providers (tests/deepeval/backup_providers.py: Plugsky, then OpenRouter, each enabled by
+its own key). A hand-over happens ONLY after the primary's own retry policy (a few attempts with backoff) gave
+up on a rate limit or transient overload. With no backup key and `none` fallbacks a fixture behaves as before:
+additive, never a new requirement.
 
-`deepeval_conversation_judge` — a THIRD knob, Groq's `openai/gpt-oss-120b`
-again (`DEEPEVAL_CONVERSATION_JUDGE_MODEL`), added 2026-09-18 after a real
-run (CI run 35230147154, PR #41) hard-crashed both
-`test_conversation_simulator_deepeval.py` tests against Gemini:
-`google.genai.errors.ClientError: 400 INVALID_ARGUMENT ... Unknown name
-"additional_properties" at 'generation_config.response_schema'`. Root
-cause, confirmed by reading deepeval's own source rather than guessed from
-the error text: `KnowledgeRetentionMetric` (both of that file's tests use
-it) unconditionally requests structured output against
-`deepeval.metrics.knowledge_retention.schema.Knowledge.data:
-Optional[Dict[str, Union[str, List[str]]]]` — Pydantic renders any
-open-ended `Dict[...]` field as `additionalProperties` in the generated
-JSON Schema, and Gemini's `response_schema` (a restricted OpenAPI-3.0
-subset) doesn't support that keyword at all, for any Gemini model — not a
-version/config issue, a structural one. `test_rag_quality_deepeval.py`/
-`test_tool_correctness_deepeval.py`'s metrics never hit a Dict-typed
-schema, so they stay on `deepeval_judge` (Gemini) above unaffected. Fails
-fast the same way `deepeval_judge` does if `GROQ_API_KEY` isn't set.
+History: the first version (one Plugsky backup) couldn't engage on the case it existed for, because deepeval's
+tenacity policy has `reraise=False` and the exception arrives as `tenacity.RetryError` wrapping the
+`RateLimitError` (PR #101: Groq's daily token limit hit, backup never engaged). fallback.py looks inside, with
+the tests the old code lacked.
 """
 import os
 
@@ -115,11 +76,7 @@ def deepeval_ollama() -> dict[str, str]:
 def _with_fallbacks(primary, fallbacks):
     """`primary` answered through the failover chain (tests/deepeval/fallback.py): then `fallbacks` (other models
     on the same provider), then the optional backup providers' models (tests/deepeval/backup_providers.py:
-    Plugsky, then OpenRouter, each only if its key is set). Returns `primary` unchanged when there is nothing
-    to fall back to, so a bare checkout behaves exactly as it always did.
-
-    Engages only on a TRANSIENT failure (rate limit, overload, timeout), judged by looking inside deepeval's own
-    tenacity `RetryError` wrapper: see fallback.py for the bug that made the previous version miss exactly that.
+    Plugsky, then OpenRouter, each only if its key is set).
     """
     backups = build_backup_models()  # [] (and no deepeval import) when no backup key is set
     if not fallbacks and not backups:
@@ -129,17 +86,9 @@ def _with_fallbacks(primary, fallbacks):
 
 @pytest.fixture(scope="session")
 def deepeval_judge():
-    """The GRADER, pointed at Gemini — see DEEPEVAL_JUDGE_MODEL's own module
-    comment for why this is separate from `deepeval_ollama` (the TARGET),
-    and for why Gemini specifically (the same model+key
-    `promptfoo/redteam.yaml`'s `redteam.provider` already uses). deepeval's
-    own native `GeminiModel` (`deepeval.models`), not the generic
-    OpenAI-SDK `LocalModel` this fixture used for Groq before — Gemini
-    isn't OpenAI-compatible, so the real Google GenAI SDK is required
-    (`pip install google-genai`). Fails fast with a clear message if
-    GOOGLE_API_KEY isn't set, rather than an opaque 401 mid-test. Wrapped
-    through `_with_fallbacks` — see this module's own docstring for the
-    failover chain.
+    """The GRADER, pointed at Gemini — see DEEPEVAL_JUDGE_MODEL's own module comment for why this is separate
+    from `deepeval_ollama` (the TARGET), and for why Gemini specifically (the same model+key
+    `promptfoo/redteam.yaml`'s `redteam.provider` already uses).
     """
     from deepeval.models import GeminiModel
 
@@ -157,17 +106,9 @@ def deepeval_judge():
 
 @pytest.fixture(scope="session")
 def deepeval_conversation_judge():
-    """The GRADER (and simulated-persona model) for
-    test_conversation_simulator_deepeval.py ONLY — see this module's own
-    docstring, `deepeval_conversation_judge` paragraph, for the real 400
-    INVALID_ARGUMENT finding that put this fixture back on Groq rather than
-    `deepeval_judge`'s Gemini. Same `LocalModel` shape `deepeval_judge` used
-    for Groq before it moved to Gemini (`deepeval.models.LocalModel` is a
-    plain OpenAI-SDK client under a generic name — any OpenAI-compatible
-    `base_url` works). Fails fast with a clear message if GROQ_API_KEY
-    isn't set, rather than an opaque 401 mid-test. Answers through
-    `_with_fallbacks` — see this module's own docstring for the failover
-    chain.
+    """The GRADER (and simulated-persona model) for test_conversation_simulator_deepeval.py ONLY — see this
+    module's own docstring, `deepeval_conversation_judge` paragraph, for the real 400 INVALID_ARGUMENT finding
+    that put this fixture back on Groq rather than `deepeval_judge`'s Gemini.
     """
     from deepeval.models import LocalModel
 
@@ -192,16 +133,8 @@ def deepeval_conversation_judge():
 
 @pytest.fixture(scope="session")
 def crawl4ai_server() -> dict[str, str]:
-    """`tests/containers.py::ensure_crawl4ai()` (2026-09-17) — used only by
-    `test_tool_correctness_deepeval.py`'s own
-    `test_fetch_external_reference_tool_call_is_correct_and_well_argued`,
-    via that file's non-autouse `_use_crawl4ai_server` fixture. Own copy
-    rather than reusing `tests/live/conftest.py`'s or
-    `tests/integration/conftest.py`'s fixture of the same name — same
-    "each package wraps the shared `ensure_*()` helper itself" split
-    `deepeval_ollama` above already takes relative to
-    `tests/live/conftest.py`'s `ollama_endpoint` (both call `ensure_ollama`,
-    just with different models) — `ensure_crawl4ai()`'s own cross-worker
-    `_acquire` cache means calling it from any number of packages' conftests
-    within the same pytest run still only starts one real container."""
+    """`tests/containers.py::ensure_crawl4ai()` (2026-09-17) — used only by `test_tool_correctness_deepeval.py`'s
+    own `test_fetch_external_reference_tool_call_is_correct_and_well_argued`, via that file's non-autouse
+    `_use_crawl4ai_server` fixture.
+    """
     return ensure_crawl4ai()

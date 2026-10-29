@@ -1,64 +1,46 @@
 """What the app tells the LLM gateway about each call, and how it reads the gateway saying stop.
 
-The gateway (LiteLLM) sits between the app and the model provider, so it is the one place that
-can bound spend even if everything in the app is wrong: a bug in the allowance, a loop. Two things
-make that work, both here. What it cannot cover is a model it has no price for: it prices from the
-same list the app reads (`/model/info`), so an unpriced call is $0 to both and no budget of
-LiteLLM's accumulates it. `UNPRICED_MODEL_POLICY=block` (app/agent/cost/pricing.py) is what covers
-that, and COST_GOVERNANCE.md pattern 74 says why the shipped local models now state a price.
+The gateway (LiteLLM) sits between the app and the model provider, so it is the one place that can bound spend
+even if the app is wrong (a bug in the allowance, a loop). It can't cover a model it has no price for: it
+prices from the same list the app reads (`/model/info`), so an unpriced call is $0 to both.
+`UNPRICED_MODEL_POLICY=block` (app/agent/cost/pricing.py) covers that; COST_GOVERNANCE.md pattern 74 says why
+the shipped local models state a price.
 
 ## Identity on every call
 
-Without it the gateway's spend logs and Langfuse show one anonymous caller, so a runaway bill can
-be found but not attributed. Each call carries:
-  * `user` — LiteLLM's end-user id, recorded on every spend-log row as `end_user`: the PERSON,
-    readable, as `tenant:<tenant>/user:<principal>` (each part percent-encoded, so neither can
-    contain `:` or `/` and the id parses back, see `parse_end_user_id`). It is what LiteLLM's
-    Customer Usage view filters by and what its per-end-user budgets are keyed by, so
-    `max_end_user_budget_id` in the LiteLLM configs is a default cap PER PERSON (pattern 74); a
-    tenant-wide gateway cap would need the tenant to be the end user, which is the other thing it
-    cannot be at the same time. It used to be a hash of the tenant alone, for one reason: `user` is a
-    standard OpenAI parameter, and whether a gateway passes it on to the model provider depends on
-    the provider and version, while a person's name or an organisation's has no business reaching a
-    third party (OpenAI itself recommends a hashed id). That reason is now an assumption about
-    LiteLLM rather than something this code guarantees, so it is checked: against the pinned 1.94.1
-    image, with a stub backend, `user` reached neither the Ollama route nor an OpenAI-compatible one
-    (nor did the metadata or the session below), and the gateway's own database and Langfuse already
-    hold the readable tenant and principal in `metadata`. The image is pinned by digest for that
-    reason, and bumping it re-runs that check (infra/README.md). A principal can be an email address;
-    this is where it would leave if a future LiteLLM forwarded `user`.
-  * `metadata` (inside `extra_body`) — the readable tenant, principal and a `tenant:<name>` tag,
-    which LiteLLM records as a `request_tags` entry. It is for the gateway's own database and
-    Langfuse, where an operator needs it; it was not forwarded to the backend either.
-  * the conversation (`thread_id`), as `litellm_session_id` (LiteLLM's own "Session ID" in its
-    logs) and `metadata.session_id` (the session the proxy's Langfuse trace is filed under). The
-    app's own Langfuse trace uses the same `thread_id` as its session, so the app's turn and the
-    proxy's per-call traces land in one Langfuse session; before, the proxy's traces had a session
-    of their own and nothing joined them. Neither field is a model parameter, so LiteLLM keeps
-    them out of the provider request (checked against a real proxy, pattern 74).
+Without it the gateway's spend logs and Langfuse show one anonymous caller, so a runaway bill can't be
+attributed. Each call carries:
+- `user`: the end-user id on every spend-log row, the PERSON as `tenant:<tenant>/user:<principal>` (each part
+  percent-encoded; `parse_end_user_id` reads it back). LiteLLM's per-end-user budgets key on it, so
+  `max_end_user_budget_id` is a default cap per person (pattern 74). A tenant-wide gateway cap would need the
+  tenant to be the end user.
+- `metadata` (inside `extra_body`): the readable tenant, principal and a `tenant:<name>` tag (a `request_tags`
+  entry), for the gateway's database and Langfuse.
+- the conversation (`thread_id`) as `litellm_session_id` and `metadata.session_id`, so the app's turn and the
+  proxy's per-call traces land in one Langfuse session.
+
+None of these reaches the model provider: checked against the pinned 1.94.1 image with a stub backend, on the
+Ollama route and an OpenAI-compatible one. That is an assumption about LiteLLM (a person's email has no
+business reaching a third party), so the image is pinned by digest and a bump re-runs the check
+(infra/README.md).
 
 ## Reading "stop"
 
-When the app's key reaches its `max_budget`, LiteLLM refuses with an error whose `type` is
-`budget_exceeded` (litellm/proxy/auth/auth_exception_handler.py). The HTTP status is the exception's
-own and has changed between versions — 429 on main-stable, 400 on older code — so the `type` is what
-is recognised, never the status. Left alone that is an `openai` status error out of the agent node,
-which the stream reports as a generic internal error — and nobody learns that the backstop fired. It
-means the app-level ceilings did not stop the spend first (or the backstop is sized too low), so it
-gets its own error code, its own counter and a critical alert.
+When the app's key reaches its `max_budget`, LiteLLM refuses with an error whose `type` is `budget_exceeded`.
+The HTTP status has changed between versions (429, 400), so the `type` is recognised, never the status. Left
+alone it would be a generic internal error and nobody would learn the backstop fired; it means the app-level
+ceilings didn't stop the spend first, so it has its own error code, counter and a critical alert.
 
-It is also never retried (`app/agent/graph/core.py::_retry_agent_on`): it repeats until the budget resets. The
-openai SDK still retries a 429 twice inside one call (measured: 3 requests per `ainvoke`), which is
-harmless — the gateway refuses at authentication, before any provider is called or any money spent.
+It is never retried (`app/agent/graph/core.py::_retry_agent_on`). The openai SDK still retries a 429 twice
+inside one call, harmlessly: the gateway refuses at authentication, before any money is spent.
 
 ## Reading "refused"
 
-A content guardrail configured in the gateway (LiteLLM's admin UI keeps them in its own database, not
-in this repo) answers a blocked call with HTTP 400 whose error body carries `provider_specific_fields`
-(`guardrail_name`, `guardrail_mode`, `category`, `matched_phrase`). That is a policy decision, not a
-failure of the app: the agent node turns it into the turn's answer (`content_block`), and the retry
-policy never repeats it or any other 4xx that repeating cannot change (`is_permanent_client_error`).
-Its text names the rule and the phrase that matched, so it never reaches the caller.
+A content guardrail in the gateway answers a blocked call with HTTP 400 whose body carries
+`provider_specific_fields` (`guardrail_name`, `guardrail_mode`, `category`, `matched_phrase`). That is a
+policy decision, not an app failure: the agent node turns it into the turn's answer (`content_block`), and the
+retry policy never repeats it or any 4xx that repeating can't change (`is_permanent_client_error`). The text
+names the rule and the matched phrase, so it never reaches the caller.
 """
 import hashlib
 import re

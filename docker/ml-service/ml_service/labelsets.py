@@ -1,38 +1,39 @@
-"""Which of a few predefined choices is this text closest to? The matcher behind `POST /v1/decide` (decide.py; specs/015 contracts/label-sets.md,
-specs/016 contracts/decide.md). This module knows nothing of HTTP or of the wire shape: sets, indexes, cutoffs, failover.
+"""Which of a few predefined choices is this text closest to? The matcher behind `POST /v1/decide` (decide.py;
+specs/015 contracts/label-sets.md, specs/016 contracts/decide.md). It knows nothing of HTTP or the wire shape:
+sets, indexes, cutoffs, failover.
 
-WHAT IT IS. A *label set* is a reviewed JSON file: a name, a handful of labels, a few example sentences per label, and for each serving
-model the similarity below which a text is "none of these". Nothing is trained. For each model the service embeds the examples with that
-model, averages each label's unit vectors into one unit vector (the *centroid*), and answers a text with the label whose centroid it is
-nearest to by cosine, or `null` when even the nearest is below the model's cutoff. The embedder is the `EmbedService` that serves
-`/v1/embeddings`, so one model loaded for two roles is loaded once.
+A *label set* is a reviewed JSON file: a name, a few labels with example sentences, and for each serving model
+the similarity below which a text is "none of these". Nothing is trained. Per model, the service embeds the
+examples, averages each label's unit vectors into a *centroid*, and answers with the label whose centroid is
+nearest by cosine, or `null` when even the nearest is below the model's cutoff. The embedder is the
+`EmbedService` behind `/v1/embeddings`, so one model loaded for two roles is loaded once.
 
-WHY A CENTROID. Measured, not chosen by taste: on CLINC150 with bge-small and the first k training examples of each intent as anchors, the
-centroid beat "the single nearest example" and "the mean of the two nearest" at every k (accuracy 0.863 against 0.806 and 0.834 at k=10),
-and rejected more out-of-scope sentences at the same in-scope keep rate (specs/015 D1). It assumes a label is ONE cluster of meaning; a
-label that is really two topics should be two labels.
+Why a centroid: measured on CLINC150 with bge-small, it beat "nearest example" and "mean of the two nearest"
+at every k (accuracy 0.863 vs 0.806 and 0.834 at k=10) and rejected more out-of-scope text at the same keep
+rate (specs/015 D1). It assumes a label is ONE cluster of meaning; a label that is really two topics should be
+two labels.
 
-FOUR RULES KEEP A SET FROM DOING HARM, each a refusal at load or build time rather than a hope at request time:
+Four rules keep a set from doing harm, each a refusal at load or build time rather than a hope at request
+time:
+1. The examples are TEXT, embedded by the serving model itself. A stored vector is valid for one model
+   revision and a wrong one gives confident nonsense with no error; text cannot go stale (D3). The index is
+   rebuilt when a model reloads under a new revision.
+2. The cutoff lives in the set, PER MODEL: similarity scales differ and the fallback is a different model. A
+   model with no `calibration` entry does not serve that set (`refused: no calibration for <model>`); it never
+   gets a guessed default (D2).
+3. A set file is data, never code: strict JSON, every field checked. A bad file is `refused: <reason>` for
+   that set in `/health/models` and nothing else; the other sets, `/v1/embeddings`, the reranker and the guard
+   serve as usual.
+4. The service returns FACTS (`label`, `similarity`, `runner_up`, `margin`), never a decision about them (D4).
 
-1. The examples are TEXT, and the serving model embeds them itself. A stored vector is valid for one model revision only, and the failure of
-   a wrong one is confident nonsense with no error anywhere; text cannot go stale (specs/015 D3). The index is rebuilt when a model reloads
-   under a different revision.
-2. The cutoff lives in the set, PER MODEL. Similarity scales differ by model and the service's fallback is a different model, so one number
-   would be wrong whenever the fallback answers. A model with no entry in `calibration` does not serve that set (`refused: no calibration
-   for <model>`); it is never given a guessed default (specs/015 D2).
-3. A set file is data, never code: strict JSON, every field checked. A bad file is `refused: <reason>` for that one set in `/health/models`
-   and nothing else; the other sets, `/v1/embeddings`, the reranker and the guard start and serve as usual.
-4. The service returns FACTS (`label`, `similarity`, `runner_up`, `margin`), never a decision about what to do with them. What a label means for
-   a model choice, an email or anything else belongs to the caller (specs/015 D4).
+Failover is the classifier's: the `classify`-role models in `models.toml` order are the chain. A model that
+raises goes through the registry's `failed` state; one that only overruns `ML_CLASSIFY_DEADLINE_MS` is skipped
+for that request and stays `ready`. When nothing can answer, `decide()` is None and decide.py returns 503
+`model_unavailable`. A request naming several sets is answered by ONE model holding an index for all of them;
+the deadline is per model, so a primary and a fallback that both overrun can spend twice it.
 
-FAILOVER is the classifier's: the `classify`-role models in `models.toml` order are the chain, a model that raises goes through the registry's
-`failed` state, one that only overruns `ML_CLASSIFY_DEADLINE_MS` is skipped for that request and stays `ready`, and when nothing can answer
-`decide()` is None, which decide.py turns into 503 `model_unavailable` (the code the System One interface uses for "cannot answer now").
-A request that names several sets is answered by ONE model that holds an index for all of them; the deadline is per model, so a primary and a
-fallback that both overrun can spend twice it.
-
-NO TEXT IS LOGGED. A request text is user data. Logs carry a set's name and a model's name and an exception's class; metrics carry the
-set's name and `served_by`.
+No request text is logged: logs carry set, model and exception-class names; metrics carry the set and
+`served_by`.
 """
 import asyncio
 import hashlib

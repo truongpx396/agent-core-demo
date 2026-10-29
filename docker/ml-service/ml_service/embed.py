@@ -1,17 +1,18 @@
-"""POST /v1/embeddings (OpenAI-compatible) and GET /v1/models (specs/014 FR-021..FR-026, contracts/ml-service.md).
+"""POST /v1/embeddings (OpenAI-compatible) and GET /v1/models (specs/014 FR-021..FR-026,
+contracts/ml-service.md).
 
-WHY OPENAI-COMPATIBLE. The app reaches every model through the LiteLLM proxy by alias. LiteLLM can forward the `embed` alias to any
-OpenAI-compatible endpoint, so serving this shape from the ML service means switching the app to an ONNX model served here is a gateway
-CONFIGURATION change with no application code change (contracts/gateway-aliases.md).
+Why OpenAI-compatible: the app reaches every model through the LiteLLM proxy by alias, and LiteLLM can forward
+the `embed` alias to any OpenAI-compatible endpoint, so switching the app to an ONNX model served here is a
+gateway CONFIGURATION change with no application code change (contracts/gateway-aliases.md).
 
-THE SERVER NEVER ADDS A PREFIX. The request carries no notion of "this is a question" versus "this is a passage", so the server cannot
-know which prefix a text needs; the app prepends it (EMBED_QUERY_PREFIX / EMBED_DOCUMENT_PREFIX). `/v1/models` echoes what each model
-expects as documentation for the operator. A server-side default would silently double-prefix.
+The server never adds a prefix: the request can't say "question" versus "passage", so the app prepends it
+(EMBED_QUERY_PREFIX / EMBED_DOCUMENT_PREFIX) and `/v1/models` only echoes what each model expects; a
+server-side default would silently double-prefix.
 
-REQUESTS ARE BOUNDED, NOT TRUNCATED. More than `ML_EMBED_MAX_ITEMS` inputs, or any input over `ML_EMBED_MAX_CHARS` characters, is
-rejected with a 400 naming the problem: a caller must be told its input did not fit. The model's own context limit is different and
-unavoidable: text longer than `max_length` tokens is cut by the tokenizer, and the response says how many items were
-(`X-Truncated-Items`), as the guard has always done.
+Requests are bounded, not truncated: more than `ML_EMBED_MAX_ITEMS` inputs or any input over
+`ML_EMBED_MAX_CHARS` is a 400 naming the problem. The model's own context limit is different: text over
+`max_length` tokens is cut by the tokenizer and the response says how many items were (`X-Truncated-Items`),
+as the guard does.
 """
 import asyncio
 import base64

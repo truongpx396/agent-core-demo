@@ -175,27 +175,21 @@ _CITATION_MARKER_WARNING = (
 
 @dataclass
 class _SubagentDomainPlugin:
-    """A throwaway DomainPlugin scoping a nested subagent run to EXACTLY its
-    pre-resolved, pre-validated (read_only-only) tool subset.
+    """A throwaway DomainPlugin scoping a nested subagent run to EXACTLY its pre-resolved, pre-validated
+    (read_only-only) tool subset.
 
-    Used instead of `AgentManifest.allowed_tools` because that field treats
-    an empty tuple as "no filter — expose everything" (see
-    app/agent/manifest.py). A subagent legitimately left with zero usable
-    tools must actually run with zero tools, not fall back to the full
-    Ecorp set (including add_note/remember) — exactly the privilege-
-    escalation-by-omission pattern 17's fail-closed discipline rules out.
-    Passing the already-narrowed list as `tools()` sidesteps the ambiguity
-    entirely.
+    Used instead of `AgentManifest.allowed_tools` because an empty tuple there means "no filter: expose
+    everything" (app/agent/manifest.py). A subagent legitimately left with zero usable tools must run with
+    zero tools, not fall back to the full Ecorp set (including add_note/remember): the
+    privilege-escalation-by-omission that pattern 17's fail-closed discipline rules out. Passing the
+    already-narrowed list as `tools()` sidesteps the ambiguity.
 
-    `tool_capabilities()` reports every `_tools` entry as `read_only`
-    directly, not a lookup into the caller's own `TOOL_CAPABILITIES` (which
-    for a domain-scoped subagent may not even contain that tool's name).
-    `tool_capability()` (app/agent/graph/core.py) defaults an undeclared name to
-    `"outward"` — correct for the top-level graph where a human can approve
-    a pause, wrong here, where a nested one-shot run has no resume path and
-    would just look like a silent failure. Correct by construction: every
-    name in `_tools` already passed `_resolve_subagent_tools`'s read_only
-    filter.
+    `tool_capabilities()` reports every `_tools` entry as `read_only` directly, not via the caller's
+    `TOOL_CAPABILITIES` (which for a domain-scoped subagent may not contain that name). `tool_capability()`
+    (app/agent/graph/core.py) defaults an undeclared name to `"outward"`: right for the top-level graph, where
+    a human can approve a pause, wrong for a one-shot nested run with no resume path, which would look like a
+    silent failure. Correct by construction: every name in `_tools` already passed `_resolve_subagent_tools`'s
+    read_only filter.
     """
 
     _tools: list
@@ -235,40 +229,29 @@ async def run_subagent_impl(
     llm: Any = None,
     use_cache: bool = False,
 ) -> SubagentResult:
-    """Build and run one nested, isolated agent turn, return its final answer
-    plus its own usage. See GRAPH_PATTERNS.md pattern 46 for the full design.
+    """Build and run one nested, isolated agent turn; return its final answer plus its own usage. Full design:
+    GRAPH_PATTERNS.md pattern 46.
 
-    `registry` and `tools_by_name` are the CALLING domain's own (built by
-    `make_domain_subagent_tool`): a registry entry can name a tool only that
-    domain has, so there is no shared default to fall back on. `llm` is DI for
-    tests (mirrors `build_graph(deps=...)`'s override shape) and defaults to a
-    real ChatOpenAI client.
+    `registry` and `tools_by_name` are the CALLING domain's own (built by `make_domain_subagent_tool`): an
+    entry can name a tool only that domain has, so there is no shared default. `llm` is injectable for tests
+    (like `build_graph(deps=...)`) and defaults to a real ChatOpenAI client. `domain` is only a
+    cache-key/tracing label; it does NOT select `registry`.
 
-    `domain` is only a cache-key/tracing label — it does NOT select
-    `registry`.
+    `use_cache` opts into reusing a compiled nested graph (`_subagent_graph_cache`). It is not inferred from
+    whether `llm`/`registry`/`tools_by_name` were passed, because the production closures always pass their
+    own registry and tools, and that inference would silently defeat caching for every non-Ecorp domain. Only
+    the two real `run_subagent` tool closures pass `use_cache=True`; tests never do.
 
-    `use_cache` opts into reusing a compiled nested graph (`_subagent_graph_cache`
-    above) — not inferred from whether `llm`/`registry`/`tools_by_name` were
-    passed, since the real production closures always pass their own
-    registry/tools_by_name and that inference would silently defeat caching
-    for every non-Ecorp domain. Only the two real `run_subagent` tool
-    closures pass `use_cache=True`; tests never set it, so they're
-    automatically excluded.
+    Isolation, in one place: a FRESH `messages` list (the subagent's system prompt plus the delegated `task`
+    as its sole HumanMessage, never this conversation's history); its own tool subset and model alias;
+    SecurityCtx inherited unconditionally from `config`; its own smaller fixed budget (MAX_SUBAGENT_ITERATIONS
+    / MAX_SUBAGENT_TOKENS_PER_RUN / MAX_SUBAGENT_COST_USD_PER_RUN); a throwaway MemorySaver, never the durable
+    checkpointer, bounded to complete within this one tool call.
 
-    Isolation, in one place: a FRESH `messages` list (subagent's own system
-    prompt + the delegated `task` as its sole HumanMessage, never this
-    conversation's history); the subagent's own tool subset and model alias;
-    SecurityCtx inherited unconditionally from `config`; its own smaller
-    fixed budget (MAX_SUBAGENT_ITERATIONS/MAX_SUBAGENT_TOKENS_PER_RUN/
-    MAX_SUBAGENT_COST_USD_PER_RUN); a throwaway MemorySaver, never the
-    durable checkpointer — bounded to complete within this one tool call.
-
-    Uses `build_subagent_graph()` — build_graph()'s same node
-    functions/factories via `assemble_shared_graph_parts`, but a leaner
-    one-shot topology: no semantic-cache read/write (a subagent's answer can
-    never cross-serve to/from a top-level query), no suggest_followups, no
-    history compaction (unreachable given MAX_SUBAGENT_TOKENS_PER_RUN). See
-    that function's docstring for the full per-node reasoning.
+    It uses `build_subagent_graph()`: the same node functions via `assemble_shared_graph_parts` in a leaner
+    one-shot topology with no semantic-cache read/write (a subagent's answer must never cross-serve a
+    top-level query), no suggest_followups, and no history compaction (unreachable under
+    MAX_SUBAGENT_TOKENS_PER_RUN). That function's docstring has the per-node reasoning.
     """
     ctx = ctx_from_config(config)
     if not valid_ctx(ctx):

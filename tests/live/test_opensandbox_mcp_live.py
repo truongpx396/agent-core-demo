@@ -1,27 +1,18 @@
-"""A real `opensandbox-mcp` round trip for app/domains/sandbox_tools.py
-(GRAPH_PATTERNS.md pattern 50) — the fake-free counterpart to
-tests/domains/test_sandbox_tools.py, which (correctly, for a fast/hermetic
-suite) mocks `app.mcp.client.load_remote_tools` entirely. What that can't
-catch — the packaged `opensandbox-mcp` CLI (`python -m opensandbox_mcp
---use-server-proxy`, what this module spawns) actually spawning, actually listing its real tool
-catalog over stdio, through the ALSO-real
-`app/mcp/client.py::load_remote_tools` (pattern 28) underneath it — needs
-`opensandbox_mcp` actually installed, hence `@pytest.mark.sandbox`
-(self-skips if it isn't, same "skip cleanly, don't fail" contract every
-other live-service marker in this suite already has).
+"""A real `opensandbox-mcp` round trip for app/domains/sandbox_tools.py (GRAPH_PATTERNS.md pattern 50): the
+fake-free counterpart to tests/domains/test_sandbox_tools.py, which (correctly, for a fast hermetic suite)
+mocks `app.mcp.client.load_remote_tools`. What that can't catch: the packaged `opensandbox-mcp` CLI (`python
+-m opensandbox_mcp --use-server-proxy`, what this module spawns) actually starting and listing its real tool
+catalog over stdio, through the also-real `app/mcp/client.py::load_remote_tools` (pattern 28). It needs
+`opensandbox_mcp` installed, hence `@pytest.mark.sandbox` (self-skips if it isn't, the same "skip cleanly,
+don't fail" contract as every live-service marker here).
 
-Deliberately scoped to the CATALOG round trip only, not to actually
-CALLING a sandbox tool (`sandbox_create`, etc.) — verified directly:
-`opensandbox-mcp`'s tool listing is served from its own static
-definitions, not proxied to a backend at all, so it succeeds even with NO
-`opensandbox-server` running (this is exactly what makes
-app/domains/sandbox_tools.py safe to wire in eagerly, see that module's
-own docstring) — meaning this test needs only the bridge installed,
-nothing more. Actually creating a sandbox needs a real, reachable,
-authenticated `opensandbox-server` (`make sandbox-up`) — that full round
-trip is covered by tests/live/test_sandbox_session_live.py instead,
-kept separate from this file's own narrower, always-installable-bridge
-scope.
+Deliberately scoped to the CATALOG round trip, not to CALLING a sandbox tool (`sandbox_create`, etc.).
+Verified directly: `opensandbox-mcp`'s tool listing is served from static definitions, not proxied to a
+backend, so it succeeds with NO `opensandbox-server` running (which is what makes app/domains/sandbox_tools.py
+safe to wire in eagerly; see its docstring). This test therefore needs only the bridge installed. Creating a
+sandbox needs a real, reachable, authenticated `opensandbox-server` (`make sandbox-up`);
+tests/live/test_sandbox_session_live.py covers that full round trip, kept separate from this file's narrower,
+always-installable scope.
 """
 import importlib.util
 

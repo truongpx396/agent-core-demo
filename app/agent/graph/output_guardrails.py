@@ -16,32 +16,22 @@ from app.agent.graph.messages import (
 )
 from app.agent.graph.skill_guards import pending_skill_required_tool
 
-# Real bug, found live via Langfuse: qwen2.5:3b narrated tool intent
-# ("I will use the `query_employees` tool...") or asked permission ("Would
-# you like to know more?") instead of calling a tool, even after
-# SYSTEM_PROMPT explicitly forbade it (a 3B model's instruction-following
-# isn't reliable enough for a prompt-only fix). No real tool_calls exists
-# in these cases, so check_output only sees an ordinary, useless final
-# answer.
+# Found live via Langfuse: qwen2.5:3b narrated tool intent ("I will use the `query_employees` tool...") or
+# asked permission ("Would you like to know more?") instead of calling a tool, even after SYSTEM_PROMPT
+# forbade it (a 3B model's instruction-following isn't reliable enough for a prompt-only fix). No real
+# tool_calls exists, so check_output sees an ordinary, useless final answer.
 #
-# Two phrasings, matched separately: (1) first-person tool intent that
-# never became a real call ("I will/can/could/would use the X tool", "let
-# me look that up"), and (2) asking permission to proceed instead of
-# answering ("would you like me to proceed?") — also a separate
-# SYSTEM_PROMPT violation.
+# Two phrasings, matched separately: (1) first-person tool intent that never became a call ("I
+# will/can/could/would use the X tool", "let me look that up"), (2) asking permission to proceed instead of
+# answering ("would you like me to proceed?"), also a SYSTEM_PROMPT violation.
 #
-# Widened three times more from later live failures: "I'll count the
-# occurrences..." (a contraction + "count the" wasn't covered — the
-# resulting incomplete answer got cached and replayed until expiry,
-# Langfuse `9336aaa6`), "Let's run this script in a sandbox..." (model
-# narrating a real returned script instead of running it — "run this/
-# that/it/the X" added), and "Let's use this skill now to summarize your
-# expenses." (qwen2.5:3b, tests/live/test_chat_ui.py's own
-# test_a_skill_is_found_and_followed, 2026-09-20 — narrating intent to use
-# a SKILL rather than a TOOL; "use\s+the\s+\S+\s+tool" only ever matched
-# "tool" phrasing, never "skill" — "use this/that skill" added). All
-# closed narrowly rather than generalized — same "deliberately crude"
-# posture as the rest of this module.
+# Widened three times from later live failures, each closed narrowly ("deliberately crude", like the rest of
+# this module): "I'll count the occurrences..." (a contraction + "count the"; the incomplete answer was cached
+# and replayed until expiry, Langfuse `9336aaa6`); "Let's run this script in a sandbox..." (narrating a
+# returned script instead of running it: "run this/that/it/the X" added); "Let's use this skill now to
+# summarize your expenses." (qwen2.5:3b in tests/live/test_chat_ui.py's test_a_skill_is_found_and_followed,
+# 2026-09-20: intent to use a SKILL, which "use\s+the\s+\S+\s+tool" never matched: "use this/that skill"
+# added).
 _TOOL_INTENT_RE = re.compile(
     r"\b(?:i (?:will|can|could|would)|i'll|let(?:'s| us)|let me)\b"
     # Real false positive: "Sorry, I could not run that calculation."
@@ -111,21 +101,19 @@ def _is_offer_follow_on(sentence: str) -> bool:
 
 
 def strip_closing_offer(content: str) -> str:
-    """`content` without a closing offer ("Would you like more information or should I proceed...?"),
-    or `content` itself when it has none or when cutting it would leave no answer.
+    """`content` without a closing offer ("Would you like more information or should I proceed...?"), or
+    `content` itself when it has none or cutting it would leave no answer.
 
-    This is a repair, not a verdict, for the same reason `insert_missing_citation_markers` is: the
-    system prompt already forbids the question twice and qwen2.5:3b writes it anyway, and sending the
-    answer back to be rewritten did not remove it (Langfuse trace `1e46b2c8`: three attempts, the same
-    question each time, then a correct answer replaced by "I described what I'd do instead of actually
-    doing it"). The offer is cut only when it is the END of the text (offers, and the short sentences
-    that continue one, from some point to the last character) and what precedes it is itself an answer:
-    at least `_MIN_BODY_CONTENT_WORDS` distinctive words, not a lead-in ending in ":" or a question,
-    no unclosed code fence, and no narrated tool use (`_TOOL_INTENT_RE`). Anything else is returned
-    unchanged, and `defers_instead_of_acting` judges it as before: a reply that is only an offer, or
-    that narrates a tool it never called, is exactly what that check exists for.
-
-    A question in the MIDDLE of an answer, with more answer after it, is never touched."""
+    A repair, not a verdict, like `insert_missing_citation_markers`: the system prompt forbids the question
+    twice and qwen2.5:3b writes it anyway, and sending the answer back to be rewritten didn't remove it
+    (Langfuse trace `1e46b2c8`: three attempts with the same question, then a correct answer replaced by "I
+    described what I'd do instead of actually doing it"). The offer is cut only when it is the END of the text
+    (offers and the short sentences continuing one, to the last character) and what precedes it is itself an
+    answer: at least `_MIN_BODY_CONTENT_WORDS` distinctive words, not a lead-in ending in ":" or a question,
+    no unclosed code fence, no narrated tool use (`_TOOL_INTENT_RE`). Anything else is returned unchanged for
+    `defers_instead_of_acting` to judge, since a reply that is only an offer, or narrates a tool it never
+    called, is what that check exists for. A question in the MIDDLE of an answer is never touched.
+    """
     if not isinstance(content, str) or not content:
         return content
     spans = sentence_spans(content)
@@ -172,30 +160,23 @@ _CLAIMS_EXECUTION_RE = re.compile(
 
 
 def fabricates_tool_output(content: str) -> bool:
-    """True when a tool-call-free final answer contains 2+ markdown code
-    fences AND narrates them as if actually executed (`_CLAIMS_EXECUTION_RE`)
-    — the "here's the script, here's its output" shape presented as if
-    run_command_in_sandbox actually ran, with no real tool_calls entry.
+    """True when a tool-call-free final answer has 2+ markdown code fences AND narrates them as if executed
+    (`_CLAIMS_EXECUTION_RE`): the "here's the script, here's its output" shape presented as if
+    run_command_in_sandbox ran, with no real tool_calls entry.
 
-    Real bug, found live: after a sandbox approval was declined, the model
-    invented both a script and its "output," narrated in PRESENT tense
-    ("Running the calculation...") so `defers_instead_of_acting` never
-    caught it — and the fabricated math didn't even match the fabricated
-    code (claimed 43750.00 for a calc that's actually 36450.00), yet
-    passed every other check.
+    Found live: after a sandbox approval was declined, the model invented a script and its "output", narrated
+    in PRESENT tense ("Running the calculation...") so `defers_instead_of_acting` never caught it, and the
+    fabricated math didn't even match the fabricated code (43750.00 claimed for a calc that gives 36450.00),
+    yet passed every other check.
 
-    The fence-count check ALONE, without the execution-claim requirement,
-    is a real false positive found live: asked to showcase markdown
-    formatting, the model correctly produced several purely illustrative
-    fenced examples (no execution claimed anywhere) and got flagged as
-    fabrication anyway, retried twice into the identical "problem," and
-    fell back to a generic "I wasn't able to..." message for a wholly
-    legitimate request (Langfuse trace `f8b1675b`, 2026-09-20). A single
-    code block (e.g. explaining a formula) was already exempt via the
-    fence threshold; this exempts a MULTI-block but purely illustrative
-    answer the same way, without giving up the real detection — every
-    true-positive case on record narrates execution in the surrounding
-    prose (see `_CLAIMS_EXECUTION_RE`'s own comment)."""
+    The fence count ALONE is a false positive, also found live: asked to showcase markdown formatting, the
+    model produced several purely illustrative fenced examples and was flagged as fabrication, retried twice
+    into the identical "problem", and fell back to a generic "I wasn't able to..." for a legitimate request
+    (Langfuse trace `f8b1675b`, 2026-09-20). A single block (explaining a formula) was already exempt by the
+    fence threshold; requiring an execution claim exempts a multi-block illustrative answer too, without
+    losing detection, since every true positive on record narrates execution in the surrounding prose (see
+    `_CLAIMS_EXECUTION_RE`'s comment).
+    """
     if not content or not isinstance(content, str):
         return False
     if content.count("```") < _FABRICATED_OUTPUT_FENCE_THRESHOLD:

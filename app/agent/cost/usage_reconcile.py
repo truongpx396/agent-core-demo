@@ -1,58 +1,36 @@
-"""Does the meter agree with the LLM gateway? The agent's usage events against the gateway's spend log (specs/010 US6, T026, T030c; the wallet
-half of this module moved to the billing package with specs/013).
+"""Does the meter agree with the LLM gateway? The agent's usage events against the gateway's spend log (specs/010
+US6, T026, T030c; the wallet half moved to the billing package in specs/013).
 
-Two independent records of the same spending exist, and each can drift from the other for a reason nobody sees until a customer does:
+Two independent records of the same spending, each able to drift unseen: `usage_events` (the meter and the
+spend the caps sum), and the gateway's spend log (LiteLLM, `end_user` = `gateway.end_user_id(tenant,
+principal)`), written by another process from the request itself. The gateway is the only detector for a call
+whose event was never written (the reconciliation detects, it doesn't prevent).
 
-  * `usage_events`: one row per model call, the meter AND the spend the dollar caps sum (postgres-init/19);
-  * the gateway's own spend log (LiteLLM, `end_user` = `gateway.end_user_id(tenant, principal)`): what the provider was actually
-    asked to spend. It is written by another process from the request itself, which is what makes it an independent
-    second meter (research G5) and the only detector for a call whose event was never written (spec 010 plan: "a model
-    call that returns just before a crash is not recorded; the reconciliation is the detector, not a prevention").
+It reports, per tenant and UTC day, the figures and their USD difference above `Tolerance` (a fixed amount or
+a percentage, whichever is larger), e.g. "acme, 2026-10-06, $0.76 of spend the gateway saw and the meter did
+not".
 
-The per-turn `usage_ledger` used to be a second record compared here. It is no longer: the dollar caps sum the events themselves (T030b), so a
-lost event now shows as a loose cap and as a gateway difference.
+Deliberately not findings: the newest minutes (`USAGE_RECONCILE_SETTLE_SECONDS`; the gateway logs in batches);
+embeddings (unmetered, no identity, so they land in `unattributed_usd`); another application's end users on a
+shared gateway (same bucket).
 
-## What it reports
+Known noise: a call that STARTS before midnight UTC and is recorded after it lands on different days in the
+gateway (start time) and the event (insert time). A busy tenant's tolerance absorbs it; a quiet tenant with an
+expensive call shows opposite drifts on adjacent days, the straddle signature, not a loss.
 
-For each tenant and UTC day, the figures and their difference, in USD, when the difference is above tolerance (a fixed
-USD amount or a percentage, whichever is larger: `Tolerance`). The report names the tenant, the day and the amount, so
-an operator can go straight to "acme, 2026-10-06, $0.76 of spend the gateway saw and the meter did not".
+The gateway read is `GET /spend/logs/v2` with `start_date`/`end_date`, paginated (checked against LiteLLM
+1.104: UTC window on `startTime`, both ends inclusive, `page_size` at most 1000, `total` capped at 10 000 so
+the page count never comes from it). The sort has no tie-breaker, so rows are de-duplicated by `request_id`,
+and a `total` below the cap must equal the rows collected or the read is INCOMPLETE. An incomplete read is
+never compared, since a truncated sum would page someone for every tenant. Ceiling:
+`USAGE_RECONCILE_GATEWAY_MAX_PAGES`.
 
-## What is deliberately not a finding
+Cost: events are read by time but the index leads with the tenant, so a pass is a sequential scan. A time-only
+index would tax every insert for a job that runs a few times a day; if a pass gets slow, that index (or a
+daily partition) is the fix and `USAGE_RECONCILE_LOOKBACK_DAYS` the lever.
 
-  * **The newest minutes** (`USAGE_RECONCILE_SETTLE_SECONDS`): the gateway writes its spend log in batches, so the newest
-    calls are in the events and not yet in the log.
-  * **Embeddings.** They are not metered and carry no identity (research G2), so the gateway attributes them to nobody.
-    That spend lands in `unattributed_usd`, which is reported but is not drift: it is a known, separate gap.
-  * **Another application's end users** on a shared gateway (an `end_user` that is neither this app's `tenant:<tenant>/user:<principal>`
-    nor its older `tenant_<hash>`): same bucket.
-
-## Known noise (disclosed, not hidden)
-
-A call that STARTS before midnight UTC and is recorded after it lands on different days in the gateway (its start time) and
-in the event (the time it was inserted). A busy tenant's tolerance absorbs a call; a tenant with almost no other spend that
-day and an expensive call across midnight shows a pair of opposite drifts on adjacent days. That signature is the
-straddle, not a loss.
-
-## The gateway read
-
-`GET /spend/logs/v2` with `start_date`/`end_date`, paginated (verified against LiteLLM 1.104's source: a UTC window on
-`startTime`, both ends inclusive; `page_size` at most 1000; `total` is capped at 10 000, so the number of pages is never read
-from it). The sort has no tie-breaker, so a row could in principle move between pages; rows are therefore de-duplicated by
-`request_id`, and when the response's own `total` is below the cap it must equal the rows collected or the read is declared
-INCOMPLETE. An incomplete read is never compared: a truncated sum would show every tenant as under-metered and page someone
-for nothing. The ceiling is `USAGE_RECONCILE_GATEWAY_MAX_PAGES`.
-
-## What a pass costs (disclosed)
-
-The events are read by TIME, and the table's index leads with the tenant (`usage_events (tenant, occurred_at)`), so a pass scans
-the table (checked with EXPLAIN: a sequential scan). A time-only index would
-make it cheap and would tax the insert of every model call for the benefit of a job that runs a few times a day, so it was not added.
-Acceptable for a few passes a day at moderate volume; if a pass becomes slow, that index (or a partition by day) is the fix, and
-`USAGE_RECONCILE_LOOKBACK_DAYS` is the lever until then.
-
-Needs the gateway's admin key (`LITELLM_MASTER_KEY`, read from the environment by the caller, never stored here): spend logs are
-an admin view. A narrower key is a follow-up.
+Needs the gateway admin key (`LITELLM_MASTER_KEY`, read from the environment by the caller, never stored
+here), since spend logs are an admin view.
 """
 import logging
 from collections.abc import Iterable, Mapping
@@ -225,17 +203,15 @@ def compare(
 def attribute_gateway(
     raw: Mapping[tuple[str, date], Decimal], tenants: Iterable[str]
 ) -> tuple[dict[Key, Decimal], Decimal]:
-    """Gateway spend keyed by tenant, plus the spend that belongs to no tenant of this app.
-
-    The gateway's end user names the PERSON (`tenant:<tenant>/user:<principal>`), and the reconciliation is per tenant, so
-    each person's spend is summed into their tenant's day; the tenant is read off the id, not looked up. A tenant the gateway
-    spent for and this database has no events for needs no special case: `compare` already reports a day present on one
-    side only as a difference from zero, which is the worst shape a lost meter can take.
-
-    Rows written before the end user named the person carry the older one-way id (`tenant_<hash>`, `gateway.legacy_end_user_id`),
-    which is still in the spend logs for as long as the gateway keeps them: those tenants are found by hashing the ones this
-    database knows, and one that matches none is still a finding, named by that id. Anything else (no identity, or another
-    application's end users) is `unattributed`: reported, never drift."""
+    """Gateway spend keyed by tenant, plus the spend that belongs to no tenant of this app. The gateway's end
+    user names the PERSON (`tenant:<tenant>/user:<principal>`), so each person's spend is summed into their
+    tenant's day, with the tenant read off the id. A tenant the gateway spent for and this database has no
+    events for needs no special case: `compare` already reports a day present on one side only as a difference
+    from zero. Rows from before the end user named the person carry the older id (`tenant_<hash>`,
+    `gateway.legacy_end_user_id`): those tenants are found by hashing the ones this database knows, and one
+    matching none is still a finding, named by that id. Anything else (no identity, another application's end
+    users) is `unattributed`: reported, never drift.
+    """
     legacy = {gateway.legacy_end_user_id(tenant): tenant for tenant in tenants}
     attributed: dict[Key, Decimal] = {}
     unattributed = ZERO

@@ -229,13 +229,10 @@ class TestRunLoop:
         assert events == [{"type": "started"}, {"type": "done", "chunks": 5}]
 
     async def test_sizes_the_default_executor_to_max_concurrency(self, monkeypatch):
-        """The loop's default executor (what asyncio.to_thread borrows from)
-        has no relationship to _MAX_CONCURRENCY out of the box — Python's own
-        default is min(32, cpu_count+4), unrelated to this app's own
-        concurrency setting and hard-capped at 32 regardless of host (see
-        run()'s own comment). Proves run() sizes it explicitly instead,
-        rather than leaving it to that unrelated, environment-dependent
-        default."""
+        """The loop's default executor (what asyncio.to_thread borrows from) has no relationship to
+        _MAX_CONCURRENCY out of the box — Python's own default is min(32, cpu_count+4), unrelated to this
+        app's own concurrency setting and hard-capped at 32 regardless of host (see run()'s own comment).
+        """
         client = FakeRedis()
         monkeypatch.setattr(ingest_worker, "get_client", lambda: client)
 
@@ -280,12 +277,10 @@ class TestRunLoop:
 
 
 class TestConcurrentDispatch:
-    """run() no longer awaits process_job one job at a time — it acquires a
-    semaphore slot, then asyncio.create_tasks _process_with_limit per entry
-    (see run()'s own comments for why the semaphore is acquired BEFORE task
-    creation, not inside it). Same shape, same test structure, as
-    tests/job_queue/test_agent_worker.py::TestConcurrentDispatch — this replicates that
-    exact acquire-then-dispatch pattern against several ingest jobs at once."""
+    """run() no longer awaits process_job one job at a time — it acquires a semaphore slot, then
+    asyncio.create_tasks _process_with_limit per entry (see run()'s own comments for why the semaphore is
+    acquired BEFORE task creation, not inside it).
+    """
 
     async def test_bounds_concurrency_and_actually_overlaps(self, monkeypatch):
         max_concurrency = 2
@@ -343,12 +338,9 @@ class TestConcurrentDispatch:
 
 
 class TestHandleReclaimedJob:
-    """`_handle_reclaimed_job` is what `_reclaim_loop` calls for every entry
-    `queue.py::reclaim_stale_entries` finds abandoned by a dead worker.
-    Always safely retried now (up to MAX_AUTO_RECLAIM_RETRIES) — see this
-    module's own docstring for why re-running `ingest_text` is safe
-    (content-derived point ids, app/ingestion/ingestor.py::_content_point_id) —
-    with dead-lettering as the fallback only once retries are exhausted."""
+    """`_handle_reclaimed_job` is what `_reclaim_loop` calls for every entry `queue.py::reclaim_stale_entries`
+    finds abandoned by a dead worker.
+    """
 
     async def test_republishes_the_job_instead_of_dead_lettering_by_default(self):
         client = FakeRedis()

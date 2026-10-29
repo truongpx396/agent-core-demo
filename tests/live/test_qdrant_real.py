@@ -1,39 +1,26 @@
-"""A real Qdrant + real embedding-model round trip for
-app/retrieval/qdrant_store.py — the fake-free counterpart to
-tests/retrieval/test_qdrant_store.py, which (correctly, for a fast/hermetic
-suite) mocks `get_client()` entirely and only proves the right
-`collection_name`/args reach a fake client. What that can't catch — a real
-qdrant-client/qdrant-server wire-protocol mismatch (named dense+sparse
-vectors, `FusionQuery(fusion=Fusion.RRF)`, `Prefetch`) breaking silently
-across a dependency bump — needs an actual server, hence `@pytest.mark.llm`
-(see tests/containers.py's own docstring for why this self-skips without
-Docker rather than needing `make up`).
+"""A real Qdrant + real embedding-model round trip for app/retrieval/qdrant_store.py: the fake-free counterpart
+to tests/retrieval/test_qdrant_store.py, which (correctly, for a fast hermetic suite) mocks `get_client()` and
+proves only that the right `collection_name`/args reach a fake client. What that can't catch is a
+qdrant-client/qdrant-server wire-protocol mismatch (named dense+sparse vectors,
+`FusionQuery(fusion=Fusion.RRF)`, `Prefetch`) breaking silently across a dependency bump. That needs a real
+server, hence `@pytest.mark.llm` (tests/containers.py's docstring explains why it self-skips without Docker
+instead of needing `make up`).
 
-`@pytest.mark.llm`, not `@pytest.mark.integration` — moved here from
-tests/integration/ after a real CI run caught `openai.APIConnectionError`:
-`app.retrieval.embeddings.embed_text` (dense leg) is a REAL network call to
-an embedding API (`app/retrieval/embeddings.py`'s own docstring: "Dense
-stays routed through LiteLLM like every other model call in this app"),
-NOT the local fastembed model this file's own docstring originally, and
-incorrectly, assumed it was — only `embed_sparse` is local now (`rerank`
-moved to a dedicated `ml-service` container — see that function's own
-docstring; this test's own `hybrid_search` calls below need it reachable
-at `ML_SERVICE_URL`, same as the real app). The `test-integration` job
-deliberately provisions no LLM/embedding backend at all (that's the whole
-reason it's cheap), so this needs `tests/live/`'s `ollama_endpoint` fixture
-(a real `nomic-embed-text` model, sharing the same container
-`test_agent_tool_calling.py`'s chat model uses — see
+`@pytest.mark.llm`, not `integration`: it moved here from tests/integration/ after a CI run caught
+`openai.APIConnectionError`. `app.retrieval.embeddings.embed_text` (the dense leg) is a REAL network call to
+an embedding API ("Dense stays routed through LiteLLM like every other model call in this app", per
+`embeddings.py`), NOT the local fastembed model this file originally and wrongly assumed. Only `embed_sparse`
+is local; `rerank` moved to a dedicated `ml-service` container (see its docstring), which this test's
+`hybrid_search` calls need reachable at `ML_SERVICE_URL`, as in the real app. The `test-integration` job
+provisions no LLM/embedding backend (that is why it's cheap), so this needs `tests/live/`'s `ollama_endpoint`
+fixture (a real `nomic-embed-text`, in the container `test_agent_tool_calling.py`'s chat model shares; see
 tests/containers.py::ensure_ollama) alongside `ensure_qdrant()`.
 
-Uses the REAL `hybrid_search`/`ensure_collection`/`build_point`/`upsert` —
-not hand-rolled vectors bypassing them — deliberately: this is the one test
-in this suite that exercises the exact same code path `search_docs` runs in
-production, dense+sparse fusion and reranking included, rather than a mock
-proving only that the right arguments were passed. `embed_text`/
-`ensure_collection`/`upsert`/`hybrid_search` are all `async def` now, so
-both tests below are `async def` themselves and await each real I/O call
-directly (`embed_sparse` stays sync — a local fastembed model, CPU-bound,
-correctly never converted).
+It uses the REAL `hybrid_search`/`ensure_collection`/`build_point`/`upsert`, not hand-rolled vectors that
+bypass them: it is the one test exercising the exact code path `search_docs` runs in production (dense+sparse
+fusion and reranking included) instead of a mock proving the right arguments were passed.
+`embed_text`/`ensure_collection`/`upsert`/`hybrid_search` are `async def`, so both tests are too and await
+each real I/O call directly (`embed_sparse` stays sync: a local CPU-bound fastembed model).
 """
 
 import pytest
@@ -92,18 +79,10 @@ async def test_hybrid_search_round_trips_through_a_real_server():
 
 
 async def test_a_point_with_no_sparse_vector_is_still_found_via_the_dense_leg():
-    """`build_point(sparse_vector=None)` is real and supported — "a caller
-    whose sparse embedding failed can still write a point" per its own
-    docstring — so a point stored that way has NO entry in Qdrant's sparse
-    index at all. That's not `hybrid_search`'s `except`-branch degrade (which
-    fires when computing the QUERY's own sparse embedding fails, not when a
-    STORED point lacks one); it's the ordinary two-leg RRF fusion, with this
-    particular point contributed by only one leg. Still worth a real-server
-    test: whether RRF fusion actually surfaces a point present in only ONE
-    of its two `Prefetch` legs is real Qdrant server behavior, not something
-    tests/retrieval/test_qdrant_store.py's mocked client (which stubs
-    `query_points` to just return `[]` and asserts on the call args) can
-    exercise."""
+    """`build_point(sparse_vector=None)` is real and supported — "a caller whose sparse embedding failed can
+    still write a point" per its own docstring — so a point stored that way has NO entry in Qdrant's sparse
+    index at all.
+    """
     collection = "integration-test-docs-dense-only"
     dense_vector = await embeddings.embed_document("Ecorp support hours are 9am to 5pm weekdays")
     await qdrant_store.ensure_collection(dim=len(dense_vector), collection=collection)

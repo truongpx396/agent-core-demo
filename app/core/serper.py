@@ -1,32 +1,32 @@
-"""The client for serper.dev, a Google Search API: the backend of the `web_search` tool (`app/domains/web_search.py`).
+"""The client for serper.dev, a Google Search API: the backend of the `web_search` tool
+(`app/domains/web_search.py`).
 
-What was measured against the live API (2026-10-28), because the rest of this module rests on it:
+Measured against the live API (2026-10-28), because the rest of this module rests on it:
+- `POST https://google.serper.dev/search`, key in an `X-API-KEY` header, body `{"q": ..., "num": N}`. A good
+  call is 200 with `organic: [{title, link, snippet, position, date?}]`, `credits: 1` and rate-limit headers
+  (`x-ratelimit-limit: 25`). Only `organic` is read: no `answerBox` or `knowledgeGraph` appeared in either
+  probe, and parsing a shape never seen is how a client breaks quietly.
+- A wrong key is HTTP 403 `{"message": "Unauthorized.", "statusCode": 403}`.
+- A BLANK query is not an error: `"   "` returned 200 with unrelated results and `credits: 1`. The provider
+  bills for it, so a blank query is refused here before any request (`blank_query`).
+- NOT measured, so not claimed: what an account with no credits returns, and what a 429 looks like (probing
+  the limit would spend the credits it protects). Both are mapped by status class, and the provider's own
+  `message` goes to the log.
 
-  * `POST https://google.serper.dev/search`, the key in an `X-API-KEY` header, a JSON body `{"q": ..., "num": N}`. A good call is 200
-    with `organic: [{title, link, snippet, position, date?}]`, `credits: 1` and rate-limit headers (`x-ratelimit-limit: 25`).
-    `peopleAlsoAsk` and `relatedSearches` come and go with the query. No `answerBox` or `knowledgeGraph` appeared in either probe,
-    so this module reads `organic` and nothing else: parsing a field whose shape was never seen is how a client breaks quietly.
-  * A wrong key is HTTP 403 `{"message": "Unauthorized.", "statusCode": 403}`.
-  * A BLANK query is not an error. `"   "` came back 200 with unrelated results and `credits: 1`: the provider bills for it.
-    That is why a blank query is refused here before any request (`blank_query`), and not left to the tool's argument check alone.
-  * NOT measured, so not claimed: what an account with no credits returns (there is no safe way to find out), and what a 429 looks
-    like (the limit is 25 per window; probing it would spend the credits it protects). Both are mapped by status class below, which
-    is the honest reading of HTTP, and the provider's own `message` goes to the log so an operator sees the real text.
+Failure policy (constitution Principle V). A search is READ-ONLY: it changes only the account's credit
+balance.
+- No key: `SearchNotConfigured`, no request. Web search is optional and off by default like Langfuse, so this
+  is an answer, not an error (the tool turns it into a normal reply; `agent_tool_errors_total` is untouched).
+- A refusal (4xx), a 5xx or an unreadable 200: `SearchFailed`, with a message written for the model and the
+  person. The provider's body NEVER reaches either (it is logged, scrubbed, truncated). Not retried: the
+  request landed.
+- Only a connection that never opened (`ConnectError`, `ConnectTimeout`) is retried: three attempts under
+  `app/core/resilience.py::CircuitBreaker`. A read timeout is NOT, although a search is idempotent in effect:
+  it may have been processed and billed, and "retry only what provably never landed" is the rule for every
+  retry here (Principle IV).
 
-Failure policy, one line each (constitution Principle V). A search is READ-ONLY: it changes nothing on the far side except the
-account's credit balance.
-
-  * No key: `SearchNotConfigured`, no request. Web search is an optional integration, off by default like Langfuse, so this is an
-    answer and not an error (the tool turns it into a normal reply; `agent_tool_errors_total` is not touched).
-  * A refusal (401/403/other 4xx) or a 5xx or an unreadable 200: `SearchFailed`, with a message written for the model and the
-    person. The provider's body NEVER reaches either (it is logged, scrubbed, truncated). Not retried: the request landed.
-  * A connection that never opened (`ConnectError`, `ConnectTimeout`) is the one thing retried, three attempts under
-    `app/core/resilience.py::CircuitBreaker`, then the breaker fails the next calls fast. A read timeout is NOT retried even though a
-    search is idempotent in effect: the request may have been processed and billed, and "retry only what provably never landed" is
-    the rule the whole app holds its retries to (Principle IV, `resilience.py`).
-
-Logs carry the outcome and the status, never the query (Principle V). The key is read once from `SERPER_API_KEY`, is sent only in
-the header, and is also in the scrubber's list of bound secrets, so an echo of it in any tool output is redacted.
+Logs carry the outcome and status, never the query. The key is read once from `SERPER_API_KEY`, sent only in
+the header, and listed among the scrubber's bound secrets.
 """
 import logging
 from dataclasses import dataclass

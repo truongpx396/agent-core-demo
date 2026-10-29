@@ -1,15 +1,13 @@
-"""The model must have no path to a balance (constitution II, specs/010 plan).
+"""The model must have no path to a balance (constitution II, specs/010 plan). Granting, adjusting or clawing
+back credits is an operator action or a signature-verified webhook, never a tool call: a tool the model can
+choose is one a poisoned document can steer, and a wallet write from it would be what the approval gate exists
+to stop. So no such tool exists.
 
-Granting, adjusting or clawing back credits is an operator action or a signature-verified webhook,
-never a tool call. A tool the model can choose is a tool a poisoned document can steer, so a write to
-a wallet from one would be a write the approval gate exists to stop: the fix is that no such tool exists.
-
-This is structural rather than a list of names: a tool cannot reach the wallet without importing it, so
-no module that defines or serves agent tools may import `credit_billing` (the billing package) at all, nor `app.billing_integration`
-(the host's side of the same boundary: it wires the wallet to the pool and holds the reconciliation and export that
-read it; specs/011-billing-module-boundary). (`usage_events`, which
-is not a tool module, is where the wallet is debited, and `budgets`, which is not one either, is where it
-is read to gate a turn; both run in the app's own turn path, outside anything the model can call.)
+The check is structural, not a list of names: a tool can't reach the wallet without importing it, so no module
+that defines or serves agent tools may import `credit_billing` or `app.billing_integration` (the host's side:
+it wires the wallet to the pool and holds the reconciliation and export that read it; specs/011).
+`usage_events` (where the wallet is debited) and `budgets` (where it is read to gate a turn) aren't tool
+modules; both run in the app's turn path, outside anything the model can call.
 """
 import ast
 from pathlib import Path

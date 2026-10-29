@@ -1,44 +1,27 @@
-"""Telegram bot channel (pattern 42) — a fourth interface alongside the CLI,
-the HTTP API, and the built-in web UI. Long-polls Telegram's `getUpdates`
-(no public webhook needed) and publishes each message as an UNATTENDED turn onto the
-domain's requests stream (`app/job_queue/producer.py`, pattern 43), where an
-`agent_worker.py` runs it through `runtime/stream.py::astream_events_turn_unattended()` —
-just a new front door onto the queue every HTTP turn already uses. This process collects
-the events the worker publishes back into one final reply, since Telegram has no
-token-streaming UX. It never runs the graph itself, so it holds no checkpointer pool and
-needs `make up`'s Redis and a worker for its domain (`make agent-worker`, or
-`agent-worker-support`/`-sales`).
+"""Telegram bot channel (pattern 42): a fourth interface beside the CLI, the HTTP API and the web UI. It
+long-polls `getUpdates` (no public webhook) and publishes each message as an UNATTENDED turn onto the domain's
+requests stream (`app/job_queue/producer.py`, pattern 43), where an `agent_worker.py` runs it through
+`astream_events_turn_unattended()`. Telegram has no token streaming, so this process collects the worker's
+events into one reply. It never runs the graph, holds no checkpointer pool, and needs Redis from `make up`
+plus a worker for its domain.
 
-Requires `TELEGRAM_BOT_TOKEN` (create via @BotFather) — refuses to start
-rather than silently no-op when unset, same fail-closed discipline as
-SecurityCtx/moderation. Also the ONE surface in this app that necessarily
-reaches the public internet, unlike the rest of the fully-local stack.
+Requires `TELEGRAM_BOT_TOKEN` (from @BotFather) and refuses to start without it, the same fail-closed
+discipline as SecurityCtx and moderation. It is the ONE surface that necessarily reaches the public internet.
 
-## A generalized gateway, not an Ecorp-only one
+`AGENT_DOMAIN` (default `"ecorp"`) picks the domain whose worker pool receives messages: `AGENT_DOMAIN=support
+python -m app.channels.telegram` runs the support copilot, unmodified. Each domain is its own process with its
+own bot token (not the unbuilt "several domains from one process" registry). A WhatsApp gateway would reuse
+`handle_message`/`stream_turn()` and differ only in transport; not built, for lack of credentials to verify
+it.
 
-`AGENT_DOMAIN` (default `"ecorp"`) picks which domain's worker pool this process's
-messages go to — `AGENT_DOMAIN=support python -m app.channels.telegram` runs the
-support copilot, `AGENT_DOMAIN=sales` the sales concierge, unmodified. Each domain is
-still its own OS process (own bot token) — this is "which domain a process serves," not
-the "several domains from one process" registry the Roadmap still lists as unbuilt.
+HITL: there is no approve/reject UX. The job carries `unattended=True`, so the worker auto-declines a
+mandatory-gate pause (up to `UNATTENDED_MAX_DECLINE_ROUNDS`, then cancels the run): a mutating request never
+becomes a silent write and never leaves the conversation paused. The user always sees a reply: the answer, an
+explicit "needs a person's approval" message, or `_NO_REPLY_FALLBACK` for a turn with no text (`_send_message`
+sends NOTHING for an empty string, which read as the bot ignoring the user).
 
-A WhatsApp gateway for the same domains would reuse
-`handle_message`/`stream_turn()` unchanged — only the
-transport differs (WhatsApp is webhook-based, not long-poll). Not built
-here: no WhatsApp Business credentials to verify it against.
-
-HITL: this channel has no interactive approve/reject UX — the job is published with
-`unattended=True`, so the worker's `astream_events_turn_unattended()` auto-declines a
-mandatory-capability-gate pause (repeatedly, up to `UNATTENDED_MAX_DECLINE_ROUNDS`, then
-cancels the run), so a mutating request never becomes a silent write and never leaves the
-conversation paused. The user always gets a visible reply: the model's own answer, an
-explicit "needs a person's approval" message, or — if a turn somehow produced no text at
-all — `_NO_REPLY_FALLBACK`. (`_send_message` sends NOTHING for an empty string, so
-without that last guard an empty turn read as the bot ignoring the user.)
-
-Run with: `python -m app.channels.telegram` (Makefile's `telegram`/
-`telegram-support`/`telegram-sales`). Its own process, not started by
-`make up`/`make serve`, since it needs a real bot token to do anything.
+Run with `python -m app.channels.telegram` (Makefile `telegram`, `telegram-support`, `telegram-sales`); not
+started by `make up`/`make serve`.
 """
 import asyncio
 import logging
@@ -237,29 +220,22 @@ async def handle_message(
 
 
 async def run() -> None:
-    """The long-poll loop: fetch updates since the last offset, handle each
-    sequentially (one chat at a time), then advance AND PERSIST `offset`
-    past each one — a message is never replayed after a successful reply,
-    and (since `offset` is now durable in Redis, not just a local variable)
-    a process restart resumes from the last one actually handled instead of
-    redelivering every update Telegram still remembers. A crash between
-    finishing `handle_message` and the persisting `_save_offset` call below
-    still means that one message gets redelivered and re-handled on
-    restart (a duplicate reply) — accepted as the right tradeoff over the
-    alternative (persist BEFORE handling), which would silently drop a
-    user's message forever if the crash happened while handling it. The
-    redelivered message is not a second TURN, though: `handle_message` keys the
-    submission by update id (`producer.stream_turn`'s `dedup_key`), so within
-    `RESULTS_STREAM_TTL_SECONDS` it reads the first attempt's results instead of
-    publishing again — still possibly a second copy of the reply, never a
-    second model call or a second question in the thread.
+    """The long-poll loop: fetch updates since the last offset, handle each sequentially (one chat at a time),
+    then advance AND PERSIST `offset` past each. A message is never replayed after a successful reply, and
+    since `offset` is durable in Redis, a restart resumes from the last one actually handled instead of
+    redelivering every update Telegram still remembers.
 
-    Sequential is a deliberate demo-scope choice, and a real limit now that
-    the turns themselves run on a worker pool: the pool can run many chats at
-    once, but this loop waits for one reply before it starts the next, so one
-    slow turn delays every other chat served by this process. Fanning out
-    would need per-chat ordering and an offset that only advances past a
-    contiguous run of finished updates; not built.
+    A crash between finishing `handle_message` and the `_save_offset` below still redelivers that one message
+    (a duplicate reply), the accepted tradeoff against persisting BEFORE handling, which would silently drop a
+    user's message forever if the crash hit while handling it. The redelivery is not a second TURN:
+    `handle_message` keys the submission by update id (`producer.stream_turn`'s `dedup_key`), so within
+    `RESULTS_STREAM_TTL_SECONDS` it reads the first attempt's results instead of publishing again: possibly a
+    second copy of the reply, never a second model call or a second question in the thread.
+
+    Sequential is a deliberate demo-scope choice and a real limit now that turns run on a worker pool: the
+    pool can run many chats at once, but this loop waits for one reply before starting the next, so one slow
+    turn delays every other chat this process serves. Fanning out would need per-chat ordering and an offset
+    that advances only past a contiguous run of finished updates; not built.
     """
     if not TELEGRAM_BOT_TOKEN:
         raise RuntimeError(

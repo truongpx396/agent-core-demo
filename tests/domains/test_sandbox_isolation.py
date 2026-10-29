@@ -1,22 +1,14 @@
-"""Tenant/conversation isolation of the per-conversation sandbox lookup.
+"""Tenant/conversation isolation of the per-conversation sandbox lookup (Principle I, NON-NEGOTIABLE): a sandbox
+holds files a model wrote on a user's behalf, so two conversations must never share one.
+`sandbox_session.get_or_create_sandbox_id` used to find a sandbox by the conversation id *rewritten to
+OpenSandbox's metadata-value rules* (characters outside `[A-Za-z0-9_.-]` became `-`, cut to 63) and never
+looked at the tenant, so `telegram:12345` and `telegram-12345` resolved to one sandbox, as did the same id
+under two tenants (reproduced against the stand-in below; spec 009 B24).
 
-Constitution Principle I (tenant isolation, NON-NEGOTIABLE) applies: a
-sandbox holds files a model wrote on a user's behalf, so two conversations
-must never land in the same one. `sandbox_session.get_or_create_sandbox_id`
-used to find a sandbox by the conversation id *rewritten to OpenSandbox's
-metadata-value rules* (every character outside `[A-Za-z0-9_.-]` became `-`,
-cut to 63 characters) and never looked at the tenant, so `telegram:12345`
-and `telegram-12345` resolved to the same sandbox, and so did the same id
-under two tenants. Reproduced against a stand-in service (below) before the
-fix; spec 009 B24.
-
-The stand-in is the part that has to be honest: it applies the metadata
-filter the way `sandbox_list` documents it (every requested key must equal
-the sandbox's own tag) and enforces the metadata VALUE rules the module
-docstring records (<=63 chars, alphanumeric at both ends, only
-alphanumeric/`-`/`_`/`.` between). That proves the lookup logic and the tags
-this app builds; it does not prove the real service's behaviour (the real
-sandbox service was never driven for this fix — see the 009 spec).
+The stand-in has to be honest: it applies the metadata filter as `sandbox_list` documents it (every requested
+key must equal the sandbox's tag) and enforces the metadata VALUE rules (<=63 chars, alphanumeric at both
+ends, only alphanumeric/`-`/`_`/`.` between). That proves the lookup logic and the tags this app builds, not
+the real service's behaviour (never driven for this fix; see spec 009).
 """
 import json
 import re

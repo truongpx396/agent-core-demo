@@ -120,9 +120,9 @@ def _not_beside_a_foreign_listener(request):
 
 
 def require_test_mode_key(key: str | None) -> str:
-    """The key this tier may use. Unset skips (nothing ran); anything that is not a TEST-mode secret or restricted key FAILS, before a
-    single request is made. Kept a plain function so a hermetic test can pin it: it is the one thing standing between this tier and a
-    live account."""
+    """The key this tier may use. Unset skips (nothing ran); anything that is not a TEST-mode secret or
+    restricted key FAILS, before a single request is made.
+    """
     if not key:
         pytest.skip("STRIPE_API_KEY is not set (put a Stripe SANDBOX secret key in .env)")
     if not key.startswith(("sk_test_", "rk_test_")):
@@ -154,9 +154,10 @@ POLAR_SANDBOX_API = "https://sandbox-api.polar.sh/v1"  # fixed here, never read 
 
 
 def require_polar_sandbox(token: str | None, environment: str) -> str:
-    """The token this tier may use. Unset skips (nothing ran); a deployment configured for PRODUCTION FAILS before a single request is made,
-    because Polar's tokens look the same in both environments and this tier creates and deletes objects. Kept a plain function so a hermetic
-    test can pin it."""
+    """The token this tier may use. Unset skips (nothing ran); a deployment configured for PRODUCTION FAILS
+    before a single request is made, because Polar's tokens look the same in both environments and this tier
+    creates and deletes objects.
+    """
     if not token:
         pytest.skip("POLAR_ACCESS_TOKEN is not set (put an Organization Access Token from sandbox.polar.sh in .env)")
     if environment != "sandbox":

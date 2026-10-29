@@ -1,22 +1,22 @@
 """The turn-entry gating nodes and the per-node reliability policy.
 
-`validate_input` stamps the turn (`ctx` from config, the per-turn resets) and is the one entry point
-of every `graph.invoke()`; `route_after_validation` fails closed on a bad `ctx` (`reject_context`)
-before looking at the message (`reject_input`). `moderate_input` / `route_after_moderation` /
-`reject_moderation` screen the text before anything that spends (pattern 25). `route_after_compaction`
-/ `context_window_exceeded` end a turn whose history summary outgrew its budget. `AGENT_RETRY_POLICY`
-is the retry policy for the one node that talks to the model (pattern 7).
+`validate_input` stamps the turn (`ctx` from config, the per-turn resets) and is the one entry point of every
+`graph.invoke()`; `route_after_validation` fails closed on a bad `ctx` (`reject_context`) before looking at
+the message (`reject_input`). `moderate_input` / `route_after_moderation` / `reject_moderation` screen the
+text before anything that spends (pattern 25). `route_after_compaction` / `context_window_exceeded` end a turn
+whose history summary outgrew its budget. `AGENT_RETRY_POLICY` is the retry policy for the one node that talks
+to the model (pattern 7).
 
-Nodes and routers live at module level (not nested in build_graph) so they're unit-testable directly,
-without compiling a graph or calling a real LLM. Where things are:
-- `graph/state.py` — `State`, `STATE_SCHEMA_VERSION` and the safety-budget constants (a leaf)
-- `graph/build.py` — `GraphDeps`, `GraphProfile` and `build_graph`, the composition root
-- `graph/routing.py` — `should_continue`, `check_output`, `route_after_check`
-- `graph/agent_node.py`, `retrieval.py`, `cache.py`, `compaction.py`, `followups.py`, `retry.py`,
-  `hitl.py` — one node (or node family) each
-- `graph/tool_guards.py`, `loop_guards.py`, `skill_guards.py`, `output_guardrails.py`,
-  `citations.py` — the checks the gates are built from
-- `graph/messages.py`, `graph/utils.py` — helpers with no node logic
+Nodes and routers are module-level (not nested in build_graph) so they're unit-testable without compiling a
+graph or calling an LLM. Where things are:
+- `graph/state.py`: `State`, `STATE_SCHEMA_VERSION` and the safety-budget constants (a leaf)
+- `graph/build.py`: `GraphDeps`, `GraphProfile` and `build_graph`, the composition root
+- `graph/routing.py`: `should_continue`, `check_output`, `route_after_check`
+- `graph/agent_node.py`, `retrieval.py`, `cache.py`, `compaction.py`, `followups.py`, `retry.py`, `hitl.py`:
+  one node (or node family) each
+- `graph/tool_guards.py`, `loop_guards.py`, `skill_guards.py`, `output_guardrails.py`, `citations.py`: the
+  checks the gates are built from
+- `graph/messages.py`, `graph/utils.py`: helpers with no node logic
 """
 import functools
 import logging

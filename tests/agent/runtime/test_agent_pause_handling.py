@@ -27,16 +27,10 @@ from tests.ecorp import build_graph
 
 
 class TestAstreamEventsTurnUnattended:
-    """astream_events_turn_unattended (GRAPH_PATTERNS.md pattern 43) — the
-    async, streaming sibling of pattern 8's auto-decline, used by
-    app/job_queue/agent_worker.py's Redis Streams consumer and
-    app/channels/telegram.py, neither of which has an interactive human to
-    show an approval_required event to. Tested by monkeypatching
-    astream_events_turn/astream_events_resume themselves (both plain
-    module-level functions) rather than driving a real graph — the
-    event-forwarding logic is what's under test here, not the
-    graph/checkpointer machinery those two already have their own coverage
-    for (tests/agent/runtime/test_durable_checkpoint.py)."""
+    """astream_events_turn_unattended (GRAPH_PATTERNS.md pattern 43) — the async, streaming sibling of pattern
+    8's auto-decline, used by app/job_queue/agent_worker.py's Redis Streams consumer and
+    app/channels/telegram.py, neither of which has an interactive human to show an approval_required event to.
+    """
 
     async def test_forwards_every_event_unchanged_when_never_paused(self, monkeypatch):
         async def fake_turn(text, thread_id, ctx, require_approval=False, images=None):
@@ -132,13 +126,9 @@ class TestAstreamEventsTurnUnattended:
 
 
 class TestAstreamEventsContinueTurnUnattended:
-    """`astream_events_continue_turn_unattended` is what the queue worker runs when it retries a
-    crashed unattended turn (a Telegram message) after the worker that began it died. The retry
-    is the same decline loop as the first attempt — they share `_decline_every_pause` — because a
-    continuation that reached an approval gate and forwarded the pause would end the job at an
-    `approval_required` its channel cannot answer and leave the conversation paused (pattern 8).
-    Like the class above, these replace the stream entry points rather than drive a real graph:
-    the forwarding and the ceiling are what is under test."""
+    """`astream_events_continue_turn_unattended` is what the queue worker runs when it retries a crashed
+    unattended turn (a Telegram message) after the worker that began it died.
+    """
 
     async def test_forwards_every_event_unchanged_when_never_paused(self, monkeypatch):
         async def fake_continue(thread_id, ctx, cancel_check=None):
@@ -248,18 +238,10 @@ def _add_note_call(call_id):
 
 
 class TestUnattendedSecondPause:
-    """Real bug (reproduced before this fix): the helper declined ONE pause.
-    If the model then re-requested the same gated write, the conversation
-    paused a SECOND time, that `approval_required` was forwarded (not
-    declined), and the checkpoint stayed paused. An unattended channel has
-    no way to resolve a pause, so every later message was refused with
-    "pending approval" and the user — who had already received an EMPTY reply
-    to the first message — could never recover that conversation. The tests
-    above mock `astream_events_turn`/`astream_events_resume` and so never
-    drove a real graph through a second pause.
-
-    Fails closed throughout: no write ever ran. The defect was liveness, not
-    safety."""
+    """Real bug (reproduced before this fix): the helper declined ONE pause. If the model then re-requested the
+    same gated write, the conversation paused a SECOND time, that `approval_required` was forwarded (not
+    declined), and the checkpoint stayed paused.
+    """
 
     @staticmethod
     async def _run(monkeypatch, script, thread_id):

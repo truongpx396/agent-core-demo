@@ -1,24 +1,20 @@
-"""OpenTelemetry metrics SDK wiring — installs the MeterProvider every
-Counter/Histogram in app/core/metrics.py records against.
+"""OpenTelemetry metrics SDK wiring: installs the MeterProvider every Counter/Histogram in app/core/metrics.py
+records against.
 
-Push, not pull: every instrumented process (the API and each scaled
-agent_worker.py/ingest_worker.py replica, pattern 43) pushes metrics via
-OTLP to a shared otel-collector, which exposes one aggregated Prometheus
-target. A pull-based /metrics endpoint on the API alone (the old design)
-could never see a worker's metrics — nothing scrapes a worker process.
+Push, not pull: every instrumented process (the API and each scaled agent_worker.py/ingest_worker.py replica,
+pattern 43) pushes metrics via OTLP to a shared otel-collector, which exposes one aggregated Prometheus
+target. The old pull-based /metrics on the API alone could never see a worker's metrics; nothing scrapes a
+worker.
 
-Call `configure_telemetry(service_name)` once, at real process startup
-(app/api/main.py's `lifespan`, or a worker/channel's `__main__` block) —
-NEVER at import time. Unlike `logging_config.configure_logging()` (freely
-re-callable), OTel's `set_meter_provider` is call-once; a second call just
-warns and is ignored. Keeping this inside `lifespan` (never entered under
-pytest, see tests/api/test_api.py) keeps a real network-bound
-OTLPMetricExporter from winning that race against a test's own
-MeterProvider during `pytest -q`.
+Call `configure_telemetry(service_name)` once, at real process startup (app/api/main.py's `lifespan`, or a
+worker/channel's `__main__`), NEVER at import time. Unlike `logging_config.configure_logging()` (freely
+re-callable), OTel's `set_meter_provider` is call-once; a second call just warns and is ignored. Keeping it
+inside `lifespan` (never entered under pytest, see tests/api/test_api.py) stops a real network-bound
+OTLPMetricExporter from winning that race against a test's own MeterProvider during `pytest -q`.
 
-Import order vs app/core/metrics.py doesn't matter: `get_meter(...)`
-(called at that module's import time) returns a proxy that defers real
-instrument creation until a MeterProvider is installed, then replays it.
+Import order against app/core/metrics.py doesn't matter: `get_meter(...)`, called at that module's import
+time, returns a proxy that defers real instrument creation until a MeterProvider is installed, then replays
+it.
 """
 import logging
 

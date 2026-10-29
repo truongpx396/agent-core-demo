@@ -1,17 +1,15 @@
-"""The billing package depends on nothing it does not declare (specs/011-billing-module-boundary D26).
+"""The billing package depends on nothing it does not declare (specs/011-billing-module-boundary D26). This is
+the PACKAGE's half of the boundary and knows nothing of the repository around it: the rule isn't "don't import
+the agent app" (true of one host only) but that every module under `src/credit_billing` imports only the
+standard library, itself and the dependencies its own `pyproject.toml` declares. So it can't depend on ANY
+host, and a new import of an undeclared library fails here until declared on purpose.
 
-This is the PACKAGE's half of the boundary and it knows nothing about the repository it happens to live in. The rule is not "do not
-import the agent app" (which would only be true of one host): it is that every module under `src/credit_billing` imports only the
-standard library, itself, and the dependencies its own `pyproject.toml` declares. So it cannot depend on ANY host, and a new import
-of an undeclared library fails here until the dependency is declared on purpose.
-
-It walks EVERY import node, nested ones included, because the two provider adapters once imported the agent app's settings inside a
-constructor, where a scan of top-level imports does not see them. The repo's own `tests/billing/test_billing_core_boundary.py` is the
-other half: it enforces the same line from the application's side.
-
-Each rule has a test of the scanner itself, because a guard that cannot fail proves nothing. The behaviour tests at the bottom
-(an unwired package refuses; the connection hands the provider's own transaction to the caller; the settings stand alone) moved
-here from the repo's test, since they are about the package and need nothing but the package.
+It walks EVERY import node, nested ones included: the two provider adapters once imported the app's settings
+inside a constructor, which a top-level scan misses. The repo's tests/billing/test_billing_core_boundary.py
+enforces the same line from the app's side. Each rule has a test of the scanner itself, because a guard that
+can't fail proves nothing. The behaviour tests at the bottom (an unwired package refuses; the connection hands
+the provider's own transaction to the caller; the settings stand alone) moved here since they need only the
+package.
 """
 import ast
 import json

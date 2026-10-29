@@ -1,48 +1,32 @@
-"""Real-subprocess capacity test: do N independently-scaled
-app/job_queue/agent_worker.py processes, each running M turns concurrently
-(AGENT_WORKER_MAX_CONCURRENCY), genuinely absorb N*M concurrent real HTTP
-requests against POST /chat/stream/queued — correctly, not just without
-crashing?
+"""Real-subprocess capacity test: do N independently scaled app/job_queue/agent_worker.py processes, each running
+M turns concurrently (AGENT_WORKER_MAX_CONCURRENCY), absorb N*M concurrent real HTTP requests against POST
+/chat/stream/queued correctly, not just without crashing?
 
-tests/agent/runtime/test_concurrent_turns.py already proves the underlying
-mechanism is correct at small scale, in-process (direct function calls,
-one Python interpreter). This is the complementary question at PRODUCTION
-shape and real scale: real OS processes, a real HTTP server, real
-concurrent client connections, real Redis queueing across real worker
-processes — the one level nothing else in this suite drives.
+tests/agent/runtime/test_concurrent_turns.py proves the mechanism at small scale in-process (direct calls, one
+interpreter). This asks the question at PRODUCTION shape: real OS processes, a real HTTP server, real
+concurrent client connections, real Redis queueing across real worker processes. Nothing else in the suite
+drives that level.
 
-Deliberately doesn't need a real LLM: loadtest/fake_llm_server.py stands in
-(see that module's own docstring for why — native Ollama on a dev machine
-serializes to exactly one in-flight generation, which would make a test
-like this measure Ollama's ceiling, not this app's own). `@pytest.mark.integration`,
-not `@pytest.mark.llm`/`e2e`: needs Docker (real Postgres + Redis via
-tests/containers.py) but no Ollama/GPU sidecar, so it runs in the same CI
-job as the rest of tests/integration/ — same reasoning tests/live/conftest.py's
-own module docstring gives for why THAT file's `real_stack` needs the
-`llm`/`e2e` markers and this one doesn't.
+It needs no real LLM: loadtest/fake_llm_server.py stands in (see its docstring; native Ollama on a dev machine
+serializes to one in-flight generation, so a test like this would measure Ollama's ceiling, not the app's).
+`@pytest.mark.integration`, not `llm`/`e2e`: it needs Docker (real Postgres + Redis via tests/containers.py)
+but no Ollama/GPU sidecar, so it runs in the same CI job as the rest of tests/integration/
+(tests/live/conftest.py's docstring gives the reverse reasoning for why ITS `real_stack` needs `llm`/`e2e`).
 
-TestScaledWorkersAbsorbConcurrentLoad is a regression guard for a real
-capacity bug found while manually verifying this exact scenario before
-writing it: 250 concurrent requests against 5 agent_worker.py processes at
-AGENT_WORKER_MAX_CONCURRENCY=50 each initially failed ~83% of the time with
-redis.exceptions.MaxConnectionsError — app/job_queue/queue.py::get_client()'s
-Redis pool silently inherited redis-py's own 100-connection default, a
-ceiling with nothing to do with how many workers or how much per-worker
-concurrency was configured (every POST /chat/stream/queued SSE connection
-holds a pooled connection for the FULL blocking-read duration of its turn,
-so concurrent SSE connections map ~1:1 onto pool connections held). Fixed
-via REDIS_MAX_CONNECTIONS (app/core/config.py). Correctness alone wouldn't
-have caught this — every individual turn that DID get a connection still
-completed correctly; only running at a concurrency level past the old
-silent default surfaces it, which is exactly what that class does on every
-run.
+TestScaledWorkersAbsorbConcurrentLoad guards a real capacity bug found while manually verifying this scenario:
+250 concurrent requests against 5 agent_worker.py processes at AGENT_WORKER_MAX_CONCURRENCY=50 each failed
+~83% of the time with redis.exceptions.MaxConnectionsError. app/job_queue/queue.py::get_client()'s Redis pool
+silently inherited redis-py's 100-connection default, a ceiling unrelated to the configured workers or
+concurrency (every POST /chat/stream/queued SSE connection holds a pooled connection for the FULL blocking
+read of its turn, so concurrent SSE connections map ~1:1 onto held pool connections). Fixed via
+REDIS_MAX_CONNECTIONS (app/core/config.py). Correctness alone wouldn't have caught it, since every turn that
+got a connection still completed correctly; only running past the old default surfaces it, which that class
+does on every run.
 
-TestScaledWorkersHandleHITLAndSubagentDelegation extends the same real
-stack to the two other real-production paths a queued turn can take: a
-paused human_approval gate resumed via POST /chat/resume, and a
-run_subagent delegation whose OWN nested LLM call goes back over the wire
-to loadtest/fake_llm_server.py — both real, at real concurrency, across
-the same 5 real worker processes.
+TestScaledWorkersHandleHITLAndSubagentDelegation extends the same real stack to the other two production paths
+of a queued turn: a paused human_approval gate resumed via POST /chat/resume, and a run_subagent delegation
+whose OWN nested LLM call goes over the wire to loadtest/fake_llm_server.py, both at real concurrency across
+the same 5 worker processes.
 """
 import asyncio
 import collections
@@ -71,28 +55,16 @@ from tests.containers import (
     ensure_redis,
 )
 
-# `xdist_group` forces every test in this module onto the SAME xdist
-# worker — needed because `scaled_stack` below is only `scope="module"`,
-# which under plain `-n auto`/`--dist=load` is per-WORKER-PROCESS, not
-# per-session: pytest-xdist's default scheduler assigns individual test
-# ITEMS to whichever worker is free, with no awareness of which fixtures
-# they share, so this module's 3 tests landing on 3 different workers means
-# 3 separate 7-real-subprocess `scaled_stack`s (5 agent_worker.py + uvicorn
-# + fake_llm_server each) all running at once — verified directly this is
-# real, not theoretical: reproduced a genuine intermittent failure in
-# TestScaledWorkersHandleHITLAndSubagentDelegation under `-n auto` (12
-# workers, 3 heavy tests landing on separate ones) that disappeared when
-# the same test ran alone. tests/containers.py's own module docstring
-# already establishes "cross-worker sharing under xdist is the whole
-# point, and it's not free" for the Postgres/Redis/Qdrant containers this
-# fixture itself calls into — this marker is the same fix applied to the
-# real-subprocess stack layered on top, which didn't inherit that sharing
-# just by depending on the containers that have it. Requires
-# `--dist=loadgroup` on the invoking `pytest` command (plain `load`/
-# `loadscope` ignore this marker entirely) — see .github/workflows/ci.yml's
-# `test-integration` job and the Makefile's own `test-integration` target,
-# the only two places `-m integration` (and therefore this module) ever
-# runs; every other job keeps its default scheduler untouched.
+# `xdist_group` puts every test in this module on the SAME xdist worker. `scaled_stack` below is only
+# `scope="module"`, which under `-n auto`/`--dist=load` is per-WORKER-PROCESS: xdist assigns test ITEMS to
+# whichever worker is free, regardless of shared fixtures, so this module's 3 tests on 3 workers would build 3
+# separate stacks of 7 real subprocesses (5 agent workers + uvicorn + fake LLM) at once. That is real: it
+# caused an intermittent failure in TestScaledWorkersHandleHITLAndSubagentDelegation under `-n auto` (12
+# workers) that vanished when the test ran alone. It is the same fix as tests/containers.py ("cross-worker
+# sharing under xdist is not free") applied to the subprocess stack layered on those containers. Needs
+# `--dist=loadgroup` on the pytest command (`load`/`loadscope` ignore the marker); see ci.yml's
+# `test-integration` job and the Makefile target, the only places `-m integration` runs. Every other job keeps
+# its default scheduler.
 pytestmark = [pytest.mark.integration, pytest.mark.xdist_group(name="scaled_stack")]
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -336,15 +308,11 @@ def scaled_stack(qdrant_collection: str) -> Iterator[str]:
 
 @pytest.fixture(scope="module")
 def qdrant_url(scaled_stack) -> str:
-    """The same Qdrant container `scaled_stack` already provisioned for
-    `GET /health/ready` — `ensure_qdrant()` is idempotent/cached (see
-    tests/containers.py), so calling it again here just exposes that same
-    container's URL to THIS test process too, letting a test verify a
-    real write (e.g. a HITL-approved `remember` call) actually landed,
-    without needing `scaled_stack` itself to change its own return shape.
-    Depends on `scaled_stack` only to document the ordering intent, not
-    because it's strictly required — `ensure_qdrant()` would work fine
-    called first too."""
+    """The same Qdrant container `scaled_stack` already provisioned for `GET /health/ready` — `ensure_qdrant()`
+    is idempotent/cached (see tests/containers.py), so calling it again here just exposes that same
+    container's URL to THIS test process too, letting a test verify a real write (e.g. a HITL-approved
+    `remember` call) actually landed, without needing `scaled_stack` itself to change its own return shape.
+    """
     return ensure_qdrant()["qdrant_url"]
 
 
@@ -364,11 +332,7 @@ def _parse_final_answer(sse_text: str) -> str:
 
 
 def _parse_error_messages(sse_text: str) -> list[str]:
-    """Every `"error"` event's content from the same SSE body. A failed turn is
-    still HTTP 200 with no answer text, so without surfacing these an assertion on
-    `_parse_final_answer` alone reports only "(expected, '')" and the real reason
-    (a deadline, a worker error, ...) has to be inferred from worker log counts —
-    which is how the first-response-deadline failure had to be diagnosed."""
+    """Every `"error"` event's content from the same SSE body."""
     errors = []
     for line in sse_text.splitlines():
         if not line.startswith("data: "):

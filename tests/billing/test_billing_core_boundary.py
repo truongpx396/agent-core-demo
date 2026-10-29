@@ -1,31 +1,29 @@
-"""The agent app's half of the billing boundary (specs/011-billing-module-boundary).
+"""The agent app's half of the billing boundary (specs/011-billing-module-boundary). Billing is a package
+(`packages/billing/`, `credit_billing`) that the app uses and that must not know the app exists. Two test
+files enforce it, one per side:
+- `packages/billing/tests/test_boundary.py` is the PACKAGE's half and knows nothing of this repo: it imports
+  only the stdlib, itself and the dependencies its own `pyproject.toml` declares.
+- this file is the APP's half. It also keeps the repo-level gate that the package never reaches into `app.*`
+  (a belt to the package's braces, failing first in this repo's run), and everything about how the APP reaches
+  the package.
 
-Billing is a package (`packages/billing/`, importable as `credit_billing`) that the agent app uses and that must not know the app
-exists. Two test files enforce that, one on each side of the line:
-
-  * `packages/billing/tests/test_boundary.py` is the PACKAGE's half and knows nothing about this repo: the package imports only the
-    standard library, itself and the dependencies its own `pyproject.toml` declares, so it cannot depend on ANY host.
-  * this file is the APP's half. It also keeps the repo-level gate that the package never reaches into `app.*` (a belt to the
-    package's braces, and the thing that fails first in this repo's own run), and everything that is about how the APP reaches
-    the package.
-
-Each rule has a test of the scanner itself, because a guard that cannot fail proves nothing (the test that no module serving a tool
-may import the wallet is the model, and its third test is the same idea). Seven things are enforced here:
-
-  1. no file in the package imports `app` or `app.<anything>` (AST over every import node, nested ones included: the two
-     provider adapters used to import the app's settings inside a constructor, which a scan of top-level imports does not see);
-  2. importing every package module with the app NOT on the import path loads no `app.*` module (runtime; catches what an AST walk
-     cannot, such as an import reached through `importlib`);
-  3. every host module that imports a package module which uses the database also imports `app.billing_integration`, the package
-     whose import wires the package to the app's pool, so no entry point can reach it unwired;
-  4. nothing under `app/` or `scripts/` outside `app/billing_integration/` imports `credit_billing` at all, except
-     `app/core/config.py` and only for its settings module (the app's `Settings` inherits the package's `BillingSettings`);
-  5. no host file outside `app/billing_integration/` holds an SQL string that names a package table, because an import scan cannot
-     see `SELECT ... FROM billing_customers` and that is how the app used to reach into the package;
-  6. the old `app/billing/` directory is gone, so nothing can quietly import a stale copy;
-  7. (spec 013) the agent core carries no billing VOCABULARY: no identifier or string outside `app/billing_integration/` names a rate, a
-     markup, the gate's or the export's settings, or any package table. An import scan and an SQL scan cannot see a setting name or a
-     column, which is how the agent's own meter used to carry the rating, the debit and the export.
+Each rule has a test of the scanner itself, because a guard that cannot fail proves nothing. Seven things are
+enforced:
+1. no file in the package imports `app` or `app.<anything>` (AST over every import node, nested ones too: the
+   provider adapters once imported the app's settings inside a constructor, which a top-level scan misses);
+2. importing every package module with the app NOT on the path loads no `app.*` module (runtime; catches
+   imports reached through `importlib`);
+3. every host module importing a database-using package module also imports `app.billing_integration`, whose
+   import wires the package to the app's pool, so no entry point reaches it unwired;
+4. nothing under `app/` or `scripts/` outside `app/billing_integration/` imports `credit_billing`, except
+   `app/core/config.py` for its settings module (the app's `Settings` inherits `BillingSettings`);
+5. no host file outside `app/billing_integration/` holds an SQL string naming a package table (an import scan
+   can't see `SELECT ... FROM billing_customers`, which is how the app used to reach in);
+6. the old `app/billing/` directory is gone, so nothing imports a stale copy;
+7. (spec 013) the agent core carries no billing VOCABULARY: no identifier or string outside
+   `app/billing_integration/` names a rate, a markup, the gate's or export's settings, or a package table
+   (import and SQL scans can't see a setting name or a column, which is how the agent's meter once carried
+   rating, debit and export).
 """
 import ast
 import json
@@ -53,9 +51,9 @@ def _package_of(path: Path) -> str:
 
 
 def _imported(source: str, package: str) -> list[tuple[int, str]]:
-    """(line, absolute dotted name) for every thing any import statement in `source` names, wherever the statement is
-    (module level, inside a function, inside a class). `from app import core` yields `app.core`; `from app.core import
-    metrics` yields `app.core.metrics`; a relative import is resolved against `package` first."""
+    """(line, absolute dotted name) for every thing any import statement in `source` names, wherever the
+    statement is (module level, inside a function, inside a class).
+    """
     found: list[tuple[int, str]] = []
     for node in ast.walk(ast.parse(source)):
         if isinstance(node, ast.Import):
@@ -158,9 +156,7 @@ def test_the_scanner_accepts_what_the_package_may_import(source):
 
 
 def test_importing_every_package_module_with_the_app_off_the_path_loads_no_host_module(tmp_path):
-    """The runtime half. A clean interpreter in an empty directory (no `.env` to read, no ambient project config) whose import path is
-    the package's `src` directory and nothing of this repo, imports every module and reports any `app.*` module that got loaded. If
-    a module reached for the host it would not import at all: the host is not on the path."""
+    """The runtime half."""
     modules = sorted(
         ".".join(path.relative_to(SRC).with_suffix("").parts) for path in CORE_FILES if path.name != "__init__.py"
     )

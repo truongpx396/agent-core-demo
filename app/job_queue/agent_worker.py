@@ -1,131 +1,67 @@
-"""Redis Streams consumer — the "agent worker" half of the SSE-service/
-agent-worker split (GRAPH_PATTERNS.md pattern 43). Run one or more of these;
-Redis's consumer-group delivery hands each request on this process's domain
-stream (`app/job_queue/queue.py::requests_stream_key`) to exactly one of
-them, so running more workers is how you add capacity.
+"""Redis Streams consumer: the "agent worker" half of the SSE-service/agent-worker split (GRAPH_PATTERNS.md
+pattern 43). Consumer-group delivery hands each request on this process's domain stream
+(`queue.py::requests_stream_key`) to exactly one worker, so more workers means more capacity.
 
-Like `app/channels/telegram.py`, ONE process serves exactly ONE domain for
-its life — `AGENT_DOMAIN` (default `"ecorp"`) picks which domain's
-manifest/tools the graph is built from and which requests stream is read
-(`AGENT_DOMAIN=support python -m app.job_queue.agent_worker` runs a
-support-only pool). Running several domains means running several worker
-POOLS; `app/api/main.py` stays one unified process, routing by `X-Domain`.
+One process serves ONE domain for its life: `AGENT_DOMAIN` (default `"ecorp"`) picks the manifest/tools and
+the stream. Several domains means several worker pools; `app/api/main.py` stays one process, routing by
+`X-Domain`.
 
-`run()` runs up to `_MAX_CONCURRENCY` turns at once per process
-(`asyncio.Semaphore`-bounded `create_task` per job). Safe across DIFFERENT
-thread_ids because a turn holds no in-process state a sibling could
-corrupt: conversation state lives in Postgres via the checkpointer,
-tenant-scoped resources are per-call/pooled, and `bind_request_id`'s
-`ContextVar` is copied per-task by `asyncio.create_task`, not shared.
-`_MAX_CONCURRENCY` lets the slow parts (LLM calls, tool execution) of
-several turns overlap — it doesn't eliminate the checkpointer's own
-finer-grained serialization point (see `app/agent/runtime/core.py::_open_checkpointer`).
+Run with `make agent-worker` (or `-support`/`-ops`/`-sales`); it needs the Redis from `make up` and is not
+started by `make up` or `make serve`. Every chat front door (the API, `make chat`, `make telegram`) needs a
+worker for its domain, or its turn gets the "is an agent-worker running for this domain?" error.
 
-For the SAME thread_id, two jobs are NOT independent even though neither
-holds shared in-process state: both would read the checkpointer's latest
-state as their own parent and both write a child from it, so whichever
-commits last silently wins — `process_request` acquires
-`queue.py::acquire_thread_lock` before running any job specifically to
-rule this out (across this process's own concurrent tasks AND across
-other worker replicas sharing the same Redis), rejecting a losing job
-with `ErrorCode.THREAD_BUSY` rather than letting it run.
+## Concurrency
 
-Four job kinds share this stream (`payload["kind"]`, default `"turn"` for
-backward compatibility) — the first three are the only ones a real producer
-(`queue.py::publish_request`/`publish_resume_request`/`publish_cancel_request`)
-ever creates; `"turn_continue"` is internal, only ever produced by this
-module's OWN reclaim path below:
-- `"turn"` — a new turn, via `astream_events_turn` (not `_unattended`):
-  this is the web UI's default route to a real watching browser
-  (`POST /chat/stream/queued`), which can render an approve/reject UI for
-  an `approval_required` pause. Wired with `cancel_check` (polls
-  `queue.py::is_cancelled`) so `POST /chat/cancel` can stop an
-  actively-streaming turn.
-- `"resume"` — continues a turn paused at human_approval via
-  `astream_events_resume`. Any worker in the pool can handle it; the
-  checkpoint lives in Postgres, not worker memory. Wired with the same
-  `cancel_check` as `"turn"`, so `POST /chat/cancel` also stops the run an
-  approval started (the approved tool, then the model call that reads its
-  result) — a flag left from the earlier streaming phase is cleared first.
-- `"cancel"` — cancels a turn paused at human_approval via `cancel_run`;
-  a no-op if the turn was actively streaming instead (that's the
-  cancel-flag mechanism, see `POST /chat/cancel` in app/api/routers/chat.py).
-- `"turn_continue"` — a crashed `"turn"` reclaimed mid-flight, via
-  `astream_events_continue_turn` (`graph.astream_events(None, ...)`
-  instead of a fresh `{"messages": [...]}`) — see below and that
-  function's own docstring for why this, not a second `astream_events_turn`
-  call, is what makes retrying it safe.
+`run()` runs up to `_MAX_CONCURRENCY` turns at once (a semaphore-bounded task per job). Different thread_ids
+are safe: a turn holds no in-process state a sibling could corrupt (state is in Postgres via the checkpointer,
+`bind_request_id`'s `ContextVar` is copied per task).
 
-For each job: publish every yielded event to the request's results stream,
-then ack so it's never redelivered. A worker that dies mid-job (crash, OOM
-kill, host failure) before reaching that ack leaves its request pending for
-the group forever — `_reclaim_loop` (run alongside the main read loop by
-every worker in the pool) periodically sweeps for exactly that via
-`queue.py::reclaim_stale_entries` (XAUTOCLAIM) and hands each one to
-`_handle_reclaimed_job`, which decides PER JOB whether re-running it is
-provably safe, and if so, exactly HOW to re-run it:
-- `"cancel"` — always safe (cancelling is inherently idempotent: it either
-  still applies, or there's nothing left to cancel and it's a no-op either
-  way).
-- `"resume"` — also always safe, since `app/core/tool_idempotency.py`
-  started guarding every `mutating`/`outward` tool: a resume continues an
-  EXISTING checkpoint from its `human_approval` pause, re-invoking whichever
-  tool calls were already pending under the exact SAME `tool_call_id`s (the
-  pause happens before those calls run) — any that already completed just
-  return their cached result instead of running again. Before that
-  guarantee existed, "resume" was deliberately excluded here (no fresh
-  `HumanMessage` boundary the way "turn" has, so there was no cheap way to
-  tell "did the just-approved call already run") — tool-level idempotency
-  is what closed that gap, not anything added to this function itself.
-- `"turn"`/`"turn_continue"` — classified by `_classify_reclaimed_turn`
-  against the thread's checkpointed state since its last `HumanMessage`:
-  - `"dead_letter"` if the checkpoint can't be read; if that HumanMessage's
-    own turn already produced a final answer (`_turn_already_completed` —
-    it can finish, usage/cost already recorded via
-    `runtime/stream.py::_record_turn_metrics`, with ZERO tool calls, so
-    retrying it from scratch would only double-record that cost for no
-    benefit); or if it crashed in the narrow window between reaching a
-    real `human_approval` interrupt and this job's own ack (indistinguishable
-    from that case otherwise — a healthy worker acks a job that reaches a
-    pause same as one that finishes, so a reclaimed `"turn"` finding one
-    means the crash landed in that exact sliver).
-  - `"retry_fresh"` (republished as `"turn"`, i.e. `astream_events_turn`
-    again with its original text) only if NO `HumanMessage` exists at all
-    yet for this thread — the crash happened before the graph ever
-    checkpointed anything, so there's nothing to continue.
-  - `"retry_continue"` (republished as `"turn_continue"`) otherwise: this
-    turn's own `HumanMessage` is checkpointed and it hasn't finished. Safe
-    to retry EVEN IF a mutating/outward tool call already completed —
-    unconditionally, no per-tool capability check needed — because
-    `astream_events_continue_turn` never re-asks the LLM from scratch: it
-    continues the exact same Pregel run LangGraph already has checkpointed,
-    which structurally never re-executes a task whose write is already
-    recorded (see that function's own docstring for the mechanics). A
-    fresh `astream_events_turn` call, by contrast, mints brand-new
-    `tool_call_id`s unrelated to the crashed attempt's own, which is what
-    used to make retrying a turn that already ran a mutating tool unsafe.
-- Every non-`dead_letter` case above is silently republished via
-  `queue.py::republish_job`, up to `MAX_AUTO_RECLAIM_RETRIES` attempts
-  (`queue.py::RECLAIM_ATTEMPTS_FIELD` on the payload) — beyond that, or on
-  `dead_letter`, it's surfaced as a `WORKER_LOST` error on the job's own
-  results stream and archived to a dead-letter stream
-  (`queue.py::dead_letter_stream_key`) for inspection/manual replay.
+The SAME thread_id is not: two jobs would read the same checkpoint as parent and the last commit would
+silently win. `process_request` therefore takes `queue.py::acquire_thread_lock` first (across tasks and
+replicas) and rejects the loser with `ErrorCode.THREAD_BUSY`.
 
-Who publishes: the HTTP API (`POST /chat/stream/queued`, `/chat/resume`,
-`/chat/cancel`), the CLI (`app/channels/chat.py`) and the Telegram channel
-(`app/channels/telegram.py`) — the last two through `app/job_queue/producer.py`.
-No front door runs the graph in its own process. A `"turn"` carries
-`payload["unattended"]` when its caller has nobody to show an approval to (the
-Telegram channel): `_process_turn` then drives `astream_events_turn_unattended`
-(auto-declines any pause, never approves) instead of `astream_events_turn`, and
-`_process_turn_continue` does the same with its unattended counterpart, so the
-flag holds through a reclaim.
+## Job kinds (`payload["kind"]`, default `"turn"`)
 
-Run with: `python -m app.job_queue.agent_worker` (Makefile's `agent-worker`
-target, or `agent-worker-support`/`-ops`/`-sales`). Needs `make up`'s
-Redis; not started by `make up`/`make serve`. Every chat front door needs
-one running for its domain — `make chat` and `make telegram` included — or
-its turn gets the "is an agent-worker running for this domain?" error.
+Producers (`queue.py::publish_request`/`publish_resume_request`/`publish_cancel_request`) create the first
+three; `"turn_continue"` comes only from this module's reclaim path.
+- `"turn"`: a new turn via `astream_events_turn`, with `cancel_check` (polls `queue.py::is_cancelled`) so
+  `POST /chat/cancel` can stop it mid-stream.
+- `"resume"`: continues a turn paused at `human_approval` via `astream_events_resume`. Any worker can take it
+  (the checkpoint is in Postgres); the same `cancel_check` applies, and a flag left from the streaming phase
+  is cleared first.
+- `"cancel"`: cancels a paused turn via `cancel_run`; a no-op if the turn was streaming (that is the
+  cancel-flag path).
+- `"turn_continue"`: a crashed `"turn"` reclaimed mid-flight, continued with `astream_events_continue_turn`
+  (see its docstring for why that is safe).
+
+## Ack and crash reclaim
+
+A job publishes every event to the results stream, then acks. A worker that dies before the ack leaves the
+request pending; `_reclaim_loop` (every worker runs one) sweeps those via `queue.py::reclaim_stale_entries`
+(XAUTOCLAIM) and `_handle_reclaimed_job` decides per job whether re-running is provably safe:
+- `"cancel"`: always (idempotent).
+- `"resume"`: always, because `app/core/tool_idempotency.py` guards every `mutating`/`outward` tool and a
+  resume re-invokes the pending calls under the same `tool_call_id`s, so finished ones return their cached
+  result.
+- `"turn"`/`"turn_continue"`: `_classify_reclaimed_turn` reads the checkpoint since the last `HumanMessage`:
+  - `"dead_letter"`: the checkpoint can't be read; the turn already produced its final answer
+    (`_turn_already_completed`; a retry would double-record its cost); or it crashed between a real
+    `human_approval` interrupt and the ack.
+  - `"retry_fresh"` (republished as `"turn"`): no `HumanMessage` yet, so the crash came before anything was
+    checkpointed.
+  - `"retry_continue"` (republished as `"turn_continue"`): checkpointed and unfinished. Safe even if a
+    mutating tool already ran, because `astream_events_continue_turn` continues the checkpointed Pregel run,
+    which never re-executes a task whose write is recorded (a fresh turn would mint new `tool_call_id`s).
+- Everything but `dead_letter` is republished via `queue.py::republish_job` up to `MAX_AUTO_RECLAIM_RETRIES`.
+  Beyond that, or on `dead_letter`, a `WORKER_LOST` error goes on the results stream and the job to a
+  dead-letter stream (`queue.py::dead_letter_stream_key`).
+
+## Who publishes
+
+The HTTP API (`/chat/stream/queued`, `/chat/resume`, `/chat/cancel`), and the CLI and Telegram channel through
+`app/job_queue/producer.py`. A `"turn"` carries `payload["unattended"]` when nobody can answer an approval
+prompt (Telegram): the worker then drives `astream_events_turn_unattended` (auto-declines any pause, never
+approves), and the flag survives a reclaim.
 """
 import asyncio
 import json
@@ -329,37 +265,28 @@ _DISPATCH = {
 
 
 async def process_request(client, entry_id: str, fields: dict) -> None:
-    """Dispatch one job by `payload["kind"]` and stream its events back —
-    always ack, even on failure: a redelivered, already-attempted request
-    would re-run the same side-effecting tool calls twice.
+    """Dispatch one job by `payload["kind"]` and stream its events back. Always ack, even on failure: a
+    redelivered, already-attempted request would re-run the same side-effecting tool calls.
 
-    Every job kind first acquires `queue.py::acquire_thread_lock` for its
-    `thread_id` — this module's own docstring notes a turn holds no
-    IN-PROCESS state a sibling could corrupt, which is true of THIS
-    process's memory but not of the shared Postgres checkpointer two
-    DIFFERENT jobs on the SAME thread_id both write through (a
-    double-submit, a retry, or a resume racing a fresh turn — nothing
-    upstream of this dispatcher rules that out, and it can just as easily
-    land on two different worker replicas as on two tasks here). A thread
-    already busy fails FAST with `ErrorCode.THREAD_BUSY` instead of
-    silently queueing behind the in-flight job, which would let a
-    double-submit produce two real turns instead of one.
+    Every job kind first acquires `queue.py::acquire_thread_lock` for its `thread_id`. The module docstring
+    notes a turn holds no IN-PROCESS state a sibling could corrupt, which is true of this process's memory but
+    not of the shared Postgres checkpointer: two jobs on the SAME thread_id (a double-submit, a retry, or a
+    resume racing a fresh turn, possibly on different worker replicas) both write through it, and nothing
+    upstream rules that out. A busy thread fails FAST with `ErrorCode.THREAD_BUSY` rather than queueing behind
+    the in-flight job, which would let a double-submit produce two real turns.
 
-    The handler itself calls `release_lock` (passed in below) BEFORE
-    publishing a terminal event, not after, and not this function waiting
-    for the handler to fully RETURN. Both weaker orderings were tried and
-    measured against a real 40-way concurrent HITL pause/resume load
-    (tests/integration/test_worker_scaling.py) before landing on this one:
-    releasing in this function's own `finally` (waiting for the handler to
-    fully return) left ~1/3 of resumes spuriously rejected as THREAD_BUSY;
-    releasing right after publishing the terminal event (but still
-    awaiting `publish_result` first) cut that to ~1/8 but didn't close it —
-    `publish_result` itself awaits a SECOND Redis round trip (a TTL
-    refresh) after its `xadd`, and a reader polling via `xread` can already
-    see the xadd'd event during that second round trip. Only releasing
-    BEFORE calling `publish_result` at all closes the window completely:
-    by the time any client could possibly observe the terminal event, the
-    lock is unconditionally already free."""
+    The handler calls `release_lock` (passed in below) BEFORE publishing a terminal event. Both weaker
+    orderings were measured against a real 40-way concurrent HITL pause/resume load
+    (tests/integration/test_worker_scaling.py):
+    - releasing in this function's own `finally` (after the handler fully returns) spuriously rejected ~1/3 of
+      resumes as THREAD_BUSY;
+    - releasing right after publishing the terminal event, still awaiting `publish_result` first, cut that to
+      ~1/8 but didn't close it: `publish_result` awaits a SECOND Redis round trip (a TTL refresh) after its
+      `xadd`, and an `xread` reader can see the xadd'd event during it.
+
+    Only releasing BEFORE `publish_result` closes the window: by the time any client can observe the terminal
+    event, the lock is already free.
+    """
     payload = json.loads(fields["payload"])
     request_id = payload["request_id"]
     kind = payload.get("kind", "turn")
@@ -455,60 +382,34 @@ def _turn_already_completed(turn_messages: list) -> bool:
 
 
 async def _classify_reclaimed_turn(graph, thread_id: str) -> str:
-    """Returns `"dead_letter"`, `"retry_fresh"`, or `"retry_continue"` for a
-    reclaimed `"turn"`/`"turn_continue"` job, by inspecting this thread's
-    checkpointed state — never re-runs anything (same read-only
-    `graph.aget_state` call `app/agent/runtime/stream.py`'s
-    `get_session_messages`/`resumability_error_async` already use
-    elsewhere).
+    """Returns `"dead_letter"`, `"retry_fresh"` or `"retry_continue"` for a reclaimed `"turn"`/`"turn_continue"`
+    job, from the thread's checkpointed state. Read-only (`graph.aget_state`, as `get_session_messages` and
+    `resumability_error_async` use); it never re-runs anything.
 
-    Finds the last message the PERSON sent (`is_user_message`, not the
-    retry feedback `retry_output` writes as a tagged `HumanMessage`): since every turn
-    appends exactly one fresh `HumanMessage` before anything else runs,
-    everything after it belongs to the most recent turn only — whether
-    that's the crashed one, or (if the crash happened before even that got
-    checkpointed) a DIFFERENT, already-completed turn.
+    It finds the last message the PERSON sent (`is_user_message`, not the retry feedback `retry_output` writes
+    as a tagged `HumanMessage`). Every turn appends one fresh `HumanMessage` before anything else, so
+    everything after it belongs to the most recent turn: the crashed one, or, if the crash came before that
+    message was checkpointed, a DIFFERENT, completed one.
 
-    - `"retry_fresh"` — no `HumanMessage` exists ANYWHERE in the checkpoint
-      yet: this thread never even reached its first turn, so there's
-      nothing to continue — republished as an ordinary `"turn"`
-      (`astream_events_turn`, with its original text).
-    - `"dead_letter"` — the checkpoint can't be read at all; OR the
-      messages after the last `HumanMessage` show that turn already
-      produced its final answer (`_turn_already_completed` — see its own
-      docstring); OR the checkpoint is paused at a real `human_approval`
-      interrupt (`state.tasks[i].interrupts`, not just `state.next` —
-      `graph/hitl.py::_resumability_error_from_state` documents why
-      `state.next` alone doesn't mean "paused") — a `"turn"` job only ever
-      reaches THIS function if it was reclaimed, i.e. its worker died
-      before reaching `process_request`'s own ack, and a healthy worker
-      acks a job that reaches a pause the same as one that finishes; so
-      finding one paused here means the crash landed in the narrow sliver
-      strictly AFTER the interrupt fired. That belongs to
-      `astream_events_resume`'s `Command(resume=...)`, not a bare
-      continuation with no resume value to give it.
-    - `"retry_continue"` — anything else: this turn's own `HumanMessage` IS
-      checkpointed and it hasn't finished. Republished as `"turn_continue"`
-      (`astream_events_continue_turn`) — safe to retry EVEN IF a
-      mutating/outward tool call already completed, unconditionally, no
-      per-tool capability check needed: see that function's own docstring
-      for why continuing the exact same checkpointed run (instead of
-      restarting with a fresh `astream_events_turn` call, which mints
-      brand-new `tool_call_id`s `app/core/tool_idempotency.py` has never
-      seen) makes that structurally safe rather than heuristically so.
+    - `"retry_fresh"`: no `HumanMessage` anywhere, so the thread never reached its first turn. Republished as
+      an ordinary `"turn"` with the original text.
+    - `"dead_letter"`: the checkpoint can't be read; or the messages after the last `HumanMessage` show the
+      turn already produced its final answer (`_turn_already_completed`); or the checkpoint is paused at a
+      real `human_approval` interrupt (`state.tasks[i].interrupts`, not `state.next`, see
+      `graph/hitl.py::_resumability_error_from_state`). A healthy worker acks a job that reaches a pause like
+      one that finishes, so a reclaimed turn finding one means the crash landed just AFTER the interrupt
+      fired, which belongs to `astream_events_resume`'s `Command(resume=...)`, not a bare continuation.
+    - `"retry_continue"`: anything else; the turn's `HumanMessage` is checkpointed and unfinished. Republished
+      as `"turn_continue"` (`astream_events_continue_turn`). Safe EVEN IF a mutating/outward tool already
+      completed, with no per-tool check: continuing the checkpointed run, rather than restarting with
+      `astream_events_turn` (which mints `tool_call_id`s `tool_idempotency.py` has never seen), makes it
+      structurally safe, not heuristic.
 
-    Deliberately conservative in one specific edge case, unchanged from
-    before this function could distinguish "fresh" from "continue": if the
-    crash happened SO early this turn's own `HumanMessage` was never
-    checkpointed, the last `HumanMessage` found belongs to the PRECEDING,
-    unrelated turn instead — which, under normal operation, is always
-    `_turn_already_completed` (nothing starts a new turn on a thread whose
-    previous one hasn't finished), so this reports `"dead_letter"` even
-    though the crashed turn genuinely never started. That's a false
-    negative (dead-letters something that was actually fine to retry
-    fresh), never a false positive, so it's an acceptable cost for not
-    needing separate bookkeeping of "where did this turn's own messages
-    start."
+    Deliberately conservative in one edge: if the crash came before this turn's own `HumanMessage` was
+    checkpointed, the last one found belongs to the PRECEDING turn, normally `_turn_already_completed`, so
+    this reports `"dead_letter"` for a turn that never started. That is a false negative (dead-lettering
+    something safe to retry), never a false positive, which is cheaper than tracking where a turn's messages
+    start.
     """
     try:
         state = await graph.aget_state({"configurable": {"thread_id": thread_id}})

@@ -1,26 +1,20 @@
 """OpenTelemetry metrics for the agent runtime.
 
-Pushed via OTLP to a shared otel-collector (see telemetry.py::configure_telemetry),
-exposing one aggregated Prometheus target covering the API and every scaled
-agent_worker.py/ingest_worker.py replica (pattern 43) — a pull-based
-`GET /metrics` on the API alone could never see a worker's metrics, since
-nothing scrapes it directly. Rates are derived from these via PromQL in
-Grafana, not stored directly.
+Pushed via OTLP to a shared otel-collector (telemetry.py::configure_telemetry), which exposes one aggregated
+Prometheus target for the API and every scaled agent_worker.py/ingest_worker.py replica (pattern 43). A
+pull-based `GET /metrics` on the API alone could never see a worker's metrics, since nothing scrapes a worker.
+Rates come from PromQL in Grafana, not from stored values.
 
-`Counter`/`Histogram` below are a prometheus_client-shaped wrapper around
-the real OTel API (`.add`/`.record`), so existing call sites
-(`x.labels(k=v).inc()` / `x.observe(v)`) needed no rewrite — a library swap
-under the hood only. Histogram bucket boundaries aren't set here (OTel has
-no per-call bucket param) — they're Views on the MeterProvider in
-telemetry.py, matched by instrument name.
+`Counter`/`Histogram` below are a prometheus_client-shaped wrapper over the real OTel API (`.add`/`.record`),
+so existing call sites (`x.labels(k=v).inc()` / `x.observe(v)`) needed no rewrite. Histogram bucket boundaries
+aren't set here (OTel has no per-call bucket param); they are Views on the MeterProvider in telemetry.py,
+matched by instrument name.
 
-Two ways these get incremented: tool calls/errors via
-`MetricsCallbackHandler` (wired into `config["callbacks"]` like the
-Langfuse handler, so it needs no instrumentation inside app/agent/graph/core.py's nodes);
-everything else incremented directly at the point it happens in app/agent/graph/core.py's
-nodes / app/agent/runtime/core.py's turn boundary, since those events can fire more than
-once per turn or need the final state dict — awkward to reconstruct from
-generic callback events.
+Two ways they are incremented: tool calls/errors through `MetricsCallbackHandler` (wired into
+`config["callbacks"]` like the Langfuse handler, so the nodes in app/agent/graph/core.py need no
+instrumentation), and everything else directly where it happens, in those nodes or at
+app/agent/runtime/core.py's turn boundary, since those events can fire more than once per turn or need the
+final state dict, which is awkward to rebuild from generic callback events.
 """
 import hashlib
 import logging

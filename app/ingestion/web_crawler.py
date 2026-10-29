@@ -1,53 +1,35 @@
-"""crawl4ai-backed web rendering for anything needing a LIVE, JS-rendered
-page turned into clean text mid-turn — not the bare `httpx.get` + stdlib
-HTML-strip `ingestor.py::ingest_url` does for static pages, but a real
-headless-Chromium render for sites that need one (SPAs, client-rendered
-marketing sites, JS-redirect gates).
+"""crawl4ai-backed web rendering, for anything needing a LIVE, JS-rendered page turned into clean text mid-turn:
+a headless-Chromium render for SPAs, client-rendered sites and JS-redirect gates, unlike the bare `httpx.get`
++ HTML-strip of `ingestor.py::ingest_url` (static pages).
 
-Backs three domain tools, all "outward" capability (reaches the open
-internet -> mandatory human approval via `should_continue`):
-`sales/tools.py::enrich_lead_from_website`,
-`support/tools.py::fetch_external_reference`,
+Backs three "outward" domain tools (they reach the open internet, so `should_continue` forces human approval):
+`sales/tools.py::enrich_lead_from_website`, `support/tools.py::fetch_external_reference`,
 `ops/tools.py::check_vendor_status_page`.
 
-Same SSRF guard as `ingestor.py` (`app/core/url_safety.py`, shared not
-duplicated) runs BEFORE crawl4ai launches a browser — a JS-rendered fetch
-reaches the network exactly like a bare GET, and crawl4ai itself has no
-concept of this app's threat model.
+The same SSRF guard as `ingestor.py` (`app/core/url_safety.py`) runs BEFORE crawl4ai launches a browser: a
+JS-rendered fetch reaches the network like a bare GET, and crawl4ai has no concept of this app's threat model.
 
-Renders via crawl4ai's dockerized server (`docker-compose.yml`'s
-`crawl4ai` service, `unclecode/crawl4ai:0.9.3` — a warm, pooled browser
-container, not launched fresh per call), reached through the official
-`Crawl4aiDockerClient` rather than hand-built HTTP calls (its
-`CrawlerRunConfig.dump()`/`BrowserConfig.dump()` produce a nested
-`{"type", "params"}` shape not worth reimplementing by hand).
+It renders through crawl4ai's dockerized server (the `crawl4ai` compose service, `unclecode/crawl4ai:0.9.3`, a
+warm pooled browser) via the official `Crawl4aiDockerClient`, not hand-built HTTP
+(`CrawlerRunConfig.dump()`/`BrowserConfig.dump()` produce a nested `{"type", "params"}` shape not worth
+reimplementing).
 
-Auth: crawl4ai 0.9.0+ is secure-by-default (binds loopback-only inside its
-container without a valid bearer token). `Crawl4aiDockerClient` only
-exposes token-setting via `.authenticate(email)` (a `/token` JWT flow this
-app doesn't use), so the `Authorization` header is set directly on the
-client's own httpx client instead.
+Auth: crawl4ai 0.9.0+ is secure-by-default (loopback-only without a bearer token). The client only sets a
+token through `.authenticate(email)`, a `/token` JWT flow this app doesn't use, so the `Authorization` header
+is set directly on the client's httpx client.
 
-Gotcha: no `browser_config` is sent at all. `BrowserConfig.dump()` always
-includes a `headers` field (a `sec-ch-ua` fingerprint default even with
-nothing set), and crawl4ai 0.9.0+'s server-side trust boundary
-unconditionally 400s any request carrying it
-("`field 'headers' is not permitted on BrowserConfig from an untrusted
-request`"). Omitting `browser_config` entirely (server falls back to its
-own default) is the only thing that works — only `crawler_config` is sent.
+Gotcha: no `browser_config` is sent. `BrowserConfig.dump()` always includes a `headers` field (a `sec-ch-ua`
+default), and 0.9.0+'s server-side trust boundary 400s any request carrying it ("field 'headers' is not
+permitted on BrowserConfig from an untrusted request"). Omitting it (the server uses its own default) is the
+only thing that works; only `crawler_config` is sent.
 
-`result.markdown` is str-compatible directly (no `.raw_markdown` needed);
-check `result.success`/`result.error_message` on failure. A failed
-navigation's `error_message` is a multi-line internals dump — truncated to
-its first line before reaching a tool result/prompt, both for readability
-and to avoid leaking server-side paths to the model.
+`result.markdown` is str-compatible (no `.raw_markdown`); on failure check
+`result.success`/`result.error_message`. A failed navigation's `error_message` is a multi-line internals dump,
+so only its first line reaches a tool result or prompt, keeping server-side paths from the model.
 
-`_crawl` retries a bare connection failure against the crawl4ai container
-itself (never a per-URL navigation failure — that's `result.success=False`,
-a real answer, not a dropped connection) and, via
-`app/core/resilience.py::CircuitBreaker`, fails fast once enough of those
-have happened in a row instead of letting every subsequent call pay the
-full connect-timeout while the container is down.
+`_crawl` retries a bare connection failure against the crawl4ai container (never a per-URL navigation failure,
+which is a real answer: `result.success=False`) and, via `app/core/resilience.py::CircuitBreaker`, fails fast
+after enough in a row, so calls don't each pay the connect timeout while the container is down.
 """
 import logging
 

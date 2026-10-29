@@ -1,18 +1,22 @@
-"""A real-gateway check that needs no model, no key and no database: the PINNED LiteLLM image, the shipped dev config, and a stub model backend.
+"""A real-gateway check that needs no model, key or database: the PINNED LiteLLM image, the shipped dev config
+and a stub model backend.
 
     make gateway-check        # Docker, one throwaway container, about a minute; not part of `make test`
 
-What it checks, because the app's design rests on it and a mock cannot show it:
+It checks what the app's design rests on and a mock can't show:
+1. the shipped dev config loads in the pinned image, and `/model/info` prices every alias in a way the app's
+   own parser accepts;
+2. a chat call is priced by the gateway: `x-litellm-response-cost` equals the stub's token counts times the
+   configured price;
+3. NOTHING identifying reaches the model backend, on the Ollama route and an OpenAI-compatible one: not the
+   end user (`user`), tenant, principal or conversation. The end user is readable on purpose
+   (`gateway.end_user_id`: `tenant:<tenant>/user:<principal>`), which is safe only while the gateway keeps it
+   to itself. That is a property of LiteLLM, not of this code, hence the check and why the image is pinned by
+   digest; run it whenever the digest is bumped (infra/README.md, "Bumping the LiteLLM image").
 
-  1. the shipped dev config loads in the pinned image, and `/model/info` prices every alias in a way the app's own parser accepts;
-  2. a chat call is priced by the gateway: `x-litellm-response-cost` equals the stub's token counts times the configured price;
-  3. NOTHING identifying reaches the model backend, on the Ollama route and on an OpenAI-compatible one: not the end user (`user`), not the tenant,
-     the principal or the conversation. The end user is readable on purpose (`gateway.end_user_id`: `tenant:<tenant>/user:<principal>`), which is only
-     safe while the gateway keeps it to itself. That is a property of LiteLLM, not of this code, so it is checked here, and it is why the image is pinned
-     by digest: run this whenever the digest is bumped (infra/README.md, "Bumping the LiteLLM image").
-
-Only the model backend is faked, and only the host in each `api_base` is rewritten. It cannot show budget enforcement, spend-log or Langfuse fields:
-those need LiteLLM's database. Exit 0 = every check passed, 1 = a check failed, 2 = it could not run.
+Only the model backend is faked (and only the host in each `api_base` rewritten). It can't show budget
+enforcement, spend-log or Langfuse fields, which need LiteLLM's database. Exit 0 every check passed, 1 a check
+failed, 2 it could not run.
 """
 import copy
 import json

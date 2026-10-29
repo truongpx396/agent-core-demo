@@ -122,17 +122,8 @@ class TestPerTurnReset:
 
 
 class TestPerTurnResetThroughTheGraph:
-    """Regression tests for a class of bug the unit test above CANNOT see:
-    `validate_input` returning a reset value is not the same as the reset
-    taking effect. What the checkpointed thread state holds after the graph
-    has APPLIED that return value depends on each field's reducer, so these
-    drive the real compiled graph across two turns on one thread and read the
-    persisted state back.
-
-    Real bug (reproduced before this fix): `State.subagent_spend` was declared
-    with `operator.add`, so `validate_input`'s `"subagent_spend": []` added
-    nothing and every earlier turn's delegated spend kept counting toward
-    later turns' MAX_TOKENS_PER_TURN / MAX_COST_USD_PER_TURN ceilings.
+    """Regression tests for a class of bug the unit test above CANNOT see: `validate_input` returning a reset
+    value is not the same as the reset taking effect.
     """
 
     @staticmethod
@@ -240,16 +231,8 @@ class TestConcatOrResetReducer:
 
 
 class TestHistoryBudget:
-    """The only unbounded input in State (`messages`) must not grow forever
-    across a long-running thread — see HISTORY_TOKEN_CEILING/FLOOR and
-    _trim_history in app/agent/graph/core.py.
-
-    Uses small, LOCAL ceiling/floor values throughout (never the real
-    production constants, which would need thousands of tokens of
-    placeholder content to exercise) computed via the real tiktoken-backed
-    _estimate_tokens against real, short content — these exercise the
-    actual estimation path rather than a hand-guessed token count that
-    could silently drift out of sync with the real encoding.
+    """The only unbounded input in State (`messages`) must not grow forever across a long-running thread — see
+    HISTORY_TOKEN_CEILING/FLOOR and _trim_history in app/agent/graph/core.py.
     """
 
     @staticmethod
@@ -332,9 +315,9 @@ class TestHistoryBudget:
         assert _messages_to_trim(survivors, ceiling=ceiling, floor=floor) == []
 
     def test_retry_feedback_is_not_a_turn_boundary_and_never_summarized_as_conversation(self):
-        """With feedback counted as a turn start, a floor sized to "feedback onward" cut the
-        history right at the feedback, leaving it as the first thing the model read. It is part
-        of the turn it belongs to, and is dropped or kept with it."""
+        """With feedback counted as a turn start, a floor sized to "feedback onward" cut the history right at the
+        feedback, leaving it as the first thing the model read.
+        """
         artifact = {"retry_artifact": True}
         messages = [
             HumanMessage(content="first question " * 20, id="h1"),
@@ -360,15 +343,10 @@ class TestHistoryBudget:
 
 
 class TestCompactHistoryNode:
-    """compact_history (app/agent/graph/core.py) replaced validate_input's old
-    discard-only trim with a discard-AND-summarize node — see
-    _messages_to_trim (the shared "what falls outside the window" helper)
-    and make_compact_history_node's docstring.
-
-    Every test here passes small, LOCAL ceiling/floor overrides to
-    make_compact_history_node — never the real HISTORY_TOKEN_CEILING/FLOOR
-    production constants, which would need thousands of tokens of
-    placeholder content to actually trip."""
+    """compact_history (app/agent/graph/core.py) replaced validate_input's old discard-only trim with a
+    discard-AND-summarize node — see _messages_to_trim (the shared "what falls outside the window" helper) and
+    make_compact_history_node's docstring.
+    """
 
     @staticmethod
     def _turns(n):

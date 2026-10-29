@@ -1,25 +1,19 @@
-"""Resolves a chat model ALIAS (`config.CHAT_MODEL`, e.g. "chat") to the
-concrete model LiteLLM routes it to (e.g. "ollama_chat/qwen2.5:3b") via
-LiteLLM's `GET /model/info` admin endpoint (pattern 38). The
-OpenAI-compatible response body and LangChain's `response_metadata` only
-ever echo back the alias — `x-litellm-model-name` carries the resolved
-value per-call, but `ChatOpenAI.invoke()` doesn't surface response
-headers, so this queries the resolution directly instead.
+"""Resolve a chat model ALIAS (`config.CHAT_MODEL`, e.g. "chat") to the concrete model LiteLLM routes it to (e.g.
+"ollama_chat/qwen2.5:3b") via LiteLLM's `GET /model/info` admin endpoint (pattern 38). The OpenAI-compatible
+response body and LangChain's `response_metadata` echo only the alias; `x-litellm-model-name` carries the
+resolved value per call, but `ChatOpenAI.invoke()` doesn't surface response headers, so this queries the
+resolution directly.
 
-Naming only aliases keeps this app portable (swapping providers is a
-config change), but means the biggest lever on output quality (a gateway
-remap) can change without any recorded artifact reflecting it. Resolving
-it here keeps model choice invisible to routing but visible to forensics
-(the usage events, `app/agent/cost/usage_events.py`).
+Naming only aliases keeps the app portable (swapping providers is a config change) but lets the biggest lever
+on output quality, a gateway remap, change with no recorded artifact. Resolving it here keeps model choice
+invisible to routing but visible to forensics (the usage events, `app/agent/cost/usage_events.py`).
 
-Async, with a short negative cache. The first version was a plain synchronous
-`httpx.get` called from the per-turn ledger write (since retired), which ran on the event loop
-at the end of every completed turn: a slow LiteLLM froze every other turn,
-stream and health check on that worker for the length of the lookup (measured:
-a 0.5 s answer stalled a concurrent heartbeat for 0.56 s), and while LiteLLM was
-down EVERY recorded turn paid a fresh 5 s timeout for an answer that could not
-have changed (spec 008, B19). Now the request is awaited, and a lookup that
-failed, or found no such alias, is not repeated for `FAILED_LOOKUP_RETRY_SECONDS`.
+Async, with a short negative cache. The first version was a synchronous `httpx.get` on the event loop at the
+end of every completed turn: a slow LiteLLM froze every other turn, stream and health check on that worker for
+the length of the lookup (measured: a 0.5 s answer stalled a concurrent heartbeat for 0.56 s), and while
+LiteLLM was down EVERY recorded turn paid a fresh 5 s timeout for an answer that couldn't have changed (spec
+008, B19). Now the request is awaited, and a lookup that failed or found no such alias isn't repeated for
+`FAILED_LOOKUP_RETRY_SECONDS`.
 """
 import logging
 import time

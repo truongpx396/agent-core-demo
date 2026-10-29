@@ -1,24 +1,14 @@
-"""Full-graph integration tests: each test drives build_graph() end-to-end
-with a fake chat model standing in for the real ChatOpenAI client, so these
-run with no live services — no LiteLLM, no Ollama, no Qdrant.
-`retrieve_context`'s search_docs call defaults to the autouse
-`mock_search_docs` fixture in conftest.py (which patches
-`graph.default_search`); tool-call scenarios below use `calculator` (pure
-Python, no network) rather than `search_docs` so the *actual*
-tool-execution step (inside ToolNode, which isn't touched by that stub)
-also stays hermetic.
+"""Full-graph integration tests: each drives build_graph() end to end with a fake chat model for the real
+ChatOpenAI client, so they need no live services. `retrieve_context`'s search_docs defaults to the autouse
+`mock_search_docs` fixture (conftest.py); tool-call scenarios use `calculator` (pure Python) rather than
+`search_docs`, so ToolNode's real execution step also stays hermetic. Scenarios mirror the flow in
+GRAPH_PATTERNS.md.
 
-Scenarios mirror the graph's documented flow in GRAPH_PATTERNS.md.
-
-The compiled graph's `agent`/`retrieve_context`/etc. nodes are `async def`
-now (real LLM/Redis/Qdrant I/O — see app/agent/graph/core.py), so every
-`g.invoke`/`g.get_state` below runs as `asyncio.run(g.ainvoke(...))`/
-`asyncio.run(g.aget_state(...))` instead — LangGraph's sync Pregel loop
-can't run an async-only node at all. Each call gets its own `asyncio.run`
-rather than one shared event loop across a test, which is fine here since
-these graphs use the default in-memory MemorySaver (no event-loop-bound
-state — contrast with `AsyncPostgresSaver`'s per-instance `asyncio.Lock`,
-see app/agent/runtime/core.py's module docstring).
+The nodes are `async def` (real LLM/Redis/Qdrant I/O, see app/agent/graph/core.py), so every call below is
+`asyncio.run(g.ainvoke(...))`/`asyncio.run(g.aget_state(...))`: LangGraph's sync Pregel loop can't run an
+async-only node. Each call gets its own `asyncio.run` rather than one shared loop, which is fine because these
+graphs use the default in-memory MemorySaver (no loop-bound state, unlike `AsyncPostgresSaver`'s per-instance
+`asyncio.Lock`, see app/agent/runtime/core.py).
 """
 import asyncio
 import uuid
@@ -295,23 +285,9 @@ class TestNoProgressDetection:
 
 
 class TestHistorySummarization:
-    """AR-015a end-to-end: a thread running past its token-based history
-    budget gets its oldest turn folded into history_summary
-    (compact_history) instead of just discarded, while turns still inside
-    the kept window survive verbatim in state["messages"]. See
-    TestSafetyBudgets' compact_history unit tests for the
-    discard/summarize logic in isolation; this proves the whole graph
-    wires it together across real successive asyncio.run(g.ainvoke()) calls sharing one
-    checkpointed thread.
-
-    Every test here drives build_graph with small, LOCAL
-    history_token_ceiling/floor overrides — never the real
-    HISTORY_TOKEN_CEILING/FLOOR production constants, which would need
-    thousands of tokens of placeholder conversation content to actually
-    trip. `_estimate_tokens` (the same real, tiktoken-backed helper
-    compact_history itself uses) computes ceiling/floor directly from the
-    turns each test constructs, rather than a hand-guessed token count
-    that could silently drift out of sync with the real encoding.
+    """AR-015a end-to-end: a thread running past its token-based history budget gets its oldest turn folded into
+    history_summary (compact_history) instead of just discarded, while turns still inside the kept window
+    survive verbatim in state["messages"].
     """
 
     N_TURNS = 3  # turns within budget before the triggering (N_TURNS + 1)-th
@@ -451,16 +427,9 @@ class TestRetryExhaustedPath:
     "couldn't answer" fallback it could have reached in 2 rounds."""
 
     async def test_identical_rejection_reason_twice_gives_up_not_a_third_attempt(self):
-        """Exactly 2 responses queued — the model narrating tool intent
-        instead of calling one, twice in a row (the actual live bug this
-        mechanism was built for — a stuck query_employees narration
-        loop). `deferred_instead_of_acting` is one of the two NOT
-        trust-content reasons (see _TRUST_CONTENT_RETRY_REASONS): the
-        narration text itself has zero answer value, so it must be
-        replaced, not shown. If route_after_check kept retrying instead
-        of giving up, GenericFakeChatModel would raise on its exhausted
-        iterator when the graph tried a 3rd agent call, failing this test
-        loudly rather than silently passing."""
+        """Exactly 2 responses queued — the model narrating tool intent instead of calling one, twice in a row
+        (the actual live bug this mechanism was built for — a stuck query_employees narration loop).
+        """
         narration = (
             "I will use the query_employees tool to look up the employees. "
             "Let's proceed with that."
@@ -522,17 +491,10 @@ class TestRetryExhaustedPath:
         assert result["iterations"] == 1
 
     async def test_different_reasons_in_a_row_keep_retrying_not_giving_up(self):
-        """Genuinely different problems across rounds (too-short, THEN
-        misattributed, then a correctly-cited success) is slow
-        convergence, not a stuck loop — must NOT trip the
-        same-reason-repeat guard, which only fires on the IDENTICAL
-        reason twice in a row. Uses "misattributed" as the middle reason,
-        not "uncited": an uncited-but-matching answer now gets fixed
-        directly by check_output's own auto-correction on that same
-        round (see test_uncited_but_correct_answer_gets_auto_corrected_
-        on_the_first_round above) rather than surfacing as a retry
-        reason at all, so it can no longer stand in for "some other,
-        still-retried failure mode" here."""
+        """Genuinely different problems across rounds (too-short, THEN misattributed, then a correctly-cited
+        success) is slow convergence, not a stuck loop — must NOT trip the same-reason-repeat guard, which
+        only fires on the IDENTICAL reason twice in a row.
+        """
         citations = [
             {
                 "marker": "[1]",
@@ -700,14 +662,10 @@ class TestInvalidToolCallGuardrail:
 
 
 class TestUseSkillWithoutSearchGate:
-    """Real bug, found live via Langfuse (trace `197ab4e1`, 2026-09-09):
-    the model called use_skill with a hallucinated name
-    ("build_production_ai_agents", no basis in the actual catalog)
-    without ever calling skill_search, then narrated the resulting "not
-    found" failure into the final answer. use_skill_without_search
-    rejects the call before it ever dispatches, same "reject the whole
-    batch + loop back to agent for a self-correcting retry" shape as
-    invalid_tool_call above."""
+    """Real bug, found live via Langfuse (trace `197ab4e1`, 2026-09-09): the model called use_skill with a
+    hallucinated name ("build_production_ai_agents", no basis in the actual catalog) without ever calling
+    skill_search, then narrated the resulting "not found" failure into the final answer.
+    """
 
     async def test_use_skill_without_search_is_rejected_then_agent_retries_without_pausing(self):
         guessed_skill = AIMessage(

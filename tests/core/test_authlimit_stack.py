@@ -63,8 +63,9 @@ def test_the_authlimit_containers_are_hardened_like_the_other_images():
 
 
 def test_nothing_but_caddy_publishes_a_port_for_the_authlimit_stack():
-    """The service answers a check, serves the public keys of the internal identity and reports readiness. None of that is for the host:
-    only Caddy (loopback) is. A published port on the service would make the identity check reachable without the front door."""
+    """The service answers a check, serves the public keys of the internal identity and reports readiness. None
+    of that is for the host: only Caddy (loopback) is.
+    """
     services = _services()
 
     assert "ports" not in services["authlimit"]
@@ -242,8 +243,10 @@ def test_keys_are_created_as_the_host_user_by_the_binary_itself_never_by_a_shell
 
 
 def test_caddy_only_declares_a_plain_url_public_so_authlimits_stricter_reading_always_applies_to_the_rest():
-    """Found by the smoke check on the real stack: a path Caddy declares public goes straight to the upstream and authlimit never sees it, so
-    `/static/a%5c..%5cchat/resume` matched `/static/*` and was proxied with no token. The guard keeps such URLs out of the public handler."""
+    """Found by the smoke check on the real stack: a path Caddy declares public goes straight to the upstream and
+    authlimit never sees it, so `/static/a%5c..%5cchat/resume` matched `/static/*` and was proxied with no
+    token.
+    """
     body = _strip_comments(_site("api.localhost"))
     matcher = re.search(r"@public_path \{(.*?)\n\t\}", body, re.DOTALL).group(1)  # up to the block's own closing brace, not the placeholder's
 

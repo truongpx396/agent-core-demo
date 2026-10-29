@@ -1,16 +1,15 @@
-"""What happens to a turn a worker left mid-flight when the graph's edges change under it.
+"""What happens to a turn a worker left mid-flight when the graph's edges change under it. LangGraph names the
+channel triggering a node after the edge feeding it, and a conditional edge's channel carries the router
+function's name. A checkpoint records which channels changed; rename a router (as #171 did,
+`route_after_check` -> `route_after_check_bound`) or remove a node and a checkpoint written under the old name
+no longer shows the pending node: `next` is empty and a resume runs nothing, silently. A turn PAUSED at
+`human_approval` is unaffected while that node's edges don't change, which is why those are covered by
+`STATE_SCHEMA_VERSION` and these are not.
 
-LangGraph names the channel that triggers a node after the edge that feeds it, and a conditional edge's
-channel carries the router function's name. A checkpoint records which of those channels have changed;
-rename a router (as #171 did, `route_after_check` -> `route_after_check_bound`) or remove a node, and a
-checkpoint written under the old name no longer shows the node that was pending: `next` is empty and a
-resume runs nothing, silently. A turn PAUSED at `human_approval` is unaffected as long as that node's edges
-do not change, which is why those are covered by `STATE_SCHEMA_VERSION` and these are not.
-
-The first test pins that LangGraph behaviour on a small graph, so a LangGraph upgrade that changes it is
-noticed here. The rest pin what this app does about it: the worker dead-letters such a turn instead of
-"continuing" it, and the stream reports an error instead of streaming the person's own question back as
-the answer. Deploying a graph change: drain the workers first (GRAPH_PATTERNS.md pattern 16).
+The first test pins that LangGraph behaviour on a small graph, so an upgrade that changes it is noticed. The
+rest pin what the app does: the worker dead-letters such a turn instead of "continuing" it, and the stream
+reports an error instead of streaming the person's own question back as the answer. Deploying a graph change:
+drain the workers first (GRAPH_PATTERNS.md pattern 16).
 """
 import uuid
 from typing import Annotated, TypedDict

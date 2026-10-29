@@ -1,20 +1,19 @@
-"""Usage export against a REAL Postgres (sql/24-billing-usage-events.sql and 25-billing-export-outbox.sql; credit_billing/export.py; moved from the agent
-app with the code by specs/013): each usage event reaches a billing provider exactly once, or fails loudly.
+"""Usage export against a REAL Postgres (sql/24 and 25; credit_billing/export.py; moved from the agent app by
+specs/013): each usage event reaches a billing provider exactly once, or fails loudly. Every guarantee is
+database behaviour, so a fake would echo what was written (constitution VII: a reliance on a real constraint,
+lock or transaction is tested at this tier):
+- `FOR UPDATE SKIP LOCKED`: two workers at once take disjoint batches, so no event is sent twice;
+- a crash between "the provider accepted it" and "marked sent" re-sends, and the provider's idempotency key
+  (the event id) makes that harmless: the one window the database can't see;
+- an event past the age limit is `expired`, counted and never sent, given up on BEFORE the provider's window
+  closes;
+- the schema guards the rows: finished is terminal, identity is immutable, an event can't be exported under
+  another tenant.
 
-Every guarantee here is database behaviour, so a fake would only echo back what was written (constitution VII: reliance on a real constraint,
-lock or transaction is stated and tested at this tier, not assumed):
-
-  * `FOR UPDATE SKIP LOCKED` means two workers running at once take disjoint batches: no event is sent twice;
-  * a crash between "the provider accepted it" and "marked sent" re-sends the event, and the provider's idempotency key (the
-    event id) is what makes that harmless: the one window the database cannot see, shown to be survivable;
-  * an event past the age limit is `expired`, counted, and never sent: given up on BEFORE the provider's own window closes;
-  * the rows are guarded by the schema: finished is terminal, identity is immutable, and an event cannot be exported under another tenant.
-
-(That the outbox row commits WITH its usage event, only for a tenant linked to a provider that bills on usage, and that a replay queues nothing
-twice, is tests/integration/test_usage_real_postgres.py: the recording is `credit_billing/usage.py`'s.)
-
-Each test uses its own tenant, customer AND PROVIDER NAME (the outbox is shared across tests and the worker drains every due
-row of a provider, so a shared name would let one test send another's rows).
+(That the outbox row commits WITH its event, only for a linked usage-billing tenant, and a replay queues
+nothing twice, is test_usage_real_postgres.py.) Each test uses its own tenant, customer AND PROVIDER NAME: the
+outbox is shared and a worker drains every due row of a provider, so a shared name would let one test send
+another's rows.
 """
 import asyncio
 import uuid

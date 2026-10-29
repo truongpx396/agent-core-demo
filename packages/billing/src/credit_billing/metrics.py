@@ -1,36 +1,34 @@
-"""The billing core's own counters and gauges (specs/011-billing-module-boundary, contracts/billing-core-boundary.md).
+"""The billing core's own counters and gauges (specs/011-billing-module-boundary,
+contracts/billing-core-boundary.md).
 
-Four counters used to live in `app/core/metrics.py`, which the billing code imported. They are here now, with
-their names, labels and help text exactly as they were, so every dashboard panel and alert rule on them keeps
-working and the billing package no longer needs any host's metrics module to be importable. Spec 013 moved the rest of what the package
-now owns the same way: the usage export's counter and age gauge, the wallet reconciliation's counter and gauges, the credit gate's
-refusal counter, and `agent_cost_governance_degraded_total` for the paths billing counts (`billing_event_write`, `credit_debit`,
-`export_enqueue`, `credit_read`). Names, labels and help are unchanged, so no alert or panel changed; the host keeps its own
-instrument of that last name for the paths it counts, and the two are told apart only by the scope label, which `sum by` and the
-alerts' `increase(...{path=...})` ignore.
+Four counters used to live in `app/core/metrics.py`, which the billing code imported. They are here now with
+names, labels and help text unchanged, so dashboards and alerts keep working and the package needs no host
+metrics module. Spec 013 moved the rest the package now owns the same way: the usage export's counter and age
+gauge, the wallet reconciliation's counter and gauges, the credit gate's refusal counter, and
+`agent_cost_governance_degraded_total` for the paths billing counts (`billing_event_write`, `credit_debit`,
+`export_enqueue`, `credit_read`). The host keeps its own instrument of that name for its paths; they differ
+only by the scope label, which `sum by` and the alerts' `increase(...{path=...})` ignore.
 
-They are built on the OpenTelemetry **API** only. A library depends on the API and emits through whatever
-provider the process installed; the SDK, the exporter, the collector endpoint and `service.name` stay the
-process's concern (`app/core/telemetry.py::configure_telemetry` in the agent app). `get_meter` returns a proxy
-until a provider is installed and replays the instruments created against it once one is, so the order in which
-the host and this module are imported does not matter, and a process that never configures telemetry just
-records nothing.
+They use the OpenTelemetry **API** only. A library depends on the API and emits through whatever provider the
+process installed; the SDK, exporter, endpoint and `service.name` stay the process's concern
+(`app/core/telemetry.py::configure_telemetry` in the app). `get_meter` is a proxy until a provider is
+installed and then replays the instruments, so import order doesn't matter and a process that never configures
+telemetry records nothing.
 
 `Counter` below is a ~25-line copy of the host wrapper (`app/core/metrics.py::Counter`): the same
-`x.labels(k=v).inc()` surface existing call sites use, and a `.name` attribute, which is how
-`tests/conftest.py::metric_value` finds a counter's data points (an OTel instrument does not expose its own
-name back). The copy is the price of the core not importing the host.
+`x.labels(k=v).inc()` surface plus a `.name`, which is how `tests/conftest.py::metric_value` finds data
+points. The copy is the price of the core not importing the host.
 
-**The meter scope is `credit_billing` and carries no version** (spec 011 D23). The collector's Prometheus exporter turns the scope
-into an `otel_scope_name` label and does NOT merge series: the same metric name emitted under two scopes comes out as two
-series (verified with a throwaway collector running this repo's exporter config; research.md P6). Until the package was
-extracted these counters kept the agent app's scope, `app.core.metrics`, so that moving the code forked nothing. A package other
-projects install should not emit another project's scope, so the scope changed once, here. Dashboards aggregate with `sum by`,
-so they carry across; the two alert rules on `agent_billing_webhook_total` are bare `increase(...)` expressions, which cannot
-count the FIRST sample of a series that did not exist before, so `initialise_webhook_series` creates every series the alerts
-look at, at 0, when the process validates its configuration. That closes a gap that existed before the scope change too (the
-first-ever quarantined event for a provider was invisible to the alert). No scope VERSION is set on purpose: a release number
-in the scope would fork every series again at every release.
+**The meter scope is `credit_billing` and carries no version** (spec 011 D23):
+- The collector's Prometheus exporter turns the scope into an `otel_scope_name` label and does NOT merge
+  series, so one metric name under two scopes is two series (research.md P6). Until extraction the counters
+  kept the app's scope; a package other projects install shouldn't emit another project's, so it changed once,
+  here. Dashboards use `sum by`, so they carry across.
+- A version in the scope would fork every series at every release.
+- The two alert rules on `agent_billing_webhook_total` are bare `increase(...)`, which can't count the FIRST
+  sample of a series that didn't exist. So `initialise_webhook_series` creates every series they look at, at
+  0, when the process validates its configuration. That also closes an older gap: the first-ever quarantined
+  event for a provider was invisible.
 
 Imports nothing from `app` (enforced by tests/billing/test_billing_core_boundary.py).
 """

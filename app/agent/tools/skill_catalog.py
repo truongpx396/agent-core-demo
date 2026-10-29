@@ -1,10 +1,9 @@
-"""Skill packages: bundled, on-disk instruction bundles the agent can
-discover and load progressively (GRAPH_PATTERNS.md pattern 45).
+"""Skill packages: bundled, on-disk instruction bundles the agent can discover and load progressively
+(GRAPH_PATTERNS.md pattern 45).
 
-A skill is one directory under `SKILLS_DIR` (app/core/config.py) containing
-a `SKILL.md` — YAML frontmatter (`name`, `description`, optionally
-`domains`) followed by a markdown instruction body, the same shape
-Anthropic's Agent Skills / OpenClaw's `SKILL.md` use:
+A skill is one directory under `SKILLS_DIR` (app/core/config.py) containing a `SKILL.md`: YAML frontmatter
+(`name`, `description`, optionally `domains`) then a markdown instruction body, the shape Anthropic's Agent
+Skills / OpenClaw's `SKILL.md` use:
 
     ---
     name: onboarding-brief
@@ -14,24 +13,18 @@ Anthropic's Agent Skills / OpenClaw's `SKILL.md` use:
     # Onboarding Brief
     1. Look up the new hire with query_employees...
 
-`domains`, if set, is a list of domain names (`app/domains/registry.py`'s
-keys) this skill is relevant to; omitted means "every domain" — the
-pre-existing default, so an un-tagged `SKILL.md` keeps working unchanged.
-`app/agent/tools/builtin.py::make_skill_tools` enforces this (in both
-`skill_search`'s results and `use_skill`'s lookup); this module only
-carries the fact.
+`domains`, if set, lists the domain names (`app/domains/registry.py` keys) the skill is relevant to; omitted
+means "every domain", so an un-tagged `SKILL.md` keeps working unchanged.
+`app/agent/tools/builtin.py::make_skill_tools` enforces it (in `skill_search` results and `use_skill` lookup);
+this module only carries the fact.
 
-This module is the DISK side only — the source of truth for a skill's full
-body. `app/agent/tools/builtin.py::use_skill` reads a skill's `body` from here by
-exact `name`, never from Qdrant: the `skills` Qdrant collection
-(`app/retrieval/qdrant_store.py`, built by `scripts/index_skills.py`) holds
-only `{name, description}`, just enough for `skill_search`'s hybrid search
-to find the right name. Keeping "searchable" (Qdrant) and "authoritative"
-(this module) as two systems means a skill's instructions can never drift
-out of sync with what's on disk.
+This is the DISK side only, the source of truth for a skill's full body. `builtin.py::use_skill` reads the
+`body` from here by exact `name`, never from Qdrant: the `skills` collection (`app/retrieval/qdrant_store.py`,
+built by `scripts/index_skills.py`) holds only `{name, description}`, just enough for `skill_search` to find
+the right name. Keeping "searchable" (Qdrant) and "authoritative" (this module) as two systems means a skill's
+instructions can't drift from what's on disk.
 
-Skills are bundled app capabilities, not tenant data — no `SecurityCtx`
-involved, same as `app/agent/tools/builtin.py::calculator`.
+Skills are bundled app capabilities, not tenant data: no `SecurityCtx`, like `builtin.py::calculator`.
 """
 from dataclasses import dataclass
 from pathlib import Path

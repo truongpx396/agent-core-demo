@@ -1,26 +1,25 @@
 """When, and for how long, to wait before retrying a model call. Pure functions, stdlib only.
 
-What the providers actually send is the part the docs under-specify, so each rule here says where it
-comes from. NOTE: the Gemini details below come from reports in public issue trackers (vercel/ai,
-inspect_ai), not from Google's own docs, and have not been captured from this repo's own key.
+Providers under-specify what they send, so each rule says where it comes from. NOTE: the Gemini details come
+from reports in public issue trackers (vercel/ai, inspect_ai), not Google's docs, and haven't been captured
+from this repo's own key.
 
-- Gemini puts the wait in the JSON BODY of a 429, as `google.rpc.RetryInfo.retryDelay` (`"34.4s"`),
-  and sends NO `Retry-After` header. Many other OpenAI-compatible providers do send the header
-  (seconds, or an HTTP date), so both are read.
+- Gemini puts the wait in the JSON BODY of a 429, as `google.rpc.RetryInfo.retryDelay` (`"34.4s"`), and sends
+  NO `Retry-After` header. Many other OpenAI-compatible providers do send the header (seconds or an HTTP
+  date), so both are read.
 - A 429 can name a per-DAY quota in the `quotaId` of its `google.rpc.QuotaFailure` (`...PerDay...` vs
-  `...PerMinute...`) while still carrying a short `retryDelay`. Public issue trackers say retrying such
-  an error is futile until the quota resets, so the first version of this policy gave up on it at
-  once. THAT WAS WRONG for this repo's real key: in a real run, errors naming a daily quota were
-  followed, under a minute later, by successes (it behaves like a rolling window). So a daily-quota
-  429 gets exactly ONE retry (`DAILY_QUOTA_ATTEMPTS`): a truly exhausted quota then costs one extra
-  attempt, not a thrown-away review. Its `retryDelay` is the quota's RESET TIME, hours away (a real
-  run read 41,609s, counting down with the clock), while requests were still getting through, so the
-  caller ignores an over-long hint on a daily quota and uses the short backoff for that one retry.
-- Google's SDK guidance for 429 and 503: exponential backoff from about a second with jitter, a
-  maximum single delay of 60 seconds, and up to four attempts.
+  `...PerMinute...`) while still carrying a short `retryDelay`. Public reports say retrying such an error is
+  futile until the quota resets, so the first version of this policy gave up at once. THAT WAS WRONG for this
+  repo's real key: errors naming a daily quota were followed, under a minute later, by successes (it behaves
+  like a rolling window). So a daily-quota 429 gets exactly ONE retry (`DAILY_QUOTA_ATTEMPTS`): a truly
+  exhausted quota costs one extra attempt, not a thrown-away review. Its `retryDelay` is the quota's RESET
+  TIME, hours away (a real run read 41,609s, counting down with the clock) while requests still got through,
+  so the caller ignores an over-long hint on a daily quota and uses the short backoff for that one retry.
+- Google's SDK guidance for 429 and 503: exponential backoff from about a second with jitter, a 60-second
+  maximum single delay, up to four attempts.
 
-The old policy waited about 2s, then 4s. A free tier's rate-limit window is a MINUTE, so three
-attempts inside ten seconds could only ever fail; waiting as the server asks is what works.
+The old policy waited about 2s, then 4s. A free tier's rate-limit window is a MINUTE, so three attempts inside
+ten seconds could only fail; waiting as the server asks is what works.
 """
 import email.utils
 import json

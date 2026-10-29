@@ -1,30 +1,19 @@
-"""MCP server exposing the structured-data tool (`app/core/sql_store.py`'s
-`query_employees`) over MCP, so an external client (Claude Desktop,
-another agent, `mcp dev`) can reach it — not just this app's own in-process
-LLM (GRAPH_PATTERNS.md pattern 21).
+"""MCP server exposing the structured-data tool (`app/core/sql_store.py`'s `query_employees`) so an external
+client (Claude Desktop, another agent, `mcp dev`) can reach it, not just this app's own LLM (GRAPH_PATTERNS.md
+pattern 21). Built on `mcp.server.MCPServer`, the 2.x SDK's server class (what `FastMCP` became).
 
-Built on `mcp.server.MCPServer`, the 2.x SDK's server class (what `FastMCP` became there).
+Identity: every other tool reads `SecurityCtx` from `RunnableConfig["configurable"]["ctx"]`, sourced from a
+trusted HTTP header (`app/api/deps.py::get_ctx`). MCP has no such channel, so `build_server(identity)` takes
+an `IdentitySource` (`app/mcp/identity.py`) and no tool takes either name as an argument. An earlier version
+did, so the connected assistant chose the tenant it read: one prompt injection from another tenant's rows. The
+policy gate (`DEFAULT_POLICY.permit(...)`) and `query_employees`'s mandatory `WHERE tenant = %s` run as
+before; only where the tenant comes from changed.
 
-## Identity over MCP: a source chosen where the server is built, never an argument
+Two sources: over stdio (`make mcp-serve`) the identity is the launcher's (`MCP_TENANT`, `MCP_PRINCIPAL`),
+started by the person who owns the machine, whom nothing authenticates; over HTTP (`app/mcp/gateway.py`,
+specs/017) it is the verified token of each request, and the launcher's environment is never consulted.
 
-Every other tool (`app/agent/tools/builtin.py`) reads `SecurityCtx` from
-`RunnableConfig["configurable"]["ctx"]`, sourced from a trusted HTTP header
-(`app/api/deps.py::get_ctx`). MCP has no equivalent channel — nothing
-upstream stamps a tenant/principal for it. So `build_server(identity)` takes an
-`IdentitySource` (`app/mcp/identity.py`) and no tool takes either name as an
-argument. An earlier version did, which meant the connected assistant chose the
-tenant it read: one prompt injection away from another tenant's rows. The policy
-gate (`DEFAULT_POLICY.permit(...)`) and `sql_store.query_employees`'s mandatory
-`WHERE tenant = %s` still run exactly as before; only where the tenant comes
-from changed.
-
-Two sources exist. Over stdio (this module's own `mcp`, `make mcp-serve`) the
-identity is the launcher's (`MCP_TENANT`, `MCP_PRINCIPAL`): the process is
-started by the person who owns the machine, and nothing authenticates that
-person. Over HTTP (`app/mcp/gateway.py`, specs/017) it is the verified access
-token of each request, and the launcher's environment is never consulted.
-
-Run with: `make mcp-serve` (stdio transport; needs MCP_TENANT and MCP_PRINCIPAL).
+Run with `make mcp-serve` (stdio; needs MCP_TENANT and MCP_PRINCIPAL).
 """
 import sys
 from typing import Any

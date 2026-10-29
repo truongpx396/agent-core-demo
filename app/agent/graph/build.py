@@ -1,27 +1,26 @@
-"""The graph builder. One function, `build_graph`, compiles every graph this app runs; a
-`GraphProfile` says which optional stages that graph includes.
+"""The graph builder. `build_graph` compiles every graph this app runs; a `GraphProfile` says which optional
+stages that graph includes:
 
-- `FULL_PROFILE` — the main conversation: semantic cache, history compaction, follow-up
-  suggestions, and citation enforcement.
-- `SUBAGENT_PROFILE` — a nested `run_subagent` run (pattern 46): none of those. `build_subagent_graph`
-  is `build_graph` with that profile.
+- `FULL_PROFILE`: the main conversation (semantic cache, history compaction, follow-up suggestions, citation
+  enforcement).
+- `SUBAGENT_PROFILE`: a nested `run_subagent` run (pattern 46), with none of those. `build_subagent_graph` is
+  `build_graph` with that profile.
 
-Topology, in order: `validate_input -> moderate_input -> [check_semantic_cache -> (miss)
-[compact_history ->]] [route_model ->] retrieve_context -> agent <-> tools`, then `check_output`, which retries,
-gives up, or ends (through `[suggest_followups] || [write_semantic_cache]`, in parallel). Moderation comes
-before anything that spends: a refused or cache-hit turn pays for no compaction (pattern 25), and none asks the model router either (pattern 68).
+Topology: `validate_input -> moderate_input -> [check_semantic_cache -> (miss) [compact_history ->]]
+[route_model ->] retrieve_context -> agent <-> tools`, then `check_output`, which retries, gives up, or ends
+(through `[suggest_followups] || [write_semantic_cache]`, in parallel). Moderation precedes anything that
+spends: a refused or cache-hit turn pays for no compaction (pattern 25) and asks no model router (pattern 68).
 GRAPH_PATTERNS.md "Graph Flow" draws it.
 
-`GraphDeps` bundles the swappable external clients, built once here and threaded into the node
-factories that need them. Unset fields fall back to the real clients; tests set individual fields to
-inject fakes instead of monkeypatching module globals.
+`GraphDeps` bundles the swappable external clients, built once here and threaded into the node factories;
+unset fields fall back to the real clients, and tests set individual fields to inject fakes instead of
+monkeypatching module globals.
 
-`manifest` and `domain` are required: the same function serves any domain (system prompt, tools,
-capability mapping, policy) with no branching, and none is the default. Ecorp is one entry in
-`app/domains/registry.py`.
+`manifest` and `domain` are required: one function serves any domain (prompt, tools, capabilities, policy)
+with no branching and no default. Ecorp is one entry in `app/domains/registry.py`.
 
-This is the composition root, so it is the one module that imports every node. Nothing a node
-imports imports it back, which is why none of the graph modules needs a deferred import.
+This is the composition root, so the one module that imports every node; nothing a node imports imports it
+back, which is why no graph module needs a deferred import.
 """
 import functools
 from collections.abc import Awaitable, Callable
@@ -207,29 +206,26 @@ def build_graph(
 ):
     """Compile the graph.
 
-    `deps` bundles swappable external clients (LLM, search) — see GraphDeps; tests inject fakes
-    via a GraphDeps to run full scenarios (reject path, tool loop, HITL, iteration cap, retry)
-    without a live model or Qdrant (tests/agent/graph/test_graph_integration.py).
+    `deps` bundles the swappable clients (LLM, search); tests inject fakes through a `GraphDeps` to run full
+    scenarios (reject path, tool loop, HITL, iteration cap, retry) without a live model or Qdrant
+    (tests/agent/graph/test_graph_integration.py).
 
-    `checkpointer` defaults to an in-memory MemorySaver — fine for tests, never for a real HITL
-    pause: a paused human_approval gate parks the run indefinitely, and MemorySaver doesn't survive
-    a process restart. app/agent/runtime/core.py's init_graph_async() passes a durable
-    AsyncPostgresSaver instead for the CLI/API singleton.
+    `checkpointer` defaults to an in-memory MemorySaver: fine for tests, never for a real HITL pause (a paused
+    `human_approval` gate parks the run indefinitely, and MemorySaver doesn't survive a restart).
+    `init_graph_async()` in app/agent/runtime/core.py passes a durable AsyncPostgresSaver for the CLI/API
+    singleton.
 
     `max_iterations`/`max_tokens_per_turn`/`max_cost_usd_per_turn` default to `None` (the
-    MAX_ITERATIONS/MAX_TOKENS_PER_TURN/MAX_COST_USD_PER_TURN constants). `run_subagent` is the one
-    caller that sets them, to the MAX_SUBAGENT_* ceilings (pattern 46), so a nested run is bounded
-    by its own.
+    MAX_ITERATIONS/MAX_TOKENS_PER_TURN/MAX_COST_USD_PER_TURN constants); only `run_subagent` sets them, to the
+    MAX_SUBAGENT_* ceilings (pattern 46).
 
-    `emit_no_answer_message` (default True) controls whether `no_answer` AND `retry_exhausted`
-    (both "ended without a real answer" terminal paths) fill an empty final AIMessage with a
-    user-facing fallback. `run_subagent` sets this False: it substitutes its own
-    differently-worded message and outcome tag, so the real fallback text would be wrongly read as
-    the subagent's own genuine answer.
+    `emit_no_answer_message` (default True): whether `no_answer` AND `retry_exhausted` fill an empty final
+    AIMessage with a user-facing fallback. `run_subagent` sets False because it substitutes its own
+    differently worded message and outcome tag, and the real fallback would be read as the subagent's genuine
+    answer.
 
-    `history_token_ceiling`/`history_token_floor` default to `None` (HISTORY_TOKEN_CEILING/FLOOR).
-    No production caller overrides these; they let tests exercise compact_history's hysteresis
-    with small, controlled budgets instead of thousands of tokens of placeholder text.
+    `history_token_ceiling`/`history_token_floor` default to `None` (HISTORY_TOKEN_CEILING/FLOOR); no
+    production caller overrides them, they let tests exercise compact_history's hysteresis with small budgets.
     """
     deps = deps or GraphDeps()
 

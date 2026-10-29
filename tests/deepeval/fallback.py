@@ -1,42 +1,35 @@
-"""Failover between judge models for tests/deepeval. Test-support code; no `deepeval` import at module
-level, because the fast `test` job collects tests/deepeval/ without `deepeval` installed at all.
+"""Failover between judge models for tests/deepeval. Test-support code; no module-level `deepeval` import,
+because the fast `test` job collects tests/deepeval/ without deepeval installed.
 
-THE BUG THIS REPLACES. The first fallback (a single optional Plugsky backup in conftest.py) only engaged
-when `exc` was itself an `openai.RateLimitError` or carried an HTTP `.code`. But deepeval wraps every call in
-a tenacity retry policy with `reraise=False` (deepeval 4.2.0 `models/retry_policy.py`), so when its attempts
-run out the exception that reaches the test is `tenacity.RetryError`, with the real `RateLimitError` buried
-inside it. A real CI run (PR #101) hit a Groq per-day token limit, had `PLUGSKY_API_KEY` set, and the backup
-NEVER engaged: zero "falling back" lines, and `FAILED ... tenacity.RetryError: RetryError[<Future ... raised
-RateLimitError>]`. The one case the fallback existed for was the one it could not see. `chain_of` now walks
-into a RetryError and down `__cause__`/`__context__`, and the classifier looks at every exception in it.
+The bug this replaces: the first fallback (one optional Plugsky backup) engaged only when the exception was
+itself an `openai.RateLimitError` or carried an HTTP `.code`. But deepeval wraps every call in a tenacity
+retry with `reraise=False` (4.2.0 `models/retry_policy.py`), so when attempts run out the exception is
+`tenacity.RetryError` with the real `RateLimitError` buried inside. A CI run (PR #101) hit a Groq per-day
+token limit with `PLUGSKY_API_KEY` set and the backup NEVER engaged. `chain_of` now walks into a RetryError
+and down `__cause__`/`__context__`, and the classifier looks at every exception in it.
 
-THE CHAIN. Each judge fixture is an ordered list: its primary, then other models on the SAME provider (each
-model has its own free-tier quota: Groq's 429 names the model, Gemini's names `PerProjectPerModel`), then
-the optional Plugsky backup. A transient failure (rate limit, overload, timeout) moves to the next model;
-so does an UNUSABLE ANSWER (below). Anything else (auth, a 400 bad schema, a real bug) is re-raised
-untouched, because a different model cannot fix it and a fallback must not hide it.
+The chain: each judge fixture is an ordered list of its primary, then other models on the SAME provider (each
+has its own free-tier quota), then the optional Plugsky backup. A transient failure (rate limit, overload,
+timeout) moves to the next model, and so does an UNUSABLE ANSWER. Anything else (auth, a 400 bad schema, a
+real bug) is re-raised untouched: another model can't fix it and a fallback must not hide it.
 
-UNUSABLE ANSWERS. The second gap, found in CI run 37320398499 (the merge of #121, and #120 before it): both
-`test_conversation_simulator_deepeval.py` tests went red on `main` with the judge having ANSWERED, just not in
-the shape asked. deepeval 4.2.0's `LocalModel` sends no `response_format` (so Groq is only asked for JSON in
-the prompt), then runs `trim_and_load_json` and `schema.model_validate` on the text. One run got
-`{"verdicts": {...}}` where a list was wanted (a pydantic `ValidationError`), the other an EMPTY completion
-(`DeepEvalError: ... invalid JSON`, raised from inside `except JSONDecodeError`, so the `JSONDecodeError` is
-only its `__context__`). Neither is transient and neither is a bug in the repo, so the chain re-raised them and
-`flaky=True` (which only swallows a failed SCORE) could not help: the job went red on a judge's formatting. The
-log shows the Groq primary had just run out of daily tokens, so the answers most likely came from a weaker
-fallback; that is not proven, because a non-transient failure never named its model. Now it does. An unusable
-answer moves to the next model for THAT call only: no cooldown, since the model is up and the next prompt may
-suit it. If the last model also answers badly the error is raised, so a chain where nobody can answer still
-fails the job rather than passing on nothing.
+Unusable answers (CI run 37320398499, the merge of #121): both conversation-simulator tests went red on `main`
+with the judge having ANSWERED in the wrong shape. deepeval's `LocalModel` sends no `response_format` (Groq is
+asked for JSON only in the prompt), then runs `trim_and_load_json` and `schema.model_validate`. One run
+returned `{"verdicts": {...}}` where a list was wanted (`ValidationError`), the other an EMPTY completion
+(`DeepEvalError: invalid JSON`, where the `JSONDecodeError` is only its `__context__`). Neither is transient
+or a repo bug, so the chain re-raised and `flaky=True` (which swallows only a failed SCORE) couldn't help. The
+Groq primary had just run out of daily tokens, so the answers most likely came from a weaker fallback
+(unproven: a non-transient failure never named its model; now it does). An unusable answer moves to the next
+model for THAT call only, with no cooldown. If the last model also answers badly the error is raised, so a
+chain where nobody can answer still fails the job.
 
-COOLDOWN. deepeval retries a dead model with backoff on EVERY call before the error surfaces, so a judge
-whose daily quota is gone would cost that wait again on each of dozens of metric calls. A model that failed
-transiently is skipped for a while (an hour if the error says it is a per-day limit, five minutes otherwise)
-and tried again afterwards, since a rolling window recovers.
+Cooldown: deepeval retries a dead model with backoff on EVERY call, so an exhausted daily quota would cost
+that wait on each of dozens of metric calls. A model that failed transiently is skipped for an hour (error
+says per-day) or five minutes, then tried again.
 
-Logs name the model and the error CLASS and status only, never the provider's message: this repo's CI logs
-are public and a 429 message carries the organisation id and quota figures.
+Logs name the model and the error CLASS and status only, never the provider's message: CI logs are public and
+a 429 message carries the organisation id and quota figures.
 """
 import time
 from collections.abc import Callable, Sequence

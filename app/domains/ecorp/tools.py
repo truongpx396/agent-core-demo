@@ -1,24 +1,20 @@
-"""The Ecorp domain's own tools: `add_note` and `remember` (both `mutating`, so
-every call is gated behind `human_approval`) and `query_employees` (a fixed,
-structured `read_only` query).
+"""The Ecorp domain's own tools: `add_note` and `remember` (both `mutating`, so every call is gated behind
+`human_approval`) and `query_employees` (a fixed, structured `read_only` query).
 
-Tool layer only: argument schemas, `ctx_or_refuse`, `idempotent()` and the
-timeout wrapper. The data access is in `store.py`. Both follow
-`.claude/rules/side-effect-tools.md`.
+Tool layer only: argument schemas, `ctx_or_refuse`, `idempotent()` and the timeout wrapper. Data access is in
+`store.py`. Both follow `.claude/rules/side-effect-tools.md`.
 
-All tools declare an explicit Pydantic `args_schema` — the JSON schema the LLM
-sees, constraining what it can send and rejecting bad arguments loudly.
-`add_note`/`remember` lean on this harder: their args are a fixed, closed set,
-never a free-form or model-generated write target (GRAPH_PATTERNS.md "fixed
-tools, never generated queries").
+All tools declare an explicit Pydantic `args_schema`, the JSON schema the LLM sees, constraining what it can
+send and rejecting bad arguments loudly. `add_note`/`remember` lean on it harder: their args are a fixed,
+closed set, never a free-form or model-generated write target (GRAPH_PATTERNS.md "fixed tools, never generated
+queries").
 
 ## Tenant isolation (app/core/security.py)
 
-`add_note`, `remember` and `query_employees` receive `config: RunnableConfig`
-(auto-injected by `ToolNode`, auto-excluded from the LLM-visible schema) to read
-`SecurityCtx` from `config["configurable"]["ctx"]`. Each calls `ctx_or_refuse`
-first and fails closed if `ctx` is missing/malformed, rather than running an
-unscoped query or untenanted write.
+`add_note`, `remember` and `query_employees` receive `config: RunnableConfig` (auto-injected by `ToolNode`,
+auto-excluded from the LLM-visible schema) to read `SecurityCtx` from `config["configurable"]["ctx"]`. Each
+calls `ctx_or_refuse` first and fails closed if `ctx` is missing or malformed, rather than running an unscoped
+query or untenanted write.
 """
 from typing import Annotated
 

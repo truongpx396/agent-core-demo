@@ -1,39 +1,35 @@
 """The MCP gateway: the two published servers over Streamable HTTP, behind OAuth 2.1 (specs/017).
 
-`app/mcp/server.py` and `ops_server.py` speak stdio: a child process of whoever launched it, one client each, no port, and an
-identity taken from that person's environment. That is right for a desktop assistant on the same machine and wrong for anything
-else (a remote agent, a team, several replicas): there is no launcher to trust. This module serves the SAME tools over HTTP
-with the SAME rule, "the identity is never an argument", but takes it from the verified access token of each request.
+`app/mcp/server.py` and `ops_server.py` speak stdio: a child of whoever launched them, one client each, with
+the identity of that person's environment. That fits a desktop assistant and nothing else (a remote agent, a
+team, replicas): there is no launcher to trust. This module serves the SAME tools with the SAME rule, "the
+identity is never an argument", but takes it from the verified access token of each request.
 
-## Shape
+Shape:
+- One `MCPServer` per endpoint, each its own OAuth RESOURCE: `/ecorp/mcp` (scope `ecorp:read`) and `/ops/mcp`
+  (scope `ops:read`). The audience a token must carry is that endpoint's own URL (RFC 8707) and the scope is
+  checked too, because the authorization server doesn't stop a client asking for a token whose audience and
+  scope disagree (measured on Casdoor); neither check alone is the boundary.
+- Stateless (`stateless_http`, `json_response`): no session pins a client to a replica, so `docker compose up
+  --scale mcp-gateway=N` behind the Caddyfile's `dynamic a` load-balances them. A tool call reads the token of
+  its own request, and concurrent callers of different tenants never see each other's (tested).
+- The SDK does the protocol parts (bearer middleware, the 401 with `WWW-Authenticate: Bearer
+  resource_metadata=...`, 403 `insufficient_scope`, the RFC 9728 metadata, the DNS-rebinding Host/Origin
+  guard). Ours are `gateway_auth.JwtVerifier`, `TenantGate` (which tenants may use the operations server) and
+  `identity.token_source` (tenant and principal from the claims).
+- The metadata documents must sit at the HOST root (`/.well-known/oauth-protected-resource/ecorp/mcp`) where
+  clients look, so the two apps are dispatched by exact path, not mounted.
 
-  * One `MCPServer` per endpoint, each its own OAuth RESOURCE: `/ecorp/mcp` (scope `ecorp:read`) and `/ops/mcp` (scope `ops:read`).
-    The audience a token must carry is that endpoint's own URL (RFC 8707), so a token for one is useless at the other, and the
-    scope is checked too: the authorization server does not stop a client asking for a token whose audience and scope disagree
-    (measured on Casdoor), so neither check alone is the boundary.
-  * Stateless (`stateless_http`, `json_response`): no session to pin a client to a replica, so any replica serves any request and
-    `docker compose up --scale mcp-gateway=N` behind the Caddyfile's `dynamic a` load-balances them. A tool call reads the token of
-    its own request, and concurrent callers of different tenants never see each other's (tested).
-  * The SDK does the protocol parts: the bearer middleware, the 401 with `WWW-Authenticate: Bearer resource_metadata=...`, the 403
-    `insufficient_scope`, the RFC 9728 metadata document, the Host/Origin (DNS-rebinding) guard. What is ours is
-    `gateway_auth.JwtVerifier` (signature, issuer, audience, expiry), `TenantGate` (which tenants may use the operations server)
-    and `identity.token_source` (tenant and principal from the claims).
-  * The metadata documents must sit at the HOST root (`/.well-known/oauth-protected-resource/ecorp/mcp`), not under a mounted path,
-    where a client looks for them; so the two apps are not mounted but dispatched by exact path.
+Fail closed: without an issuer and a JWKS URL the gateway does not start (`GatewayConfigError`); without
+`MCP_GATEWAY_OPS_TENANTS` the operations endpoint refuses everyone; a token that cannot be verified is a 401.
+An `http://` issuer or public URL is accepted only for loopback. It never reads `MCP_TENANT`/`MCP_PRINCIPAL`.
 
-## Fail closed
+Not built (specs/017): per-tenant rate limits (since done by the authlimit front door), a mutating tool (the
+sandbox is deliberately not behind this gateway: Principle II puts side effects behind the graph's approval
+gate, which an outside caller doesn't pass through), stale-key grace when the authorization server is down,
+production TLS/DNS wiring.
 
-Without an issuer and a JWKS URL the gateway does not start (`GatewayConfigError`); without `MCP_GATEWAY_OPS_TENANTS` the
-operations endpoint refuses every caller; a token that cannot be verified, for any reason, is a 401. An `http://` issuer or public
-URL is accepted only for a loopback host. Nothing here ever reads `MCP_TENANT`/`MCP_PRINCIPAL`.
-
-## Not built (specs/017)
-
-Per-tenant rate limits, a mutating tool (the sandbox is deliberately not behind this gateway: constitution Principle II puts every
-side effect behind an approval gate that lives in the agent's graph, and an outside caller does not pass through it), stale-key
-grace when the authorization server is down, and production TLS/DNS wiring (the `gateway` compose profile is for local use).
-
-Run with: `make mcp-gateway-up` (the whole stack), or `python -m app.mcp.gateway --host 0.0.0.0 --port 8000`.
+Run with `make mcp-gateway-up`, or `python -m app.mcp.gateway --host 0.0.0.0 --port 8000`.
 """
 import argparse
 import contextlib

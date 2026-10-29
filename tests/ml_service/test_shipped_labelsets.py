@@ -29,8 +29,7 @@ def test_every_shipped_set_is_accepted_by_the_services_own_parser(path):
 
 @pytest.mark.parametrize("path", SETS, ids=lambda p: p.stem)
 def test_every_model_in_the_classify_chain_has_a_cutoff_for_every_shipped_set(path):
-    """A model with no entry does not serve the set. For the fallback that is a silent loss of redundancy, so adding a model to the chain
-    (or a set to the image) without its cutoff fails here, not in production at 3 a.m. when the primary is down."""
+    """A model with no entry does not serve the set."""
     chain = [m["name"] for m in tomllib.loads(MODELS_TOML.read_text())["model"] if "classify" in m["roles"] and m.get("enabled", True)]
     parsed = labelsets.parse_labelset(path.read_text(), path.stem)
     assert isinstance(parsed, labelsets.LabelSet)

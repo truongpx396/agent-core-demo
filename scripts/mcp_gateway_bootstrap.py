@@ -1,28 +1,31 @@
-"""Create, idempotently, what the MCP gateway expects to find in Casdoor (specs/017): `make mcp-gateway-bootstrap`.
+"""Create, idempotently, what the MCP gateway expects to find in Casdoor (specs/017): `make
+mcp-gateway-bootstrap`. The gateway is a resource server and trusts whatever the authorization server signed
+for it, which needs an APPLICATION per published server whose tokens carry the right claims, and a user to log
+in as. A second run changes nothing it shouldn't.
 
-The gateway is a resource server; it trusts whatever the authorization server signed for it. For that to be useful the authorization
-server needs, for each published server, an APPLICATION whose tokens carry the right claims, and a user to log in as. This makes them, so
-the stack works after one command and a second run changes nothing it should not:
+- one ORGANIZATION per tenant (default `ecorp`, which owns the seeded rows) and one for operators
+  (`ops-team`). The token's `owner` claim is the organization, which the gateway reads as the tenant
+  (`MCP_GATEWAY_TENANT_CLAIM`).
+- one APPLICATION per organization and server: `mcp-<tenant>` (scope `ecorp:read`) and `mcp-ops` (scope
+  `ops:read`). Category `Agent` / type `MCP` turns custom scopes on. Tokens are `JWT-Standard` (17 claims,
+  none of the profile; the default format carries ~85 including `lastSigninIp`).
+- (specs/018) one APPLICATION per tenant for the chat API: `api-<tenant>` (scope `api:chat`), a public client
+  whose redirect URIs are the web page's root and the smoke check's callback, verified at the front door by
+  authlimit.
+- every access token lasts SEVEN DAYS by default (`--token-hours` or TOKEN_HOURS; spec 018 FR-022).
+  Verification is offline, so a token can't be recalled: `make authlimit-revoke` bounds that, and a short
+  access token plus a refresh token is the production recommendation. The MCP applications follow the same
+  setting (spec 017 used one hour; revocation now covers the MCP routes).
+- a demo USER per organization. The password is printed ONCE, when created; an existing user is left alone.
 
-  * one ORGANIZATION per tenant (default `ecorp`, which owns the seeded Ecorp rows) and one for the operators (`ops-team`). The token's
-    `owner` claim is the organization, and the gateway reads the tenant from it (`MCP_GATEWAY_TENANT_CLAIM`).
-  * one APPLICATION per organization and server: `mcp-<tenant>` for the Ecorp directory (scope `ecorp:read`) and `mcp-ops` for the
-    operations server (scope `ops:read`). Category `Agent` / type `MCP` is what turns custom scopes on. Tokens are `JWT-Standard`
-    (17 claims, none of the user's profile; the default format carries ~85 including `lastSigninIp`).
-  * (specs/018) one APPLICATION per tenant for the chat API: `api-<tenant>` (scope `api:chat`), a public client whose redirect URIs are the
-    web page's root and the smoke check's callback. Its tokens are what the authlimit service verifies at the front door.
-  * every application's access token lasts SEVEN DAYS by default (`--token-hours` or the TOKEN_HOURS variable change it; spec 018 FR-022).
-    Verification is offline, so a token cannot be recalled by the authorization server: `make authlimit-revoke` is how an operator bounds
-    that, and a short access token with a refresh token is the production recommendation. (Spec 017 used one hour for the MCP applications;
-    revocation now covers the MCP routes too, so they follow the same setting.)
-  * a demo USER in each organization. A password is printed ONCE, when the user is created; an existing user is left alone.
+It prints the `claude mcp add` command per server, with a PRE-REGISTERED client and fixed callback port: this
+Casdoor has dynamic client registration off by default (anyone reaching it could register a client) and no
+Client ID Metadata Document support (both measured, specs/017 research.md), and it compares redirect URIs
+exactly.
 
-It prints the `claude mcp add` command for each server: a PRE-REGISTERED client with a fixed callback port, because this Casdoor has
-dynamic client registration off by default (anyone who can reach it could register a client) and no Client ID Metadata Document support
-(both measured, specs/017 research.md), and Casdoor compares redirect URIs exactly.
-
-Runs INSIDE the gateway container (`docker compose exec`), where Casdoor is `http://casdoor:8000`: no TLS to trust, and the admin API is not
-published. Needs CASDOOR_ADMIN_PASSWORD in the environment. Standard library plus httpx, nothing from `app`.
+Runs INSIDE the gateway container (`docker compose exec`), where Casdoor is `http://casdoor:8000` (no TLS to
+trust; the admin API isn't published). Needs CASDOOR_ADMIN_PASSWORD. Standard library plus httpx, nothing from
+`app`.
 """
 import argparse
 import os

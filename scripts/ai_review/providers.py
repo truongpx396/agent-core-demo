@@ -1,13 +1,11 @@
 """Which providers the AI reviewer may try, in order, and how it moves from one to the next.
 
-Everything about fallback providers lives here, so `review.py` only has to hand it the one
-thing it cannot know: how to ask a single provider. Stdlib only, no network, no GitHub types.
-`walk_chain` takes that step (and the exception type that means "this provider failed") as
-parameters, which is also what lets this module sit below `review.py` without importing it.
+All fallback-provider logic lives here, so `review.py` only supplies what it alone knows: how to ask a single provider.
+Stdlib only, no network, no GitHub types. `walk_chain` takes that step (and the exception type meaning "this provider
+failed") as parameters, which also lets this module sit below `review.py` without importing it.
 
-The primary is `AI_REVIEW_BASE_URL` / `AI_REVIEW_MODEL` / `AI_REVIEW_API_KEY`. The fallbacks are grouped
-by provider, because that is the only distinction that matters (a model is just a name; a provider
-brings a host and a key), and are tried in this order:
+The primary is `AI_REVIEW_BASE_URL` / `AI_REVIEW_MODEL` / `AI_REVIEW_API_KEY`. Fallbacks are grouped by provider (a
+model is just a name; a provider brings a host and a key) and tried in this order:
 
     AI_REVIEW_FALLBACK_MODELS              comma list: other models on the PRIMARY's provider (same host, same key)
     AI_REVIEW_FALLBACK_PROVIDER1_MODELS    comma list: models on ANOTHER provider; empty switches the group off
@@ -15,17 +13,16 @@ brings a host and a key), and are tried in this order:
     AI_REVIEW_FALLBACK_PROVIDER1_API_KEY   that provider's key: see the key rule below
     AI_REVIEW_FALLBACK_PROVIDER2_*         the same, for a third provider
 
-The chain is the primary, then FALLBACK_MODELS in order, then PROVIDER1's models, then PROVIDER2's. In logs
-and in the comment header each is "fallback N" by its place in that chain.
+The chain is the primary, then FALLBACK_MODELS, then PROVIDER1's models, then PROVIDER2's. Logs and the comment header
+call each one "fallback N" by its place in the chain.
 
-Two-line reason this exists: a free tier's quota is per MODEL (and per provider), so when one is spent
-the next may be untouched, and an advisory reviewer that goes dark for the day is worse than one that
-quietly uses its second choice.
+Why: a free tier's quota is per MODEL (and per provider), so when one is spent the next may be untouched, and an
+advisory reviewer that goes dark for the day is worse than one that quietly uses its second choice.
 
-THE KEY RULE. One provider's API key is never sent to another provider's host. A fallback uses its own
-key if it has one; otherwise it inherits the primary's key ONLY when it points at the same base URL
-(the FALLBACK_MODELS case). A fallback on a different host with no key of its own sends
-none, which is right for a keyless endpoint and fails loudly with a 401 for one that needs a key.
+THE KEY RULE. One provider's API key is never sent to another provider's host. A fallback uses its own key if it has
+one; otherwise it inherits the primary's key ONLY when it points at the same base URL (the FALLBACK_MODELS case). A
+fallback on a different host with no key of its own sends none, which is right for a keyless endpoint and fails loudly
+with a 401 for one that needs a key.
 """
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass

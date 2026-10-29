@@ -1,15 +1,16 @@
-"""The agent app keeps COPIES of three things the billing package owns, because docker-compose, Prometheus and Grafana read fixed
-paths in this repo (specs/011-billing-module-boundary D22). The package's files are canonical; this fails the build if a copy drifts.
+"""The agent app keeps COPIES of three things the billing package owns, because docker-compose, Prometheus and
+Grafana read fixed paths here (specs/011 D22). The package's files are canonical; this fails the build if a
+copy drifts:
+- `postgres-init/20-`, `22-`, `24-` and `25-` must be byte-equal to the scripts the package ships (a fresh
+  volume is built from the former, every other project from the latter, so the schema is identical by
+  construction, SC-005);
+- `observability/prometheus/alerts.yml` must carry each of the package's alert rules (webhook, usage record,
+  debit, export, gate, wallet reconciliation) with the same name, expression, `for`, labels and summary
+  (descriptions differ on purpose: each says where its deployment keeps the scripts);
+- the app's 'Credit Billing' dashboard must carry each of the package dashboard's panels with the same type
+  and queries (since spec 013 every metric on it is the package's).
 
-  * `postgres-init/20-`, `22-`, `24-` and `25-` must be byte-equal to the scripts the package ships, because a fresh volume is built from the
-    former and every other project from the latter: the schema is identical by construction (SC-005);
-  * `observability/prometheus/alerts.yml` must carry each of the package's alert rules (the webhook, the usage record, the debit, the export,
-    the gate, the wallet reconciliation) with the same name, expression, `for`, labels and summary (descriptions differ on purpose: each
-    says where its own deployment keeps the schema scripts);
-  * the app's 'Credit Billing' dashboard must carry each of the package dashboard's panels with the same type and the same queries (since spec
-    013 every metric on it is the package's, so the two are the same panels under different ids).
-
-Each comparison has a test that it can fail, so none of them passes by comparing a thing with itself.
+Each comparison has a test that it can fail, so none passes by comparing a thing with itself.
 """
 import json
 from pathlib import Path

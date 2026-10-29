@@ -196,10 +196,9 @@ class TestAStreamClosedBeforeItsTerminalEventStillFinishesTheTrace:
         assert "[abandoned: stream closed before the turn finished]" in update["output"]
 
     async def test_closing_the_stream_early_counts_the_turn_as_abandoned_not_cancelled(self, monkeypatch):
-        """The turn's outcome used to be recorded on every exit but this one, so a run
-        whose consumer vanished left no trace in `agent_requests_total` at all. It is counted under
-        its own outcome: nobody asked for a stop, so it is not "cancelled", and the POST /chat/cancel
-        counter stays where it was."""
+        """The turn's outcome used to be recorded on every exit but this one, so a run whose consumer vanished
+        left no trace in `agent_requests_total` at all.
+        """
         monkeypatch.setattr(stream_module, "_open_trace", lambda *a, **k: (_FakeTrace(), []))
         llm = GenericFakeChatModel(
             messages=iter([AIMessage(content="A normal answer that streams in several tokens.")])
@@ -225,11 +224,9 @@ class TestAStreamClosedBeforeItsTerminalEventStillFinishesTheTrace:
         assert metric_value(metrics.agent_streaming_cancellation_total) == streaming_cancellations
 
     async def test_closing_the_stream_at_a_synthetic_answer_still_records_the_finished_turn(self, monkeypatch):
-        """A turn that never called the model (here a semantic-cache hit) streams its answer as ONE
-        synthetic token. That token used to be yielded BEFORE the trace output and the turn's
-        metrics were written, and that part of the generator is covered by no `except` branch, so
-        a consumer that closed the stream at it left a finished turn with a blank trace and no
-        outcome. The turn is recorded first now; the client still gets the same events."""
+        """A turn that never called the model (here a semantic-cache hit) streams its answer as ONE synthetic
+        token.
+        """
         fake_trace = _FakeTrace()
         monkeypatch.setattr(stream_module, "_open_trace", lambda *a, **k: (fake_trace, []))
 
@@ -439,16 +436,9 @@ class TestFollowupsEventIsSurfaced:
         assert types_in_order[-1] == "done"
 
     async def test_followups_own_llm_call_never_leaks_into_the_token_stream(self, monkeypatch):
-        """Real bug, caught live via Langfuse: astream_events emits
-        on_chat_model_stream for EVERY chat-model call in the graph, not
-        just the main answer's. suggest_followups makes its own SEPARATE
-        llm.invoke() call — without filtering by which node a given stream
-        event belongs to (metadata.langgraph_node), its generated
-        questions streamed as "token" events too, landing concatenated
-        onto the end of the real answer with no separator: a real user saw
-        their answer's last citation marker immediately followed by the
-        raw follow-up questions text, no space, no newline, before the
-        (correct, separate) "followups" event even fired."""
+        """Real bug, caught live via Langfuse: astream_events emits on_chat_model_stream for EVERY chat-model
+        call in the graph, not just the main answer's.
+        """
         async def fake_search(query, ctx):
             cited = {
                 "marker": "[1]",
@@ -527,15 +517,11 @@ class TestRetryEventClearsTheStream:
         assert "".join(after) == "Here is a sufficiently long final answer now."
 
     async def test_a_likely_misattributed_answer_retry_also_emits_a_retry_event(self, monkeypatch):
-        """Was an "uncited" scenario; a genuinely uncited-but-matching
-        answer now gets fixed in place by check_output's own citation
-        auto-correction on the SAME round (see
-        TestCheckOutputCitationAutoCorrectionStreaming below for that
-        case) rather than triggering a real retry_output round, so it can
-        no longer stand in for "a genuine model-retry round still emits a
-        retry event" here. "misattributed" isn't auto-corrected — fixing
-        it means dropping a marker the model chose to attach, not adding
-        one — so it still reaches retry_output for real, same as before.
+        """Was an "uncited" scenario; a genuinely uncited-but-matching answer now gets fixed in place by
+        check_output's own citation auto-correction on the SAME round (see
+        TestCheckOutputCitationAutoCorrectionStreaming below for that case) rather than triggering a real
+        retry_output round, so it can no longer stand in for "a genuine model-retry round still emits a retry
+        event" here.
         """
         source_text = "Checkpointers persist state across a thread's whole lifetime reliably."
 
@@ -720,13 +706,10 @@ class TestCheckOutputCitationAutoCorrectionStreaming:
 
 
 class TestCompactedEventSignalsHistoryTrimming:
-    """graph.py's compact_history (GRAPH_PATTERNS.md pattern 41) runs on
-    EVERY turn but only actually trims once history crosses its ceiling —
-    with no signal for that, a client just goes quiet for however long the
-    summarization LLM call takes, indistinguishable from any other slow
-    turn. Fixed by emitting `{"type": "compacted"}` only on a turn that
-    actually trimmed something, so a UI can show a transient status
-    instead (see _run_graph_stream's own docstring)."""
+    """graph.py's compact_history (GRAPH_PATTERNS.md pattern 41) runs on EVERY turn but only actually trims once
+    history crosses its ceiling — with no signal for that, a client just goes quiet for however long the
+    summarization LLM call takes, indistinguishable from any other slow turn.
+    """
 
     async def test_a_compacting_turn_emits_exactly_one_compacted_event(self, monkeypatch):
         # Same ceiling/floor derivation tests/agent/graph/test_graph_integration.py's
@@ -820,22 +803,9 @@ class _FakeTurnState:
 
 
 class _FakeStreamGraph:
-    """A minimal stand-in for the compiled graph `_run_graph_stream`
-    drives — yields exactly the hand-built `astream_events` v2 event dicts
-    given, rather than a real GenericFakeChatModel-backed graph. Chosen
-    over driving a real tool-calling turn through `astream_events_turn`
-    (this file's usual `_events_for` pattern): verified directly that
-    GenericFakeChatModel's own `_stream` reconstruction raises "No
-    generations found in stream" for an empty-content, tool-calls-only
-    AIMessage once routed through `astream_events()` specifically (its
-    plain `.invoke()`/`.ainvoke()` path — what tests/agent/runtime/test_concurrent_turns.py's
-    own subagent tests use instead — doesn't hit this) — a pre-existing
-    fake-model/streaming-API interaction limitation, reproduced even with
-    ZERO subagent involvement, unrelated to the filtering logic under test
-    here. Testing `_run_graph_stream`'s event TRANSLATION directly, with
-    synthetic events shaped exactly like real `astream_events` v2 output,
-    sidesteps that limitation entirely and tests precisely the code this
-    change touched."""
+    """A minimal stand-in for the compiled graph `_run_graph_stream` drives — yields exactly the hand-built
+    `astream_events` v2 event dicts given, rather than a real GenericFakeChatModel-backed graph.
+    """
 
     def __init__(self, events, final_messages):
         self._events = events
@@ -940,15 +910,11 @@ class TestAGraphFailureNeverLeaksItsMessageToTheCaller:
 
 
 class TestSubagentEventsDontLeakIntoTheMainStream:
-    """_run_graph_stream (app/agent/runtime/stream.py) threads this turn's own
-    callbacks/metadata into a subagent's NESTED graph.invoke() (see
-    app/agent/tools/run_subagent.py::run_subagent_impl's `nested_config`) so its
-    internal LLM/tool calls trace correctly — but that nested graph is
-    built via this exact same build_graph(), so it ALSO has a node named
-    "agent". Without the `metadata.subagent_name` guard added alongside
-    that threading, the nested run's own reasoning tokens would satisfy
-    the existing `langgraph_node == "agent"` check too and leak into the
-    client's main answer stream, indistinguishable from the real answer."""
+    """_run_graph_stream (app/agent/runtime/stream.py) threads this turn's own callbacks/metadata into a
+    subagent's NESTED graph.invoke() (see app/agent/tools/run_subagent.py::run_subagent_impl's
+    `nested_config`) so its internal LLM/tool calls trace correctly — but that nested graph is built via this
+    exact same build_graph(), so it ALSO has a node named "agent".
+    """
 
     async def test_nested_reasoning_tokens_never_appear_in_the_token_stream(self):
         events = await _stream_events(

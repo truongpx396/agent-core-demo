@@ -55,57 +55,44 @@ def _resumability_error_from_state(state) -> str | None:
 
 
 async def resumability_error_async(graph, config: dict) -> str | None:
-    """Check before every Command(resume=...) call — never resume blindly.
-    Returns None if safe, otherwise a human-readable reason (and
-    increments `agent_checkpoint_issue_total`).
+    """Check before every Command(resume=...): never resume blindly. Returns None if safe, else a human-readable
+    reason (and increments `agent_checkpoint_issue_total`).
 
-    ASYNC ONLY — the only caller, `astream_events_resume`, runs directly on
-    the checkpointer's own event loop, where only `graph.aget_state` (not
-    the sync accessor) is safe to call. 
-    Two failure modes (mirroring the intel-agent names in GRAPH_PATTERNS.md):
+    ASYNC ONLY: the sole caller, `astream_events_resume`, runs on the checkpointer's own event loop, where
+    only `graph.aget_state` (not the sync accessor) is safe.
 
-    - **checkpoint_lost** — no paused run for this thread (`state.next` is
-      empty): wrong thread id, run already completed/errored past the
-      pause, or the checkpoint was lost/corrupted. Catches calling
-      `Command(resume=...)` against nothing pending.
-    - **checkpoint_incompatible** — checkpoint's `state_schema_version`
-      differs from this build's. A renamed State key, removed node, or
-      reordered edge could otherwise fail silently on resume, so resuming
-      into a possibly different topology is refused. A differing
-      `graph_version` (build SHA) alone is NOT an error — ordinary
-      deploys change it without touching `STATE_SCHEMA_VERSION` (see that
-      constant's docstring for the bump discipline this relies on).
+    Two failure modes:
+    - **checkpoint_lost**: no paused run for this thread (`state.next` is empty): wrong thread id, a run
+      already past the pause, or a lost or corrupt checkpoint. Catches a `Command(resume=...)` against nothing
+      pending.
+    - **checkpoint_incompatible**: the checkpoint's `state_schema_version` differs from this build's. A
+      renamed State key, removed node or reordered edge could fail silently on resume, so resuming into a
+      possibly different topology is refused. A differing `graph_version` (build SHA) alone is NOT an error:
+      ordinary deploys change it without touching `STATE_SCHEMA_VERSION` (see that constant's docstring for
+      the bump discipline).
     """
     return _resumability_error_from_state(await graph.aget_state(config))
 
 
 async def paused_approval_async(graph, config: dict) -> dict | None:
-    """Is `config`'s thread currently parked at a real human_approval
-    interrupt? Returns `None` if not (the common case for both an ordinary
-    new turn and a session-switcher reload), else `{"tool_calls": [...],
-    "resumable": bool}`.
+    """Is `config`'s thread parked at a real human_approval interrupt? Returns `None` if not (the common case),
+    else `{"tool_calls": [...], "resumable": bool}`.
 
-    Two callers, same shape needed for opposite reasons:
-    - `astream_events_turn` (runtime/stream.py) — checked before starting a
-      BRAND-NEW turn, so a fresh message can't silently blow past a
-      pending approval: LangGraph's own `.astream(new_input, config)`
-      restarts flatly from `__start__` and never revisits an unresumed
-      interrupted task, leaving its `tool_calls` dangling with no matching
-      `ToolMessage` forever (verified directly against a real paused
-      thread). `resumable=True` here means "safe to auto-cancel via
-      `cancel_run` before proceeding"; `False` means the checkpoint is
-      schema-incompatible, so even cancelling can't cleanly resume into it.
-    - `GET /chat/sessions/{thread_id}/pending_approval` (app/api/routers/chat.py)
-      — checked when the session switcher loads a thread, so returning to
-      a paused conversation re-shows the approve/reject UI instead of
-      silently looking idle (the web UI's own `activeTurn` is in-memory
-      JS state that a page reload/session switch never repopulates).
+    Two callers need the same shape for opposite reasons:
+    - `astream_events_turn` (runtime/stream.py), before a BRAND-NEW turn, so a fresh message can't silently
+      blow past a pending approval: LangGraph's `.astream(new_input, config)` restarts from `__start__` and
+      never revisits an unresumed interrupted task, leaving its `tool_calls` dangling with no `ToolMessage`
+      forever (verified on a real paused thread). `resumable=True` means "safe to auto-cancel via `cancel_run`
+      first"; `False` means the checkpoint is schema-incompatible, so even cancelling can't cleanly resume
+      into it.
+    - `GET /chat/sessions/{thread_id}/pending_approval` (app/api/routers/chat.py), when the session switcher
+      loads a thread, so returning to a paused conversation re-shows the approve/reject UI instead of looking
+      idle (the web UI's `activeTurn` is in-memory JS state that a reload never repopulates).
 
     Deliberately NOT `resumability_error_async`: that increments
-    `agent_checkpoint_issue_total{reason="checkpoint_lost"}` on "nothing
-    pending" — the overwhelmingly common result for both callers above —
-    which would drown out that metric's actual signal (someone tried to
-    resume/cancel a thread that wasn't paused at all, a real anomaly).
+    `agent_checkpoint_issue_total{reason="checkpoint_lost"}` on "nothing pending", the overwhelmingly common
+    result here, which would drown that metric's real signal (someone tried to resume or cancel a thread that
+    wasn't paused).
     """
     state = await graph.aget_state(config)
     if not state.next or not any(task.interrupts for task in state.tasks):

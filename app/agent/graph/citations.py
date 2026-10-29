@@ -103,27 +103,20 @@ def _uncited_citation_matches(
 def find_likely_uncited(
     content: str, citations: list[dict], used: list[dict]
 ) -> list[dict]:
-    """Citations not referenced by marker in `content` where at least one
-    answer SENTENCE shares enough distinctive vocabulary with that
-    citation's text to suggest the model drew on it without attributing
-    it — a stronger signal than "citations were merely offered"
-    (metrics.agent_zero_citations_total). General-knowledge/
-    calculator-only answers (allowed uncited by SYSTEM_PROMPT) share no
-    such vocabulary, so this stays quiet for those.
+    """Citations offered but never referenced by marker in `content`, where at least one answer SENTENCE shares
+    enough distinctive vocabulary with the citation's text to suggest the model drew on it without attributing
+    it: a stronger signal than "citations were merely offered" (metrics.agent_zero_citations_total).
+    General-knowledge and calculator-only answers (allowed uncited by SYSTEM_PROMPT) share none, so this stays
+    quiet for them.
 
-    Sentence-level (`overlap / len(sentence_words)`, gated by
-    `_MIN_JUDGED_SENTENCE_WORDS`), not the original whole-answer-vs-whole-
-    citation ratio — real gap found live (Langfuse `057e3594`,
-    2026-09-09): a paraphrase of two ~100-word citations scored only
-    23-37% against their full length, nowhere near the 60% bar, because a
-    long source's total vocabulary dwarfs what a short faithful
-    paraphrase reuses. Per-sentence overlap asks the right question
-    regardless of source length.
+    Judged per sentence (`overlap / len(sentence_words)`, gated by `_MIN_JUDGED_SENTENCE_WORDS`), not whole
+    answer against whole citation. Found live (Langfuse `057e3594`, 2026-09-09): a paraphrase of two ~100-word
+    citations scored 23-37% against their full length, far below the 60% bar, because a long source's
+    vocabulary dwarfs what a short faithful paraphrase reuses.
 
-    Delegates to `_uncited_citation_matches`, also used by check_output to
-    auto-insert the missing marker instead of retrying the model — seven
-    live prompt-only attempts (including the exact-marker retry feedback)
-    all failed to get qwen2.5:3b to add one back.
+    Delegates to `_uncited_citation_matches`, also used by check_output to insert the missing marker instead
+    of retrying: seven prompt-only attempts (including the exact-marker retry feedback) never got qwen2.5:3b
+    to add one back.
     """
     return [citation for citation, _sentence in _uncited_citation_matches(content, citations, used)]
 
@@ -131,27 +124,19 @@ def find_likely_uncited(
 def insert_missing_citation_markers(
     content: str, citations: list[dict], used: list[dict]
 ) -> tuple[str, list[dict]]:
-    """Mechanically appends each `find_likely_uncited`-flagged
-    citation's `[n]` marker onto the sentence `_uncited_citation_matches`
-    identified as its best match, instead of asking the model to redo it —
-    live-verified necessary: on Langfuse trace `057e3594` (2026-09-09),
-    neither the standard citation reminder, six reworded variants, nor the
-    exact retry-feedback message got qwen2.5:3b to add a missing marker;
-    all seven attempts reproduced identical uncited prose. Since a
-    citation is only ever matched to a specific sentence, insertion here
-    is fully deterministic.
+    """Mechanically append each flagged citation's `[n]` marker to the sentence `_uncited_citation_matches`
+    matched it to, instead of asking the model to redo it. Live-verified necessary: on Langfuse trace
+    `057e3594` (2026-09-09) neither the standard reminder, six rewordings, nor the exact retry feedback got
+    qwen2.5:3b to add a missing marker (seven attempts, identical uncited prose). A citation is only ever
+    matched to a specific sentence, so insertion is deterministic.
 
-    Multiple citations best-matching the same sentence get appended
-    together (e.g. '...these safeguards [1][2].'); otherwise each marker
-    goes before its sentence's trailing punctuation (matching
-    SYSTEM_PROMPT's own example), or at the end if there's no trailing
-    .!?. Matches by exact substring position to preserve original
-    whitespace outside touched sentences.
+    Several citations best-matching one sentence are appended together ('...these safeguards [1][2].');
+    otherwise each marker goes before the sentence's trailing punctuation (as SYSTEM_PROMPT's own example
+    does), or at the end if there is none. Matching is by exact substring position, preserving whitespace
+    outside touched sentences.
 
-    Returns `(possibly-modified content, citations actually inserted)` —
-    check_output uses the second value for its own metric and recomputes
-    the "uncited" finding against the new content rather than
-    assuming this emptied it.
+    Returns `(possibly-modified content, citations actually inserted)`; check_output uses the second for its
+    metric and recomputes the "uncited" finding on the new content rather than assuming this emptied it.
     """
     matches = _uncited_citation_matches(content, citations, used)
     if not matches:
@@ -198,27 +183,21 @@ _MISATTRIBUTED_OVERLAP_RATIO = 0.25
 def find_likely_misattributed(
     content: str, citations: list[dict], used: list[dict]
 ) -> list[dict]:
-    """Mirror of `find_likely_uncited`: catches a real, in-range
-    marker used on a sentence that shares no meaningful vocabulary with
-    THAT marker's own source — real bug, found live (Langfuse trace
-    `ed435567`): the model cited [3] on every sentence of an answer,
-    though [3]'s actual content had nothing to do with it. Neither
-    `count_ungrounded_claims` (marker is real) nor `used_citations`
-    (marker genuinely appears) catches this.
+    """Mirror of `find_likely_uncited`: a real, in-range marker used on a sentence that shares no meaningful
+    vocabulary with THAT marker's source. Found live (Langfuse `ed435567`): the model cited [3] on every
+    sentence though [3]'s content had nothing to do with it. Neither `count_ungrounded_claims` (the marker is
+    real) nor `used_citations` (it genuinely appears) catches this.
 
-    For each `used` marker, every citing sentence is checked against that
-    marker's source text; flags only when NONE show meaningful overlap
-    AND at least one was long enough to judge. Uses
-    `_MIN_JUDGED_SENTENCE_WORDS` on the SENTENCE, not the citation — real
-    bug, found live: a one-word memory ("magiclab396") cited on an answer
-    went undetected because this used to skip any short CITATION, missing
-    the clearest misattribution case there is. `find_likely_uncited`
-    was later given the same floor for the same reason, in the other
-    direction. Only skipped when a source has NO content words at all.
+    For each `used` marker, every citing sentence is checked against that marker's source; it flags only when
+    NONE overlap meaningfully AND at least one was long enough to judge. `_MIN_JUDGED_SENTENCE_WORDS` applies
+    to the SENTENCE, not the citation: a one-word memory ("magiclab396") cited on an answer went undetected
+    when short CITATIONS were skipped, missing the clearest misattribution there is (`find_likely_uncited`
+    later got the same floor for the same reason, in the other direction). Only a source with NO content words
+    is skipped.
 
-    The sentences come from `messages.split_sentences`, which keeps a marker written after the full
-    stop ("... are free. [1]") with the sentence it follows. Splitting on the full stop alone judged
-    that `[1]` against the NEXT sentence and flagged a correct citation (Langfuse trace `1e46b2c8`).
+    Sentences come from `messages.split_sentences`, which keeps a marker written after the full stop ("... are
+    free. [1]") with the sentence it follows; splitting on the full stop alone judged that `[1]` against the
+    NEXT sentence and flagged a correct citation (Langfuse `1e46b2c8`).
     """
     if not content or not used:
         return []

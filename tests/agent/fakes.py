@@ -82,9 +82,5 @@ class Domain:
 
 
 def make_agent_node(llm, *args, system_prompt="", **kwargs):
-    """`make_agent_node` for tests of message assembly: no system prompt unless the test gives one.
-
-    The real factory requires it (the agent node puts the domain's prompt first on every call), so
-    a graph can never run un-guided. A test that is about how the REST of the call is assembled
-    (context, summary, reminders) says `system_prompt=""` once, here, instead of in every call."""
+    """`make_agent_node` for tests of message assembly: no system prompt unless the test gives one."""
     return _agent_node.make_agent_node(llm, *args, system_prompt=system_prompt, **kwargs)

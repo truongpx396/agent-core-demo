@@ -102,9 +102,9 @@ class TestTheWebhookRoute:
 
 
 class TestTheApiNoLongerLimitsTurns:
-    """The decision of spec 018 (FR-029), pinned so it is not quietly undone: how fast a tenant or a person may start turns is the front door's
-    to decide. A second limiter here would be a second number to tune, the stricter one silently winning, keyed on a header the API does not
-    trust in identity mode."""
+    """The decision of spec 018 (FR-029), pinned so it is not quietly undone: how fast a tenant or a person may
+    start turns is the front door's to decide.
+    """
 
     async def test_a_burst_of_turn_creating_requests_is_never_throttled_by_the_api_itself(self, monkeypatch):
         # A webhook ceiling of 1 would reject the second hit if these paths shared it, and the old per-tenant limit was 30 a minute.

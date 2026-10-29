@@ -2,43 +2,36 @@
 
 ## Hybrid retrieval (GRAPH_PATTERNS.md pattern 20)
 
-Every point carries TWO named vectors — `dense` (semantic, via LiteLLM) and
-`sparse` (lexical/BM25, local fastembed). `hybrid_search` fetches both
-legs with `Prefetch` and fuses them server-side via Qdrant's own RRF
-(`FusionQuery(fusion=Fusion.RRF)`). The tenant/owner pre-filter
-(`app/core/security.py`'s `Policy.lower`) is applied inside EACH
-`Prefetch`, not just at the top level — filtering only after fusion would
-let the fused candidate set briefly include rows the principal can't see.
+Every point carries TWO named vectors: `dense` (semantic, via LiteLLM) and `sparse` (lexical/BM25, local
+fastembed). `hybrid_search` fetches both legs with `Prefetch` and fuses them server-side with Qdrant's RRF
+(`FusionQuery(fusion=Fusion.RRF)`). The tenant/owner pre-filter (`Policy.lower`, app/core/security.py) is
+applied inside EACH `Prefetch`, not only on top: filtering after fusion would let the fused candidates briefly
+include rows the principal can't see.
 
-Two independent degradation layers (pattern 10's "narrowly-scoped,
-recorded-not-smoothed-over" policy), both recorded via
-`agent_retrieval_degraded_total{stage=...}`:
-1. Sparse unavailable -> degrade to dense-only. Still correct/scoped, just
-   lower recall.
-2. Reranking unavailable -> degrade to the RRF-fused order. Reranking
-   improves top-of-list precision; it isn't what makes the list correct.
+Two independent degradation layers (pattern 10), both recorded as `agent_retrieval_degraded_total{stage=...}`:
+sparse unavailable -> dense-only (still correct and scoped, lower recall); reranking unavailable -> the RRF
+order (reranking sharpens the top, it doesn't make the list correct).
 
-## Multiple collections, one schema (GRAPH_PATTERNS.md pattern 45)
+## Multiple collections, one schema (pattern 45)
 
-`ensure_collection`/`upsert`/`hybrid_search` all take an optional
-`collection` (default `COLLECTION`) so a second collection with this same
-dense+sparse schema — e.g. `SKILLS_COLLECTION` — gets the identical
-fusion/rerank/degrade pipeline with no duplicated logic.
+`ensure_collection`/`upsert`/`hybrid_search` take an optional `collection` (default `COLLECTION`), so another
+collection with the same dense+sparse schema (e.g. `SKILLS_COLLECTION`) gets the same fusion/rerank/degrade
+pipeline.
 
-## Embedding identity, and why every access goes through an alias (GRAPH_PATTERNS.md pattern 67)
+## Embedding identity, and why every access goes through an alias (pattern 67)
 
-A logical collection `docs` is, in Qdrant, a PHYSICAL collection `docs-1a2b3c4d` (the suffix is the first 8 hex digits of the embedding
-identity its vectors were made under, app/retrieval/embedding_identity.py) reached through the ALIAS `docs-live`. Every read and write
-uses the alias, and compares the suffix with the identity this process is configured for:
-
-  * a mismatch is refused (`EmbeddingIdentityMismatch`): reads degrade exactly like a retrieval outage, writes fail visibly. Mixing two
-    embedding spaces in one collection returns confident nonsense and nothing about the vector size can catch it;
-  * switching models is therefore: build `docs-<new hash>` beside the old one, verify it, then repoint the alias in ONE request
-    (Qdrant alias updates are atomic) so there is no moment in which the live collection holds both, and a failure before the repoint
-    leaves the old collection serving (`scripts/reembed.py`);
-  * a collection from before this existed is a physical collection named exactly `docs` with no alias. It is ADOPTED: an alias
-    `docs-live -> docs` is created (non-destructive) and the configured identity is trusted, with a warning and a metric, because
-    nothing records what it was made with. The first re-embed replaces it with a verifiable one.
+A logical collection `docs` is the PHYSICAL collection `docs-1a2b3c4d` (the first 8 hex digits of the
+embedding identity its vectors were made under, app/retrieval/embedding_identity.py) reached through the ALIAS
+`docs-live`. Every read and write uses the alias and compares the suffix with the identity this process is
+configured for:
+- a mismatch is refused (`EmbeddingIdentityMismatch`): reads degrade like a retrieval outage, writes fail
+  visibly. Mixing two embedding spaces returns confident nonsense that vector size can't catch;
+- switching models builds `docs-<new hash>` beside the old one, verifies it, then repoints the alias in ONE
+  atomic request, so the live collection never holds both and a failure before the repoint leaves the old one
+  serving (`scripts/reembed.py`);
+- a pre-existing collection named exactly `docs` with no alias is ADOPTED: `docs-live -> docs` is created
+  (non-destructive) and the configured identity is trusted, with a warning and a metric, since nothing records
+  what it was made with. The first re-embed replaces it with a verifiable one.
 """
 import asyncio
 import logging
@@ -351,32 +344,21 @@ async def hybrid_search(
     collection: str | None = None,
     min_score: float | None = None,
 ):
-    """Dense+sparse hybrid search, RRF-fused, cross-encoder reranked —
-    degrading gracefully at each stage (see module docstring). Returns
-    scored points (each has `.payload`), reranked-and-truncated to `k`
-    (default `RERANK_TOP_K`) when reranking succeeds, or the RRF/dense
-    order truncated to `k` otherwise.
+    """Dense+sparse hybrid search, RRF-fused and cross-encoder reranked, degrading at each stage (see module
+    docstring). Returns scored points (each with `.payload`), reranked and truncated to `k` (default
+    `RERANK_TOP_K`), or the RRF/dense order truncated to `k` when reranking is unavailable.
 
-    `doc_ids`, when given, narrows results to those point ids — ANDed onto
-    the tenant/topic filter, never a replacement for it.
+    `doc_ids` narrows results to those point ids, ANDed onto the tenant/topic filter and never replacing it.
+    `collection` defaults to `COLLECTION`; pass e.g. `SKILLS_COLLECTION` for another collection with the same
+    schema.
 
-    `collection` defaults to `COLLECTION` (docs) — pass e.g.
-    `SKILLS_COLLECTION` to search a different collection with this same
-    schema (see `ensure_collection`).
+    `min_score` drops points whose cross-encoder score is below it: a real relevance floor, since RRF/dense
+    order only says "most similar of what came back". It applies only when reranking ran, because only the
+    cross-encoder's raw logit scale (unbounded, e.g. -11 to +6) is meaningful against it (RRF scores are
+    rank-derived), so it is a no-op when `rerank_results=False` or reranking degrades.
 
-    `min_score`, when given, drops points whose cross-encoder score falls
-    below it — a real relevance floor, not just a rank cutoff (RRF/dense
-    order alone says "most similar of what came back," not "actually
-    relevant"). Only applied when reranking actually ran: the cross-
-    encoder's raw logit scale (unbounded, e.g. -11 vs +6) is the only scale
-    it's meaningful against — RRF scores are rank-derived and not
-    comparable, so this is a no-op when `rerank_results=False` or
-    reranking degrades.
-
-    `async def`: every leg is real I/O — `embed_query`/`rerank` (HTTP) and
-    Qdrant's `query_points` (`AsyncQdrantClient`) are all awaited directly.
-    `embed_sparse` is the exception — local ONNX/CPU compute, so it runs
-    via `asyncio.to_thread` instead.
+    `async def`: `embed_query`/`rerank` (HTTP) and `query_points` (`AsyncQdrantClient`) are awaited directly;
+    `embed_sparse` is local ONNX/CPU compute and runs via `asyncio.to_thread`.
     """
     # deferred: avoids importing fastembed at module load
     from app.retrieval import embeddings

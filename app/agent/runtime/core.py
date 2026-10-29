@@ -1,35 +1,29 @@
 """Shared agent runtime, run by `app/job_queue/agent_worker.py` and nothing else that serves chat.
 
-Centralises the compiled graph (singleton), per-thread system-prompt seeding,
-and Langfuse callbacks, so memory and tracing behave identically whichever front
-door a turn came in through: the FastAPI service, the CLI (`app/channels/chat.py`)
-and the Telegram channel (`app/channels/telegram.py`) all publish their turns to the
-queue (`app/job_queue/producer.py`) and a worker runs them here.
+It centralises the compiled graph (singleton), per-thread system-prompt seeding and Langfuse callbacks, so
+memory and tracing behave the same whichever front door a turn came through: the FastAPI service, the CLI
+(`app/channels/chat.py`) and Telegram (`app/channels/telegram.py`) all publish turns to the queue
+(`app/job_queue/producer.py`) and a worker runs them here.
 
 ## Durable checkpointing (init_graph_async)
 
-Uses `AsyncPostgresSaver`, not `build_graph()`'s default `MemorySaver` —
-a paused `human_approval` gate is only a real safety control if it survives
-a redeploy, and Postgres (unlike a single SQLite file) is safe under
-concurrent access from multiple processes sharing the same `thread_id`s
-(FastAPI + one or more `agent_worker.py` replicas).
+`AsyncPostgresSaver`, not `build_graph()`'s default `MemorySaver`: a paused `human_approval` gate is only a
+real safety control if it survives a redeploy, and Postgres (unlike a single SQLite file) is safe under
+concurrent access from several processes sharing the same `thread_id`s (FastAPI + `agent_worker.py` replicas).
 
-`AsyncPostgresSaver` binds its async lock to whichever event loop it was
-*created* on; calling it from a different loop raises "bound to a different
-event loop" (verified empirically). `init_graph_async()` therefore opens the
-checkpointer on the CALLING loop — every process driving the graph must
-await it on that same loop before any graph call, never from a background
-thread or a different loop.
+`AsyncPostgresSaver` binds its async lock to the event loop it was *created* on; calling it from another loop
+raises "bound to a different event loop" (verified). So `init_graph_async()` opens the checkpointer on the
+CALLING loop, and every process driving the graph must await it on that loop before any graph call, never from
+a background thread or a different loop.
 
 This file owns the checkpointer/graph singleton lifecycle
-(`init_graph_async`/`close_checkpointer_pool`/`_open_checkpointer`/
-`_resolve_domain_name`), session-directory upsert (`upsert_session`), and the bindings of the tenant daily-budget
-check (`_check_allowance`/`allowance_refusal`; the rule itself is `app/agent/cost/budgets.py`) — kept together
-because each reads/reassigns a module global (`_graph`/`_domain_name`, or
-config names several tests monkeypatch directly on this module) that only works correctly with consumer and binding in one file.
-The streaming entry points live in `app/agent/runtime/stream.py`, which
-accesses this module's globals via `runtime_module.X` rather than a bare
-import, for the same monkeypatch reason.
+(`init_graph_async`/`close_checkpointer_pool`/`_open_checkpointer`/`_resolve_domain_name`), the
+session-directory upsert (`upsert_session`) and the tenant daily-budget bindings
+(`_check_allowance`/`allowance_refusal`; the rule is `app/agent/cost/budgets.py`). They are kept together
+because each reads or reassigns a module global (`_graph`/`_domain_name`, or config names several tests
+monkeypatch on this module) and that only works with consumer and binding in one file. The streaming entry
+points live in `app/agent/runtime/stream.py`, which reaches this module's globals as `runtime_module.X` rather
+than a bare import, for the same monkeypatch reason.
 """
 import asyncio
 import logging
@@ -175,28 +169,22 @@ async def upsert_session(ctx: SecurityCtx | None, thread_id: str, text: str) -> 
 
 
 async def _open_checkpointer():
-    """Open the AsyncPostgresSaver on whichever loop calls this (see module
-    docstring). Stashes the pool in the module global so it isn't
-    garbage-collected out from under the connection, and so
-    `close_checkpointer_pool()` can shut it down explicitly later.
+    """Open the AsyncPostgresSaver on the calling loop (see the module docstring). The pool is stashed in a
+    module global so it isn't garbage-collected under the connection and `close_checkpointer_pool()` can shut
+    it down.
 
-    Backed by an `AsyncConnectionPool` rather than a single `AsyncConnection`,
-    so concurrent turns get independent connections instead of funneling
-    through one (psycopg serializes all operations on a single connection).
+    It uses an `AsyncConnectionPool`, not a single `AsyncConnection`, so concurrent turns get independent
+    connections (psycopg serializes all operations on one connection).
 
-    Workaround: `AsyncPostgresSaver` still wraps every checkpoint read/write
-    in one `asyncio.Lock` per saver instance regardless of `conn` type,
-    which hard-serializes checkpoint I/O even with a pool — measured ~5x
-    latency growth from N=1 to N=50 concurrent turns. This is an open
-    upstream defect (langchain-ai/langgraph#7259; fix #7269 not yet merged).
-    Swapping `saver.lock` for an `asyncio.Semaphore` (same `async with`
-    protocol) is the community-verified workaround, capping concurrency at
-    the pool size instead of serializing to 1. Remove once #7269 ships
-    upstream — re-check before any langgraph-checkpoint-postgres bump, since
-    this pokes a private attribute of a third-party class.
+    Workaround: `AsyncPostgresSaver` still wraps every checkpoint read/write in one `asyncio.Lock` per saver
+    regardless of `conn` type, hard-serializing checkpoint I/O even with a pool (~5x latency growth from N=1
+    to N=50 concurrent turns; open upstream defect langchain-ai/langgraph#7259, fix #7269 unmerged). Swapping
+    `saver.lock` for an `asyncio.Semaphore` (same `async with` protocol) is the community-verified fix,
+    capping concurrency at the pool size instead of 1. Remove once #7269 ships, and re-check before any
+    langgraph-checkpoint-postgres bump: this pokes a private attribute of a third-party class.
 
-    `saver.setup()` is idempotent (creates tables on first run only) — safe
-    to call on every process start, including each agent_worker.py replica.
+    `saver.setup()` is idempotent (creates tables on first run only), so it is safe on every process start,
+    including each agent_worker.py replica.
     """
     global _checkpointer_pool
     pool = AsyncConnectionPool(

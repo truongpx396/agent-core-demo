@@ -1,15 +1,16 @@
-"""A stand-in for LiteLLM's `GET /spend/logs/v2`, built from what its SOURCE says (litellm 1.104,
-`litellm/proxy/spend_tracking/spend_management_endpoints.py::ui_view_spend_logs`), not from what its docs imply:
+"""A stand-in for LiteLLM's `GET /spend/logs/v2`, built from its SOURCE (litellm 1.104,
+`spend_management_endpoints.py::ui_view_spend_logs`), not its docs:
+- `start_date` and `end_date` are REQUIRED, UTC, `YYYY-MM-DD HH:MM:SS` (or a bare date), both INCLUSIVE on
+  `startTime`;
+- `page` is 1-based and `page_size` at most 1000 (larger is a 422);
+- the response is `{"data", "total", "page", "page_size", "total_pages", "total_is_capped"}` and `total` is
+  clamped to 10 000, so a window with more rows can't be paged by its `total_pages`;
+- the sort has no tie-breaker, so rows with an equal `startTime` have no guaranteed order between pages (kept
+  stable here; the reconciliation de-duplicates by `request_id` and checks `total`);
+- it is an admin view: any other key reads nothing useful (modelled as a 401).
 
-  * `start_date` and `end_date` are REQUIRED, UTC, `YYYY-MM-DD HH:MM:SS` (or a bare date), and both ends are INCLUSIVE on `startTime`;
-  * `page` is 1-based and `page_size` at most 1000 (a larger one is a 422 from the real server);
-  * the response is `{"data": [...], "total", "page", "page_size", "total_pages", "total_is_capped"}` and `total` is clamped to
-    10 000, so a window with more rows than that cannot be paged by its own `total_pages`;
-  * the sort has no tie-breaker, so rows with an equal `startTime` have no guaranteed order between pages (kept stable here; the
-    reconciliation de-duplicates by `request_id` and checks the response's own `total`, which its tests drive directly);
-  * the endpoint is an admin view: any other key reads nothing useful, modelled as a 401.
-
-A test that fed the reconciliation a hand-made response in another shape would prove nothing about the real gateway.
+A test feeding the reconciliation a hand-made response in another shape would prove nothing about the real
+gateway.
 """
 from datetime import UTC, datetime
 

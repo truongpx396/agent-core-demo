@@ -1,21 +1,17 @@
-"""Money in, against a REAL Postgres (postgres-init/20 and 22; packages/billing/src/credit_billing/webhooks.py, store.py, inbox.py,
-src/credit_billing/http.py): a payment provider's webhook becomes credits exactly once, or a visible refusal.
+"""Money in, against a REAL Postgres (postgres-init/20 and 22; credit_billing webhooks.py, store.py, inbox.py,
+http.py): a provider's webhook becomes credits exactly once, or a visible refusal. Every guarantee is database
+behaviour (constitution VII):
+- `PRIMARY KEY (provider, event_id)` makes five sequential and twenty concurrent deliveries of one event ONE
+  grant, and the second concurrent delivery blocks on the first's transaction;
+- the grant and the inbox status are ONE transaction, so there is no "granted but not marked applied";
+- `UNIQUE (provider, customer_ref)` and the index on `credit_lots` stop a customer being re-pointed at another
+  tenant and a payment being credited twice;
+- a trigger makes `applied` and `ignored` terminal and an event's identity immutable;
+- a refund after the credits were spent leaves a negative balance and the gate then refuses usage (spec D6).
 
-Every guarantee here is database behaviour, so a fake would only echo back what was written (constitution VII:
-reliance on a real constraint, lock or transaction is stated and tested at this tier, not assumed):
-
-  * `PRIMARY KEY (provider, event_id)` makes five sequential and twenty concurrent deliveries of one event
-    ONE grant, and the second concurrent delivery blocks on the first's transaction instead of racing it;
-  * the grant and the inbox status are ONE transaction, so there is no state "granted but not marked applied";
-  * `UNIQUE (provider, customer_ref)` and the index on `credit_lots` stop a customer being re-pointed at another
-    tenant and a payment being credited twice;
-  * a trigger makes `applied` and `ignored` terminal, and what an event WAS immutable;
-  * a refund after the credits were spent leaves a negative balance and the gate then refuses usage (spec D6).
-
-The shared adapter contract (tests/contract.py) is run here too, for EVERY registered adapter, through the
-real inbox and wallet: "a replayed payload is applied once" is a claim about a database, not a parser.
-
-Each test uses its own tenant, customer, product and event ids: the container is shared across tests and workers.
+The shared adapter contract (tests/contract.py) also runs here for EVERY registered adapter through the real
+inbox and wallet: "a replayed payload is applied once" is a claim about a database, not a parser. Each test
+uses its own tenant, customer, product and event ids: the container is shared.
 """
 import asyncio
 import json
@@ -511,13 +507,7 @@ class TestARefund:
 
 
 class TestTheWalletsSecondLayerJudgesAKeyOnWhatItNames:
-    """Spec 012: the wallet refuses a reused idempotency key whose request differs. The webhook handler reaches the wallet only after two earlier
-    layers (the inbox claim, which serialises one event, and the payment's lot check, which ignores a payment already granted), so a replayed key
-    is rare here; these tests REACH the second layer on purpose, by making those two layers miss, and pin what each call site compares.
-
-    A webhook grant leaves out `expires_at` (it is `now + days` at processing time, so any replay computes a later instant). A webhook clawback
-    compares nothing but its kind (the key names the PAYMENT; the amount it reads depends on when it read the lot, and a debit can land between
-    two events' reads). With the strict default either would turn a harmless replay into a failure."""
+    """Spec 012: the wallet refuses a reused idempotency key whose request differs."""
 
     @staticmethod
     def purchase(world) -> BillingEvent:

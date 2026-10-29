@@ -2,42 +2,35 @@
 
 - `search_docs`: tenant-scoped retrieval from Qdrant, optional topic filter.
 - `calculator`: a second tool so the agent must *choose* which to call.
-- `ask_clarification`: an ordinary read-only tool whose result the model relays
-  verbatim (GRAPH_PATTERNS.md pattern 27).
-- `skill_search`/`use_skill` (`make_skill_tools(domain)`): progressive disclosure
-  over a bundled catalog of `SKILL.md` packages (`app/agent/tools/skill_catalog.py`,
-  GRAPH_PATTERNS.md pattern 45). `skill_search` hybrid-searches a small Qdrant
-  collection of skill name/description metadata; `use_skill` loads one matched
-  skill's full body from disk by exact name. Bundled app capability, not tenant
-  data — no `SecurityCtx` involved.
-- `gather_context`: the automatic pre-fetch (documents plus this principal's
-  memories, one continuously-numbered citation sequence).
+- `ask_clarification`: an ordinary read-only tool whose result the model relays verbatim (GRAPH_PATTERNS.md
+  pattern 27).
+- `skill_search`/`use_skill` (`make_skill_tools(domain)`): progressive disclosure over a bundled catalog of
+  `SKILL.md` packages (`app/agent/tools/skill_catalog.py`, pattern 45). `skill_search` hybrid-searches a small
+  Qdrant collection of skill name/description metadata; `use_skill` loads one matched skill's full body from
+  disk by exact name. A bundled app capability, not tenant data: no `SecurityCtx`.
+- `gather_context`: the automatic pre-fetch (documents plus this principal's memories, one continuously
+  numbered citation sequence).
 - `skill_tools_first`: the bound-tool ordering every domain uses (pattern 50).
 
-`run_subagent` (`app/agent/tools/run_subagent_domain.py`) delegates a self-contained
-task to a fresh, ISOLATED nested agent run — unlike `use_skill`, which loads more
-instructions into THIS agent's context. Every subagent is restricted to `read_only`
-tools, so it needs no mandatory `human_approval` gating (pattern 46).
+`run_subagent` (`app/agent/tools/run_subagent_domain.py`) delegates a self-contained task to a fresh, ISOLATED
+nested agent run, unlike `use_skill`, which loads more instructions into THIS agent's context. Every subagent
+is restricted to `read_only` tools, so it needs no mandatory `human_approval` (pattern 46).
 
-A domain's own tools live in `app/domains/<name>/tools.py` (the Ecorp ones, `add_note`,
-`remember` and `query_employees`, in `app/domains/ecorp/`).
-
-All tools declare an explicit Pydantic `args_schema` — the JSON schema the LLM sees,
-constraining what it can send and rejecting bad arguments loudly.
+A domain's own tools live in `app/domains/<name>/tools.py` (Ecorp's `add_note`, `remember` and
+`query_employees` in `app/domains/ecorp/`). All tools declare an explicit Pydantic `args_schema`: the JSON
+schema the LLM sees, which constrains what it can send and rejects bad arguments loudly.
 
 ## Tenant isolation (app/core/security.py)
 
-`search_docs` receives `config: RunnableConfig` (auto-injected by `ToolNode`,
-auto-excluded from the LLM-visible schema) to read `SecurityCtx` from
-`config["configurable"]["ctx"]`. It calls `ctx_or_refuse` first and fails closed if
-`ctx` is missing/malformed, rather than running an unscoped query.
+`search_docs` receives `config: RunnableConfig` (auto-injected by `ToolNode`, auto-excluded from the
+LLM-visible schema) to read `SecurityCtx` from `config["configurable"]["ctx"]`. It calls `ctx_or_refuse` first
+and fails closed if `ctx` is missing or malformed, rather than running an unscoped query.
 
 ## Cross-session memory
 
-Recall is automatic: `gather_context` folds this principal's memories into the
-pre-fetch, re-filtered against *current* ctx every call
-(`Policy.lower(ctx, "memories")`, scoped to `tenant` AND `owner`), never trusted from a
-prior snapshot. The only writer is Ecorp's `remember` (`app/domains/ecorp/`).
+Recall is automatic: `gather_context` folds this principal's memories into the pre-fetch, re-filtered against
+*current* ctx every call (`Policy.lower(ctx, "memories")`, scoped to `tenant` AND `owner`), never trusted from
+a prior snapshot. The only writer is Ecorp's `remember` (`app/domains/ecorp/`).
 """
 import ast
 import asyncio
@@ -469,31 +462,25 @@ def skill_tools_first(
     reused_tools: Sequence[BaseTool],
     run_subagent: BaseTool | None = None,
 ) -> list[BaseTool]:
-    """Orders a domain's bound tool list with skill_search/use_skill FIRST,
-    ahead of every action tool — a live-verified fix, not a guess.
+    """Order a domain's bound tool list with skill_search/use_skill FIRST, ahead of every action tool: a
+    live-verified fix, not a guess.
 
-    Every domain used to build `action_tools + reused_tools` (skill_search/
-    use_skill near the end). A sales deal-math question never called
-    skill_search across many runs, even after three escalating prompt/
-    docstring rewrites. The actual cause was list POSITION, not wording:
-    swapping only the order made this app's local model (qwen2.5:3b via
-    Ollama, grammar-constrained tool-calling) call use_skill('deal-economics')
-    as its first move, 3/3 fresh runs, zero prompt changes. A small,
-    grammar-constrained model's tool selection is sensitive to bound-list
-    position, not just description — worth trying before assuming a "won't
-    call X" pattern is an instruction-following ceiling.
+    Every domain used to build `action_tools + reused_tools` (skill_search/use_skill near the end), and a
+    sales deal-math question never called skill_search across many runs, even after three escalating
+    prompt/docstring rewrites. The cause was list POSITION, not wording: swapping only the order made this
+    app's local model (qwen2.5:3b via Ollama, grammar-constrained tool calling) call
+    use_skill('deal-economics') first, 3/3 fresh runs, with no prompt change. A small grammar-constrained
+    model's tool selection is sensitive to bound-list position as well as description; try that before
+    assuming a "won't call X" pattern is an instruction-following ceiling.
 
-    Only skill_search/use_skill move to the front; the rest of
-    `reused_tools` (search_docs, ask_clarification) keep their position
-    after the domain's action tools — search_docs doesn't share this
-    problem, and a separate finding needed to REDUCE its reflexive default
-    use, so promoting it too would fight that fix.
+    Only skill_search/use_skill move to the front. The rest of `reused_tools` (search_docs, ask_clarification)
+    keep their position after the domain's action tools: search_docs doesn't share the problem, and a separate
+    finding needed to REDUCE its reflexive use, so promoting it would fight that fix.
 
-    `run_subagent`, if given, is promoted into the same leading tier (was
-    previously appended dead last). Unlike the skill_search fix above, this
-    is a reasoned extension of the same principle, NOT independently
-    live-verified — worth confirming the same way if this ever gets
-    questioned."""
+    `run_subagent`, if given, joins the same leading tier (it was appended dead last). Unlike the skill_search
+    fix, this is a reasoned extension of the same principle and NOT independently live-verified; confirm the
+    same way if it is ever questioned.
+    """
     by_name = {t.name: t for t in reused_tools}
     promoted = [by_name[name] for name in ("skill_search", "use_skill") if name in by_name]
     if run_subagent is not None:

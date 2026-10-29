@@ -1,26 +1,30 @@
 """Generate the shared token vectors in testdata/auth-vectors/ (spec 018, FR-034, tasks T011).
 
-Two verifiers in two languages must agree on what a valid token is: the Go service (`services/authlimit`) and the MCP gateway's Python
-verifier (`app/mcp/gateway_auth.py`). Agreement that is checked by hand drifts, so both run ONE file of tokens with the outcome each must
-reach. This script makes that file.
+Two verifiers in two languages must agree on what a valid token is: the Go service (`services/authlimit`) and the MCP
+gateway's Python verifier (`app/mcp/gateway_auth.py`). Agreement checked by hand drifts, so both run ONE file of tokens
+with the outcome each must reach. This script makes that file.
 
 How the tokens are made, and why no secret is committed:
 
-  * a throwaway RSA key is generated in memory, every token is signed once, and the key is DISCARDED. Only the public half is kept
-    (`jwks.json`), plus the finished tokens. Nothing can mint a new token from this directory, and there is no private key for a secret
-    scanner to find.
-  * the clock is part of the file (`now`): a token's `exp` is relative to it, so no vector ever expires. A verifier under test is given
-    that instant as its clock.
-  * re-running this script makes a NEW set of tokens (new key); commit the result only when a vector is added or changed.
+  * a throwaway RSA key is generated in memory, every token is signed once, and the key is DISCARDED. Only the
+    public half is kept (`jwks.json`), plus the finished tokens. Nothing can mint a new token from this
+    directory, and there is no private key for a secret scanner to find.
+  * the clock is part of the file (`now`): a token's `exp` is relative to it, so no vector ever expires. A
+    verifier under test gets that instant as its clock.
+  * re-running this script makes a NEW set of tokens (new key); commit the result only when a vector is added
+    or changed.
 
-Three profiles, because the verifiers do different amounts of checking (see `README.md`):
+Three profiles, because the verifiers check different amounts (see `README.md`):
 
-  chat      the service on the chat API: signature, issuer, the API's audience, expiry, an issue time, a lifetime cap, a scope.
-  identify  the service in limit-only mode on the MCP routes: signature, issuer and expiry only, to learn who is calling.
+  chat      the service on the chat API: signature, issuer, the API's audience, expiry, an issue time, a lifetime
+            cap, a scope.
+  identify  the service in limit-only mode on the MCP routes: signature, issuer and expiry only, to learn who is
+            calling.
   mcp       the MCP gateway's own verifier: signature, issuer, ITS audience, expiry, a subject.
 
-The rule that the `identify` expectations must obey, asserted at the bottom of this script: the limit-only profile never refuses a token
-the MCP gateway accepts. If it did, that token would pass straight through to the gateway un-metered, escaping the limiter.
+The `identify` expectations must obey one rule, asserted at the bottom of this script: the limit-only profile never
+refuses a token the MCP gateway accepts. If it did, that token would pass straight through to the gateway un-metered,
+escaping the limiter.
 """
 import base64
 import hashlib

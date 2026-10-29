@@ -1,19 +1,16 @@
-"""Turns the AI reviewer's free-text answer into findings that can be anchored on a PR's diff.
+"""Turns the AI reviewer's free-text answer into findings that can be anchored on a PR's diff. Pure functions: no
+network, no GitHub types, stdlib only; `review.py` does the I/O.
 
-Pure functions: no network, no GitHub types, stdlib only. `scripts/ai_review/review.py` does the I/O.
-
-Every rule here comes from probing GitHub's real review-comment API on a throwaway PR (README,
-"AI review"), not from the docs, which are silent on most of it:
-
-- A comment attaches only to a line that is IN the diff (an added or context line inside a hunk).
-  Any other line, or a path the PR did not change, is rejected with a 422.
-- A batch of comments is ATOMIC: one unplaceable comment fails the whole batch and none are
-  created, and the error does not say which one. So placement is decided here, up front, from the
-  diff itself, instead of by trial and error against the API.
-- GitHub does NOT deduplicate. Posting the same comment twice creates two, so the caller needs a
-  stable key per location (`Anchor.key`), carried in a hidden marker in the comment body.
-- A multi-line comment is accepted if both of its ends are lines in the diff, even across hunks.
-  We are stricter on purpose: see `MAX_RANGE` and `anchor_for`.
+Each rule comes from probing GitHub's real review-comment API on a throwaway PR (README, "AI review"), not
+from the docs:
+- A comment attaches only to a line IN the diff (an added or context line inside a hunk); any other line, or a
+  path the PR didn't change, is a 422.
+- A batch is ATOMIC: one unplaceable comment fails all of them without saying which, so placement is decided
+  up front from the diff, not by trial against the API.
+- GitHub does NOT deduplicate: posting a comment twice creates two, so the caller needs a stable key per
+  location (`Anchor.key`), carried in a hidden marker in the body.
+- A multi-line comment is accepted if both ends are in the diff, even across hunks. We are stricter on
+  purpose: see `MAX_RANGE` and `anchor_for`.
 """
 import re
 from collections.abc import Mapping

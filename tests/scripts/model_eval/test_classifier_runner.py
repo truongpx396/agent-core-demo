@@ -43,8 +43,9 @@ def test_the_length_comparison_is_the_heads_curve_minus_the_longest_first_curve(
 
 @pytest.mark.parametrize("seed", range(10))
 def test_whenever_the_gap_is_defined_every_router_reaches_half_and_ninety_percent_by_escalating_everything(seed):
-    """Escalating every prompt recovers exactly all of the gap, so the cost-quality curve ends at 1.0 and CPT is always defined (at worst 100%).
-    That is why the suite's "never reached" branch is defensive only, and why a CPT of NaN would mean a bug, not a bad router."""
+    """Escalating every prompt recovers exactly all of the gap, so the cost-quality curve ends at 1.0 and CPT is
+    always defined (at worst 100%).
+    """
     rng = np.random.default_rng(seed)
     n = 30
     q_local = rng.random(n) * 0.5

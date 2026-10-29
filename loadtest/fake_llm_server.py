@@ -1,70 +1,38 @@
-"""OpenAI-compatible fake LLM server — a load-testing double for whatever
-actually serves inference, so `POST /chat/stream/queued`'s concurrency
-(app/job_queue/agent_worker.py's own `_MAX_CONCURRENCY` + pooled checkpointer)
-can be measured in isolation. Native Ollama on this project's own dev stack
-is NOT concurrent — verified directly by firing concurrent requests at it:
-its `llama-server` process runs with `-np 1` (`--parallel 1`), so every
-request queues behind whichever one is already running, regardless of how
-many concurrent callers there are. Locust load results against real Ollama
-therefore measure Ollama's own serialization, not agent_worker.py's —
-pointing at this server instead removes that confound.
+"""OpenAI-compatible fake LLM server: a load-testing double so `POST /chat/stream/queued`'s concurrency (the
+worker's `_MAX_CONCURRENCY` plus the pooled checkpointer) can be measured in isolation. Native Ollama on the
+dev stack runs `llama-server` with `-np 1` (verified by firing concurrent requests), so every request queues
+behind the running one and a Locust run against it measures Ollama's serialization, not the worker's.
 
-`langchain_openai.ChatOpenAI` (app/agent/graph/utils.py::_make_llm) needs zero
-code changes to talk to this: just point `OPENAI_API_BASE` here instead of
-LiteLLM. Implements both streaming and non-streaming `POST
-/v1/chat/completions`, since app/agent/graph/utils.py's `_make_llm()` comment
-notes `astream_events` (what the queued path always runs through) forces
-every LLM call through the streaming HTTP path even when the calling node
-code does `.invoke()` — so a load-test run exercising `/chat/stream/queued`
-always hits the streaming branch below; the non-streaming branch exists so
-this server also works against a genuinely sync top-level `graph.invoke()`
-caller (e.g. a test driving `build_graph(...)` directly rather than through
-`astream_events`), which does issue a real non-streaming request.
-
-Run: `make fake-llm` (defaults to :9009). Point a load-test run at it
-(bypassing LiteLLM/Ollama/Langfuse tracing entirely — this exists to
-isolate agent_worker.py's own concurrency, not to exercise the full
-production observability path):
+`langchain_openai.ChatOpenAI` (app/agent/graph/utils.py::_make_llm) needs no change: point `OPENAI_API_BASE`
+here instead of LiteLLM. This bypasses LiteLLM, Ollama and Langfuse on purpose.
 
     OPENAI_API_BASE=http://localhost:9009/v1 make serve
     OPENAI_API_BASE=http://localhost:9009/v1 make agent-worker
-    make loadtest-queued   # loadtest/locustfile_queued.py, against the above
+    make fake-llm          # :9009
+    make loadtest-queued   # loadtest/locustfile_queued.py
 
-Two knobs simulate different backends, both via env var so no code change
-is needed to compare them:
-- `FAKE_LLM_LATENCY_SECONDS` / `FAKE_LLM_LATENCY_JITTER_SECONDS` — simulated
-  think-time per completion (default 1.5s +/- up to 0.5s).
-- `FAKE_LLM_MAX_CONCURRENCY` — 0 (default) means unbounded, i.e. a genuinely
-  concurrent backend; set it to 1 to reproduce today's Ollama-shaped
-  ceiling as an A/B baseline, or any N to simulate a rate-limited real
-  provider.
+`POST /v1/chat/completions` is implemented both streaming and non-streaming. `astream_events`, which the
+queued path always uses, forces every LLM call through the streaming HTTP path even for `.invoke()`; the
+non-streaming branch serves a sync top-level `graph.invoke()` caller (a test driving `build_graph(...)`
+directly).
 
-Every request logs a timestamped start/end line (var/fake-llm.log under
-`make loadtest-up`) with a duration and the CURRENT in-flight request
-count — uvicorn's own default access log carries no timestamp at all
-(verified directly: its lines are bare "INFO:     <client> - "METHOD path
-HTTP/1.1" status"), which made a real stuck-trace investigation dead-end
-here with no way to tell whether this server was event-loop-starved by a
-pile of concurrent requests at that moment or genuinely idle. A request
-that logs "start" but never logs "end" — the streaming branch's own
-try/finally still fires even on a client-initiated cancel/disconnect
-(Starlette closes an in-flight async generator via `.aclose()`, which
-throws `GeneratorExit` in at the current suspension point) — means the
-server-side task never got scheduled again at all, not just a slow
-client.
+Two env knobs simulate different backends:
+- `FAKE_LLM_LATENCY_SECONDS` / `FAKE_LLM_LATENCY_JITTER_SECONDS`: think-time per completion (default 1.5s +/-
+  0.5s).
+- `FAKE_LLM_MAX_CONCURRENCY`: 0 (default) is unbounded; 1 reproduces Ollama's ceiling as an A/B baseline; N
+  simulates a rate-limited provider.
 
-Also implements `POST /v1/embeddings` — every real turn calls
-app/retrieval/embeddings.py::embed_text unconditionally (retrieve_context's
-own automatic pre-fetch, plus `remember`/`add_note`'s writes), and without
-this route every one of those calls 404s against a server that only ever
-implemented chat completions, silently degrading EVERY semantic-cache
-lookup and EVERY Qdrant read/write to a permanent miss/no-op — never
-exercising the real code on the other side of those calls at all. Same
-deterministic, dependency-free technique
-tests/agent/runtime/test_concurrent_turns.py's own `_fake_embed_text` already uses
-in-process (same text -> same vector, needed for a cache/Qdrant "hit" to
-work at all) — a real embedding model was never load-bearing for THIS
-server's job of exercising concurrency, only a consistent one.
+Every request logs a timestamped start/end line (var/fake-llm.log under `make loadtest-up`) with its duration
+and the in-flight count, because uvicorn's access log has no timestamp and a stuck-trace investigation
+dead-ended without knowing whether this server was starved or idle. A "start" without an "end" means the task
+was never scheduled again (the streaming branch's try/finally still fires on a client disconnect, when
+Starlette closes the generator).
+
+`POST /v1/embeddings` is also implemented: every real turn calls `embed_text` (the automatic pre-fetch,
+`remember`/`add_note`), and without this route each call 404s, silently turning every semantic-cache lookup
+and Qdrant read/write into a permanent miss/no-op. The vectors are deterministic and dependency-free (same
+text, same vector, as tests/agent/runtime/test_concurrent_turns.py's `_fake_embed_text`), since this server
+needs a consistent embedding, not a good one.
 """
 import asyncio
 import hashlib
@@ -108,22 +76,17 @@ _MAX_CONCURRENCY = int(os.environ.get("FAKE_LLM_MAX_CONCURRENCY", "0"))  # 0 = u
 _semaphore = asyncio.Semaphore(_MAX_CONCURRENCY) if _MAX_CONCURRENCY > 0 else None
 
 
-# --- Tool-call simulation registry ------------------------------------------
+# --- Tool-call simulation registry ---
 #
-# To make a NEW tool call get simulated, add a new `@tool_simulator`-decorated
-# function below (anywhere above `# --- OpenAI wire format ---`) — nothing
-# else in this file needs to change. Each simulator inspects the turn's last
-# USER message text plus the tool names the request actually offered
-# (`tools`), and returns the ToolCall to emit instead of a plain-text answer,
-# or None to decline (the next registered simulator gets a turn; if none
-# claim it, the turn gets a plain-text final answer). A turn that's already
-# past its tool call — the follow-up request carrying the tool's real result
-# as a `role: "tool"` message — never reaches these; see `_pick_tool_call`.
+# To simulate a NEW tool call, add a `@tool_simulator` function below (anywhere above `# --- OpenAI wire
+# format ---`); nothing else changes. Each simulator inspects the last USER message and the tool names the
+# request offered (`tools`) and returns the ToolCall to emit, or None to decline (the next simulator gets a
+# turn; if none claims it, the turn gets a plain-text answer). The follow-up request carrying the tool's real
+# result as a `role: "tool"` message never reaches these (see `_pick_tool_call`).
 #
-# The tool NAME returned must match a real tool this app's graph can execute
-# (app/agent/tools/builtin.py) — ToolNode actually runs it for real against the
-# arguments given here, exactly as production would; this file only fakes
-# the LLM's decision to call it, never the tool execution itself.
+# The returned tool NAME must be a real tool the graph can execute (app/agent/tools/builtin.py): ToolNode
+# really runs it with these arguments. This file fakes only the LLM's decision to call it, never the
+# execution.
 
 
 @dataclass

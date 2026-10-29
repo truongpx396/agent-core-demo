@@ -1,21 +1,23 @@
-"""Can a person sign in to the built-in web page and chat, in a real browser, through the front door? `make authlimit-web-check` (specs/018, T062/T068).
+"""Can a person sign in to the built-in web page and chat, in a real browser, through the front door? `make
+authlimit-web-check` (specs/018, T062/T068).
 
-`tests/api/test_web_ui_auth.py` runs the page's sign-in script against a DOM stub; this runs the real page in Chromium (Playwright) against the real
-stack: the real Casdoor login form, the real code exchange across origins (CORS), the real front door, the real API in identity mode and a worker.
-For each of two tenants it creates a throwaway user and then:
+`tests/api/test_web_ui_auth.py` runs the sign-in script against a DOM stub; this runs the real page in
+Chromium (Playwright) against the real stack: the real Casdoor login form, the code exchange across origins
+(CORS), the front door, the API in identity mode and a worker. For each of two tenants it creates a throwaway
+user and then:
+- loads the page signed out: the sign-in box shows, the Tenant and Principal pickers are hidden;
+- signs in through Casdoor's form and lands back signed in as that person, with no code or token in the
+  address bar or history, the token in sessionStorage only and nothing but the organization in localStorage;
+- asks "list the employees" and gets ONLY that tenant's rows, although the page also tries to send the OTHER
+  tenant in X-Tenant-Id (the pickers' values are dropped in identity mode and the door removes them anyway);
+- reloads and is still signed in; signs out and is back at the box with the conversation gone; a 401 (revoked
+  token) puts it back at the box with "no longer valid".
 
-  * loads the page signed out: the sign-in box shows, the Tenant and Principal pickers are hidden;
-  * signs in through Casdoor's own form and lands back on the page signed in as that person, with no code or token in the address bar or history,
-    the token in sessionStorage only, and nothing but the organization in localStorage;
-  * asks "list the employees" and gets back ONLY that tenant's rows, though the page also tries to send the OTHER tenant's name in X-Tenant-Id
-    (it must not: the pickers' values are dropped in identity mode, and the door removes them anyway);
-  * reloads and is still signed in; signs out and is back at the sign-in box with the conversation gone; a 401 (a revoked token) puts it back at
-    the box with "no longer valid".
-
-It needs the app stack behind the door and bootstrapped (`make authlimit-up-app`, `make mcp-gateway-bootstrap ARGS="--tenant ecorp --tenant other-co"`,
-`make mcp-gateway-ca`), a worker on a model double that can call `query_employees` (loadtest/fake_llm_server.py, `make fake-llm`, with the worker's
-OPENAI_API_BASE pointed at it), and a second tenant with employees of its own. A manual tier like `make authlimit-smoke`: never CI. Needs Playwright
-and a Chromium (`playwright install chromium`). Exit status 0 only if every check passed.
+Needs the app stack behind the door, bootstrapped (`make authlimit-up-app`, `make mcp-gateway-bootstrap
+ARGS="--tenant ecorp --tenant other-co"`, `make mcp-gateway-ca`), a worker on a model double that can call
+`query_employees` (loadtest/fake_llm_server.py via `make fake-llm`, the worker's OPENAI_API_BASE pointed at
+it), a second tenant with employees, and Playwright with Chromium (`playwright install chromium`). A manual
+tier like `make authlimit-smoke`, never CI; exit 0 only if every check passed.
 """
 import argparse
 import asyncio
