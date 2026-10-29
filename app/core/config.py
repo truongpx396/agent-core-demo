@@ -56,7 +56,7 @@ class Settings(BillingSettings):
     # it is worth it is `make model-eval` (specs/014 User Story 1), not an assumption.
     embed_query_prefix: str = ""
     embed_document_prefix: str = ""
-    # An operator label folded into the embedding identity. The alias resolver (app/core/model_resolver.py) sees which model an alias
+    # An operator label folded into the embedding identity. The alias resolver (app/adapters/litellm/model_catalog.py) sees which model an alias
     # points at, but not that the same name was re-pulled to different weights in place (an Ollama tag moved); bump this when that
     # happens so the identity changes and the guard demands a re-embed.
     embed_model_revision: str = ""

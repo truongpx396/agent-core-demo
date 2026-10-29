@@ -3,7 +3,7 @@
 
 Why this shape: a decision (which topic is this? should a human take over?) is not generated text, and a
 hosted service for it already exists with a documented wire format: `{model, state, questions}` in, `{model,
-answers, usage}` out. The app asks in that shape (app/core/classification.py), so pointing it at another
+answers, usage}` out. The app asks in that shape (app/adapters/mlservice/classification.py), so pointing it at another
 implementation is a change of URL, key and model name there and in no caller. This service is a local
 implementation: no text leaves the machine, no per-call cost, a few milliseconds. It is NOT a copy of the
 hosted one (see below).

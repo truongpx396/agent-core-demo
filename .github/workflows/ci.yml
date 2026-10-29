@@ -749,7 +749,7 @@ jobs:
 
           from app.agent.tools import skill_catalog as skills
           from app.agent.tools import subagent_catalog as subagents
-          from app.domains import sandbox_tools
+          from app.adapters.mcp import sandbox_tools
 
           problems = []
           if not skills.load_skills():

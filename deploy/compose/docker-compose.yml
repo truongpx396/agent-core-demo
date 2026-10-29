@@ -43,7 +43,7 @@ x-app-env: &app-env
   LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-}
   CRAWL4AI_SERVER_URL: http://crawl4ai:11235
   CRAWL4AI_API_TOKEN: ${CRAWL4AI_API_TOKEN:-}
-  # Empty leaves web_search declared but answering "not set up" (app/core/serper.py). A container does not read `.env`, so without this
+  # Empty leaves web_search declared but answering "not set up" (app/adapters/web/serper.py). A container does not read `.env`, so without this
   # line a key that works under `make serve` is silently empty in the api and the workers.
   SERPER_API_KEY: ${SERPER_API_KEY:-}
   WEB_SEARCH_MAX_RESULTS: ${WEB_SEARCH_MAX_RESULTS:-5}

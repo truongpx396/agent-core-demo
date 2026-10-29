@@ -431,13 +431,13 @@ and needs no paid-API call and no training:
 3. Ask:
 
 ```python
-from app.core.classification import Choice, choose
+from app.ports.classification import Choice, route_classifier   # the port; the process binds the ML-service adapter at start
 
 EMAIL_INTENT = Choice(                                                  # named after the label set; the options are exactly its labels
     "email-intent", "Does this message ask us to send an email, or only to look something up?",
     {"send_email": "asks us to send or reply by email", "look_up": "only asks for information"},
 )
-answer = await choose(EMAIL_INTENT, message_text)                       # never raises; the first 2,000 characters are sent, nothing else
+answer = await route_classifier.get().choose(EMAIL_INTENT, message_text)                       # never raises; the first 2,000 characters are sent, nothing else
 if answer.outcome == "labelled" and answer.label == "send_email":       # label is None when the text is near none of the choices
     ...                                                                 # any other outcome (timeout, error, no_answer): decide without it
 ```

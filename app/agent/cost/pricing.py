@@ -1,7 +1,7 @@
 """What a model costs, and the arithmetic from token usage to dollars (spec 008 A2, GRAPH_PATTERNS.md 26 and 35).
 
 Prices are READ from LiteLLM (`GET /model/info`), not kept in a table here: the proxy owns the alias ->
-concrete-model mapping (app/core/model_resolver.py), so it is the one place that can say what an alias costs.
+concrete-model mapping (app/adapters/litellm/model_catalog.py), so it is the one place that can say what an alias costs.
 Its entry carries `input_cost_per_token`, `output_cost_per_token` and `cache_read_input_token_cost`, merged
 from LiteLLM's cost map with any `model_info` in the LiteLLM config taking precedence. Swapping the model
 behind an alias re-prices it with no code change, and a self-hosted model is priced where it is defined.

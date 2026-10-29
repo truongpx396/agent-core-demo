@@ -408,7 +408,7 @@ groups:
             agent_team_channel_notify_total{sink,outcome="error"} increased
             sustained over 15m — this is a saga PIVOT send (an escalation/
             handoff/incident write already committed; see
-            app/domains/notify.py's own docstring), so a human may be
+            app/adapters/notify/team_channel.py's own docstring), so a human may be
             going unnotified about real, already-applied business state.
             Check SLACK_WEBHOOK_URL / var/team_channel.log permissions.
 
@@ -421,7 +421,7 @@ groups:
           summary: "The code sandbox is unavailable; turns are going on without it"
           description: >-
             agent_sandbox_unavailable_total{reason} increased for 15m — the sandbox
-            tool catalog could not be loaded (app/domains/sandbox_tools.py), so the
+            tool catalog could not be loaded (app/adapters/mcp/sandbox_tools.py), so the
             ops, support and sales sandbox tools are missing from the turn and the
             model works without them. reason=connection or timeout: opensandbox-server
             (`make sandbox-up`) is down or still booting; circuit_open: that has been
@@ -464,7 +464,7 @@ groups:
             (reason=missing), so it was left out and the feature behind it is off.
             The usual cause is an upgrade of the dependency that provides the server
             (opensandbox-mcp): read what changed in its tool descriptions before
-            re-pinning in app/domains/sandbox_tools.py, because that text is what the
+            re-pinning in app/adapters/mcp/sandbox_tools.py, because that text is what the
             model is told to do. The test that fails on the same drift is
             tests/domains/test_sandbox_tool_pins.py.
 

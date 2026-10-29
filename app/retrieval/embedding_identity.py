@@ -11,7 +11,7 @@ operator revision label). Its first 8 hex digits go in the collection's NAME (`d
 cache's index name, so any process can read what a collection holds with no second store, and `qdrant_store`
 compares it with the configured identity on every read and write.
 
-"Resolved model" comes from LiteLLM's /model/info (app/core/model_resolver.py). Where that answers nothing
+"Resolved model" comes from LiteLLM's /model/info (app/adapters/litellm/model_catalog.py). Where that answers nothing
 (OPENAI_API_BASE straight at an OpenAI-compatible server, as in the live test tier, or LiteLLM briefly down)
 the identity falls back to the ALIAS NAME. That is weaker (re-pointing the alias at another model of the same
 size goes unnoticed, which `EMBED_MODEL_REVISION` is for) but stable per deployment, and counted as
