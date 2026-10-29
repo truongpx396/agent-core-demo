@@ -24,6 +24,7 @@ from app.domains.sales import store
 from app.domains.sales.domain import SALES_DOMAIN_PLUGIN, SALES_MANIFEST
 from tests.conftest import TEST_CTX
 from tests.ecorp import build_graph, make_write_semantic_cache_node
+from tests.fakes.web import use_page_renderer
 
 CONTACT = "jordan@example.com"
 QUESTION = "Research jordan's company site and add it to their notes."
@@ -83,11 +84,10 @@ async def test_a_repeated_request_runs_the_action_again_instead_of_replaying_the
     async def fake_render(url):
         return "Acme — mid-market SaaS."
 
-    from app.domains.sales import tools as sales_tools
 
     monkeypatch.setattr(store, "get_lead", fake_get_lead)
     monkeypatch.setattr(store, "append_lead_note", fake_append)
-    monkeypatch.setattr(sales_tools, "render_url_to_markdown", fake_render)
+    use_page_renderer(monkeypatch, fake_render)
 
     cache = _OneDictCache()
     llm = GenericFakeChatModel(

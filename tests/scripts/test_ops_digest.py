@@ -15,6 +15,7 @@ import asyncio
 
 import pytest
 
+from app.adapters.notify import team_channel as team_channel_adapter
 from app.core import gateway
 from scripts import ops_digest
 
@@ -61,7 +62,7 @@ def test_run_digest_posts_the_summary_to_the_team_channel(monkeypatch):
     async def fake_post_to_team_channel(channel, message):
         posted.setdefault(channel, message)
 
-    monkeypatch.setattr(ops_digest.notify, "post_to_team_channel", fake_post_to_team_channel)
+    monkeypatch.setattr(team_channel_adapter, "post_to_team_channel", fake_post_to_team_channel)
 
 
 
@@ -85,7 +86,7 @@ def test_run_digest_tells_the_gateway_whose_call_it_is(monkeypatch):
 
     monkeypatch.setattr(ops_digest.metrics_client, "fetch_readings", fake_fetch_readings)
     monkeypatch.setattr(ops_digest.metrics_client, "detect_anomalies", lambda readings: [])
-    monkeypatch.setattr(ops_digest.notify, "post_to_team_channel", fake_post_to_team_channel)
+    monkeypatch.setattr(team_channel_adapter, "post_to_team_channel", fake_post_to_team_channel)
 
     fake_chat = _FakeChat(_FakeResponse("Everything is healthy today."))
     asyncio.run(ops_digest.run_digest(llm=fake_chat))
@@ -107,7 +108,7 @@ def test_run_digest_records_usage_when_tokens_are_reported(monkeypatch, usage_ev
     async def fake_post_to_team_channel(channel, message):
         return None
 
-    monkeypatch.setattr(ops_digest.notify, "post_to_team_channel", fake_post_to_team_channel)
+    monkeypatch.setattr(team_channel_adapter, "post_to_team_channel", fake_post_to_team_channel)
 
     fake_chat = _FakeChat(_FakeResponse("summary", usage_metadata={"total_tokens": 42}))
     asyncio.run(ops_digest.run_digest(llm=fake_chat))
@@ -128,7 +129,7 @@ def test_run_digest_records_a_cron_usage_event(monkeypatch, usage_event_sink):
 
     monkeypatch.setattr(ops_digest.metrics_client, "fetch_readings", fake_fetch_readings)
     monkeypatch.setattr(ops_digest.metrics_client, "detect_anomalies", lambda readings: [])
-    monkeypatch.setattr(ops_digest.notify, "post_to_team_channel", fake_post_to_team_channel)
+    monkeypatch.setattr(team_channel_adapter, "post_to_team_channel", fake_post_to_team_channel)
 
     usage = {"input_tokens": 30, "output_tokens": 12, "total_tokens": 42}
     asyncio.run(ops_digest.run_digest(llm=_FakeChat(_FakeResponse("summary", usage_metadata=usage))))
@@ -149,7 +150,7 @@ def test_run_digest_writes_no_event_when_no_tokens_are_reported(monkeypatch, usa
     async def fake_post_to_team_channel(channel, message):
         return None
 
-    monkeypatch.setattr(ops_digest.notify, "post_to_team_channel", fake_post_to_team_channel)
+    monkeypatch.setattr(team_channel_adapter, "post_to_team_channel", fake_post_to_team_channel)
 
     fake_chat = _FakeChat(_FakeResponse("summary"))
     asyncio.run(ops_digest.run_digest(llm=fake_chat))
@@ -181,7 +182,7 @@ def test_run_digest_records_the_priced_cost_of_its_own_call(monkeypatch, usage_e
     monkeypatch.setattr(pricing, "_fetch_model_info", priced_fetch)
     monkeypatch.setattr(ops_digest.metrics_client, "fetch_readings", fake_fetch_readings)
     monkeypatch.setattr(ops_digest.metrics_client, "detect_anomalies", lambda readings: [])
-    monkeypatch.setattr(ops_digest.notify, "post_to_team_channel", fake_post_to_team_channel)
+    monkeypatch.setattr(team_channel_adapter, "post_to_team_channel", fake_post_to_team_channel)
     usage = {"input_tokens": 1000, "output_tokens": 500, "total_tokens": 1500}
 
     asyncio.run(ops_digest.run_digest(llm=_FakeChat(_FakeResponse("summary", usage_metadata=usage))))

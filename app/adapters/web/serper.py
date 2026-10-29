@@ -1,4 +1,4 @@
-"""The client for serper.dev, a Google Search API: the backend of the `web_search` tool
+"""The `WebSearch` adapter (`app/ports/web.py`): the client for serper.dev, a Google Search API, the backend of the `web_search` tool
 (`app/domains/web_search.py`).
 
 Measured against the live API (2026-10-28), because the rest of this module rests on it:
@@ -29,7 +29,6 @@ Logs carry the outcome and status, never the query. The key is read once from `S
 the header, and listed among the scrubber's bound secrets.
 """
 import logging
-from dataclasses import dataclass
 from urllib.parse import urlparse
 
 import httpx
@@ -38,6 +37,7 @@ from app.core import metrics
 from app.core.config import SERPER_API_KEY, WEB_SEARCH_MAX_RESULTS
 from app.core.resilience import CircuitBreaker, CircuitOpenError
 from app.core.scrubbing import scrub
+from app.ports.web import SearchFailed, SearchHit, SearchNotConfigured
 
 logger = logging.getLogger(__name__)
 
@@ -55,22 +55,6 @@ _NEVER_LANDED = (httpx.ConnectError, httpx.ConnectTimeout)
 _MAX_TITLE_CHARS = 200
 _MAX_SNIPPET_CHARS = 400
 _MAX_PROVIDER_MESSAGE_CHARS = 120  # logged only, never shown to the model
-
-
-@dataclass(frozen=True)
-class SearchHit:
-    title: str
-    url: str
-    snippet: str
-    date: str | None
-
-
-class SearchFailed(Exception):
-    """A search that did not produce results. The message is written for the model and the person, so it names no provider detail."""
-
-
-class SearchNotConfigured(SearchFailed):
-    """No `SERPER_API_KEY`. Expected on a deployment that never opted in, so the tool answers it instead of raising."""
 
 
 def _fail(outcome: str, message: str, *, status: int | None = None, provider_message: str = "") -> SearchFailed:
@@ -208,3 +192,10 @@ async def search(query: str, *, client: httpx.AsyncClient | None = None) -> list
         return await _search(client, SERPER_API_KEY, cleaned)
     async with httpx.AsyncClient(timeout=_TIMEOUT) as owned:
         return await _search(owned, SERPER_API_KEY, cleaned)
+
+
+class SerperWebSearch:
+    """The `WebSearch` adapter (`app/ports/web.py`): `search` behind the port, looked up at CALL time so a test that patches the module function is seen."""
+
+    async def search(self, query: str) -> list[SearchHit]:
+        return await search(query)

@@ -20,11 +20,12 @@ from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.types import Command
 
+from app.adapters.notify import team_channel as notify
 from app.agent.graph.build import GraphDeps
-from app.domains import notify
 from app.domains.ops.domain import OPS_DOMAIN_PLUGIN, OPS_MANIFEST
 from tests.conftest import TEST_CTX
 from tests.ecorp import ECORP_DOMAIN_PLUGIN, build_graph
+from tests.fakes.web import use_page_renderer
 
 
 def _tool_call(name, args, call_id="c1"):
@@ -314,12 +315,11 @@ async def test_check_vendor_status_page_pauses_for_approval_as_an_outward_tool()
 
 
 async def test_approving_check_vendor_status_page_runs_it_and_finishes(monkeypatch):
-    from app.domains.ops import tools as ops_tools
 
     async def fake_render_url_to_markdown(url):
         return "All systems operational."
 
-    monkeypatch.setattr(ops_tools, "render_url_to_markdown", fake_render_url_to_markdown)
+    use_page_renderer(monkeypatch, fake_render_url_to_markdown)
 
     llm = _fake_llm_returning(
         _tool_call("check_vendor_status_page", {"url": "https://status.example.com"}),

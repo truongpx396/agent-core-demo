@@ -10,7 +10,7 @@ import re
 import pytest
 from pydantic import ValidationError
 
-from app.core import serper
+from app.adapters.web import serper
 from app.core.untrusted import CLOSE_TAG, OPEN_TAG
 from app.domains import web_search as tool_module
 from app.domains.ecorp.domain import ECORP_DOMAIN_PLUGIN

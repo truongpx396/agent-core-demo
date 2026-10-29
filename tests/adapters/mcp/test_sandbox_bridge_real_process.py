@@ -5,8 +5,9 @@ needs a running opensandbox-server. But the bridge's tool catalog is static and 
 server unreachable fails fast with an error the client reports, so what this app does around the bridge can be checked for real here:
 the five pinned tools load and are all `outward`, the other fourteen are never offered, and listing and calling share ONE process.
 """
+from app.adapters.mcp import sandbox_tools
 from app.core import metrics
-from app.domains import sandbox_session, sandbox_tools
+from app.domains import sandbox_session
 from app.mcp.connection import close_all_connections
 from tests.conftest import metric_value
 

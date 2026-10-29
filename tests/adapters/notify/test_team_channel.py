@@ -1,4 +1,4 @@
-"""Tests for app/domains/notify.py::post_to_team_channel — same "patch the
+"""Tests for app/adapters/notify/team_channel.py::post_to_team_channel — same "patch the
 low-level client constructor" convention as tests/domains/ops/test_metrics_client.py
 for the Slack leg; the local sink is a real `var/team_channel.log` write,
 redirected to a tmp_path so this never touches the repo's own `var/`.
@@ -8,8 +8,8 @@ gained specifically because this is a saga PIVOT send (see its own module
 docstring) — a failed push must still be OBSERVABLE even though it's never
 load-bearing, which is exactly what every "_records_..." test below proves.
 """
+from app.adapters.notify import team_channel as notify
 from app.core import metrics
-from app.domains import notify
 from tests.conftest import metric_value as _count
 
 

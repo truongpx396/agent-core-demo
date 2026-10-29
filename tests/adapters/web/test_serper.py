@@ -1,4 +1,4 @@
-"""`app/core/serper.py`: the serper.dev client behind `web_search` (GRAPH_PATTERNS.md pattern 87).
+"""`app/adapters/web/serper.py`: the serper.dev client behind `web_search` (GRAPH_PATTERNS.md pattern 87).
 
 All of it runs on `httpx.MockTransport`; the one real call is `make web-search-check`. Several tests pin behavior that was MEASURED against the live
 API on 2026-10-28 (the header, the body, the `organic` shape, a wrong key being a 403, a blank query being billed). What a mock cannot show is that the
@@ -11,7 +11,8 @@ import httpx
 import pytest
 from pydantic import ValidationError
 
-from app.core import metrics, serper
+from app.adapters.web import serper
+from app.core import metrics
 from app.core.config import Settings
 from app.core.resilience import CircuitBreaker
 from tests.conftest import metric_value
@@ -172,10 +173,10 @@ async def test_the_providers_own_error_text_goes_to_the_log_for_the_operator_and
     """Out-of-credits is expected to be a 4xx, but that was never measured. The log line is how an operator learns the real text."""
     body = {"message": "Not enough credits", "statusCode": 400}
 
-    with caplog.at_level(logging.WARNING, logger="app.core.serper"), pytest.raises(serper.SearchFailed) as caught:
+    with caplog.at_level(logging.WARNING, logger="app.adapters.web.serper"), pytest.raises(serper.SearchFailed) as caught:
         await serper.search("a private customer question", client=_client(lambda request: httpx.Response(400, json=body)))
 
-    (record,) = [r for r in caplog.records if r.name == "app.core.serper"]
+    (record,) = [r for r in caplog.records if r.name == "app.adapters.web.serper"]
     assert (record.outcome, record.status, record.provider_message) == ("rejected", 400, "Not enough credits")
     assert "Not enough credits" not in str(caught.value)
     assert "private customer question" not in record.getMessage() + repr(record.__dict__), "logs carry metadata, never the query"
@@ -187,10 +188,10 @@ async def test_an_echo_of_the_key_in_the_providers_error_is_scrubbed_before_it_i
     monkeypatch.setattr(config, "SERPER_API_KEY", KEY)
     body = {"message": f"bad key {KEY}", "statusCode": 403}
 
-    with caplog.at_level(logging.WARNING, logger="app.core.serper"), pytest.raises(serper.SearchFailed):
+    with caplog.at_level(logging.WARNING, logger="app.adapters.web.serper"), pytest.raises(serper.SearchFailed):
         await serper.search("q", client=_client(lambda request: httpx.Response(403, json=body)))
 
-    (record,) = [r for r in caplog.records if r.name == "app.core.serper"]
+    (record,) = [r for r in caplog.records if r.name == "app.adapters.web.serper"]
     assert KEY not in record.provider_message
 
 

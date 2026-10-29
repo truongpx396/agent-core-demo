@@ -17,16 +17,20 @@ import psycopg
 from app.adapters.litellm.chat_model import OpenAiChatModels
 from app.adapters.litellm.failures import OpenAiFailures
 from app.adapters.litellm.model_catalog import LiteLLMModelCatalog
+from app.adapters.mcp.sandbox_tools import OpenSandboxCatalog
 from app.adapters.mlservice.classification import MlServiceClassifier
 from app.adapters.mlservice.prompt_guard import MlServicePromptGuard
+from app.adapters.notify.team_channel import LocalAndSlackTeamChannel
 from app.adapters.postgres.budget_holds import PgBudgetHoldStore
 from app.adapters.postgres.budget_policies import PgBudgetPolicyStore
 from app.adapters.postgres.checkpointing import PgCheckpointing
 from app.adapters.postgres.sessions import PgSessionStore
 from app.adapters.postgres.tool_idempotency import PgToolCallLedger
 from app.adapters.postgres.usage_events import PgUsageEventStore
+from app.adapters.web.serper import SerperWebSearch
 from app.core.errors import register_store_error
 from app.domains.registry import RegistryDomainCatalog
+from app.ingestion.web_crawler import Crawl4aiPageRenderer
 from app.ports import (
     checkpointing,
     classification,
@@ -35,9 +39,12 @@ from app.ports import (
     idempotency,
     llm,
     models,
+    notify,
     retrieval,
+    sandbox,
     screening,
     sessions,
+    web,
 )
 from app.ports.slot import PortNotBound, Slot, unbound
 from app.retrieval.qdrant_store import QdrantDocumentIndex
@@ -62,6 +69,10 @@ def adapters() -> dict[Slot, object]:
         llm.chat_models: OpenAiChatModels(),
         classification.route_classifier: MlServiceClassifier(),
         screening.injection_scorer: MlServicePromptGuard(),
+        web.web_search: SerperWebSearch(),
+        web.page_renderer: Crawl4aiPageRenderer(),
+        notify.team_channel: LocalAndSlackTeamChannel(),
+        sandbox.sandbox_catalog: OpenSandboxCatalog(),
     }
 
 

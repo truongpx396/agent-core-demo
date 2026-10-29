@@ -1,4 +1,4 @@
-"""OpenSandbox (github.com/opensandbox-group/OpenSandbox) consumed over MCP (pattern 50) through the unmodified
+"""The `SandboxCatalog` adapter (`app/ports/sandbox.py`): OpenSandbox (github.com/opensandbox-group/OpenSandbox) consumed over MCP (pattern 50) through the unmodified
 `app/mcp/client.py::load_remote_tools` (pattern 28). `opensandbox-mcp` is a stdio MCP server bridging to a
 containerized `opensandbox-server` (`make sandbox-up`), run as `python -m opensandbox_mcp ...
 --use-server-proxy`. Since release 1.1 that flag is what a sandbox call needs: without it the call hangs 40+
@@ -39,6 +39,7 @@ from app.core.config import OPENSANDBOX_API_KEY, OPENSANDBOX_MCP_DOMAIN
 from app.core.resilience import CircuitBreaker, CircuitOpenError
 from app.core.tool_runtime import arun_with_timeout
 from app.mcp import client as mcp_client
+from app.ports.sandbox import SANDBOX_DEPENDENCY
 
 logger = logging.getLogger(__name__)
 
@@ -66,7 +67,7 @@ OPEN_SANDBOX_API_KEY_ENV = "OPEN_SANDBOX_API_KEY"
 # input schema as `opensandbox-mcp==1.1.1` offers it (app/mcp/client.py::tool_fingerprint). The client keeps exactly these and
 # only while they still match: the other fourteen (kill, renew, move, delete, replace, ...) are never offered to the model, and
 # a release that rewrites one of these five's description, which is text the model obeys, is left out and counted until a
-# person reads the change and updates the hash. tests/domains/test_sandbox_tool_pins.py fails on the same drift in CI, and
+# person reads the change and updates the hash. tests/adapters/mcp/test_sandbox_tool_pins.py fails on the same drift in CI, and
 # prints the new values, so this is a two-line change with the diff of the bridge's descriptions next to it.
 PINNED_SANDBOX_TOOLS = {
     "command_run": "a85c41d3e5e85d5ce01c32baa41708a66c953dc4912bab907227242dce177a5e",
@@ -76,7 +77,6 @@ PINNED_SANDBOX_TOOLS = {
     "sandbox_list": "5232c31c63f8b822830defaa2e998cacbd64c4d4e49bc14094cb0a371a707888",
 }
 
-SANDBOX_DEPENDENCY = "opensandbox_mcp"  # the label on every metric about this bridge, same as its circuit breaker's
 
 
 def _unavailable_reason(exc: BaseException) -> str:
@@ -136,3 +136,10 @@ async def load_sandbox_tools() -> tuple[list[BaseTool], dict[str, str]]:
             extra={"error_class": type(exc).__name__, "domain": OPENSANDBOX_MCP_DOMAIN},
         )
         return [], {}
+
+
+class OpenSandboxCatalog:
+    """The adapter: `load_sandbox_tools` behind the port, looked up at CALL time so a test that patches the module function is seen."""
+
+    async def load(self) -> tuple[list[BaseTool], dict[str, str]]:
+        return await load_sandbox_tools()

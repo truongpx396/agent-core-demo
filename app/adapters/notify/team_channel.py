@@ -1,4 +1,4 @@
-"""Team-channel notifications shared by every example domain (ops's
+"""The `TeamChannel` adapter (`app/ports/notify.py`): team-channel notifications shared by every example domain (ops's
 `post_to_team_channel` tool, support/sales's escalation/handoff side
 effects) — one implementation instead of three copies.
 
@@ -74,3 +74,10 @@ async def post_to_team_channel(channel: str, message: str) -> str:
             metrics.agent_team_channel_notify_total.labels(sink="slack", outcome="error").inc()
 
     return f"Posted to {channel!r}."
+
+
+class LocalAndSlackTeamChannel:
+    """The adapter: `post_to_team_channel` behind the port, looked up at CALL time so a test that patches the module function is seen."""
+
+    async def post(self, channel: str, message: str) -> str:
+        return await post_to_team_channel(channel, message)

@@ -27,11 +27,12 @@ from app.core.tool_idempotency import idempotent
 from app.core.tool_runtime import arun_with_timeout
 from app.core.tool_schema import ToolArgs
 from app.core.untrusted import frame_untrusted
-from app.domains import notify, sandbox_session
+from app.domains import sandbox_session
 from app.domains.ops import metrics_client, store
 from app.domains.policy import ActionAllowlistPolicy
 from app.domains.web_search import make_web_search_tool
-from app.ingestion.web_crawler import CRAWL_TOOL_TIMEOUT_SECONDS, render_url_to_markdown
+from app.ports.notify import team_channel
+from app.ports.web import CRAWL_TOOL_TIMEOUT_SECONDS, page_renderer
 
 NO_CTX_REFUSAL = (
     "Refused: no valid tenant/principal context for this request. "
@@ -114,7 +115,7 @@ class PostToTeamChannelArgs(BaseModel):
 
 
 async def _post_to_team_channel_impl(channel: str, message: str) -> str:
-    return await notify.post_to_team_channel(channel, message)
+    return await team_channel.get().post(channel, message)
 
 
 @tool(args_schema=PostToTeamChannelArgs)
@@ -255,7 +256,7 @@ class CheckVendorStatusPageArgs(BaseModel):
 
 async def _check_vendor_status_page_impl(url: str) -> str:
     # Page text is untrusted data (SYSTEM_PROMPT's promise about tool results).
-    return frame_untrusted(await render_url_to_markdown(url))
+    return frame_untrusted(await page_renderer.get().render(url))
 
 
 @tool(args_schema=CheckVendorStatusPageArgs)

@@ -1,4 +1,4 @@
-"""The sandbox bridge's tool catalog against the hashes this app pinned (app/domains/sandbox_tools.py::PINNED_SANDBOX_TOOLS).
+"""The sandbox bridge's tool catalog against the hashes this app pinned (app/adapters/mcp/sandbox_tools.py::PINNED_SANDBOX_TOOLS).
 
 The client keeps a remote tool only while its name, description and input schema hash to the pinned value (app/mcp/client.py,
 specs/009 A5). That is the right behaviour in production and a trap in a dependency bump: a release of `opensandbox-mcp` that
@@ -11,7 +11,8 @@ listing is what the wire would carry, by hashing through the same function the c
 from opensandbox.config import ConnectionConfig
 from opensandbox_mcp.server import create_server
 
-from app.domains import sandbox_session, sandbox_tools
+from app.adapters.mcp import sandbox_tools
+from app.domains import sandbox_session
 from app.mcp.client import tool_fingerprint
 
 
@@ -26,7 +27,7 @@ async def test_every_pinned_sandbox_tool_still_matches_what_the_installed_bridge
     drifted = {name: offered.get(name) for name, pin in sandbox_tools.PINNED_SANDBOX_TOOLS.items() if offered.get(name) != pin}
 
     assert not drifted, (
-        "The installed opensandbox-mcp describes these tools differently from what app/domains/sandbox_tools.py pinned, so the "
+        "The installed opensandbox-mcp describes these tools differently from what app/adapters/mcp/sandbox_tools.py pinned, so the "
         "app would leave them out at runtime (agent_mcp_tool_pin_failures_total). Read what changed in their descriptions and "
         "schemas, then update PINNED_SANDBOX_TOOLS to:\n"
         + "\n".join(f'    "{name}": "{offered[name]}",' for name in sorted(drifted) if offered.get(name))

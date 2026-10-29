@@ -29,9 +29,9 @@ from app.agent.cost import metering
 from app.core.config import CHAT_MODEL, DEFAULT_TENANT, OPENAI_API_BASE, OPENAI_API_KEY
 from app.core.job_runtime import scheduled_job
 from app.core.security import SecurityCtx
-from app.domains import notify
 from app.domains.sales import store
 from app.domains.sales.domain import SALES_MANIFEST
+from app.ports.notify import team_channel
 
 _CRON_CTX: SecurityCtx = {"tenant": DEFAULT_TENANT, "principal": "sales-followup-cron", "claims": {}}
 
@@ -87,7 +87,7 @@ async def run_followup_sweep(tenant: str = DEFAULT_TENANT, llm=None) -> list[str
         response = call.response
         draft = response.content if isinstance(response.content, str) else str(response.content)
 
-        await notify.post_to_team_channel(
+        await team_channel.get().post(
             "sales-followups",
             f"Draft nudge for {item['lead_name']} ({item['contact']}):\n{draft}",
         )

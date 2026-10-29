@@ -23,11 +23,12 @@ from app.core.tool_idempotency import idempotent
 from app.core.tool_runtime import arun_with_timeout
 from app.core.tool_schema import ToolArgs
 from app.core.untrusted import frame_untrusted
-from app.domains import notify, sandbox_session
+from app.domains import sandbox_session
 from app.domains.policy import ActionAllowlistPolicy
 from app.domains.sales import store
 from app.domains.web_search import make_web_search_tool
-from app.ingestion.web_crawler import CRAWL_TOOL_TIMEOUT_SECONDS, render_url_to_markdown
+from app.ports.notify import team_channel
+from app.ports.web import CRAWL_TOOL_TIMEOUT_SECONDS, page_renderer
 
 NO_CTX_REFUSAL = (
     "Refused: no valid tenant/principal context for this request. "
@@ -244,7 +245,7 @@ async def _handoff_to_human_impl(contact: str, brief_summary: str, reason: str, 
     updated = await store.set_lead_status(ctx["tenant"], contact, "handed_off")
     if not updated:
         return f"No lead found for contact {contact!r} — nothing to hand off."
-    await notify.post_to_team_channel(
+    await team_channel.get().post(
         "sales-handoffs",
         f"[{ctx['tenant']}] Hot lead {contact} handed off by {ctx['principal']} ({reason}):\n{brief_summary}",
     )
@@ -358,7 +359,7 @@ async def _enrich_lead_from_website_impl(
     if lead is None:
         return f"No lead found for contact {contact!r} — log an interaction with them first."
 
-    page_text = await render_url_to_markdown(url)
+    page_text = await page_renderer.get().render(url)
     note = f"Website research ({url}):\n{page_text}"
     await store.append_lead_note(ctx["tenant"], contact, note, tool_call_id=tool_call_id)
     return (

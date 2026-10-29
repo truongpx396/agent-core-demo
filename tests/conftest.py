@@ -128,10 +128,10 @@ def no_real_tracing(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def no_real_web_search(monkeypatch):
-    """`web_search` (app/core/serper.py) is a billed call to a third party, and a developer's `.env` can hold a
+    """`web_search` (app/adapters/web/serper.py) is a billed call to a third party, and a developer's `.env` can hold a
     real `SERPER_API_KEY` (it is meant to).
     """
-    from app.core import serper
+    from app.adapters.web import serper
 
     monkeypatch.setattr(serper, "SERPER_API_KEY", "")
 

@@ -23,11 +23,12 @@ from app.core.tool_idempotency import idempotent
 from app.core.tool_runtime import arun_with_timeout
 from app.core.tool_schema import ToolArgs
 from app.core.untrusted import frame_untrusted
-from app.domains import notify, sandbox_session
+from app.domains import sandbox_session
 from app.domains.policy import ActionAllowlistPolicy
 from app.domains.support import store
 from app.domains.web_search import make_web_search_tool
-from app.ingestion.web_crawler import CRAWL_TOOL_TIMEOUT_SECONDS, render_url_to_markdown
+from app.ports.notify import team_channel
+from app.ports.web import CRAWL_TOOL_TIMEOUT_SECONDS, page_renderer
 
 NO_CTX_REFUSAL = (
     "Refused: no valid tenant/principal context for this request. "
@@ -173,7 +174,7 @@ async def _escalate_to_human_impl(ticket_id: int, reason: str, ctx: SecurityCtx)
     updated = await store.escalate_ticket(ctx["tenant"], ticket_id, reason)
     if not updated:
         return f"No ticket #{ticket_id} found to escalate."
-    await notify.post_to_team_channel(
+    await team_channel.get().post(
         "support-escalations",
         f"[{ctx['tenant']}] Ticket #{ticket_id} escalated by {ctx['principal']}: {reason}",
     )
@@ -277,7 +278,7 @@ class FetchExternalReferenceArgs(BaseModel):
 
 async def _fetch_external_reference_impl(url: str) -> str:
     # Page text is untrusted data (SYSTEM_PROMPT's promise about tool results).
-    return frame_untrusted(await render_url_to_markdown(url))
+    return frame_untrusted(await page_renderer.get().render(url))
 
 
 @tool(args_schema=FetchExternalReferenceArgs)

@@ -60,7 +60,7 @@ async def arun_with_timeout(func, *args, _timeout_seconds: float | None = None, 
 def run_with_timeout(func, *args, _timeout_seconds: float | None = None, **kwargs):
     """The sync survivor of `arun_with_timeout`'s predecessor: still runs
     `func` in a worker thread via `concurrent.futures`, not `asyncio.wait_for`
-    — its one caller, `app/domains/sandbox_tools.py::load_sandbox_tools`, runs
+    — its one caller, `app/adapters/mcp/sandbox_tools.py::load_sandbox_tools`, runs
     at plain Python import time (eager domain composition), before any event
     loop exists. `mcp_client.load_remote_tools` (what it wraps) opens its own
     throwaway loop via `asyncio.run(...)` internally; this dispatches that

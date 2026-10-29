@@ -53,11 +53,12 @@ from app.core.config import MCP_TOOL_OUTPUT_MAX_CHARS
 from app.core.output_limits import bound_output
 from app.core.scrubbing import scrub
 from app.mcp.connection import connection_for
+from app.ports.sandbox import REMOTE_ERROR_PREFIX
 
 logger = logging.getLogger(__name__)
 
-# What a failed remote call starts with, so a caller that parses replies (the sandbox) can tell a failure from a payload.
-REMOTE_ERROR_PREFIX = "Remote tool error:"
+# `REMOTE_ERROR_PREFIX` (app/ports/sandbox.py) is what a failed remote call starts with, so a caller that parses replies (the sandbox) can tell a
+# failure from a payload.
 
 
 @dataclass(frozen=True)
@@ -179,7 +180,7 @@ async def load_remote_tools(
 
     `async def`, awaiting `_list_remote_tools` directly — the `mcp` SDK
     client is async-native and this function's one real caller
-    (`app/domains/sandbox_tools.py::load_sandbox_tools`) is `async def`
+    (`app/adapters/mcp/sandbox_tools.py::load_sandbox_tools`) is `async def`
     too, so there's no sync/async boundary to bridge. Every wrapped remote
     tool is `coroutine`-only for the same reason.
     """

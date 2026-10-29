@@ -32,11 +32,11 @@ from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import BaseTool, InjectedToolCallId, StructuredTool
 from pydantic import BaseModel, Field, field_validator
 
-from app.core import serper
 from app.core.security import Policy, SecurityCtx, valid_ctx
 from app.core.tool_idempotency import idempotent
 from app.core.tool_runtime import NO_CTX_REFUSAL, arun_with_timeout, ctx_from_config
 from app.core.untrusted import frame_untrusted
+from app.ports.web import SearchHit, SearchNotConfigured, web_search
 
 ACTION = "web_search"
 _MAX_QUERY_CHARS = 300
@@ -64,7 +64,7 @@ class WebSearchArgs(BaseModel):
         return v
 
 
-def format_hits(hits: list[serper.SearchHit]) -> str:
+def format_hits(hits: list[SearchHit]) -> str:
     """One entry per hit: the title, the address, the snippet. No `[n]` numbering (see the module docstring)."""
     entries = []
     for hit in hits:
@@ -78,8 +78,8 @@ def format_hits(hits: list[serper.SearchHit]) -> str:
 
 async def _web_search_impl(query: str) -> str:
     try:
-        hits = await serper.search(query)
-    except serper.SearchNotConfigured as exc:
+        hits = await web_search.get().search(query)
+    except SearchNotConfigured as exc:
         # An answer, not a failure: this deployment never opted in. Returned (not raised) so it does not count as a tool error.
         return str(exc)
     if not hits:

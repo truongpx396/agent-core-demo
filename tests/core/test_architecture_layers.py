@@ -43,7 +43,7 @@ INFRASTRUCTURE = frozenset({
 
 # Modules that live in `app/core` but are adapters or process plumbing, not kernel.
 PLATFORM_CORE = frozenset({
-    "sql_store", "serper", "internal_identity", "telemetry", "logging_config", "job_runtime",
+    "sql_store", "internal_identity", "telemetry", "logging_config", "job_runtime",
 })
 
 # Application-ring files that are adapters by convention.
@@ -62,15 +62,8 @@ LEDGER: frozenset[tuple[str, str]] = frozenset({
     ("app/domains/ecorp/tools.py", "app.domains.ecorp.store"),
     ("app/domains/ops/tools.py", "app.domains.ops.metrics_client"),
     ("app/domains/ops/tools.py", "app.domains.ops.store"),
-    ("app/domains/ops/tools.py", "app.ingestion"),
     ("app/domains/sales/tools.py", "app.domains.sales.store"),
-    ("app/domains/sales/tools.py", "app.ingestion"),
     ("app/domains/support/tools.py", "app.domains.support.store"),
-    ("app/domains/support/tools.py", "app.ingestion"),
-    ("app/domains/notify.py", "httpx"),
-    ("app/domains/sandbox_session.py", "app.mcp"),
-    ("app/domains/sandbox_tools.py", "app.mcp"),
-    ("app/domains/web_search.py", "app.core.serper"),
 })
 
 

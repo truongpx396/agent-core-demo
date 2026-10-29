@@ -41,6 +41,11 @@ from crawl4ai.docker_client import RequestError as Crawl4aiRequestError
 from app.core.config import CRAWL4AI_API_TOKEN, CRAWL4AI_SERVER_URL
 from app.core.resilience import CircuitBreaker, CircuitOpenError
 from app.core.url_safety import assert_safe_url_async
+from app.ports.web import (
+    CRAWL_RENDER_TIMEOUT_SECONDS,
+    CRAWL_TOOL_TIMEOUT_SECONDS,
+    CrawlFailed,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -51,28 +56,14 @@ _CRAWL4AI_RETRY_ATTEMPTS = 3  # 1 initial + 2 retries — a render is read-only
 # app/core/resilience.py's own module docstring for why THAT isn't retried).
 _CRAWL4AI_RETRY_BASE_DELAY_SECONDS = 0.5
 
-CRAWL_TIMEOUT_SECONDS = 30  # headless-browser render is slower than a bare
+CRAWL_TIMEOUT_SECONDS = CRAWL_RENDER_TIMEOUT_SECONDS  # headless-browser render (30 s, the port's) is slower than a bare
 # GET (ingestor.py's _URL_TIMEOUT_SECONDS=10). Passed to crawl4ai as
 # page_timeout, so a hung page fails cleanly INSIDE _crawl (a real
 # CrawlFailed) rather than only via the outer thread-kill below.
 
-CRAWL_TOOL_TIMEOUT_SECONDS = CRAWL_TIMEOUT_SECONDS + 10  # the
-# `_timeout_seconds` every domain tool passes to
-# app/core/tool_runtime.py::run_with_timeout — larger than CRAWL_TIMEOUT_SECONDS
-# so crawl4ai's own page_timeout fires first, giving a clean CrawlFailed
-# message instead of the outer wrapper's blunter cutoff.
-
 _MAX_MARKDOWN_CHARS = 20_000  # bounded like ingestor.py's _MAX_URL_BYTES —
 # a full page's markdown could otherwise blow past what's reasonable in a
 # tool result/prompt.
-
-
-class CrawlFailed(Exception):
-    """A URL that passed the SSRF guard but couldn't be rendered
-    (navigation error, timeout, no content, server unreachable/
-    unauthorized) — expected and caller-facing, not a bug. Propagates up
-    like any other exception (`app/agent/graph/core.py`'s handle_tool_errors turns it into
-    a ToolMessage) — no domain tool catches it itself."""
 
 
 async def _crawl(url: str) -> str:
@@ -129,3 +120,11 @@ async def render_url_to_markdown(url: str) -> str:
     if len(text) > _MAX_MARKDOWN_CHARS:
         text = text[:_MAX_MARKDOWN_CHARS] + "\n\n[truncated: page content exceeds the fetch limit]"
     return text
+
+
+class Crawl4aiPageRenderer:
+    """The `PageRenderer` adapter (`app/ports/web.py`): `render_url_to_markdown` behind the port, looked up at CALL time. `CrawlFailed` propagates up like any
+    other exception (`app/agent/graph/core.py`'s handle_tool_errors turns it into a ToolMessage); no domain tool catches it itself."""
+
+    async def render(self, url: str) -> str:
+        return await render_url_to_markdown(url)

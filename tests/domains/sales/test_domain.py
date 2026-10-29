@@ -24,6 +24,7 @@ from app.domains.sales import store
 from app.domains.sales.domain import SALES_DOMAIN_PLUGIN, SALES_MANIFEST
 from tests.conftest import TEST_CTX
 from tests.ecorp import ECORP_DOMAIN_PLUGIN, build_graph
+from tests.fakes.web import use_page_renderer
 
 _CORE_SALES_TOOLS = {
     "search_docs",
@@ -233,7 +234,6 @@ async def test_enrich_lead_from_website_pauses_for_approval_as_an_outward_tool()
 
 
 async def test_approving_enrich_lead_from_website_runs_it_and_finishes(monkeypatch):
-    from app.domains.sales import tools as sales_tools
 
     async def fake_get_lead(tenant, contact):
         return {"name": "Jordan", "contact": contact}
@@ -248,7 +248,7 @@ async def test_approving_enrich_lead_from_website_runs_it_and_finishes(monkeypat
     async def fake_render_url_to_markdown(url):
         return "Ecorp Lead Co — mid-market SaaS."
 
-    monkeypatch.setattr(sales_tools, "render_url_to_markdown", fake_render_url_to_markdown)
+    use_page_renderer(monkeypatch, fake_render_url_to_markdown)
 
     llm = _fake_llm_returning(
         _tool_call(
@@ -273,7 +273,7 @@ async def test_handoff_to_human_notifies_the_team_channel(monkeypatch):
     """handoff_to_human's own side effect (app/domains/sales/tools.py) —
     unit-level, same shape as
     tests/domains/support/test_domain.py::test_escalate_to_human_notifies_the_team_channel."""
-    from app.domains import notify
+    from app.adapters.notify import team_channel as notify
     from app.domains.sales.tools import _handoff_to_human_impl
 
     async def fake_set_lead_status(tenant, contact, status):

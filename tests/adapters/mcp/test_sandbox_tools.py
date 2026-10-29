@@ -1,4 +1,4 @@
-"""Tests for app/domains/sandbox_tools.py — mocks
+"""Tests for app/adapters/mcp/sandbox_tools.py — mocks
 `app.mcp.client.load_remote_tools` (the existing, unmodified pattern-28
 client this module builds on, same boundary tests/mcp/test_mcp_client.py
 already mocks one level deeper at `_list_remote_tools`/`_call_remote_tool`)
@@ -26,9 +26,9 @@ import sys
 
 import pytest
 
+from app.adapters.mcp import sandbox_tools
 from app.core import metrics
 from app.core.resilience import CircuitBreaker
-from app.domains import sandbox_tools
 from app.mcp import client as mcp_client
 from tests.conftest import metric_value
 
