@@ -1,51 +1,36 @@
 """Does the meter agree with the LLM gateway? The agent's usage events against the gateway's spend log (specs/010
 US6, T026, T030c; the wallet half moved to the billing package in specs/013).
 
-Two independent records of the same spending, each able to drift unseen:
-  * `usage_events`: one row per model call, the meter AND the spend the caps sum (postgres-init/19);
-  * the gateway's spend log (LiteLLM, `end_user` = `gateway.end_user_id(tenant, principal)`): what the
-    provider was actually asked to spend, written by another process from the request itself. That makes it an
-    independent second meter (research G5) and the only detector for a call whose event was never written
-    (spec 010 plan: the reconciliation is the detector, not a prevention).
+Two independent records of the same spending, each able to drift unseen: `usage_events` (the meter and the
+spend the caps sum), and the gateway's spend log (LiteLLM, `end_user` = `gateway.end_user_id(tenant,
+principal)`), written by another process from the request itself. The gateway is the only detector for a call
+whose event was never written (the reconciliation detects, it doesn't prevent).
 
-## What it reports
+It reports, per tenant and UTC day, the figures and their USD difference above `Tolerance` (a fixed amount or
+a percentage, whichever is larger), e.g. "acme, 2026-10-06, $0.76 of spend the gateway saw and the meter did
+not".
 
-Per tenant and UTC day, the figures and their USD difference when above tolerance (a fixed USD amount or a
-percentage, whichever is larger: `Tolerance`). It names tenant, day and amount, e.g. "acme, 2026-10-06, $0.76
-of spend the gateway saw and the meter did not".
+Deliberately not findings: the newest minutes (`USAGE_RECONCILE_SETTLE_SECONDS`; the gateway logs in batches);
+embeddings (unmetered, no identity, so they land in `unattributed_usd`); another application's end users on a
+shared gateway (same bucket).
 
-## What is deliberately not a finding
+Known noise: a call that STARTS before midnight UTC and is recorded after it lands on different days in the
+gateway (start time) and the event (insert time). A busy tenant's tolerance absorbs it; a quiet tenant with an
+expensive call shows opposite drifts on adjacent days, the straddle signature, not a loss.
 
-  * **The newest minutes** (`USAGE_RECONCILE_SETTLE_SECONDS`): the gateway writes its log in batches.
-  * **Embeddings:** unmetered and carrying no identity (research G2), so the gateway attributes them to
-    nobody; that spend lands in `unattributed_usd`, reported but not drift.
-  * **Another application's end users** on a shared gateway (neither `tenant:<tenant>/user:<principal>` nor
-    the older `tenant_<hash>`): same bucket.
+The gateway read is `GET /spend/logs/v2` with `start_date`/`end_date`, paginated (checked against LiteLLM
+1.104: UTC window on `startTime`, both ends inclusive, `page_size` at most 1000, `total` capped at 10 000 so
+the page count never comes from it). The sort has no tie-breaker, so rows are de-duplicated by `request_id`,
+and a `total` below the cap must equal the rows collected or the read is INCOMPLETE. An incomplete read is
+never compared, since a truncated sum would page someone for every tenant. Ceiling:
+`USAGE_RECONCILE_GATEWAY_MAX_PAGES`.
 
-## Known noise (disclosed)
+Cost: events are read by time but the index leads with the tenant, so a pass is a sequential scan. A time-only
+index would tax every insert for a job that runs a few times a day; if a pass gets slow, that index (or a
+daily partition) is the fix and `USAGE_RECONCILE_LOOKBACK_DAYS` the lever.
 
-A call that STARTS before midnight UTC and is recorded after it lands on different days in the gateway (start
-time) and the event (insert time). A busy tenant's tolerance absorbs it; a quiet tenant with an expensive call
-across midnight shows a pair of opposite drifts on adjacent days. That signature is the straddle, not a loss.
-
-## The gateway read
-
-`GET /spend/logs/v2` with `start_date`/`end_date`, paginated (verified against LiteLLM 1.104's source: a UTC
-window on `startTime`, both ends inclusive; `page_size` at most 1000; `total` capped at 10 000, so the page
-count is never read from it). The sort has no tie-breaker, so rows are de-duplicated by `request_id`, and when
-the response's `total` is below the cap it must equal the rows collected or the read is INCOMPLETE. An
-incomplete read is never compared: a truncated sum would show every tenant under-metered and page someone for
-nothing. Ceiling: `USAGE_RECONCILE_GATEWAY_MAX_PAGES`.
-
-## What a pass costs (disclosed)
-
-Events are read by TIME but the index leads with the tenant (`usage_events (tenant, occurred_at)`), so a pass
-is a sequential scan (EXPLAIN-checked). A time-only index would tax every model call's insert for a job that
-runs a few times a day, so it wasn't added; if a pass gets slow, that index (or a daily partition) is the fix,
-and `USAGE_RECONCILE_LOOKBACK_DAYS` the lever until then.
-
-Needs the gateway's admin key (`LITELLM_MASTER_KEY`, read from the environment by the caller, never stored
-here): spend logs are an admin view. A narrower key is a follow-up.
+Needs the gateway admin key (`LITELLM_MASTER_KEY`, read from the environment by the caller, never stored
+here), since spend logs are an admin view.
 """
 import logging
 from collections.abc import Iterable, Mapping

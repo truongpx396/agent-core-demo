@@ -1,49 +1,41 @@
 """Who is calling the API, proven from the identity the front door signed (specs/018).
 
-The front door (the authlimit service) verifies a person's access token, charges their buckets, and puts a
-SHORT-LIVED identity on the request it forwards: a compact JWS signed with a key only that service holds,
-naming a tenant (`tenant`) and a person (`sub`). In identity mode the API trusts that and nothing else, not
-`X-Tenant-Id` or `X-Principal-Id`, which a client can set to anything. This module is the check. It issues
-nothing and holds no secret: only the public half of the signing keys, fetched from the front door.
+The front door (the authlimit service) verifies a person's access token, charges their buckets, and forwards
+the request with a SHORT-LIVED identity: a compact JWS, signed with a key only that service holds, naming a
+`tenant` and a person (`sub`). In identity mode the API trusts that and nothing else, not `X-Tenant-Id` or
+`X-Principal-Id`, which a client can set to anything. This module is the check; it issues nothing and holds
+only the public half of the keys, fetched from the front door.
 
 ## What an identity must be
 
-  * `alg` EdDSA, from this module's allow-list and never from the token's own header (an `alg: none`, or an
-    RS256 external access token "presented" as an identity, is refused before any key is used); header `typ`
-    `authlimit-identity+jwt`.
-  * Signed by a key the front door currently publishes (named by the header's `kid`).
-  * `iss` `urn:agent-core:authlimit`, `aud` `agent-core-api`, and `exp`, `nbf` and `sub` present, `exp` in the
-    future and `nbf` not (a few seconds of clock skew allowed), and `tenant` and `sub` non-empty text. The
-    lifetime is the front door's to set (30 seconds by default); the API doesn't widen it.
-  * `testdata/auth-vectors/identity.json` is a real one, minted by the Go service, and a test here verifies
-    it.
+- `alg` EdDSA, from this module's allow-list and never from the token's own header (an `alg: none`, or an
+  RS256 external token "presented" as an identity, is refused before any key is used); `typ`
+  `authlimit-identity+jwt`.
+- Signed by a key the front door currently publishes (the header's `kid`).
+- `iss` `urn:agent-core:authlimit`, `aud` `agent-core-api`, `exp` in the future, `nbf` not (a few seconds of
+  skew allowed), `sub` present, and `tenant` and `sub` non-empty text. The lifetime is the front door's (30
+  seconds by default); the API doesn't widen it.
+- `testdata/auth-vectors/identity.json` is a real one minted by the Go service, and a test verifies it.
 
 ## The verifier never raises
 
-`verify` runs in a request dependency, where an exception is a 500 and a path whose outcome nobody decided. So
-every failure, unexpected ones included, comes back as a `Refusal` with one counted, closed-vocabulary reason
-(`agent_api_identity_total{outcome}`) and never the token or a claim of it. Reasons that are the CALLER'S
-fault (no header, bad signature, expired) are `unavailable=False` and become a 401; the one that is OURS, the
-public keys can't be confirmed current, is `unavailable=True` and becomes a 503 (not the person's mistake;
-retrying shortly is right).
+`verify` runs in a request dependency, where an exception is a 500 nobody decided. Every failure comes back as
+a `Refusal` with one counted, closed-vocabulary reason (`agent_api_identity_total{outcome}`), never the token
+or a claim of it. The CALLER'S faults (no header, bad signature, expired) are `unavailable=False` and become
+401; the one that is OURS, public keys that can't be confirmed current, is `unavailable=True` and becomes 503.
 
 ## The public keys
 
-`InternalKeys` fetches the key set with the event loop's own client under a short deadline, keeps it for
-`ttl_seconds`, and fetches again on a `kid` it doesn't hold (how a rotated-in key is picked up), at most once
-per `min_refresh_seconds` however many identities with made-up `kid`s arrive: a caller must not be able to
-turn that into load on the front door. If a fetch fails, the last keys stay trusted for `stale_grace_seconds`
-more and the failure is counted (`agent_api_identity_key_refresh_total{result="error"}`); past that the API
-refuses every identity with 503, because trusting a key set it can't confirm is current is trusting a key that
-may have been withdrawn for compromise. The grace exists because one dead authlimit replica behind a
-round-robin name would otherwise turn a single failed fetch into an outage for the whole API. Fail CLOSED
-after the grace, never open: this is the one place the API decides who someone is.
+`InternalKeys` fetches the key set under a short deadline, keeps it for `ttl_seconds`, and refetches on an
+unknown `kid` (how a rotated-in key is picked up) at most once per `min_refresh_seconds`, so made-up `kid`s
+can't become load on the front door. If a fetch fails the last keys stay trusted for `stale_grace_seconds`
+(one dead replica behind a round-robin name would otherwise make one failed fetch an outage) and the failure
+is counted (`agent_api_identity_key_refresh_total{result="error"}`). Past the grace the API refuses every
+identity with 503: trusting keys it can't confirm are current means trusting one that may have been withdrawn
+for compromise. Fail CLOSED, never open; this is the one place the API decides who someone is.
 
-## Starting up
-
-`check_settings` runs once at API start. In identity mode with no usable `AUTHLIMIT_KEYS_URL` the API doesn't
-start, with a message naming the variable (never its value, which could carry a credential): an API that can't
-verify anyone must not come up.
+`check_settings` runs once at start: in identity mode with no usable `AUTHLIMIT_KEYS_URL` the API doesn't
+start, with a message naming the variable (never its value).
 """
 import asyncio
 import ipaddress

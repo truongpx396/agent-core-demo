@@ -1,36 +1,30 @@
-"""Redis Streams consumer: the worker half of the production ingestion pipeline. Run one or more; consumer-group
-delivery hands each job on `ingest_queue.py::INGEST_REQUESTS_STREAM` to exactly one worker, so more workers
-means more capacity. Same shape as `app/job_queue/agent_worker.py`, deliberately on a separate queue/group
-(see `ingest_queue.py`'s docstring).
+"""Redis Streams consumer: the worker half of the ingestion pipeline. Consumer-group delivery hands each job on
+`ingest_queue.py::INGEST_REQUESTS_STREAM` to exactly one worker. Same shape as
+`app/job_queue/agent_worker.py`, deliberately on a separate queue/group (see `ingest_queue.py`).
 
 Per job: download from MinIO (`object_store.py`), dispatch to a PDF/DOCX extractor by extension
-(`extractors.py`), then feed the text into the chunk/embed/upsert pipeline every ingest path shares
-(`ingestor.py::ingest_text`). This worker owns only the download/dispatch/queue plumbing.
+(`extractors.py`), then feed the text into the shared chunk/embed/upsert pipeline
+(`ingestor.py::ingest_text`). This worker owns only download, dispatch and queue plumbing.
 
-A worker that dies mid-job leaves its entry pending forever unless something reclaims it. `_reclaim_loop` (run
-beside the read loop by every worker) does that via `XAUTOCLAIM`, like `agent_worker.py`'s. Unlike that one, a
-reclaimed ingest job is always safe to silently re-publish (capped by `MAX_AUTO_RECLAIM_RETRIES`):
-`ingest_text` derives Qdrant point ids from content (`_content_point_id`), so a re-run upserts onto the same
-ids instead of duplicating what the crashed attempt wrote. See `_handle_reclaimed_job`.
+A worker that dies mid-job leaves its entry pending forever unless reclaimed; `_reclaim_loop` (every worker
+runs one) does it via `XAUTOCLAIM`. Unlike agent_worker.py, a reclaimed ingest job is always safe to
+re-publish (capped by `MAX_AUTO_RECLAIM_RETRIES`): `ingest_text` derives Qdrant point ids from content
+(`_content_point_id`), so a re-run upserts onto the same ids instead of duplicating (see
+`_handle_reclaimed_job`).
 
-`run()` runs up to `_MAX_CONCURRENCY` jobs at once per process (an `asyncio.Semaphore`-bounded `create_task`
-per job, acquired before the task is created, as in `agent_worker.py::run()`). That is safe because a job
-holds no shared in-process state; the module-level MinIO/Qdrant/embedding clients are lazy singletons safe
-under concurrent use.
+`run()` runs up to `_MAX_CONCURRENCY` jobs at once (semaphore acquired before the task is created, as in
+agent_worker.py). A job holds no shared in-process state; the module-level MinIO/Qdrant/embedding clients are
+lazy singletons safe under concurrent use.
 
-Download and extraction are blocking (MinIO SDK, pypdf/python-docx), so both go through `asyncio.to_thread`;
-otherwise one job would stall every other job's I/O on the event loop. That doesn't lift the GIL bottleneck:
-PDF/DOCX extraction is CPU-bound, so `to_thread` only overlaps I/O (MinIO, embedding HTTP calls, Qdrant
-upserts) with one job's parsing. For parse-heavy workloads add worker PROCESSES; raise `_MAX_CONCURRENCY` when
-jobs mostly wait on MinIO/embeddings/Qdrant.
+Download and extraction are blocking (MinIO SDK, pypdf/python-docx), so both go through `asyncio.to_thread` or
+one job would stall every other's I/O. That doesn't lift the GIL: extraction is CPU-bound, so `to_thread` only
+overlaps I/O with one job's parsing. For parse-heavy loads add worker PROCESSES; raise `_MAX_CONCURRENCY` when
+jobs mostly wait on MinIO/embeddings/Qdrant. `ingest_text` and its `on_progress` callback
+(`_make_progress_reporter`) are plain `async def`, with no thread bridge.
 
-`ingest_text` is `async def` (real `AsyncQdrantClient`/`AsyncOpenAI`), so it awaits its I/O on this loop
-without a thread. Its `on_progress` callback (`_make_progress_reporter`) is likewise a plain `async def`
-calling `publish_result` in place, with no `run_coroutine_threadsafe` bridge.
-
-Run with `python -m app.ingestion.ingest_worker` (Makefile `ingest-worker`). Needs `make up`'s Redis + MinIO;
-not started by `make up`. Opt-in alongside `POST /ingest/upload` (app/api/routers/ingest.py), which only
-publishes the job.
+Run with `python -m app.ingestion.ingest_worker` (Makefile `ingest-worker`); needs Redis + MinIO from `make
+up`, is not started by it, and is opt-in alongside `POST /ingest/upload` (app/api/routers/ingest.py), which
+only publishes the job.
 """
 import asyncio
 import concurrent.futures

@@ -1,22 +1,17 @@
 """A cached answer must never stand in for an action.
 
-`write_semantic_cache` stored the final text of ANY completed turn, including one
-that ran an approved write. A later identical or near-identical request from the
-same principal then hit the cache and was answered with that text — "Remembered.",
-"Ticket #123 created" — with no model call, no approval pause and no write. The
-user is told something was done when nothing was, and on a deployment where a
-person approves every write the approval is silently bypassed (the cache never
-reaches `human_approval`).
+`write_semantic_cache` stored the final text of ANY completed turn, including one that ran an approved write.
+A later identical or near-identical request from the same principal then hit the cache and was answered
+"Remembered." or "Ticket #123 created" with no model call, approval pause or write: the user is told something
+was done when nothing was, and a deployment where a person approves every write has the approval silently
+bypassed.
 
-Found by accident: a real-model browser test repeated the same prompt in one
-session, got the cached answer instead of an approval prompt, and failed on a
-button that never appeared. Reproduced here against the real graph with the
-read side and the write side of the cache backed by one dict (what the real Redis
-cache does for one principal).
+Found by accident: a real-model browser test repeated a prompt in one session, got the cached answer instead
+of an approval prompt, and failed on a button that never appeared. Reproduced here against the real graph with
+the cache's read and write sides backed by one dict (as the real Redis cache does for one principal).
 
-What is cached stays as before: an answer from a turn that called no tool, or
-only read-only tools, is still cached. Only a turn that called a tool that is not
-`read_only` is kept out — and a tool with no declared tier counts as `outward`,
+Unchanged: an answer from a turn that called no tool, or only read-only tools, is still cached. Only a turn
+that called a tool that is not `read_only` is kept out, and a tool with no declared tier counts as `outward`,
 the repo-wide fail-closed default.
 """
 import pytest

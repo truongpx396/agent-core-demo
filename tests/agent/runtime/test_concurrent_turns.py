@@ -1,43 +1,36 @@
 """Concurrency-correctness suite: does running several turns at once (`agent_worker.py`'s `_MAX_CONCURRENCY` plus
-`app/agent/runtime/core.py`'s pooled checkpointer, both added so ONE worker process can run turns
-simultaneously) produce correct, isolated results, or does it corrupt or cross-deliver state?
+the pooled checkpointer in `app/agent/runtime/core.py`) give correct, isolated results, or corrupt or
+cross-deliver state?
 
-Separate from tests/agent/runtime/test_durable_checkpoint.py (same shape: real Postgres, fake LLM,
-`ensure_postgres()`/`reset_agent_singleton`), whose concurrent-access tests cover one SPECIFIC race (a stale
-resume hijacking an actively streaming turn). This file asks the general question: under real concurrent load,
-is there any shared-data contention or cache leak between unrelated turns? It runs in CI (`make
-test-integration`, `@pytest.mark.integration`) against ephemeral Postgres + Redis Stack containers
-(tests/containers.py) and a fake LLM (langchain_core's GenericFakeChatModel), with no live Ollama/LiteLLM.
+Separate from tests/agent/runtime/test_durable_checkpoint.py (real Postgres, fake LLM), whose concurrency
+tests cover one specific race (a stale resume hijacking a streaming turn). This asks the general question
+under real concurrent load. It runs in CI (`make test-integration`, `@pytest.mark.integration`) against
+ephemeral Postgres + Redis Stack containers (tests/containers.py) and a fake LLM (`GenericFakeChatModel`),
+with no live Ollama/LiteLLM.
 
-Seven angles, one test class each:
+One class per angle:
 - TestNoCrossContaminationUnderConcurrency: N turns on N THREADS against the real pooled checkpointer; does
-  each thread's history contain ONLY its own message?
-- TestSemanticCacheIsolationUnderConcurrency: two TENANTS racing an identical question against the real
-  semantic cache; a same-tenant repeat must hit while the other tenant's first ask of the same text must miss.
-- TestWorkerConcurrencyAgainstTheRealQueue: the production dispatch (`agent_worker._process_with_limit`, the
-  Semaphore-gated `asyncio.create_task` shape `run()` uses) against a real Redis queue; do N deliberately slow
-  turns finish in genuinely overlapping wall-clock time? The regression guard: if a change reintroduces serial
-  processing, the timing assertion catches it even though every turn would still complete "correctly".
-- TestHITLApprovalUnderConcurrency: N turns pause at the mandatory approval gate (a `remember` call, pattern
-  15) at once, then all resume concurrently; each resume must unblock ITS OWN call, and the approved memory
-  write must land in Qdrant scoped to the right owner.
-- TestSubagentCallUnderConcurrency: N turns delegate to the real `run_subagent` (pattern 46) at once, each a
-  separate nested `build_graph()` run on the shared singleton; each must answer ITS OWN task, never a
-  sibling's.
-- TestQdrantReadWriteUnderConcurrency: N TENANTS searching a pre-seeded real Qdrant collection; each must hit
-  only its own documents (the question the semantic-cache class asks of Redis, asked of Qdrant's tenant
-  filter).
-- TestSameThreadTurnsAreSerializedNotCorrupted: the complement. The classes above prove DIFFERENT
-  thread_ids/tenants stay isolated; this proves the SAME thread_id doesn't fork its checkpoint when two "turn"
-  jobs race it through the real queue/worker. Before `app/job_queue/queue.py::acquire_thread_lock`, both jobs
-  read the latest state as their parent and wrote a child from it, so the last commit silently won and the
-  other message vanished from history; no class above ever put two jobs on one thread_id.
+  each history contain ONLY its own message?
+- TestSemanticCacheIsolationUnderConcurrency: two TENANTS racing an identical question; a same-tenant repeat
+  must hit, the other tenant's first ask must miss.
+- TestWorkerConcurrencyAgainstTheRealQueue: the production dispatch (`agent_worker._process_with_limit`)
+  against a real Redis queue; do N slow turns genuinely overlap in wall-clock time? The guard against
+  reintroduced serial processing, which would still complete "correctly".
+- TestHITLApprovalUnderConcurrency: N turns pause at the approval gate (a `remember` call, pattern 15), then
+  all resume at once; each resume must unblock ITS OWN call and the memory write must land in Qdrant for the
+  right owner.
+- TestSubagentCallUnderConcurrency: N turns delegate to the real `run_subagent` (pattern 46), each a nested
+  `build_graph()` run on the shared singleton; each must answer ITS OWN task.
+- TestQdrantReadWriteUnderConcurrency: N TENANTS searching a seeded collection must hit only their own
+  documents (the semantic-cache question asked of Qdrant's tenant filter).
+- TestSameThreadTurnsAreSerializedNotCorrupted: the complement; the same thread_id must not fork its
+  checkpoint when two "turn" jobs race through the real queue. Before `queue.py::acquire_thread_lock` the last
+  commit silently won and the other message vanished; no class above put two jobs on one thread_id.
 
-No reachable embedding backend is required (`_fake_embed_text`): every real embedding call
-(app/retrieval/embeddings.py::embed_text) needs a reachable OPENAI_API_BASE, which `test-integration` CI
-deliberately doesn't provision, and a CI run surfaced exactly that gap once. These tests check
-RediSearch/Qdrant tenant filtering, HITL pause/resume routing and subagent delegation, never embedding
-QUALITY, so a deterministic network-free stand-in is more correct, not just CI-safe.
+No embedding backend is needed (`_fake_embed_text`): the real `embed_text` needs a reachable OPENAI_API_BASE,
+which `test-integration` CI doesn't provision (a CI run once surfaced that). These tests check tenant
+filtering, HITL routing and delegation, never embedding QUALITY, so a deterministic network-free stand-in is
+more correct, not just CI-safe.
 """
 import asyncio
 import hashlib
@@ -209,56 +202,36 @@ async def _fake_identity():
 
 
 async def _fake_embed_text(text: str) -> list[float]:
-    """Deterministic, network-free stand-in for the REAL embed_text
-    (app/retrieval/embeddings.py), which needs a reachable OpenAI-compatible
-    endpoint (OPENAI_API_BASE) — fine on a dev machine with `make up`
-    running, but NOT available in the `test-integration` CI job, which
-    deliberately provisions no LLM at all (see tests/integration/'s own
-    "no LLM" scope). Verified directly: a real CI run hit exactly this gap
-    — every embed_text() call failed, semantic_cache.get/set's own
-    degrade-to-miss `except Exception` swallowed it silently, so
-    TestSemanticCacheIsolationUnderConcurrency's "must hit" assertion
-    failed for a completely different reason than the isolation bug it
-    exists to catch. tests/live/conftest.py's own module docstring
-    documents hitting this identical class of gap before (test_qdrant_real.py
-    started in tests/integration/ too, moved once a real CI run surfaced
-    `openai.APIConnectionError`).
+    """Deterministic, network-free stand-in for the real `embed_text` (app/retrieval/embeddings.py), which needs
+    a reachable OPENAI_API_BASE: fine on a dev machine with `make up`, but absent from the `test-integration`
+    CI job, which provisions no LLM. A CI run hit exactly that gap: every `embed_text()` failed,
+    semantic_cache's degrade-to-miss `except Exception` swallowed it, and
+    TestSemanticCacheIsolationUnderConcurrency's "must hit" assertion failed for a reason other than the
+    isolation bug it exists to catch (tests/live/conftest.py documents the same class of gap).
 
-    What THIS file's tests actually exercise is semantic_cache.py's
-    TAG-scoped RediSearch KNN query — same text -> same vector (so a
-    same-tenant repeat can hit) and isolation enforced by the tenant/
-    principal TAG filter regardless of the vector's actual values — a real
-    embedding model was never load-bearing for that, so a deterministic
-    hash-based vector is a correct, not just convenient, substitute here."""
+    These tests exercise semantic_cache.py's TAG-scoped RediSearch KNN query: same text -> same vector (so a
+    same-tenant repeat can hit) and isolation by the tenant/principal TAG filter whatever the vector's values.
+    A real embedding model was never load-bearing, so a hash-based vector is a correct substitute, not just a
+    convenient one.
+    """
     digest = hashlib.sha256(text.encode()).digest()
     return [b / 255.0 for b in digest]
 
 
 @pytest.fixture(autouse=True)
 async def real_semantic_cache_redis(monkeypatch):
-    """Points the REAL app/retrieval/semantic_cache.py module (not stubbed
-    via GraphDeps.cache_get/cache_set — isolation under concurrency is
-    exactly what TestSemanticCacheIsolationUnderConcurrency exists to
-    check) at a real, ephemeral Redis Stack container. `_client`/
-    `_index_ready` reset the same way tests/integration/test_queue_real_redis.py
-    resets its own module-level lazy-singleton client. `embed_text` is
-    replaced with `_fake_embed_text` — see that function's own docstring
-    for why a real embedding model was never actually needed here, and is
-    unavailable in CI anyway.
+    """Points the REAL app/retrieval/semantic_cache.py (not stubbed via `GraphDeps.cache_get/cache_set`, since
+    isolation under concurrency is what TestSemanticCacheIsolationUnderConcurrency checks) at an ephemeral
+    Redis Stack container. `_client`/`_index_ready` are reset as tests/integration/test_queue_real_redis.py
+    resets its lazy-singleton client, and `embed_text` is replaced by `_fake_embed_text` (see its docstring).
 
-    `flushall()` matters here specifically (that file's own fixture doesn't
-    need it — it scopes REQUESTS_STREAM/CONSUMER_GROUP to a fresh uuid per
-    test instead): `ensure_redis()`'s container is SHARED and PERSISTENT —
-    reused across every test in this session, and verified directly to
-    survive across separate process invocations entirely (a throwaway
-    debug script's cache write was still readable in a completely fresh
-    python run afterward). semantic_cache.py's index name/key prefix are
-    fixed module constants, not overridable per-test the way the queue's
-    stream/group names are, so a flush is the only way to guarantee this
-    file's cache-isolation assertions start from a genuinely empty cache
-    instead of silently depending on whatever an earlier test (or an
-    earlier whole pytest run reusing the same cached container) left
-    behind."""
+    `flushall()` matters here: `ensure_redis()`'s container is SHARED and PERSISTENT, reused by every test in
+    the session and verified to survive across separate process invocations (a debug script's cache write was
+    readable in a fresh python run). semantic_cache.py's index name and key prefix are fixed module constants,
+    not per-test like the queue's stream/group names (which the other file scopes to a fresh uuid), so a flush
+    is the only way to start the isolation assertions from an empty cache instead of depending on what an
+    earlier test or whole run left behind.
+    """
     info = ensure_redis()
     monkeypatch.setattr(semantic_cache, "REDIS_URL", info["redis_url"])
     monkeypatch.setattr(semantic_cache, "_client", None)

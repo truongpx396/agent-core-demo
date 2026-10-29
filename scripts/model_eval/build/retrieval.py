@@ -1,18 +1,21 @@
-"""Building the repository's own retrieval dataset: `evals/datasets/retrieval-domains/<version>/` (specs/014 FR-009, research.md A3).
+"""Building the repo's own retrieval dataset: `evals/datasets/retrieval-domains/<version>/` (specs/014 FR-009,
+research.md A3).
 
-Source: authored knowledge-base articles for the four domains (`evals/sources/`), the sample documents, and the skill descriptions. They
-are chunked with THE APP'S OWN CHUNKER (child windows of DEFAULT_CHILD_CHARS), because the shape of a real chunk is part of what is being
-measured: the first benchmark in this work understated chunk length by 2.4x with synthetic text and reported a cost per chunk that was
-2.7x too high.
+Source: authored knowledge-base articles for the four domains (`evals/sources/`), the sample documents and the
+skill descriptions, chunked with THE APP'S OWN CHUNKER (child windows of DEFAULT_CHILD_CHARS), because the
+shape of a real chunk is part of what is measured (the first benchmark here used synthetic text, understated
+chunk length 2.4x and reported a cost per chunk 2.7x too high).
 
-Questions are written by a LOCAL model (offline, no vendor, nothing leaves the machine) and then filtered, because a model asked for a
-question about a passage loves to copy the passage:
-  * a question sharing a long verbatim span with its chunk tests string matching, not meaning, and is dropped;
-  * duplicates and near-duplicates are dropped, within the set and across the dev/test split (a leak makes a model look better);
-  * a question whose content words ALL appear in a second chunk is ambiguous (the overlap between adjacent child windows is the usual
-    cause), so that chunk is also marked relevant and the item is kept as `adversarial`.
-Every item is written `reviewed: false`. A person flips that flag; nothing here asserts a review happened, and a baseline recorded
-before then is marked provisional.
+Questions are written by a LOCAL model (offline, nothing leaves the machine) and filtered, because a model
+asked for a question about a passage copies the passage:
+- a question sharing a long verbatim span with its chunk tests string matching, not meaning, and is dropped;
+- duplicates and near-duplicates are dropped, within the set and across the dev/test split (a leak flatters a
+  model);
+- a question whose content words ALL appear in a second chunk is ambiguous (usually overlap between adjacent
+  child windows), so that chunk is also marked relevant and the item is kept as `adversarial`.
+
+Every item is written `reviewed: false`. A person flips that flag; nothing here asserts a review happened, and
+a baseline recorded before then is marked provisional.
 """
 import hashlib
 import json

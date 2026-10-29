@@ -1,20 +1,22 @@
-"""What a vector collection's vectors were made with, and a refusal to mix two answers (specs/014 FR-018..FR-020).
+"""What a vector collection's vectors were made with, and a refusal to mix two answers (specs/014
+FR-018..FR-020).
 
-THE PROBLEM. Two embedding models can have the same dimension and be completely different spaces: nomic-embed-text and
-gte-modernbert-base are both 768-d, so Qdrant accepts one model's query against the other's vectors and every search silently returns
-confident nonsense. A prefix change does the same with the model unchanged (nomic needs `search_query: ` / `search_document: `, and
-turning one on changes the space). Nothing about a size check catches either.
+The problem: two embedding models can share a dimension and be entirely different spaces (nomic-embed-text and
+gte-modernbert-base are both 768-d), so Qdrant accepts one model's query against the other's vectors and every
+search silently returns confident nonsense. A prefix change does the same with the model unchanged (nomic's
+`search_query: ` / `search_document: `). A size check catches neither.
 
-THE IDENTITY. (the model the `embed` alias resolves to, the vector size, the query prefix, the document prefix, an operator revision
-label). Its first 8 hex digits are written into the collection's NAME (`docs-1a2b3c4d`) and into the answer cache's index name, so any
-process can read what a collection holds without a second store and without a server feature. `qdrant_store` compares it with the
-configured identity on every read and write.
+The identity is (the model the `embed` alias resolves to, vector size, query prefix, document prefix, an
+operator revision label). Its first 8 hex digits go in the collection's NAME (`docs-1a2b3c4d`) and the answer
+cache's index name, so any process can read what a collection holds with no second store, and `qdrant_store`
+compares it with the configured identity on every read and write.
 
-"RESOLVED MODEL" COMES FROM LITELLM'S /model/info (app/core/model_resolver.py). Where that answers nothing (a deployment pointing
-OPENAI_API_BASE straight at an OpenAI-compatible server, which is how the live test tier runs, or LiteLLM briefly down) the identity
-falls back to the ALIAS NAME. That is weaker (re-pointing the alias at another model of the same size would go unnoticed, which is what
-`EMBED_MODEL_REVISION` is for), but it is stable per deployment and it is counted as `unverified`; refusing to work would break every
-such deployment. The resolver caches a success for the process life, so a flapping proxy does not flip the hash.
+"Resolved model" comes from LiteLLM's /model/info (app/core/model_resolver.py). Where that answers nothing
+(OPENAI_API_BASE straight at an OpenAI-compatible server, as in the live test tier, or LiteLLM briefly down)
+the identity falls back to the ALIAS NAME. That is weaker (re-pointing the alias at another model of the same
+size goes unnoticed, which `EMBED_MODEL_REVISION` is for) but stable per deployment, and counted as
+`unverified`; refusing would break such deployments. The resolver caches a success for the process life, so a
+flapping proxy doesn't flip the hash.
 """
 import hashlib
 import json

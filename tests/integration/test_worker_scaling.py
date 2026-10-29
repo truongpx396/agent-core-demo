@@ -55,28 +55,16 @@ from tests.containers import (
     ensure_redis,
 )
 
-# `xdist_group` forces every test in this module onto the SAME xdist
-# worker — needed because `scaled_stack` below is only `scope="module"`,
-# which under plain `-n auto`/`--dist=load` is per-WORKER-PROCESS, not
-# per-session: pytest-xdist's default scheduler assigns individual test
-# ITEMS to whichever worker is free, with no awareness of which fixtures
-# they share, so this module's 3 tests landing on 3 different workers means
-# 3 separate 7-real-subprocess `scaled_stack`s (5 agent_worker.py + uvicorn
-# + fake_llm_server each) all running at once — verified directly this is
-# real, not theoretical: reproduced a genuine intermittent failure in
-# TestScaledWorkersHandleHITLAndSubagentDelegation under `-n auto` (12
-# workers, 3 heavy tests landing on separate ones) that disappeared when
-# the same test ran alone. tests/containers.py's own module docstring
-# already establishes "cross-worker sharing under xdist is the whole
-# point, and it's not free" for the Postgres/Redis/Qdrant containers this
-# fixture itself calls into — this marker is the same fix applied to the
-# real-subprocess stack layered on top, which didn't inherit that sharing
-# just by depending on the containers that have it. Requires
-# `--dist=loadgroup` on the invoking `pytest` command (plain `load`/
-# `loadscope` ignore this marker entirely) — see .github/workflows/ci.yml's
-# `test-integration` job and the Makefile's own `test-integration` target,
-# the only two places `-m integration` (and therefore this module) ever
-# runs; every other job keeps its default scheduler untouched.
+# `xdist_group` puts every test in this module on the SAME xdist worker. `scaled_stack` below is only
+# `scope="module"`, which under `-n auto`/`--dist=load` is per-WORKER-PROCESS: xdist assigns test ITEMS to
+# whichever worker is free, regardless of shared fixtures, so this module's 3 tests on 3 workers would build 3
+# separate stacks of 7 real subprocesses (5 agent workers + uvicorn + fake LLM) at once. That is real: it
+# caused an intermittent failure in TestScaledWorkersHandleHITLAndSubagentDelegation under `-n auto` (12
+# workers) that vanished when the test ran alone. It is the same fix as tests/containers.py ("cross-worker
+# sharing under xdist is not free") applied to the subprocess stack layered on those containers. Needs
+# `--dist=loadgroup` on the pytest command (`load`/`loadscope` ignore the marker); see ci.yml's
+# `test-integration` job and the Makefile target, the only places `-m integration` runs. Every other job keeps
+# its default scheduler.
 pytestmark = [pytest.mark.integration, pytest.mark.xdist_group(name="scaled_stack")]
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]

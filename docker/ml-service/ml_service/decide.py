@@ -1,30 +1,33 @@
-"""POST /v1/decide: typed decisions, in the request and answer shape of the TypeSafe "System One" / Jev interface (specs/016, contracts/decide.md).
+"""POST /v1/decide: typed decisions in the request and answer shape of the TypeSafe "System One" / Jev interface
+(specs/016, contracts/decide.md).
 
-WHY THIS SHAPE. A decision (which of these topics is this? should a human take over?) is a different thing from generated text, and a hosted
-service that answers it already exists with a documented wire format: `{model, state, questions}` in, `{model, answers, usage}` out. The app
-asks its questions in that shape, so pointing it at another implementation of the same interface is a change of URL, key and model name in the
-app's client (app/core/classification.py) and no change to any caller. This service is one implementation, a local one: no text leaves the
-machine, no per-call cost, a few milliseconds. It is NOT a copy of the hosted one and does not pretend to be (see "WHAT DIFFERS").
+Why this shape: a decision (which topic is this? should a human take over?) is not generated text, and a
+hosted service for it already exists with a documented wire format: `{model, state, questions}` in, `{model,
+answers, usage}` out. The app asks in that shape (app/core/classification.py), so pointing it at another
+implementation is a change of URL, key and model name there and in no caller. This service is a local
+implementation: no text leaves the machine, no per-call cost, a few milliseconds. It is NOT a copy of the
+hosted one (see below).
 
-WHAT IS ANSWERED. A `choice` question: `criteria` maps each option to a description, the answer is one of the options. Here the question's NAME
-is the name of a label set (labelsets.py), because the matcher learns from the set's example sentences and the interface has no place for
-examples; the `criteria` keys must be exactly the set's labels, so a caller and a set that drifted apart is a 400 and not a quietly wrong answer.
-Several questions in one request are answered by one model with one embedding pass.
+What is answered: a `choice` question, where `criteria` maps each option to a description. The question's NAME
+is the name of a label set (labelsets.py), because the matcher learns from the set's example sentences and the
+interface has no place for examples. The `criteria` keys must be exactly the set's labels, so a caller and a
+set that drifted apart is a 400, not a quietly wrong answer. Several questions in one request share one model
+and one embedding pass.
 
-WHAT DIFFERS from the hosted interface, each one deliberate and listed in the contract:
-- `choice` is `null` when the text is near none of the options (the set's cutoff, per model). The hosted model always names an option; a caller
-  that wants "none of these" there adds an option for it. A caller of this service must handle `null`.
-- No `confidence` and no `probabilities`. A cosine similarity is not a probability, and a number that looks like one invites a threshold that
-  means nothing. The evidence is in `x_evidence` (nearest label, similarity, runner-up, margin) under its own name.
-- `state` is a string (the hosted one also takes an object or an array); `instructions` and the option descriptions are required for the shape
-  and not used for matching; only `choice` is implemented, `score` and `noul` are a 422, and `assets` is a 422.
+What differs from the hosted interface (each deliberate, listed in the contract):
+- `choice` is `null` when the text is near none of the options (the set's per-model cutoff). The hosted model
+  always names one; callers here must handle `null`.
+- No `confidence` or `probabilities`: a cosine similarity is not a probability, and a number that looks like
+  one invites a meaningless threshold. Evidence is in `x_evidence` (nearest label, similarity, runner-up,
+  margin). Fields this service adds are prefixed `x_`.
+- `state` is a string only; `instructions` and option descriptions are required for the shape and unused for
+  matching; only `choice` is implemented (`score`, `noul` and `assets` are 422).
 - `model` is optional and can only be "local". No authentication: this is an internal service.
 - `usage.input_tokens` is the tokens the embedder was fed; `output_tokens` is 0.
-- A request nothing can answer is 503 `model_unavailable` with `Retry-After`, as the hosted interface says "temporarily overloaded".
-Fields this service adds are prefixed `x_`, so a reader of the documented fields never meets them by accident.
+- A request nothing can answer is 503 `model_unavailable` with `Retry-After`.
 
-NO TEXT IS LOGGED. `state` is user data. Logs carry the decisions' names, the serving model and an exception's class; metrics carry the
-decision's name (one the service already knows) and `served_by`.
+No text is logged: `state` is user data. Logs carry decision names, the serving model and exception classes;
+metrics carry the decision's name and `served_by`.
 """
 import logging
 import re

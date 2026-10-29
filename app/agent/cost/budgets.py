@@ -1,69 +1,53 @@
 """The spend allowance: may this caller start another turn? (spec 008, GRAPH_PATTERNS.md 26 and 35.)
 
-The cross-turn counterpart of `MAX_COST_USD_PER_TURN` (graph/routing.py::should_continue, one turn's own
-total): checked before a turn starts, so an over-budget caller is refused before reaching the LLM/tool loop.
+The cross-turn counterpart of `MAX_COST_USD_PER_TURN`, checked before a turn starts so an over-budget caller
+is refused before reaching the LLM/tool loop.
 
 ## Limits
 
-A limit is a (scope, window, dollars) triple. Scopes: `tenant` (the whole organisation) and `principal` (one
-person in it). Windows: `day` (ROLLING 24h, so near-limit status never resets mid-day) and `month` (the
-CALENDAR month in UTC, resetting on the 1st like an invoice).
+A limit is a (scope, window, dollars) triple. Scopes: `tenant` and `principal` (one person). Windows: `day`
+(rolling 24h) and `month` (calendar month, UTC).
 
-Only the tenant daily limit is always on; the other three are off at 0, so an unconfigured deployment behaves
-as before and pays for none of their reads. The FIRST exceeded limit refuses and only it is counted
-(`configured_limits` puts tenant before person: an organisation-wide stop matters more).
+Only the tenant daily limit is always on; the other three are off at 0, so an unconfigured deployment pays for
+none of their reads. The first exceeded limit refuses and only it is counted (tenant is checked before
+person).
 
 ## Overrides
 
-The four limits are Settings defaults. `budget_policies` (operator-edited) overrides them per tenant, per
-person, or for every person in a tenant (`*`): `resolve_limits` applies person, else `*`, else default. NULL
-means "no cap" and 0 means "refuse everything" (the suspend switch); see postgres-init/18-budget-policies.sql.
-The override read can fail too, under the same policy as the spend read.
+The four limits are Settings defaults. `budget_policies` (operator-edited,
+postgres-init/18-budget-policies.sql) overrides them per tenant, per person, or for every person (`*`):
+`resolve_limits` applies person, else `*`, else default. NULL means no cap; 0 refuses everything (the suspend
+switch). The override read fails under the same policy as the spend read.
 
-## `spent`, and why in-flight holds are added (tenant scopes)
+## Spend, and why holds are added (tenant scopes)
 
-`spent` sums the usage events (`spend.usage_summary`). An event lands when a call returns, so a running
-sibling turn has spent SOME money already but not its remaining calls; without a hold, N concurrent turns read
-a stale `spent`, all pass, and all proceed (check-then-act). Every turn reserves `MAX_COST_USD_PER_TURN`
-(`budget_holds.reserve_budget`), so tenant limits see bursts the events alone would miss. The hold is the
-whole ceiling and the events are the part already spent, so a running turn is counted twice: a conservative
-over-count (at most `MAX_COST_USD_PER_TURN` per running turn) that can refuse a sibling a little early and
-never lets a burst through.
+Usage events land only when a call returns, so N concurrent turns would all read a stale `spent` and all pass
+(check-then-act). Every turn therefore reserves `MAX_COST_USD_PER_TURN` (`budget_holds.reserve_budget`). A
+running turn is counted twice (hold plus spend so far): a conservative over-count that can refuse a sibling a
+little early and never lets a burst through.
 
-Holds are per TENANT, so a person's limit doesn't see their own concurrent turns and can be overshot by up to
-(concurrent turns) x MAX_COST_USD_PER_TURN. A soft guard rail: closing it needs a schema change for a small
-overshoot; tenant limits stay exact.
+Holds are per tenant, so a person's limit can be overshot by up to (concurrent turns) x
+`MAX_COST_USD_PER_TURN`; closing that needs a schema change for a small overshoot. Tenant limits stay exact.
 
-## The credit gate (specs/010 T016, owned by the billing package since specs/013)
+## The credit gate (specs/010 T016, the billing package's since specs/013)
 
-A prepaid balance that only a grant refills: a different KIND of limit. Whether it is enforced, what a hold is
-worth in credits and what to do when the wallet can't be read are the package's
-(`credit_billing/admission.py`). This module asks one question through the port, `billing_port.admit`, and
-maps the answer: `exhausted` -> `insufficient_credits` (`ErrorCode.INSUFFICIENT_CREDITS`), `unavailable` ->
-`unavailable` (`ErrorCode.BUDGET_CHECK_UNAVAILABLE`, blaming no one's balance), `degraded` -> served, marked
-`degraded`.
+A prepaid balance that only a grant refills. This module asks one question through the port,
+`billing_port.admit`, and maps the answer: `exhausted` -> `insufficient_credits`, `unavailable` ->
+`BUDGET_CHECK_UNAVAILABLE` (blaming no one's balance), `degraded` -> served, marked `degraded`.
 
-  * Holds are the caller's: passed as a callable awaited only for a tenant with a wallet, so deployments where
-    most tenants have none pay for no hold read. The gate converts them to credits at its own rate.
-  * It runs after the dollar limits, so a spend cap is what a caller is told about when both apply, and a
-    refused turn pays for no extra read.
-  * Off means untouched: with enforcement off the gate reads nothing.
-  * The in-flight hold read stays open (0.0) on its own failure.
+- Holds are a callable awaited only for a tenant with a wallet; the gate converts them to credits.
+- It runs after the dollar limits, so a spend cap is what a caller is told about when both apply.
+- With enforcement off it reads nothing. The hold read stays open (0.0) on its own failure.
 
 ## When the check cannot answer
 
-  * The spend READ fails (`usage_events` unreachable or never applied): governed by
-    `BUDGET_CHECK_FAILURE_POLICY`. "open" (default) serves the turn and counts it
-    (`agent_cost_governance_degraded_total{path="ledger_read"}`, a label kept from the ledger days so alerts
-    and dashboards still match; alert `TenantAllowanceUnenforced`), since a database outage shouldn't also
-    take down every turn. "closed" refuses with `ErrorCode.BUDGET_CHECK_UNAVAILABLE`, for deployments that
-    would rather refuse than run unmetered.
-  * The in-flight hold read fails: always open, to 0.0, counted. It only closes a race; the spend check
-    beneath it is still enforced.
+- The spend read fails: `BUDGET_CHECK_FAILURE_POLICY`. "open" (default) serves the turn and counts it
+  (`agent_cost_governance_degraded_total{path="ledger_read"}`, alert `TenantAllowanceUnenforced`); "closed"
+  refuses with `BUDGET_CHECK_UNAVAILABLE`.
+- The hold read fails: always open (0.0) and counted; the spend check beneath it still applies.
 
-Everything takes its limits as arguments, so the decision is a plain function of (ctx, limits, spend, holds);
-app/agent/runtime/core.py's thin wrappers read configured values at call time, which is what lets tests
-re-point them.
+The decision is a plain function of (ctx, limits, spend, holds); the wrappers in app/agent/runtime/core.py
+read configured values at call time, which lets tests re-point them.
 """
 import logging
 from collections.abc import Sequence

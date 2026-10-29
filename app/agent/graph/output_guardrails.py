@@ -101,21 +101,19 @@ def _is_offer_follow_on(sentence: str) -> bool:
 
 
 def strip_closing_offer(content: str) -> str:
-    """`content` without a closing offer ("Would you like more information or should I proceed...?"),
-    or `content` itself when it has none or when cutting it would leave no answer.
+    """`content` without a closing offer ("Would you like more information or should I proceed...?"), or
+    `content` itself when it has none or cutting it would leave no answer.
 
-    This is a repair, not a verdict, for the same reason `insert_missing_citation_markers` is: the
-    system prompt already forbids the question twice and qwen2.5:3b writes it anyway, and sending the
-    answer back to be rewritten did not remove it (Langfuse trace `1e46b2c8`: three attempts, the same
-    question each time, then a correct answer replaced by "I described what I'd do instead of actually
-    doing it"). The offer is cut only when it is the END of the text (offers, and the short sentences
-    that continue one, from some point to the last character) and what precedes it is itself an answer:
-    at least `_MIN_BODY_CONTENT_WORDS` distinctive words, not a lead-in ending in ":" or a question,
-    no unclosed code fence, and no narrated tool use (`_TOOL_INTENT_RE`). Anything else is returned
-    unchanged, and `defers_instead_of_acting` judges it as before: a reply that is only an offer, or
-    that narrates a tool it never called, is exactly what that check exists for.
-
-    A question in the MIDDLE of an answer, with more answer after it, is never touched."""
+    A repair, not a verdict, like `insert_missing_citation_markers`: the system prompt forbids the question
+    twice and qwen2.5:3b writes it anyway, and sending the answer back to be rewritten didn't remove it
+    (Langfuse trace `1e46b2c8`: three attempts with the same question, then a correct answer replaced by "I
+    described what I'd do instead of actually doing it"). The offer is cut only when it is the END of the text
+    (offers and the short sentences continuing one, to the last character) and what precedes it is itself an
+    answer: at least `_MIN_BODY_CONTENT_WORDS` distinctive words, not a lead-in ending in ":" or a question,
+    no unclosed code fence, no narrated tool use (`_TOOL_INTENT_RE`). Anything else is returned unchanged for
+    `defers_instead_of_acting` to judge, since a reply that is only an offer, or narrates a tool it never
+    called, is what that check exists for. A question in the MIDDLE of an answer is never touched.
+    """
     if not isinstance(content, str) or not content:
         return content
     spans = sentence_spans(content)

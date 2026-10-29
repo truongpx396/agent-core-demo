@@ -1,21 +1,17 @@
-"""The tool-batch guard: one node that turns a batch of tool calls the model should not have
-made into a self-correcting retry, instead of running or surfacing it.
+"""The tool-batch guard: one node that turns a batch of tool calls the model should not have made into a
+self-correcting retry, instead of running or surfacing it. `batch_problem` checks three problems in order
+(`should_continue` routes on it and `tool_batch_guard` re-derives it, so there is one definition each):
+- `too_many_tool_calls`: more than MAX_TOOL_CALLS_PER_TURN in one response (a confused model fanning out into
+  dozens of searches);
+- `invalid_tool_call`: a name that is not one of THIS domain's tools (a hallucinated or malformed call, seen
+  with small models on Ollama's native tool-calling); a human at `human_approval` couldn't meaningfully
+  approve a name that doesn't exist;
+- `use_skill_without_search`: `use_skill` before `skill_search` this turn. SYSTEM_PROMPT requires searching
+  first; without it the model guessed a name and narrated the "not found" failure into the answer (Langfuse
+  `197ab4e1`).
 
-Three problems, checked in this order by `batch_problem` (which `should_continue` routes on and
-`tool_batch_guard` re-derives, so there is one definition of each):
-
-- `too_many_tool_calls` — more calls in one response than MAX_TOOL_CALLS_PER_TURN (a confused
-  model fanning out into dozens of searches).
-- `invalid_tool_call` — a name that is not one of THIS domain's tools (a hallucinated or
-  malformed call, seen with Ollama's native tool-calling on small models, e.g. qwen2.5:3b). A
-  human at `human_approval` couldn't meaningfully approve a name that doesn't exist.
-- `use_skill_without_search` — `use_skill` before `skill_search` this turn. SYSTEM_PROMPT
-  requires searching first so the model uses a skill's real name; without it, the model guessed
-  a name that doesn't exist and narrated the "not found" failure into the final answer (Langfuse
-  `197ab4e1`, 2026-09-09).
-
-All three answer every pending call with a `ToolMessage` (`reject_tool_calls`) and loop back to
-`agent`. Each keeps its own counter in `app/core/metrics.py`.
+All three answer every pending call with a `ToolMessage` (`reject_tool_calls`) and loop back to `agent`, each
+with its own counter in `app/core/metrics.py`.
 """
 from typing import Literal, cast
 

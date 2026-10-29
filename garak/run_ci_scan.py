@@ -1,52 +1,30 @@
-"""Fast, curated garak probe subset against the real model — report-only,
-run on every push in CI (`.github/workflows/ci.yml`'s `garak` job; `make
-garak` locally). See `garak/config.yaml`'s own header and GRAPH_PATTERNS.md
-pattern 48 for the full design writeup; this docstring covers WHY this is
-report-only rather than a pass/fail gate — a deliberate conclusion, not a
-default, reached empirically while building this:
+"""Fast, curated garak probe subset against the real model, REPORT-ONLY, run on every push
+(`.github/workflows/ci.yml`'s `garak` job; `make garak` locally). Design: `garak/config.yaml`'s header and
+GRAPH_PATTERNS.md pattern 48. This docstring explains why it is report-only, a conclusion reached empirically,
+not a default.
 
-**garak scans the RAW model, bypassing `app/core/moderation.py`
-entirely** — unlike promptfoo/support.yaml (which tests THIS app's system
-prompt), garak's OpenAICompatible target talks straight to Ollama, with no
-graph, no moderation node, no system prompt at all in front of it. That's
-the point: it measures the base model's OWN resistance as a defense-in-depth
-signal, independent of (not a regression test FOR) `app/core/moderation.py`'s
-pattern-based screening, which sits in front of the model in the real app
-and is already covered by its own hermetic tests.
+garak scans the RAW model, bypassing `app/core/moderation.py`: its OpenAICompatible target talks straight to
+Ollama, with no graph, moderation node or system prompt (unlike promptfoo/support.yaml, which tests this app's
+prompt). That is the point: a defense-in-depth signal about the base model's own resistance, not a regression
+test for moderation, which has its own hermetic tests.
 
-**A small local model has near-zero jailbreak resistance on its own —
-verified directly, not assumed.** Running `dan.Dan_11_0`/`dan.AntiDAN`
-against `qwen2.5:1.5b` here scored a 100% attack success rate on at least
-one detector every time this was tried while building this script. That's
-an honest, disclosed property of choosing a small, fast, CI-friendly local
-model (the same tradeoff `tests/live/`'s own model choice makes for speed),
-not a bug this app's code can fix — a hard "the raw model must resist this
-probe" gate would be permanently red from the first push, which is worse
-than no gate at all (the classic failure mode a brand-new scanner gate
-should specifically avoid — see `scripts/eval.py`'s own comment on why a
-gate that always fails gets disabled by a frustrated team). So this prints
-a clear, honest summary and only fails the BUILD on a genuine scan
-execution error (garak itself crashing), never on an attack succeeding.
-`make garak-full`/CI's uploaded `garak_runs/` artifact are where a human
-actually reviews findings — the same "hard gate + human-reviewed report"
-split `scripts/eval.py` uses for its own grounded-claims/pass-rate numbers.
+A small local model has near-zero jailbreak resistance on its own (verified): `dan.Dan_11_0`/`dan.AntiDAN`
+against `qwen2.5:1.5b` scored 100% attack success on at least one detector every time. That is a disclosed
+cost of choosing a small, fast, CI-friendly model, not a bug this app can fix. A hard gate would be
+permanently red from the first push, and a gate that always fails gets disabled (see `scripts/eval.py`). So
+this prints an honest summary and fails the BUILD only when garak itself crashes, never because an attack
+succeeded. `make garak-full` and CI's uploaded `garak_runs/` artifact are where a human reviews findings, the
+same hard-gate-plus-reviewed-report split `scripts/eval.py` uses.
 
-**`agent_breaker` (a real, newer probe specifically targeting tool-calling
-agents — directly relevant to this app's own tool-bound agent) is
-deliberately excluded, from BOTH this fast subset and `garak-full`** —
-verified directly that its detector requires a `NIM_API_KEY` (an NVIDIA
-NIM cloud API key) with no local-model alternative, which this fully-local,
-offline-by-default demo has no way to satisfy. A real, disclosed gap, not
-an oversight: anyone with a NIM key can add it back locally by extending
-`_FAST_PROBE_SPEC` below.
+Excluded on purpose:
+- `agent_breaker` (a newer probe for tool-calling agents) is excluded from BOTH this subset and `garak-full`:
+  its detector needs a `NIM_API_KEY` (NVIDIA NIM cloud) with no local alternative, which this
+  offline-by-default demo can't satisfy. A disclosed gap; add it back locally via `_FAST_PROBE_SPEC` with a
+  key.
+- `promptinject`/`latentinjection` are excluded from the FAST subset only: one `promptinject.HijackHateHumans`
+  run generates 64 prompts (the `dan` probes 1 each), far too slow per push.
 
-**`promptinject`/`latentinjection` are excluded from the FAST subset only**
-(they're fine for `make garak-full`) — verified directly that a single
-`promptinject.HijackHateHumans` run generates 64 prompts (vs. the `dan`
-family's 1 each), making it far too slow for a per-push CI job at even one
-generation per prompt.
-
-Run with: `python garak/run_ci_scan.py` (see Makefile's `garak` target).
+Run with `python garak/run_ci_scan.py` (the Makefile's `garak` target).
 """
 import json
 import os

@@ -1,22 +1,16 @@
-"""A contract test over EVERY non-read-only tool of EVERY domain plugin.
+"""A contract test over EVERY non-read-only tool of EVERY domain plugin. Principles II and IV (mandatory
+approval; exactly-once side effects) are non-negotiable, and a write tool is safe only if it remembers three
+things: refuse without a valid tenant/principal context, route its real work through `idempotent()`, and hand
+`idempotent()` the injected `tool_call_id` and its own name. Per-behavior tests existed, but nothing failed if
+a NEW write tool, or an edit, dropped one of the three. This does.
 
-Principles II and IV (mandatory approval; exactly-once side effects) are
-non-negotiable, and what makes a write tool safe is three small things it must
-each remember to do: refuse when there is no valid tenant/principal context,
-route its real work through `idempotent()`, and hand `idempotent()` the injected
-`tool_call_id` and its own name. Every tool has behavior tests, but they were
-written per behavior — nothing failed if a NEW write tool, or an edit to an
-existing one, quietly dropped one of the three. This file does.
+It enumerates tools from the registry, not a list kept here, so a tool is covered the moment it is registered,
+and because its sample arguments must be declared below, adding one forces its author to read the checklist
+(`.claude/rules/side-effect-tools.md`).
 
-It enumerates the tools from the registry rather than from a list kept here, so
-a tool added tomorrow is covered the moment it is registered — and, because its
-sample arguments must be declared below, adding one forces its author to look at
-this checklist (`.claude/rules/side-effect-tools.md`).
-
-What it deliberately does NOT prove: that `idempotent()` itself is exactly-once
-(tests/core/test_tool_idempotency.py), or that each tool's row-level uniqueness
-holds at the store (the per-store tests). It pins that every write tool is
-*wired* to them.
+It does NOT prove `idempotent()` is exactly-once (tests/core/test_tool_idempotency.py) or that a tool's
+row-level uniqueness holds at the store (the per-store tests); it pins that every write tool is *wired* to
+them.
 """
 import sys
 

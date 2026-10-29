@@ -1,55 +1,41 @@
-"""Money in: one provider event becomes a grant, a clawback, or a visible refusal, exactly once
-(specs/010-credit-billing-readiness, contracts/billing-provider-port.md steps 4-7;
-postgres-init/22-billing.sql).
+"""Money in: one provider event becomes a grant, a clawback, or a visible refusal, exactly once (specs/010,
+contracts/billing-provider-port.md steps 4-7; postgres-init/22-billing.sql).
 
-A webhook is a stranger's statement that a payment happened, and proves nothing the app hasn't checked. The
-adapter has verified the signature before this module sees the event (`parse_webhook`); this module then
-decides everything that matters from tables the app wrote itself: WHO from `billing_customers`, HOW MUCH from
-`credit_products`, and WHETHER IT IS NEW from the inbox. Nothing in the payload names a tenant or an amount
-that counts (`BillingEvent` has no field for either).
+A webhook is a stranger's statement that a payment happened. The adapter has verified the signature
+(`parse_webhook`); this module decides everything else from tables the app wrote: WHO from
+`billing_customers`, HOW MUCH from `credit_products`, WHETHER IT IS NEW from the inbox. Nothing in the payload
+names a tenant or an amount that counts (`BillingEvent` has no field for either).
 
 ## The duplicate story (constitution IV)
 
-- The same event delivered twice: inbox `PRIMARY KEY (provider, event_id)`; the second delivery finds a
-  terminal row.
-- The same event delivered twice AT ONCE: the same key; the second INSERT blocks on the first's transaction,
-  then finds its row.
-- A crash between "granted" and "marked applied": impossible by construction, since the grant and the status
-  change are ONE transaction.
-- The inbox row swept, then the event redelivered: the grant's own key `"{provider}:{event_id}"` in
-  `credit_transactions`, kept for good. The wallet compares what the key stood for (every field but the
-  expiry, which is `now + days` and so always differs on a replay). The same grant is a duplicate; a DIFFERENT
-  one (the catalogue changed in between) is quarantined as `idempotency_conflict`, never granted twice and
-  never silently dropped.
-- One payment described by two DIFFERENT events: the app checks for an existing grant of that `(tenant,
-  provider, payment_ref)` and ignores the second; the unique index in 22 backstops a race.
-- A refund described by two different events: the clawback is keyed by the PAYMENT,
-  `clawback:{provider}:{payment_ref}`, so a payment is taken back at most once. Only the kind is compared on a
-  reused key, because the amount an event reads depends on when it read the lot: two events for one refund can
-  differ there and must stay a duplicate.
+- The same event twice, even AT ONCE: inbox `PRIMARY KEY (provider, event_id)`; the second INSERT blocks on
+  the first's transaction, then finds its row. A crash between "granted" and "marked applied" can't happen:
+  grant and status change are ONE transaction.
+- The inbox row swept, then redelivery: the grant's own key `"{provider}:{event_id}"` in `credit_transactions`
+  is kept for good. The wallet compares what the key stood for (all but the expiry, which differs on every
+  replay): the same grant is a duplicate; a DIFFERENT one (the catalogue changed) is quarantined as
+  `idempotency_conflict`, never granted twice or silently dropped.
+- One payment described by two different events: an existing grant for `(tenant, provider, payment_ref)` makes
+  the second ignored; the unique index in 22 backstops a race.
+- One refund described by two events: the clawback is keyed by the PAYMENT
+  (`clawback:{provider}:{payment_ref}`), so it is taken back at most once. Only the kind is compared on a
+  reused key, since the amount depends on when the lot was read.
 
-## What can happen to an event, and what the caller is told
+## Outcomes, and what the provider is told
 
-- `applied`: inbox `applied`; provider told 2xx (stop retrying); counted.
-- `duplicate`: inbox unchanged; 2xx; counted.
-- `ignored`: inbox `ignored`; 2xx; counted.
-- `quarantined`: inbox `quarantined`; 2xx, since retrying can't fix it (an unlinked customer stays unlinked; a
-  replayed grant whose request changed is `idempotency_conflict`); counted and ALERTED.
-- `retry`: inbox `received`; 5xx, for a refund whose purchase hasn't arrived yet, bounded by
-  `BILLING_REFUND_HOLD_HOURS`; counted.
-- `failed`: inbox `failed`; 5xx, retried `BILLING_WEBHOOK_MAX_ATTEMPTS` times and then quarantined; counted
-  and ALERTED.
+- `applied`, `duplicate`, `ignored`: 2xx, counted.
+- `quarantined`: 2xx (retrying can't fix an unlinked customer or a changed replay), counted and ALERTED
+  (`BillingWebhookQuarantined`). It is the outcome that hides money: the customer paid, got nothing, and
+  nobody is retrying. Anything undecided goes here rather than being guessed: a chargeback and a partial
+  refund (what they are worth is a product decision).
+- `retry`: 5xx, for a refund whose purchase hasn't arrived, bounded by `BILLING_REFUND_HOLD_HOURS`; counted.
+- `failed`: 5xx, retried `BILLING_WEBHOOK_MAX_ATTEMPTS` times then quarantined; counted and ALERTED.
 
-`quarantined` is the outcome that hides money: the customer has paid and received nothing, and nobody is
-retrying. It is the one that pages (`BillingWebhookQuarantined`). Everything the app hasn't decided how to
-handle goes there rather than being guessed at: a chargeback (what a dispute is worth is a product decision)
-and a partial refund (likewise).
+## The gap this leaves
 
-## The one gap this leaves, disclosed
-
-An event stuck in `received` or `failed` whose provider then STOPS redelivering goes unnoticed until someone
-looks, because nothing polls the inbox. `BILLING_WEBHOOK_MAX_ATTEMPTS` bounds the loop while the provider
-keeps retrying; it can't bound one that has given up. The reconciliation (specs/010 PR 6) is the detector.
+An event stuck in `received` or `failed` whose provider STOPS redelivering goes unnoticed, because nothing
+polls the inbox; the max-attempts bound only helps while the provider keeps retrying. The reconciliation
+(specs/010 PR 6) is the detector.
 """
 import logging
 from dataclasses import dataclass

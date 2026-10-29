@@ -1,21 +1,22 @@
-"""The Stripe adapter against Stripe's real SANDBOX (specs/010 T029a). Manual: `make test-provider-sandbox`, never CI.
+"""The Stripe adapter against Stripe's real SANDBOX (specs/010 T029a). Manual: `make test-provider-sandbox`,
+never CI.
 
-The hermetic suite proves the adapter against Stripe's DOCUMENTATION: its signatures come from Stripe's own library, its payloads from the
-API reference. This proves it against Stripe itself, in three ways nothing else can:
+The hermetic suite proves the adapter against Stripe's DOCUMENTATION (signatures from Stripe's library,
+payloads from the API reference). This proves it against Stripe itself:
+- a Checkout request the real API accepts, returning the session shape `tests/fake_stripe_api.py` assumes
+  (this file asserts those behaviours, keeping the fake honest);
+- a delivery SIGNED BY STRIPE (via `stripe listen`, whose secret the CLI prints) verifies, and the same bytes
+  are refused when altered, stale, under another secret, or under only the `v0` label;
+- a REAL `checkout.session.completed` and the REAL `charge.refunded` it leads to normalize to a purchase and
+  refund sharing one `payment_ref`, the fact the wallet's refund logic can't work without.
 
-  * a Checkout request the real API accepts, and the session it returns has the shape `tests/fake_stripe_api.py` assumes (this
-    file asserts those very behaviours, which is what keeps that fake honest);
-  * a delivery SIGNED BY STRIPE (via `stripe listen`, whose secret the CLI prints) verifies with the adapter's code, and the same bytes
-    are refused when altered, stale, under another secret, or under only the `v0` label;
-  * a REAL `checkout.session.completed` and the REAL `charge.refunded` it leads to normalize to a purchase and a refund that share one
-    `payment_ref`: the one fact the wallet's refund logic cannot work without.
+It does NOT complete a hosted Checkout (that takes a browser), so the purchase event comes from `stripe
+trigger checkout.session.completed` (a guest checkout with no `customer` or `metadata.product_ref`). A session
+THIS APP created, paid in a real browser, is test_stripe_paid_checkout.py.
 
-What this module does NOT do: complete a hosted Checkout page (that takes a browser), so the purchase event here comes from
-`stripe trigger checkout.session.completed`'s fixture (a guest checkout with no `customer` and no `metadata.product_ref`). A session THIS APP
-created, paid in a real browser, is tests/provider_sandbox/test_stripe_paid_checkout.py.
-
-Needs: STRIPE_API_KEY (a `sk_test_`/`rk_test_` key; a live key FAILS the run), the `stripe` CLI logged in to the same sandbox. It creates
-labelled objects (`metadata[agent_core_demo_test]=true`) and archives/deletes what it can; PaymentIntents and Charges cannot be deleted.
+Needs STRIPE_API_KEY (a `sk_test_`/`rk_test_` key; a live key FAILS the run) and the `stripe` CLI logged in to
+the same sandbox. It creates labelled objects (`metadata[agent_core_demo_test]=true`) and archives/deletes
+what it can; PaymentIntents and Charges can't be deleted.
 """
 import os
 import shutil

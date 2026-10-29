@@ -1,34 +1,29 @@
 """The billing port: the contract between a host application and the billing package
-(specs/011-billing-module-boundary, contracts/billing-port.md, decisions D12, D18, D19; widened by
-specs/013-billing-owns-the-meter).
+(specs/011-billing-module-boundary, contracts/billing-port.md, D12, D18, D19; widened by specs/013).
 
 A host that bills needs four things from the package and nothing else:
+- **record a unit of usage** in its own transaction (`record_usage_in`): the package rates, keeps, debits and
+  queues it, and never raises for an operational fault (`usage.py`);
+- **ask whether a tenant may start more work** (`admit`): the credit gate (`admission.py`);
+- **read a tenant's balance** (`account_balance`);
+- **read what to show a tenant** (`credit_summary`): the balance and whether the gate enforces, or None when
+  credits are off or there is no wallet.
 
-- **record a unit of usage** in its own transaction (`record_usage_in`): the package rates it, keeps it,
-  debits the wallet and queues it for export, and never raises for an operational fault
-  (`credit_billing/usage.py`);
-- **ask whether a tenant may start more work** (`admit`): the credit gate (`credit_billing/admission.py`);
-- **read a tenant's balance** (`account_balance`), for gate callers that need the figure;
-- **read what to show a tenant** (`credit_summary`): the balance and whether the gate is enforcing, or None
-  when credits are off or the tenant has no wallet.
-
-They have the shape a service API would have (plain data types, an idempotency key on the write, a tenant on
-every call), so a network implementation can satisfy the same protocol later without the host changing. The
-one thing that isn't plain is the caller's `conn` on the write, deliberately: today the record, the debit and
-the export row are atomic with the host's own event, in the host's transaction and inside its savepoint, and
-that atomicity is what stops a replay from double-debiting. A remote billing service can't take a connection;
-what it takes instead (an at-least-once consume keyed by the event id) is the consistency change
-`design-note.md` describes.
+They have the shape of a service API (plain types, an idempotency key on the write, a tenant on every call),
+so a network implementation could satisfy the same protocol without the host changing. The one thing that
+isn't plain is the caller's `conn` on the write, deliberately: the record, the debit and the export row are
+atomic with the host's own event, in its transaction and savepoint, and that atomicity stops a replay from
+double-debiting. A remote service can't take a connection; what it takes instead (an at-least-once consume
+keyed by the event id) is the change `design-note.md` describes.
 
 `InProcessBilling` is the implementation that exists. It adds nothing: each method calls the module that does
-the work, resolved at CALL time (so a test patching `usage.record_usage_in` or `credits.account_balance` still
-sees its patch, and the hermetic suite's connection guard still applies). The host doesn't import this module.
-It imports `app.billing_integration.port`, which holds the implementation in use, so the choice is made in one
-place on the host's side and importing it wires the package to the host's pool.
+the work, resolved at CALL time so a test patching `usage.record_usage_in` or `credits.account_balance` still
+sees its patch (and the hermetic suite's connection guard still applies). The host imports
+`app.billing_integration.port`, not this module, so the choice is made in one place and importing it wires the
+package to the host's pool.
 
-Deliberately not here: grants, adjustments and webhook intake (the package serves those itself, via the
-operator CLI and `credit_billing/http.py`), checkout, and holds. `credits_for_cost` is a pure function and
-stays one.
+Not here: grants, adjustments and webhook intake (served by the operator CLI and `http.py`), checkout and
+holds. `credits_for_cost` is a pure function and stays one.
 
 Imports nothing from `app` outside `credit_billing` (enforced by tests/test_boundary.py).
 """

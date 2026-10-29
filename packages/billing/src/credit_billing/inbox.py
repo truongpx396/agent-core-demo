@@ -1,19 +1,19 @@
 """Retention for the webhook inbox (postgres-init/22-billing.sql).
 
-The inbox is the audit trail of what a payment provider told the app, so it is kept for a long time (400 days
-by default), but it must not grow for ever: this deletes `applied` and `ignored` rows older than
+The inbox is the audit trail of what a payment provider told the app, so it is kept long (400 days by default)
+but must not grow forever: this deletes `applied` and `ignored` rows older than
 `BILLING_INBOX_RETENTION_DAYS`. It NEVER deletes a row that is still an open question (`received`, `failed`,
-`quarantined`): those are the ones a person has to look at, however old.
+`quarantined`), however old.
 
-Deleting an applied row cannot make a late redelivery grant twice: the grant's own idempotency key,
-`"{provider}:{event_id}"` in `credit_transactions`, is part of the wallet's financial record and is kept for
-good, so the redelivered event inserts a fresh inbox row and then finds its grant already made (proved against a
-real Postgres in tests/integration/test_webhooks_real_postgres.py). The floor below is therefore about
-not racing a provider's retries, not about correctness.
+Deleting an applied row cannot make a late redelivery grant twice: the grant's own key
+`"{provider}:{event_id}"` in `credit_transactions` is part of the wallet's permanent record, so the redelivery
+inserts a fresh inbox row and finds its grant already made (proved against real Postgres in
+tests/integration/test_webhooks_real_postgres.py). The floor below is about not racing a provider's retries,
+not correctness.
 
-An operator job (`src/credit_billing/cli/inbox_sweep.py`), never reachable from a request: like the usage events' sweep (`scripts/usage_events_sweep.py`) it
-spans tenants, because retention is a property of the table. Bounded: a run deletes at most
-`SWEEP_MAX_BATCHES * SWEEP_BATCH_SIZE` rows and the job is idempotent, so the next run continues.
+An operator job (`cli/inbox_sweep.py`), never reachable from a request. Like the usage events' sweep
+(`scripts/usage_events_sweep.py`) it spans tenants, because retention is a property of the table. Bounded: a
+run deletes at most `SWEEP_MAX_BATCHES * SWEEP_BATCH_SIZE` rows and is idempotent, so the next run continues.
 """
 import logging
 

@@ -1,22 +1,17 @@
-"""The tenant allowance on the paths that are NOT a brand-new turn (spec 008 A6, FR-022).
+"""The tenant allowance on the paths that are NOT a brand-new turn (spec 008 A6, FR-022). Only
+`astream_events_turn` used to check the allowance and hold a reservation, but a turn paused for approval
+resumes through `astream_events_resume` after any wait, during which the tenant may have spent past its
+ceiling, and that path called the model with no check and no hold. Per entry point:
+- resume: refused when the tenant is over its ceiling (the thread stays paused; cancelling is never refused),
+  and it holds a reservation while it runs;
+- the unattended decline chain: part of an already-admitted request, so not re-checked (a refusal would strand
+  the conversation at its pause);
+- crash-continue: a retry of admitted work, so NOT refused (that could strand a turn that already ran a
+  mutating tool) but it holds a reservation, since the crashed worker's was lost;
+- cancel: spends nothing, so never gated.
 
-Only `astream_events_turn` used to check the allowance and hold a reservation. A
-turn paused for approval is resumed later through `astream_events_resume` — after
-a wait of any length, during which the tenant may have spent its way past its
-ceiling — and that path called the model again with no check and no hold. These pin
-the rule per entry point:
-
-  * resume: refused when the tenant is over its ceiling (the thread stays paused;
-    cancelling it is never refused), and it holds a reservation while it runs;
-  * the unattended decline chain: part of an already-admitted request, so it is not
-    re-checked (a refusal there would strand the conversation at its pause);
-  * crash-continue: a retry of admitted work, so it is NOT refused (that could strand
-    a turn that already ran a mutating tool) but it does hold a reservation, since the
-    crashed worker's was lost with it;
-  * cancel: spends nothing, so it is never gated.
-
-Fake graphs and patched budget functions: this proves each entry point asks the
-right question and releases what it took, not how a real checkpointer behaves.
+Fake graphs and patched budget functions: this proves each entry point asks the right question and releases
+what it took, not how a real checkpointer behaves.
 """
 import asyncio
 

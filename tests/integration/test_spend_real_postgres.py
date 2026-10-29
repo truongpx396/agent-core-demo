@@ -1,17 +1,16 @@
-"""What a tenant has spent, read from the usage events, against a REAL Postgres (specs/010 T030).
-
-The dollar caps and `GET /usage` used to sum `usage_ledger` (one row per turn) and now sum `usage_events` (one row per
-model call). tests/agent/cost/test_spend.py proves the statement's shape through a fake connection; only a real table shows
-what the shipped schema does with it:
-
-  * the sum never crosses tenants and, when narrowed, never crosses people: the property every budget decision rests on;
-  * the window honours `since`, so a rolling 24h is not a calendar day;
-  * an UNPRICED call (NULL cost) adds its tokens and no dollars, and does not turn the whole sum NULL;
-  * a cap trips on events ALONE, with no ledger row anywhere: this is the test that fails if the caps still read the ledger;
-  * a ledger row ALONE is no longer counted, which pins the cutover (and is why `make usage-events-carry-over` exists);
-  * the writer's columns and the reader's agree (a call written by the real writer is what the cap sees);
-  * the history `make usage-events-carry-over` copied is what the cap then reads, in the window it was spent in;
-  * the window read can use `(tenant, occurred_at)`, proven the way the ledger's index was: with sequential scans off.
+"""What a tenant has spent, read from the usage events, against a REAL Postgres (specs/010 T030). The dollar caps
+and `GET /usage` now sum `usage_events` (one row per model call), not `usage_ledger` (one per turn).
+tests/agent/cost/test_spend.py proves the statement's shape through a fake; only a real table shows what the
+schema does with it:
+- the sum never crosses tenants and, narrowed, never crosses people: what every budget decision rests on;
+- the window honours `since`, so a rolling 24h is not a calendar day;
+- an UNPRICED call (NULL cost) adds its tokens and no dollars, and doesn't turn the whole sum NULL;
+- a cap trips on events ALONE, with no ledger row (this fails if the caps still read the ledger); a ledger row
+  ALONE is no longer counted, which pins the cutover (and is why `make usage-events-carry-over` exists);
+- the writer's columns and the reader's agree;
+- the history the carry-over copied is what the cap then reads, in the window it was spent in;
+- the window read can use `(tenant, occurred_at)`, proven with sequential scans off, as the ledger's index
+  was.
 
 Each test uses its own tenant: the container is shared across tests and xdist workers.
 """

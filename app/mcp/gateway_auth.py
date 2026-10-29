@@ -1,33 +1,30 @@
 """Who is calling the MCP gateway, proven from a bearer token (specs/017).
 
-The gateway (`app/mcp/gateway.py`) is an OAuth 2.1 RESOURCE SERVER and nothing else: it never issues a token, it checks the one
-it is given. The MCP authorization spec asks of such a server that it validate the token's signature and expiry, that it accept
-only a token issued FOR IT (the `aud` claim, via the RFC 8707 `resource` the client sent), and that it never pass the token on.
-This module is those checks plus the one policy the SDK's contract has no place for.
+The gateway (`app/mcp/gateway.py`) is an OAuth 2.1 RESOURCE SERVER: it never issues a token, it checks the one
+it is given. The MCP authorization spec asks that it validate signature and expiry, accept only a token issued
+FOR IT (the `aud` claim, via the RFC 8707 `resource` the client sent), and never pass the token on. This
+module is those checks plus one policy the SDK's contract has no place for.
 
-## The verifier never raises
+The verifier never raises. `mcp.server.auth` calls `verify_token` inside its middleware, where an exception is
+a 500 nobody decided. So every failure, unexpected ones included, is a `None` (the SDK then answers 401 with
+the metadata URL a client uses to find the authorization server) and a counted, logged reason that is never
+the token.
 
-`mcp.server.auth` calls `verify_token` from inside its authentication middleware; an exception there is a 500 for the caller and,
-worse, a path whose outcome nobody decided. So every failure, including the unexpected ones, is a `None` (the SDK then answers
-401 with the metadata URL a client uses to find the authorization server) and a counted, logged reason that is never the token.
+What a token must be:
+- signed by a key in the authorization server's JWKS, with an algorithm from a short allow-list (RS256) taken
+  from the allow-list and never from the token's own header (`none`, or an HS256 token "signed" with the
+  public key, is refused before any key is used);
+- `iss` equal to the configured issuer, `aud` containing THIS server's resource URI, `exp` and `sub` present,
+  `exp` in the future (a few seconds of skew allowed). A token minted without a `resource` parameter has the
+  client id as audience (measured on Casdoor 4.24, specs/017 research) and is refused, which is the point of
+  the audience check;
+- its `scope` claim (a space-separated string) is what the SDK enforces `required_scopes` against.
 
-## What a token must be
-
-  * signed by a key in the authorization server's JWKS, with an algorithm from a short allow-list (RS256). The algorithm is
-    taken from the allow-list, never from what the token's own header asks for: a header of `none`, or an HS256 token "signed"
-    with the public key as the secret, is refused before any key is used.
-  * `iss` equal to the configured issuer, `aud` containing THIS server's resource URI, `exp` and `sub` present and `exp` in the
-    future (a few seconds of clock skew allowed). A token minted without a `resource` parameter has the client id as its audience
-    (measured on Casdoor 4.24, specs/017 research) and is refused here: that is the point of the audience check.
-  * its `scope` claim (a space-separated string) is what `required_scopes` is later enforced against by the SDK.
-
-## Signing keys
-
-`JwksCache` fetches the JWKS over HTTP with the event loop's own client (no thread), keeps it for `ttl_seconds`, and refreshes on a
-`kid` it does not hold, which is how a rotated key is picked up. A caller must not be able to turn that into a way to make the
-gateway hammer the authorization server, so a refresh is attempted at most once per `min_refresh_seconds` however many tokens
-with unknown `kid`s arrive. Keys older than the TTL are not trusted: if they cannot be refreshed the token is refused and the
-reason is `jwks_unavailable` (a gap: to the client that looks like an expired login, not an outage; the metric says which).
+Signing keys: `JwksCache` fetches the JWKS with the event loop's own client, keeps it for `ttl_seconds`, and
+refreshes on an unknown `kid` (how a rotated key is picked up), at most once per `min_refresh_seconds` so
+made-up `kid`s can't make the gateway hammer the authorization server. Keys older than the TTL are not
+trusted: if they can't be refreshed the token is refused with reason `jwks_unavailable` (a gap: to the client
+that looks like an expired login, not an outage; the metric says which).
 """
 import asyncio
 import json

@@ -1,48 +1,37 @@
-"""Fixtures for tests/live/: the tests that need a real, small Ollama model (`@pytest.mark.llm`,
-`@pytest.mark.e2e`; GRAPH_PATTERNS.md pattern 48 has the full design). Three session fixtures, with
-deliberately different weights:
+"""Fixtures for tests/live/: tests that need a real, small Ollama model (`@pytest.mark.llm`, `@pytest.mark.e2e`;
+design in GRAPH_PATTERNS.md pattern 48). Three session fixtures of deliberately different weight:
 
-`ollama_endpoint`: just `tests/containers.py::ensure_ollama()`, which pulls a real CHAT model and a real
-embedding model (`nomic-embed-text`, this app's `EMBED_MODEL` default) into one shared container. Used by:
-- test_agent_tool_calling.py, which drives `app.agent.graph.core.build_graph()` in-process with a real
-  `ChatOpenAI` pointed at this endpoint and every OTHER dependency mocked the way tests/conftest.py's autouse
-  fixtures do for the rest of the suite. No retrieval/cache/checkpoint claim is tested, only "does the real
-  model's native tool-calling integrate with this app's real graph code", which a scripted
+`ollama_endpoint`: `tests/containers.py::ensure_ollama()`, which pulls a real CHAT model and a real embedding
+model (`nomic-embed-text`, the `EMBED_MODEL` default) into one shared container. Used by:
+- test_agent_tool_calling.py, which drives `build_graph()` in-process with a real `ChatOpenAI` against this
+  endpoint and everything else mocked as tests/conftest.py's autouse fixtures do. It tests only whether the
+  real model's native tool-calling integrates with the real graph code, which a scripted
   `GenericFakeChatModel` can't prove because it doesn't reason.
 - test_qdrant_real.py, which needs the real embedding model (`embed_text` is a network call, not local
-  fastembed; see its docstring: it began in tests/integration/, which provisions no LLM, and a CI run surfaced
-  the `openai.APIConnectionError` that proved it belonged here).
+  fastembed; it began in tests/integration/, which has no LLM, and a CI run surfaced the
+  `openai.APIConnectionError`).
 
-`crawl4ai_server`: just `tests/containers.py::ensure_crawl4ai()`, a real crawl4ai server for
-`test_domain_crawl_tools_live.py` (2026-09-17; see that helper's docstring). `test_web_crawler_live.py` shared
-this fixture but moved to `tests/integration/` the same day (`@pytest.mark.integration`, with its own copy of
-the fixture), once self-provisioning removed what made it `tests/live/`-shaped. It has no LLM/graph
-dependency, unlike `test_domain_crawl_tools_live.py`, which drives the real graph through a `human_approval`
-interrupt and stays here.
+`crawl4ai_server`: `ensure_crawl4ai()`, a real crawl4ai server for `test_domain_crawl_tools_live.py`.
+`test_web_crawler_live.py` moved to `tests/integration/` (with its own copy) once self-provisioning removed
+what made it live-shaped; it has no LLM/graph dependency, unlike this one, which drives the real graph through
+a `human_approval` interrupt.
 
 `real_stack`: the full backing stack (Postgres + Redis + Qdrant + Ollama) PLUS a real `uvicorn
-app.api.main:app` and one real `python -m app.job_queue.agent_worker`, started as OS subprocesses. Only
-test_chat_ui.py's Playwright test uses it, because it needs a running HTTP server: the built-in web UI
-(app/api/static/index.html) calls `POST /chat/stream/queued` and `POST /chat/resume` (its
-`send()`/`resume()`), which work end to end only through the real Redis queue and a real agent-worker, not
-in-process.
+app.api.main:app` and one real `python -m app.job_queue.agent_worker` as subprocesses. Only test_chat_ui.py's
+Playwright test uses it: the web UI calls `POST /chat/stream/queued` and `/chat/resume`, which work end to end
+only through the real Redis queue and a real worker.
 
-The CONTAINERS from `ensure_*()` are expensive (a model pull, seconds of boot) and worth sharing across every
-xdist worker (see tests/containers.py's docstring). The uvicorn/agent-worker PROCESSES are cheap (no model
-loading or migration, just an interpreter starting), so `real_stack` is deliberately NOT shared: each xdist
-worker gets its own uvicorn (on its own OS-assigned free port) and its own agent-worker, both pointed at the
-SAME shared containers. That avoids rebuilding the containers' cross-process cache/lock/teardown machinery for
-nothing; a plain `scope="session"` generator fixture is enough since no subprocess lifecycle is shared. Each
-agent-worker's `CONSUMER_NAME` is randomized per process (agent_worker.py's
-`f"{socket.gethostname()}-{uuid4().hex[:8]}"`), so N workers' agent-workers join the SAME Redis consumer group
-without colliding, which is how production scaling works (`make agent-worker`, run several times).
+The CONTAINERS are expensive (model pull, boot) and shared across xdist workers (see tests/containers.py). The
+uvicorn/worker PROCESSES are cheap, so `real_stack` is NOT shared: each xdist worker gets its own uvicorn
+(OS-assigned free port) and agent-worker against the SAME shared containers. Each worker's `CONSUMER_NAME` is
+randomized per process (`f"{socket.gethostname()}-{uuid4().hex[:8]}"`), so they join one Redis consumer group
+without colliding, as in production scaling.
 
-Every real dependency is wired purely through environment variables (`app/core/config.py`'s pydantic-settings
-fields), with no changes to app/ (GRAPH_PATTERNS.md pattern 48, design decision #4). `OPENAI_API_BASE` points
-straight at Ollama's `/v1`, bypassing the LiteLLM proxy. Verified manually before writing this: Ollama's
-OpenAI-compatible endpoint emits real native tool calls when called directly with `tools=[...]`, not the
-prompt-injected fakes that litellm-config.yaml's comment warns about for its `ollama/` (as opposed to
-`ollama_chat/`) provider. That is a LiteLLM-side translation detail, not a property of Ollama's API.
+Every dependency is wired through environment variables (`app/core/config.py` settings) with no change to app/
+(pattern 48, design decision #4). `OPENAI_API_BASE` points straight at Ollama's `/v1`, bypassing LiteLLM:
+verified that Ollama's OpenAI-compatible endpoint emits real native tool calls when given `tools=[...]`, not
+the prompt-injected fakes litellm-config.yaml warns about for its `ollama/` provider (a LiteLLM translation
+detail, not Ollama's API).
 """
 import contextlib
 import os

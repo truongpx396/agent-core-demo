@@ -1,33 +1,35 @@
-"""A Polar Checkout this app CREATED, actually PAID in a browser, and the real events it leads to (specs/010 T029b). Manual, never CI.
+"""A Polar Checkout this app CREATED, actually PAID in a browser, and the real events it leads to (specs/010
+T029b). Manual, never CI.
 
-tests/provider_sandbox/test_polar_sandbox.py proves the adapter against real Polar signatures and a real checkout API, but its purchase and refund
-events are `polar trigger` SAMPLES (a generator's payloads, signed by Polar's real delivery path), because paying a hosted Polar checkout takes a
-browser. This drives one with Playwright (already a dev dependency for the e2e tier), the Polar counterpart of test_stripe_paid_checkout.py: the
-adapter creates the session, headless Chromium pays it with Stripe's documented test card, Polar delivers the real `order.paid`, and the order
-is refunded through Polar's API.
+test_polar_sandbox.py proves the adapter against real signatures and a real checkout API, but its purchase and
+refund events are `polar trigger` SAMPLES, because paying a hosted checkout takes a browser. This drives one
+with Playwright (a dev dependency of the e2e tier), the Polar counterpart of test_stripe_paid_checkout.py: the
+adapter creates the session, headless Chromium pays it with Stripe's test card, Polar delivers the real
+`order.paid`, and the order is refunded through Polar's API.
 
-What this closes, that nothing else could show:
-  * the order a buyer ACTUALLY paid is a `CREDITS_PURCHASED` for the customer the adapter was told to bill, for the product the adapter put in
-    the session, and its `payment_ref` is the order id the API reports (a sample's ids are random, so none of this was ever checked);
-  * the order's `checkout_id` is the session THIS APP made, and the whole real lifecycle (every checkout, customer, order and refund delivery
-    the purchase and its refund produced) grants exactly once and reverses exactly once: `order.created` and `order.updated` of the very same purchase carry
-    `billing_reason: purchase` too and must stay ignored;
-  * the real full refund names the same order, and a second `create_checkout` for the same attempt AFTER it was paid returns the paid
-    session instead of a second checkout (the adapter's "already paid is returned" rule, never run against a paid session before);
-  * the buyer's typed name, billing address and email never reach the stored form of the event (a sample's buyer is a random fake).
+What this shows that nothing else could:
+- the paid order is a `CREDITS_PURCHASED` for the customer the adapter was told to bill and the product it put
+  in the session, with `payment_ref` the order id the API reports (a sample's ids are random);
+- the order's `checkout_id` is this app's session, and the whole lifecycle grants exactly once and reverses
+  exactly once (`order.created` and `order.updated` also carry `billing_reason: purchase` and must stay
+  ignored);
+- the real full refund names the same order, and a second `create_checkout` for the same attempt AFTER payment
+  returns the paid session instead of a second checkout;
+- the buyer's name, billing address and email never reach the stored event.
 
-Facts only a real payment showed: Polar's hosted page needs a billing address for a US buyer (street, postal code, city, state) and the card
-number, expiry and CVC live in ONE Stripe Elements iframe; after paying, Polar redirects to the success URL with a `customer_session_token`
-appended (a bearer credential for the buyer's portal, so this file never prints the URL).
+Facts only a real payment showed: the hosted page needs a billing address for a US buyer, and card number,
+expiry and CVC live in ONE Stripe Elements iframe. After paying, Polar redirects to the success URL with a
+`customer_session_token` (a bearer credential for the buyer's portal), so this file never prints the URL.
 
-What it does NOT do: it depends on the markup of Polar's hosted page (the Payment Element iframe's title, its `number`/`expiry`/`cvc` inputs,
-the `billing-country` and `billing-state` test ids, the `customer_billing_address.*` field names and the "Pay now" button), so a redesign can
-break it without the adapter being wrong. It skips when Playwright or its Chromium is not installed. Each run leaves one refunded order in
-the sandbox (an order cannot be deleted); the product is archived and the customer deletion is attempted.
+It depends on the markup of Polar's hosted page (the iframe title, `number`/`expiry`/`cvc` inputs,
+`billing-country`/`billing-state` test ids, `customer_billing_address.*` names, the "Pay now" button), so a
+redesign can break it without the adapter being wrong. It skips without Playwright or its Chromium. Each run
+leaves one refunded order in the sandbox (orders can't be deleted); the product is archived and customer
+deletion is attempted.
 
-Run it sparingly, never in a loop: Polar rate-limits the sandbox (100 requests a minute is documented; the hosted page makes calls of its own,
-not measured here), and a token that ran sixteen of these in about 80 minutes was locked out for an hour (`Retry-After: 3570`). The helper then
-says so (`HTTP 429, the sandbox rate limit; retry after N s`) and the run must not be repeated until then.
+Run it sparingly, never in a loop: Polar rate-limits the sandbox (documented 100 requests a minute), and a
+token that ran sixteen of these in about 80 minutes was locked out for an hour (`Retry-After: 3570`). The
+helper then reports `HTTP 429, the sandbox rate limit; retry after N s`; do not repeat the run until then.
 """
 import asyncio
 import os

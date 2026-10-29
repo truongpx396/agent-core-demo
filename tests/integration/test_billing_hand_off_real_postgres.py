@@ -1,14 +1,13 @@
-"""The agent's meter and billing, end to end against a REAL Postgres (app/agent/cost/usage_events.py -> app/billing_integration/port.py -> the billing
-package; postgres-init/19, 20, 24, 25; specs/013-billing-owns-the-meter).
-
-What billing DOES with a recorded usage (rating, the atomic debit, the savepoints, the export row, the schema's guards) is proven against a real
-Postgres by the package's own tests (packages/billing/tests/integration/). What only this file can show is the SEAM, whole:
-
-  * the agent's own event and billing's record and debit commit as ONE transaction, so a replayed model call is one of each;
-  * the agent's table carries no billing column on a fresh database;
-  * a billing fault never costs the agent its own event, and a billing that is off writes nothing of its own;
-  * the credit gate reads the real wallet and the real in-flight holds: a tenant with no credits is refused, and a grant lets the next turn
-    through (US3's independent test), and a call the meter charged is what runs it out.
+"""The agent's meter and billing, end to end against a REAL Postgres (app/agent/cost/usage_events.py ->
+app/billing_integration/port.py -> the billing package; postgres-init/19, 20, 24, 25; specs/013). What billing
+DOES with a recorded usage (rating, atomic debit, savepoints, export row, schema guards) is proven by the
+package's own tests (packages/billing/tests/integration/). Only this file shows the SEAM, whole:
+- the agent's event and billing's record and debit commit as ONE transaction, so a replayed model call is one
+  of each;
+- the agent's table has no billing column on a fresh database;
+- a billing fault never costs the agent its own event, and billing being off writes nothing of its own;
+- the credit gate reads the real wallet and in-flight holds: a tenant with no credits is refused, a grant lets
+  the next turn through (US3's independent test), and a call the meter charged is what runs it out.
 
 Each test uses its own tenant: the container is shared across tests and xdist workers.
 """

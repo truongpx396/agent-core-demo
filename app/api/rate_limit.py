@@ -1,16 +1,19 @@
-"""Per-source-address rate limiting for the payment-provider webhook route, the one limit the API still enforces itself.
+"""Per-source-address rate limiting for the payment-provider webhook route, the one limit the API still enforces
+itself.
 
-This module used to hold a second limiter, a moving window per TENANT on the turn-creating endpoints (`RATE_LIMIT_PER_MINUTE`, 30). That one is gone
-(spec 018): the limit on how fast a tenant or a person may start turns is enforced at the front door by the authlimit service, before a request reaches
-this process, from a tenant and a person it has just verified, as a token bucket (a burst, then a steady rate) in a Redis it shares with no one's
-queue. Keeping the old one would have been a second policy point: two numbers to tune, the stricter silently winning, and a counter keyed on the
-`X-Tenant-Id` HEADER, which in identity mode is not an input the API trusts at all. Nothing here limits turns any more, and a test says so.
+The per-TENANT moving window on turn-creating endpoints (`RATE_LIMIT_PER_MINUTE`, 30) is gone (spec 018): how
+fast a tenant or person may start turns is enforced at the front door by the authlimit service, from a tenant
+and person it has just verified, as a token bucket in a Redis it shares with no queue. Keeping the old one
+would be a second policy point (two numbers to tune, the stricter silently winning, a counter keyed on the
+`X-Tenant-Id` HEADER that identity mode doesn't trust). Nothing here limits turns any more, and a test says
+so.
 
-What stays has a reason the front door cannot cover. The webhook has no tenant and no token (the caller is a payment provider, authenticated by its
-signature), and Caddy lets that route through un-checked, so a stranger's flood of forged requests is bounded here, per source address, before the
-app computes a MAC for each. It is a plain Starlette middleware over the `limits` library (the one slowapi wraps), not slowapi's decorator, which
-would make every route take a `request` parameter just for the decorator; Redis-backed, so a second `uvicorn` process shares the count (pattern 43);
-and it fails OPEN if Redis is unreachable, the same degrade-don't-crash posture as semantic_cache.py and app/core/moderation.py.
+What stays, the front door can't cover: the webhook has no tenant and no token (a provider authenticated by
+signature) and Caddy lets it through unchecked, so a flood of forged requests is bounded here per source
+address before the app computes a MAC for each. It is a plain Starlette middleware over the `limits` library
+(what slowapi wraps; slowapi's decorator would make every route take a `request` parameter), Redis-backed so a
+second `uvicorn` shares the count (pattern 43), and fails OPEN if Redis is unreachable, like semantic_cache.py
+and app/core/moderation.py.
 """
 import logging
 

@@ -1,33 +1,27 @@
 """Exactly-once guard for every "mutating"/"outward" tool (TOOL_CAPABILITIES, app/agent/tools/builtin.py). It
-closes the gap `app/job_queue/agent_worker.py`'s reclaim loop left open: a reclaimed `"resume"` job re-invokes
-whichever tool calls were pending at its `human_approval` pause under the SAME `tool_call_id`s (the pause
-happens before those calls run, and `Command(resume=...)` continues that exact checkpointed state). Without
-this, retrying one risked re-sending an email, re-creating a ticket, or repeating any other already-applied
-side effect.
+closes the gap agent_worker.py's reclaim loop left: a reclaimed `"resume"` job re-invokes the tool calls
+pending at its `human_approval` pause under the SAME `tool_call_id`s (the pause is before they run, and
+`Command(resume=...)` continues that exact state). Without this, a retry risked re-sending an email or
+re-creating a ticket.
 
-Persisted in the same `appdata` Postgres database as core/sql_store.py (`tool_call_dedup`,
-postgres-init/13-tool-call-dedup.sql), keyed by `tool_call_id` alone: the LLM provider assigns a fresh one per
-tool call it decides to make, so two invocations sharing an id are, by construction, the SAME logical
-invocation attempted again, never two intended actions colliding.
+Persisted in the `appdata` Postgres (`tool_call_dedup`, postgres-init/13-tool-call-dedup.sql), keyed by
+`tool_call_id` alone: the provider assigns a fresh one per tool call, so two invocations sharing an id are, by
+construction, the SAME invocation attempted again.
 
 Scope, deliberately narrow: this makes ONE invocation exactly-once. It does NOT make a whole crashed "turn"
-safe to retry through a fresh `astream_events_turn`, which re-asks the LLM and gets brand-new tool_call_ids
-that dedup here can't connect to the crashed attempt. `agent_worker.py` instead reclaims a crashed "turn" by
-CONTINUING its checkpointed run (`astream_events_continue_turn`, `graph.astream_events(None, ...)`), the same
-reasoning generalized from "resume" to any crashed turn (see `_classify_reclaimed_turn` and
-`astream_events_continue_turn`).
+safe to retry through a fresh `astream_events_turn`, which re-asks the LLM and gets new ids this can't connect
+to the crashed attempt. agent_worker.py instead reclaims a crashed turn by CONTINUING its checkpointed run
+(`astream_events_continue_turn`; see `_classify_reclaimed_turn`).
 
-Fails OPEN on its own storage failure, with the same posture and reason as `app/agent/cost/budget_holds.py`
-and `app/agent/runtime/sessions.py` (see tests/conftest.py's `mock_appdata_postgres`): a dedup-store outage
-must degrade to "run the tool, unprotected" rather than block every mutating/outward tool call. This is
-defense in depth for a rare compounding failure (a crash-recovery retry landing exactly while the dedup store
-is also down), never a precondition for a tool call.
+Fails OPEN on its own storage failure, with the same posture as `app/agent/cost/budget_holds.py` and
+`app/agent/runtime/sessions.py` (see `mock_appdata_postgres` in tests/conftest.py): a dedup-store outage must
+degrade to "run the tool, unprotected" rather than block every mutating tool. It is defense in depth for a
+rare compound failure, not a precondition.
 
-A second, DIFFERENT gap that keying on `tool_call_id` can't close: `fn()`'s soft timeout (`arun_with_timeout`)
-firing AFTER its write already committed on the far side but before this module's closing `UPDATE`. The retry
-arrives under a BRAND NEW tool_call_id (a fresh LLM decision) that no id-keyed defense can recognize as "the
-same one again"; `MutatingToolTimedOut` handles it by steering the agent to verify, not by deduplicating after
-the fact.
+A different gap that keying on `tool_call_id` can't close: `fn()`'s soft timeout (`arun_with_timeout`) firing
+AFTER its write committed remotely but before this module's closing `UPDATE`. The retry arrives under a NEW
+tool_call_id (a fresh LLM decision) that no id-keyed defense recognises. `MutatingToolTimedOut` handles it by
+steering the agent to verify, not by deduplicating.
 """
 import logging
 from collections.abc import Awaitable, Callable

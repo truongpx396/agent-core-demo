@@ -1,28 +1,27 @@
 """The credit gate: may this tenant start another unit of work on its prepaid balance? (specs/010 T016, moved
 here by specs/013.)
 
-It lived in the agent app's `app/agent/cost/budgets.py` beside the dollar caps, with the rate, markup and
-failure policy passed in. It is the package's now, because every part of it is billing: whether to enforce,
-what a credit is worth, what to do when the wallet can't be read. A host asks one question, `admit(tenant,
+It lived in `app/agent/cost/budgets.py` with the rate, markup and failure policy passed in; it is the
+package's now, because every part of it is billing. A host asks one question, `admit(tenant,
 reserved_usd=...)`, and maps the answer onto its own refusal.
 
 A tenant that HAS a wallet (a `credit_accounts` row) is refused (`exhausted`) once its available credits minus
-the caller's in-flight holds are not positive. A tenant with no wallet is never gated, so shipping this
-changes nothing until an operator, or a verified purchase, opens one.
+the caller's in-flight holds are not positive. A tenant with no wallet is never gated, so this changes nothing
+until an operator, or a verified purchase, opens one.
 
-- **Holds are in credits.** The caller reserves dollars while a unit of work runs (the agent:
-  `MAX_COST_USD_PER_TURN` per running turn) and the gate converts them at the configured rate, so a tenant
-  with 100 credits can't start a second concurrent turn that may spend 500. The first is checked against the
-  balance alone, so it can overdraw by at most what it spends; the wallet books that as debt
-  (`credits.debit_in`) and the next grant repays it. `reserved_usd` is a callable awaited only for a tenant
-  that has a wallet, so a deployment where most tenants have none pays for no hold read.
-- **Off means untouched.** With `CREDITS_ENFORCEMENT` off nothing is read, neither the wallet nor the holds.
-  Shadow mode (a rate set, enforcement off) still debits, in `usage.py`; it just doesn't refuse.
-- **A wallet that can't be read** follows `CREDIT_CHECK_FAILURE_POLICY`, separate from any spend read the host
-  does because the two fail separately. "open" serves the caller (`degraded`) and counts it
-  (`agent_cost_governance_degraded_total{path="credit_read"}`, alert `CreditGateUnenforced`); "closed" refuses
-  (`unavailable`), blaming no one's balance. The hold read is the caller's and is expected to degrade to 0 on
-  its own failure.
+- **Holds are in credits.** The caller reserves dollars while work runs (the agent: `MAX_COST_USD_PER_TURN`
+  per running turn) and the gate converts them at the configured rate, so a tenant with 100 credits can't
+  start a second concurrent turn that may spend 500. The first is checked against the balance alone and can
+  overdraw by at most what it spends; the wallet books that as debt (`credits.debit_in`) and the next grant
+  repays it. `reserved_usd` is a callable awaited only for a tenant with a wallet, so most-tenants-have-none
+  deployments pay for no hold read.
+- **Off means untouched.** With `CREDITS_ENFORCEMENT` off nothing is read. Shadow mode (a rate set,
+  enforcement off) still debits, in `usage.py`, but doesn't refuse.
+- **An unreadable wallet** follows `CREDIT_CHECK_FAILURE_POLICY`, separate from the host's spend-read policy
+  because the two fail separately. "open" serves the caller (`degraded`) and counts
+  `agent_cost_governance_degraded_total{path="credit_read"}` (alert `CreditGateUnenforced`); "closed" refuses
+  (`unavailable`), blaming no one's balance. The hold read is the caller's and degrades to 0 on its own
+  failure.
 
 Imports nothing from `app` (enforced by tests/test_boundary.py).
 """

@@ -1,35 +1,29 @@
 """Where the billing core gets a database connection (specs/011-billing-module-boundary,
 contracts/billing-core-boundary.md).
 
-The core used to `from app.agent.sql_store import get_connection` (now `app.core.sql_store`), tying it to the
-agent's pool: copying `packages/billing/src/credit_billing/` into another project failed to import. It now
-asks this module, and the host (or a future service, or a test) says where connections come from with
-`configure(...)`. The core never opens a pool, never holds a connection string and never falls back to a
-default.
+The core used to import the agent's pool (`app.core.sql_store.get_connection`), so copying `credit_billing/`
+into another project failed to import. Now the host (or a service, or a test) says where connections come from
+with `configure(...)`. The core never opens a pool, holds a connection string or falls back to a default.
 
-**The provider owns the transaction.** A provider must behave like `app.core.sql_store.get_connection`: one
-`async with` is one transaction, committed on a clean exit and rolled back when the block raises. This is an
-invariant, not a convention: every single-statement writer in the core relies on the commit, and the webhook
-handler gets "applied and marked applied" atomically from one block. `get_connection()` below delegates with
-`async with provider() as conn: yield conn`, so an exception in the caller's block is thrown into the
-provider's `async with` and reaches its rollback (tests/billing/test_billing_core_boundary.py proves it, and
-proves a clean exit doesn't look like one).
+**The provider owns the transaction.** It must behave like `app.core.sql_store.get_connection`: one `async
+with` is one transaction, committed on a clean exit and rolled back when the block raises. This is an
+invariant: every single-statement writer relies on the commit, and the webhook handler gets "applied and
+marked applied" atomically from one block. `get_connection()` delegates with `async with provider() as conn:
+yield conn`, so an exception in the caller's block reaches the provider's rollback
+(tests/billing/test_billing_core_boundary.py proves it, and that a clean exit doesn't look like one).
 
-**Unset means refused** (constitution I: unknown resolves to refusal). A process that reaches the core unwired
-gets `BillingNotConfigured`, never a connection to a database it wasn't told about. In the agent app the
-wiring is `app/billing_integration/__init__.py`, which every host module importing `credit_billing` also
-imports (a scan enforces it), so no entry point can reach the core unwired. A caller that swallows the error
-degrades through the same counted path as any other wallet fault (`_charge` into `credit_debit`, the gate into
-`credit_read`), so an unwired process is loud in the alerts, not silent.
+**Unset means refused** (constitution I). A process reaching the core unwired gets `BillingNotConfigured`,
+never a connection to a database it wasn't told about. In the app the wiring is
+`app/billing_integration/__init__.py`, which every host module importing `credit_billing` also imports (a scan
+enforces it). A caller that swallows the error degrades through the same counted path as any wallet fault
+(`_charge` into `credit_debit`, the gate into `credit_read`), so an unwired process is loud in the alerts.
 
-**The name is the contract with the tests.** Core modules do `from credit_billing.db import get_connection`
-and keep that module-level name, so `monkeypatch.setattr(credits, "get_connection", fake)` (the hermetic
-suite's guard and the real-Postgres tests) works as it always did.
+**The name is the contract with the tests.** Core modules do `from credit_billing.db import get_connection`,
+so `monkeypatch.setattr(credits, "get_connection", fake)` works as before.
 
-Rules the `*_in(conn, ...)` functions follow and must keep: they never commit and never begin an outermost
-transaction on a connection they were handed (they use savepoints), and the core never checks out a second
-connection while holding one (the pool is finite, and two checkouts in one task is how a pool deadlocks
-itself).
+Rules the `*_in(conn, ...)` functions keep: they never commit and never begin an outermost transaction on a
+connection they were handed (they use savepoints), and the core never checks out a second connection while
+holding one (the pool is finite; two checkouts in one task is how a pool deadlocks itself).
 
 Imports nothing from `app` (enforced by tests/billing/test_billing_core_boundary.py).
 """

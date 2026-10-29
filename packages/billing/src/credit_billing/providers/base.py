@@ -1,22 +1,17 @@
-"""The billing-provider port (specs/010-credit-billing-readiness/contracts/billing-provider-port.md).
+"""The billing-provider port (specs/010-credit-billing-readiness/contracts/billing-provider-port.md). A provider
+(Stripe, Polar, PayPal, a metering product) is one adapter module implementing `BillingProvider`; the wallet,
+inbox, catalog and gating are provider-agnostic and don't change when one is added (SC-004). An adapter holds
+NO business rules: it translates wire formats.
 
-A provider (Stripe, Polar, PayPal, or a metering product) is one adapter module that implements
-`BillingProvider`. Everything else (the wallet, the inbox, the catalog, gating) is provider-agnostic and does
-not change when an adapter is added (SC-004). An adapter holds NO business rules: it translates wire formats.
+It must not name a tenant. `BillingEvent` has no `tenant` field on purpose: a webhook reaches a tenant only
+through `billing_customers`, a link the app wrote, looked up by `customer_ref`, so a payload claiming
+`"tenant": "someone-else"` has nowhere to put it (stronger than a rule to ignore the field). Nor may it carry
+an amount that decides credits: `amount_minor` is informational and what a purchase is worth comes from the
+server-side catalog (FR-015).
 
-## What an adapter must never do
-
-It must not name a tenant. `BillingEvent` has no `tenant` field on purpose: the only way a webhook reaches a
-tenant is `billing_customers`, a link the app wrote itself, looked up by `customer_ref`. A payload that
-claims a tenant ("tenant": "someone-else") therefore has nowhere to put it, which is a stronger guarantee than a
-rule saying "ignore that field". It must not carry an amount that decides credits either: `amount_minor` is
-informational, and what a purchase is worth is read from the server-side catalog (FR-015).
-
-## Capabilities
-
-Providers differ in shape: Stripe and Polar can take usage events, PayPal as far as found can only sell a
-credit pack. `capabilities` says which optional methods exist, so one wallet serves all of them. An adapter
-that declares no capability is a webhook-only provider, which is a complete, legal adapter.
+`capabilities` says which optional methods exist, so one wallet serves providers that differ (Stripe and Polar
+can take usage events; PayPal, as far as found, only sells a credit pack). An adapter declaring none is a
+webhook-only provider, a complete and legal adapter.
 """
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field

@@ -1,14 +1,14 @@
-"""Datasets: the frozen, versioned inputs every comparison stands on (specs/014 FR-009, FR-010, FR-011, data-model.md sections 2-3).
-
-A benchmark is only as trustworthy as the discipline around its data, so the rules here are refusals, each from a way an evaluation lies:
-  * Every file's sha256 is recomputed on load and a mismatch STOPS the run. A dataset that changed under the same name would silently
-    invalidate every baseline recorded on it.
-  * `dev` (for tuning) and `test` (for reporting) are disjoint by id AND by near-duplicate text (normalised-token Jaccard >= 0.9). A
-    question that leaks across the split makes a model look better than it is.
-  * `reviewed_share` is COMPUTED from the items, never typed: a person flips `reviewed`, nobody asserts it for them.
-  * A public dataset is pinned by commit and per-file hash, carries a licence from a small allow-list, and is never redistributed (the
-    cache is untracked). The repository's own datasets contain no tenant data (FR-039).
-  * Nothing here opens the network except `fetch_public`, and that has a per-request timeout, bounded retries and a total deadline.
+"""Datasets: the frozen, versioned inputs every comparison stands on (specs/014 FR-009, FR-010, FR-011,
+data-model.md sections 2-3). The rules are refusals, each from a way an evaluation lies:
+- Every file's sha256 is recomputed on load and a mismatch STOPS the run: a dataset changed under the same
+  name would silently invalidate every baseline on it.
+- `dev` (tuning) and `test` (reporting) are disjoint by id AND by near-duplicate text (normalised-token
+  Jaccard >= 0.9); a leaked question flatters a model.
+- `reviewed_share` is COMPUTED from the items, never typed: a person flips `reviewed`, nobody asserts it for
+  them.
+- A public dataset is pinned by commit and per-file hash, carries a licence from a small allow-list, and is
+  never redistributed (the cache is untracked). The repo's own datasets hold no tenant data (FR-039).
+- Only `fetch_public` opens the network, with a per-request timeout, bounded retries and a total deadline.
 """
 import csv
 import hashlib

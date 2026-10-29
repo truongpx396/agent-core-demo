@@ -1,53 +1,43 @@
-"""Applies the package's shipped schema scripts to a database that already exists, and records that it did
+"""Applies the package's shipped schema scripts to an existing database and records that it did
 (specs/012-billing-migrate-idempotency).
 
-Before this, the schema could only be applied by `psql`, once: on a fresh volume by the container's init, or
-by an operator by hand. Nothing recorded what had been applied, nothing could answer "is this database
-current?", and two deploys starting together could collide. A service that owns its schema and runs against a
-database that already holds money needs all three.
+The schema could only be applied by `psql`, once (a fresh volume's init, or an operator by hand): nothing
+recorded what ran, nothing could answer "is this database current?", and two deploys starting together could
+collide. A service that owns its schema and runs against a database holding money needs all three.
 
 ## The model: repeatable scripts
 
-The two shipped scripts are idempotent (`CREATE ... IF NOT EXISTS`, `CREATE OR REPLACE`) and edited in place
-when the schema evolves. That is Flyway's *repeatable migration*: applied when never applied, and again
-whenever its checksum changes, with the author keeping it safe to apply any number of times. A shipped script
-is therefore `pending` (never recorded), `applied` (recorded with this checksum) or `changed` (recorded with
-another). A recorded script this package doesn't ship is `unknown`: a newer version ran here, so it is
-reported and left alone and never fails a check, so a rollback to an older package isn't blocked by a newer
-one's records. Immutable, numbered, one-way migrations are the next step for a change that can't be written
-idempotently or needs a data backfill; they aren't built, and the record table doesn't preclude them.
+The shipped scripts are idempotent (`CREATE ... IF NOT EXISTS`, `CREATE OR REPLACE`) and edited in place as
+the schema evolves: Flyway's *repeatable migration*, applied when never applied and again whenever the
+checksum changes. A script is `pending` (never recorded), `applied` (recorded with this checksum) or `changed`
+(recorded with another). A recorded script this package doesn't ship is `unknown`: a newer version ran here,
+so it is reported, left alone and never fails a check (a rollback to an older package isn't blocked).
+Immutable numbered migrations are the next step for a change that can't be idempotent or needs a backfill; not
+built, and the record table doesn't preclude them.
 
-**Adopting a database the host initialised** needs no special case. The init scripts created the schema and
-recorded nothing, so every script is `pending`; applying an idempotent script to a database that already has
-it changes no row, and then it is recorded.
+Adopting a database the host initialised needs no special case: the init scripts recorded nothing, so every
+script is `pending`, applying one to a database that has it changes no row, and then it is recorded.
 
-## The order inside one script's transaction (each step is there because of a failure)
+## The order inside one script's transaction (each step answers a failure)
 
-1. `SET LOCAL lock_timeout` bounds every wait below, the advisory lock included (verified on PostgreSQL 16;
-   the documentation is silent on the advisory case). A wait ending by timeout is a clean rollback; one ending
-   by the deadlock detector picks a victim among unrelated sessions (the repo's pattern 60).
-2. `pg_advisory_xact_lock(k1, k2)`, BEFORE anything else. `CREATE TABLE IF NOT EXISTS` is not a concurrency
-   guard: eight connections creating one table at once failed 216 times in 40 rounds (`DuplicateTable`,
-   `DuplicateObject`, `UniqueViolation`). The lock covers the record table AND the scripts, which are full of
-   `CREATE TABLE IF NOT EXISTS`. The two-integer form is a separate key space from the single-bigint form the
-   wallet uses per tenant (`pg_advisory_xact_lock(hashtextextended(tenant, 0))`), so no tenant name can
-   collide with it. It is transaction-level, so a killed process or dropped connection can't leave it held.
+1. `SET LOCAL lock_timeout` bounds every wait below, the advisory lock included. A timeout is a clean
+   rollback; the deadlock detector would pick a victim among unrelated sessions (the repo's pattern 60).
+2. `pg_advisory_xact_lock(k1, k2)` BEFORE anything else: `CREATE TABLE IF NOT EXISTS` is not a concurrency
+   guard (eight connections creating one table failed 216 times in 40 rounds). The two-integer form is a
+   separate key space from the wallet's single-bigint per-tenant lock, so no tenant name can collide, and
+   being transaction-level a killed process can't leave it held.
 3. The record table, `CREATE TABLE IF NOT EXISTS`, inside the lock.
-4. The check, inside the lock: a runner that waited for another finds the script already recorded with this
-   checksum and skips it.
-5. The script, as one multi-statement string (no parameters, so the driver uses the simple-query protocol).
+4. The check, inside the lock: a runner that waited finds the script already recorded with this checksum and
+   skips it.
+5. The script, as one multi-statement string (no parameters, so the simple-query protocol).
 6. The record, `INSERT ... ON CONFLICT (script) DO UPDATE`.
 
-One transaction per script means a script and its record commit together or not at all (PostgreSQL has
-transactional DDL), a failed script leaves nothing half-applied, and earlier scripts stay recorded. The
-transaction is the connection provider's (`credit_billing.db`: one `async with` is one transaction), which is
-why every error below is raised from INSIDE the block.
+One transaction per script (PostgreSQL has transactional DDL) means a script and its record commit together or
+not at all and earlier scripts stay recorded. The transaction is the connection provider's
+(`credit_billing.db`: one `async with` is one transaction), so every error is raised from INSIDE the block.
 
-## What it does not do
-
-No downgrade, no dry run beyond `status()`, no detection of a database altered by hand (a checksum is about
-the script, not the live schema). It never runs by itself: not on import, not on application start. It never
-opens a pool or holds a connection string.
+Not done: downgrades, a dry run beyond `status()`, detecting a database altered by hand (a checksum covers the
+script, not the live schema). It never runs by itself, never opens a pool and never holds a connection string.
 
 Imports nothing from `app` (enforced by tests/test_boundary.py and the host's
 tests/billing/test_billing_core_boundary.py).

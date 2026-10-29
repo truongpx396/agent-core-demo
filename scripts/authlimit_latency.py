@@ -1,17 +1,18 @@
-"""How much time does the front door's check add to a request? `python -m scripts.authlimit_latency` (specs/018, SC-008).
+"""How much time does the front door's check add to a request? `python -m scripts.authlimit_latency` (specs/018,
+SC-008).
 
-The comparison is built to isolate the check and nothing else: the same client, the same TLS connection, the same Caddy and the same stub
-upstream, alternating one request to a CHECKED route (Caddy asks authlimit first) with one to a PUBLIC route (Caddy goes straight to the
-upstream). Alternating keeps the two samples under the same load, temperature and garbage-collection weather; the difference is the
-`forward_auth` hop plus authlimit's work (verify the token, look up revocation, charge the buckets, sign an identity).
+The comparison isolates the check: the same client, TLS connection, Caddy and stub upstream, alternating one
+request to a CHECKED route (Caddy asks authlimit first) with one to a PUBLIC route (straight to the upstream).
+Alternating keeps both samples under the same load and GC weather; the difference is the `forward_auth` hop
+plus authlimit's work (verify the token, look up revocation, charge the buckets, sign an identity).
 
-The proposed targets (spec 018 SC-008) were: median added under 10 ms, 95th percentile added under 50 ms. This prints whether they were met;
-the numbers belong in specs/018-authlimit-edge-auth/research.md R6. It measures a development stack on one machine, through Docker Desktop's
-network: a floor for the cost of the design, not a production figure.
+Targets (spec 018 SC-008): median added under 10 ms, p95 under 50 ms. This prints whether they were met; the
+numbers belong in specs/018-authlimit-edge-auth/research.md R6. It measures a development stack on one machine
+through Docker Desktop's network: a floor for the design's cost, not a production figure.
 
-A route that is LIMITED (a turn) spends tokens and answers 429 once the bucket is empty, which would be measuring the refusal. Measure the
-limiter's cost with the stack in observe mode (`AUTHLIMIT_LIMIT_MODE=observe`, which still calls Redis but never refuses), or measure a
-route that is checked and never limited, the default.
+A LIMITED route (a turn) spends tokens and answers 429 once the bucket is empty, which would measure the
+refusal. Measure the limiter's cost in observe mode (`AUTHLIMIT_LIMIT_MODE=observe`: still calls Redis, never
+refuses), or use a route that is checked and never limited, the default.
 """
 import argparse
 import asyncio

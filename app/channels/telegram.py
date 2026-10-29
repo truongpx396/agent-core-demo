@@ -1,35 +1,27 @@
 """Telegram bot channel (pattern 42): a fourth interface beside the CLI, the HTTP API and the web UI. It
-long-polls Telegram's `getUpdates` (no public webhook needed) and publishes each message as an UNATTENDED turn
-onto the domain's requests stream (`app/job_queue/producer.py`, pattern 43), where an `agent_worker.py` runs
-it through `runtime/stream.py::astream_events_turn_unattended()`: a new front door onto the queue every HTTP
-turn already uses. Telegram has no token-streaming UX, so this process collects the events the worker
-publishes back into one final reply. It never runs the graph, holds no checkpointer pool, and needs `make
-up`'s Redis and a worker for its domain (`make agent-worker`, or `agent-worker-support`/`-sales`).
+long-polls `getUpdates` (no public webhook) and publishes each message as an UNATTENDED turn onto the domain's
+requests stream (`app/job_queue/producer.py`, pattern 43), where an `agent_worker.py` runs it through
+`astream_events_turn_unattended()`. Telegram has no token streaming, so this process collects the worker's
+events into one reply. It never runs the graph, holds no checkpointer pool, and needs Redis from `make up`
+plus a worker for its domain.
 
-Requires `TELEGRAM_BOT_TOKEN` (create via @BotFather); it refuses to start when unset rather than silently
-no-op, the same fail-closed discipline as SecurityCtx and moderation. It is also the ONE surface in this app
-that necessarily reaches the public internet.
+Requires `TELEGRAM_BOT_TOKEN` (from @BotFather) and refuses to start without it, the same fail-closed
+discipline as SecurityCtx and moderation. It is the ONE surface that necessarily reaches the public internet.
 
-## A generalized gateway, not an Ecorp-only one
+`AGENT_DOMAIN` (default `"ecorp"`) picks the domain whose worker pool receives messages: `AGENT_DOMAIN=support
+python -m app.channels.telegram` runs the support copilot, unmodified. Each domain is its own process with its
+own bot token (not the unbuilt "several domains from one process" registry). A WhatsApp gateway would reuse
+`handle_message`/`stream_turn()` and differ only in transport; not built, for lack of credentials to verify
+it.
 
-`AGENT_DOMAIN` (default `"ecorp"`) picks which domain's worker pool this process's messages go to:
-`AGENT_DOMAIN=support python -m app.channels.telegram` runs the support copilot, `AGENT_DOMAIN=sales` the
-sales concierge, unmodified. Each domain is still its own OS process with its own bot token; this is "which
-domain a process serves", not the "several domains from one process" registry the Roadmap lists as unbuilt.
+HITL: there is no approve/reject UX. The job carries `unattended=True`, so the worker auto-declines a
+mandatory-gate pause (up to `UNATTENDED_MAX_DECLINE_ROUNDS`, then cancels the run): a mutating request never
+becomes a silent write and never leaves the conversation paused. The user always sees a reply: the answer, an
+explicit "needs a person's approval" message, or `_NO_REPLY_FALLBACK` for a turn with no text (`_send_message`
+sends NOTHING for an empty string, which read as the bot ignoring the user).
 
-A WhatsApp gateway for the same domains would reuse `handle_message`/`stream_turn()` unchanged; only the
-transport differs (webhook-based, not long-poll). Not built: no WhatsApp Business credentials to verify it
-against.
-
-HITL: there is no interactive approve/reject UX. The job is published with `unattended=True`, so the worker's
-`astream_events_turn_unattended()` auto-declines a mandatory-capability-gate pause (repeatedly, up to
-`UNATTENDED_MAX_DECLINE_ROUNDS`, then cancels the run), so a mutating request never becomes a silent write and
-never leaves the conversation paused. The user always gets a visible reply: the model's answer, an explicit
-"needs a person's approval" message, or `_NO_REPLY_FALLBACK` if a turn produced no text (`_send_message` sends
-NOTHING for an empty string, so without that guard an empty turn read as the bot ignoring the user).
-
-Run with: `python -m app.channels.telegram` (Makefile's `telegram`/`telegram-support`/`telegram-sales`). Its
-own process, not started by `make up`/`make serve`, since it needs a real bot token.
+Run with `python -m app.channels.telegram` (Makefile `telegram`, `telegram-support`, `telegram-sales`); not
+started by `make up`/`make serve`.
 """
 import asyncio
 import logging

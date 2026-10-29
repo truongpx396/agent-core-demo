@@ -1,15 +1,13 @@
-"""Generic async micro-batching queue: the engine behind every endpoint of this service.
+"""Generic async micro-batching queue: the engine behind every endpoint of this service (the old `main.py`'s
+class, now public as `MicroBatcher`). It coalesces concurrent `submit` calls from DIFFERENT callers into
+fewer, larger ONNX forward passes instead of each paying full per-call overhead, the "adaptive batching" of
+TEI/Triton/BentoML/Ray Serve scoped to a few small CPU models.
 
-Moved verbatim from the old single-file `main.py` (the class is now public as `MicroBatcher`). It coalesces concurrent `submit` calls
-from DIFFERENT callers into fewer, larger ONNX forward passes instead of each paying full per-call overhead serially — the same
-"adaptive batching" idea TEI/Triton/BentoML/Ray Serve all offer, scoped down to what a few small models on CPU need.
-
-Why hand-rolled instead of a framework: TEI's own supported reranking architectures (CamemBERT, XLM-RoBERTa, GTE, ModernBERT) exclude
-plain BERT/MiniLM outright regardless of weight format (verified against TEI's docs), and it has no notion of a plain classification
-model like Prompt Guard. BentoML's adaptive batching only coalesces requests the framework itself dispatches over HTTP — verified in
-its source (`_bentoml_sdk/method.py::APIMethod._local_call` bypasses the batch dispatcher for any in-process self-call), which would
-force a wire-contract redesign. Ray Serve's `@serve.batch` works but pulls the whole Ray runtime, a real memory cost this deployment
-does not want. Triton's dynamic batcher expects tensor-in/tensor-out, not raw text, so both text models would need a Python backend.
+Why hand-rolled: TEI's reranking architectures (CamemBERT, XLM-RoBERTa, GTE, ModernBERT) exclude plain
+BERT/MiniLM and it has no plain classification model like Prompt Guard; BentoML's adaptive batching skips
+in-process self-calls (`_bentoml_sdk/method.py::APIMethod._local_call`), forcing a wire-contract redesign; Ray
+Serve's `@serve.batch` pulls the whole Ray runtime; Triton's dynamic batcher expects tensors, not text, so
+both text models would need a Python backend.
 """
 import asyncio
 import time

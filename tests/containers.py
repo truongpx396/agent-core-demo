@@ -1,36 +1,32 @@
 """Shared, Docker-backed real services for tests that need more than a fake:
-`tests/agent/runtime/test_durable_checkpoint.py` (real Postgres), `tests/integration/` (Postgres + Redis +
-Qdrant, no LLM) and `tests/live/` (adds a real, small Ollama model). GRAPH_PATTERNS.md pattern 48 has the
-design; this docstring covers the two mechanics every `ensure_*()` depends on.
+tests/agent/runtime/test_durable_checkpoint.py (real Postgres), tests/integration/ (Postgres + Redis + Qdrant)
+and tests/live/ (adds a small real Ollama). Design: GRAPH_PATTERNS.md pattern 48. This covers the two
+mechanics every `ensure_*()` depends on.
 
-**Skip, don't fail, when Docker isn't reachable.** Each `ensure_*()` does a real connectivity probe and
-`pytest.skip` on failure, but starts its own ephemeral container instead of probing an assumed-external one
-(no `make up`). A `pytest -q` run on a laptop with no Docker daemon stays as green and fast as ever.
+**Skip, don't fail, when Docker isn't reachable.** Each `ensure_*()` probes connectivity and `pytest.skip`s on
+failure, but starts its own ephemeral container rather than assuming an external one (no `make up`), so
+`pytest -q` on a laptop without Docker stays green and fast.
 
-**Cross-worker sharing under pytest-xdist is the whole point, and it isn't free.** `-n auto` runs each worker
-as a SEPARATE OS process, so a plain `@pytest.fixture(scope="session")` calling `SomeContainer().start()`
-would start one container PER WORKER, exactly the waste a shared Ollama endpoint avoids (Ollama's own request
-queueing is what lets many workers hit ONE warm model, cutting wall-clock time; see the Makefile's
-`test-live`). Every `ensure_*` uses a `filelock.FileLock` over a small JSON cache file: the first worker to
-grab the lock starts the container (and for Ollama pulls the model) and caches its connection info; every
-other worker, and that worker on every later test, reads the cache back.
+**Cross-worker sharing under pytest-xdist.** `-n auto` runs each worker as a SEPARATE process, so a plain
+session fixture would start one container PER WORKER, the waste a shared Ollama avoids (its request queueing
+lets many workers hit one warm model; see `test-live`). Every `ensure_*` uses a `filelock.FileLock` over a
+small JSON cache file: the first worker to take the lock starts the container (and pulls the Ollama model) and
+caches its connection info; every other worker, and that one on later tests, reads it back.
 
-The cache lives under a FIXED path (`tempfile.gettempdir()`, namespaced by a hash of this repo's root, see
-`_shared_root`), deliberately NOT pytest's per-invocation `tmp_path_factory` basetemp, though that is the
-standard xdist "run a session fixture once" recipe. Verified empirically that it doesn't fit: the recipe works
-because each worker derives the directory from a value the xdist CONTROLLER broadcast at session start, but
-nothing broadcasts it back to the controller's own `pytest_sessionfinish` at the END, and a fresh
-`TempPathFactory` built there allocates the NEXT rotating number instead of rediscovering the one workers
-used. A fixed path sidesteps that, at the cost of treating a cached entry as possibly stale (see `_acquire`'s
-validation) rather than assuming a fresh directory is empty.
+The cache lives under a FIXED path (`tempfile.gettempdir()`, namespaced by a hash of the repo root, see
+`_shared_root`), NOT pytest's `tmp_path_factory` basetemp, the usual xdist recipe. That fails here (verified):
+workers derive the directory from a value the controller broadcast at start, but nothing broadcasts it back to
+the controller's `pytest_sessionfinish`, where a fresh `TempPathFactory` allocates the NEXT rotating number
+instead of finding the workers'. A fixed path sidesteps that, at the cost of treating a cached entry as
+possibly stale (`_acquire` validates it).
 
-Given that, teardown can't be "whichever worker's fixture finishes first" (the others would be pulled out from
-under) or testcontainers' default Ryuk reaper (its session is per Python process, so the first worker to exit
-would reap containers the rest still need). Both are replaced: `TESTCONTAINERS_RYUK_DISABLED` is set before
-any container starts, and `teardown_all()`, called from `tests/conftest.py`'s `pytest_sessionfinish` and gated
-to run only once ALL workers have reported back, removes every container this run started, by id, read back
-from the cache files. A container id is process-independent (unlike the live testcontainers object, which
-exists only in the worker that started it), so teardown from the controller, which started none, works.
+Teardown can't be "whichever worker finishes first" (it would pull containers from under the others) or
+testcontainers' Ryuk reaper (its session is per Python process, so the first worker to exit would reap the
+rest's containers). So `TESTCONTAINERS_RYUK_DISABLED` is set before any container starts, and
+`teardown_all()`, called from `tests/conftest.py`'s `pytest_sessionfinish` and gated to run once ALL workers
+have reported, removes every container this run started by id, read from the cache files. A container id is
+process-independent (the live object exists only in the worker that started it), so the controller, which
+started none, can tear down.
 """
 import hashlib
 import json
@@ -302,28 +298,14 @@ def _setup_checkpointer_schema_once(checkpointer_url: str) -> None:
         async with AsyncPostgresSaver.from_conn_string(checkpointer_url) as saver:
             await saver.setup()
 
-    # A bare `asyncio.new_event_loop()` + `run_until_complete()` + `close()`,
-    # NOT `asyncio.run(_setup())` — real bug, found live (test-live CI,
-    # 2026-09-21): `asyncio.run()`/`asyncio.Runner` calls
-    # `asyncio.set_event_loop(...)` on entry and `asyncio.set_event_loop(None)`
-    # on exit (verified against CPython's own asyncio/runners.py) — a
-    # THREAD-GLOBAL mutation, not scoped to this call. This function runs
-    # inside `ensure_postgres`, a plain sync fixture shared by every
-    # `tests/live/` file (sync e2e tests AND `async def` pytest-asyncio
-    # tests alike) under `-n auto` — whichever xdist WORKER happens to win
-    # the cross-worker cache-miss race for Postgres executes this exactly
-    # once, and a plain `asyncio.run()` there left that worker's
-    # thread-global event-loop registry cleared out from under
-    # pytest-asyncio's own scoped Runner, surfacing on every SUBSEQUENT
-    # unrelated async test scheduled onto that same worker as `RuntimeError:
-    # Runner.run() cannot be called from a running event loop` — 4 tests in
-    # completely different files (test_qdrant_real.py,
-    # test_prompt_injection_via_retrieval.py,
-    # test_domain_crawl_tools_live.py) failed identically this way in one
-    # real run, none of them actually broken. A throwaway loop that never
-    # registers itself as the thread's current loop sidesteps this
-    # entirely — `_setup()`'s own body only needs a loop to run ON, never
-    # `asyncio.get_event_loop()`'s global registry.
+    # A bare `asyncio.new_event_loop()` + `run_until_complete()` + `close()`, NOT `asyncio.run(_setup())`.
+    # Real bug (test-live CI, 2026-09-21): `asyncio.run()` calls `set_event_loop(...)` on entry and
+    # `set_event_loop(None)` on exit, a THREAD-GLOBAL mutation. This runs inside `ensure_postgres`, a sync
+    # fixture shared by every `tests/live/` file, and whichever xdist worker wins the cache-miss race runs it
+    # once; `asyncio.run()` there cleared that worker's event-loop registry from under pytest-asyncio's
+    # Runner, so every later async test on that worker failed with `RuntimeError: Runner.run() cannot be
+    # called from a running event loop` (4 unrelated tests in one run). A throwaway loop that never registers
+    # as the thread's current loop avoids it; `_setup()` only needs a loop to run ON.
     loop = asyncio.new_event_loop()
     try:
         loop.run_until_complete(_setup())

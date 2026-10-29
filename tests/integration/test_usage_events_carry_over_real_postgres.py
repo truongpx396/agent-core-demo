@@ -1,20 +1,19 @@
 """The ledger-to-events carry-over against a REAL Postgres (scripts/usage_events_carry_over.py, specs/010 T030).
+tests/scripts/test_usage_events_carry_over.py proves the loop through a scripted connection; the cutover's
+safety rests on what the statements DO:
+- history older than the first real event is copied and NOTHING newer (those turns already have events;
+  copying would count them twice and double a tenant's spend the day it is switched on);
+- a re-run copies nothing (`ledger:<id>` is deterministic, the event id is the primary key);
+- afterwards the sum the dollar caps take sees the old spend (the point of it all);
+- a carried row is history, not a call: never rated, charged or queued for export, so it can't bill anyone or
+  reach a provider;
+- a run that stopped at its ceiling is CONTINUED by the next (a scan restarted from id 0 would have had that
+  bug);
+- the empty-table cutoff is "now" (asked in a rolled-back transaction, so the shared table is untouched).
 
-tests/scripts/test_usage_events_carry_over.py proves the loop through a scripted connection. What only a real database can
-show is what the statements DO, and the cutover's safety rests on it:
-
-  * history older than the first real event is copied, and NOTHING newer (those turns already have events: copying them
-    would count them twice, which doubles a tenant's spend on the day it is switched on);
-  * a re-run copies nothing (`ledger:<id>` is deterministic, the event id is the primary key);
-  * after it, the sum the dollar caps take sees the old spend (the point of it all);
-  * a carried row is history, not a call: it is never rated, charged or queued for export, so it cannot bill anyone or
-    reach a provider;
-  * a run that stopped at its ceiling is CONTINUED by the next one (the bug a scan restarted from id 0 would have had);
-  * the empty-table cutoff is "now" (asked inside a transaction that is rolled back, so the shared table is untouched).
-
-The container is shared across tests and xdist workers and the cutoff is global ("the first real event in the table"), so
-every test uses its own tenant, passes it as the filter, and puts its "history" years in the past, older than anything any
-other test seeds, and its "recent" rows after its own real event.
+The container is shared and the cutoff is global ("the first real event in the table"), so every test uses its
+own tenant as the filter, puts its "history" years in the past, older than anything else seeds, and its
+"recent" rows after its own real event.
 """
 import asyncio
 import uuid

@@ -1,21 +1,24 @@
-"""`make router-label`: run the route prompts through the local and the strong model and have a judge score both answers (specs/014 C5, T071).
+"""`make router-label`: run the route prompts through the local and the strong model and have a judge score both
+answers (specs/014 C5, T071). The output is the raw material for a routing head: how good each model's answer
+was, per prompt.
 
-The output is the raw material for a routing head: for every prompt, how good each model's answer was. It is produced ON REQUEST and per
-operator, because it costs minutes of model time per prompt and because the result is a fact about two specific models and one specific
-judge (`routing.py` explains why that makes it a file the operator owns, not part of the committed dataset).
+Produced ON REQUEST and per operator: it costs minutes of model time per prompt and the result is a fact about
+two specific models and one judge (`routing.py` explains why that makes it the operator's file, not part of
+the committed dataset).
 
-BOUNDED, because this runs unattended against a laptop's models: every call has its own timeout, and the whole run has a deadline after
-which no new call starts. RESUMABLE: the outcomes file is rewritten atomically after every prompt, a re-run skips the prompts that already
-have both scores, and retries the ones that were left missing. NEVER TENANT DATA: the only prompts it reads are the committed `route-domains`
-set, which was written for this repository and checked against the tenant denylist when the set was frozen.
+- BOUNDED, because it runs unattended on a laptop: every call has a timeout and the run has a deadline after
+  which no new call starts.
+- RESUMABLE: the outcomes file is rewritten atomically after every prompt; a re-run skips prompts with both
+  scores and retries the missing ones.
+- NEVER TENANT DATA: it reads only the committed `route-domains` set, written for this repo and checked
+  against the tenant denylist when frozen.
+- THE JUDGE sees the question and one answer, not which model wrote it or the other answer. A score it can't
+  produce (not JSON, not a number in [0, 1]) is retried ONCE, then recorded as missing (`null`), never zero; a
+  model call that times out or errors is missing too. Nothing logs a prompt or answer: counts and ids only.
 
-THE JUDGE sees the question and one answer and nothing else: not which model wrote it, not the other answer. A score it cannot produce
-(not JSON, not a number in [0, 1], or out of range) is retried ONCE; if the retry fails too, the score is recorded as missing (`null`), never
-as zero. A model call that times out or errors is missing too. Nothing here logs a prompt or an answer: counts and ids only.
-
-KNOWN LIMITS (they bound what any router judged on this can be): the local and strong models answer WITHOUT retrieval, so a prompt about a
-company policy is scored on how honestly the model handles not knowing it, not on a grounded answer; and a judge that is also the strong
-model favours its own style. Both are disclosed in the PR that adds this, not hidden in a number.
+Known limits, which bound any router judged on this (disclosed in the PR that adds it): the models answer
+WITHOUT retrieval, so a company-policy prompt is scored on how honestly the model handles not knowing it; and
+a judge that is also the strong model favours its own style.
 """
 import hashlib
 import json

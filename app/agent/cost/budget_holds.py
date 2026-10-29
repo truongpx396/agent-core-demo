@@ -1,18 +1,17 @@
 """The in-flight budget holds: what keeps N concurrent turns from all passing the same stale cap check.
 
-A turn that passed `budgets.check` reserves `MAX_COST_USD_PER_TURN` for its duration (`reserve_budget`) and gives it back when it
-ends (`release_budget_reservation`, always, in a `finally`); a sibling turn for the same tenant adds the tenant's in-flight total
-(`in_flight_reservation`) to what the usage events say was already spent. Without the hold, N turns racing one tenant would all read
-the same stale "spent so far", all pass, and all proceed: a check-then-act race. It is about concurrency, not history: a hold is
-a row in `tenant_budget_holds` (postgres-init/16) with its own timestamp, and one that outlives its turn ages out on its own clock.
+A turn that passed `budgets.check` reserves `MAX_COST_USD_PER_TURN` for its duration (`reserve_budget`) and
+releases it when it ends (`release_budget_reservation`, always, in a `finally`); a sibling turn for the tenant
+adds the tenant's in-flight total (`in_flight_reservation`) to what the usage events say was spent. Without
+the hold, N turns racing one tenant all read the same stale "spent so far" and all proceed. It is about
+concurrency, not history: a hold is a row in `tenant_budget_holds` (postgres-init/16) with its own timestamp,
+and one that outlives its turn ages out on its own clock.
 
-This used to live in `usage_ledger.py`, beside the per-turn ledger the caps read. That module is gone (specs/010 T030c3): nothing
-writes the ledger since T030c2, the caps sum the usage events (`app/agent/cost/spend.py`), and its retention sweep was replaced by the
-events' (`app/agent/cost/usage_events_retention.py`). The holds had never had anything to do with the ledger except sharing its file.
-The `usage_ledger` TABLE stays as read-only history that `scripts/usage_events_carry_over.py` can copy into the events; dropping it
-is a later, separate, destructive migration.
+This left `usage_ledger.py` when that module went (specs/010 T030c3; the caps sum `spend.py`, retention is
+`usage_events_retention.py`). The `usage_ledger` TABLE stays as read-only history that
+`scripts/usage_events_carry_over.py` can copy; dropping it is a later destructive migration.
 
-Every function here fails OPEN (a hold that cannot be written or read must not block a turn) and counts the failure
+Every function fails OPEN (a hold that can't be written or read must not block a turn) and counts the failure
 (`agent_cost_governance_degraded_total{path="reservation"}`).
 """
 import logging

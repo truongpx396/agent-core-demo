@@ -1,19 +1,22 @@
-"""A Stripe Checkout this app CREATED, actually PAID in a browser, and the real events it leads to (specs/010 T029a). Manual, never CI.
+"""A Stripe Checkout this app CREATED, actually PAID in a browser, and the real events it leads to (specs/010
+T029a). Manual, never CI.
 
-tests/provider_sandbox/test_stripe_sandbox.py proves the adapter against real Stripe signatures and real refunds, but its purchase event came
-from `stripe trigger`'s fixture (a guest checkout with no customer and no `metadata.product_ref`), because completing a HOSTED Checkout page needs
-a browser. This drives one with Playwright (already a dev dependency for the e2e tier): the adapter creates the session, headless Chromium pays it
-with Stripe's documented test card, Stripe sends the real `checkout.session.completed`, and the same payment is refunded through the API.
+test_stripe_sandbox.py proves the adapter against real signatures and refunds, but its purchase event is
+`stripe trigger`'s fixture (a guest checkout with no customer or `metadata.product_ref`), because a HOSTED
+Checkout page needs a browser. This drives one with Playwright (a dev dependency of the e2e tier): the adapter
+creates the session, headless Chromium pays with Stripe's test card, Stripe sends the real
+`checkout.session.completed`, and the payment is refunded through the API.
 
-What this closes, that nothing else could show:
-  * the session THIS APP made ties to its catalog entry: the completed event carries the Price id the adapter put in `metadata.product_ref`, and
-    the customer is the one the adapter was told to bill (a hand-made session has neither);
-  * `payment_ref` is the PaymentIntent, and the real refund of that payment names the very same one;
-  * the amount on the event is what the buyer paid INCLUDING tax (a $5.00 Price is 550 under Managed Payments' 10% VAT): informational only, since the
-    catalog decides credits, but it is not the Price.
+What it shows that nothing else could:
+- the session THIS APP made ties to its catalog entry: the event carries the Price id the adapter put in
+  `metadata.product_ref`, and the customer is the one the adapter was told to bill;
+- `payment_ref` is the PaymentIntent, and the real refund names the very same one;
+- the event amount is what the buyer paid INCLUDING tax ($5.00 is 550 under Managed Payments' 10% VAT),
+  informational since the catalog decides credits.
 
-What it does NOT do: it depends on the markup of Stripe's hosted page (a stable `data-testid` for the submit button and the `#cardNumber`-style
-field ids), so a redesign can break it without the adapter being wrong. It skips when Playwright or its Chromium is not installed.
+It depends on the markup of Stripe's hosted page (a stable `data-testid` for the submit button,
+`#cardNumber`-style field ids), so a redesign can break it without the adapter being wrong. It skips without
+Playwright or its Chromium.
 """
 import asyncio
 import os

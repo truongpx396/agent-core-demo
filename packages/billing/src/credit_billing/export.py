@@ -1,61 +1,51 @@
-"""Money out: usage events reach a usage-billing provider exactly once, or fail loudly
-(specs/010-credit-billing-readiness, T023-T025; moved into the package by specs/013;
-sql/25-billing-export-outbox.sql).
+"""Money out: usage events reach a usage-billing provider exactly once, or fail loudly (specs/010 T023-T025,
+moved here by specs/013; sql/25-billing-export-outbox.sql).
 
-## The shape
-
-A tenant linked to a provider that bills on usage (it declares `USAGE_EXPORT`) gets one
-`billing_export_outbox` row per usage event, written in the event's own transaction
-(`credit_billing/usage.py`). This module drains that table. It is the only code that sends usage to a
-provider, and it is built for three facts research R1 established:
-
-1. Providers deduplicate by a caller-supplied id (Stripe `identifier`, Polar `external_id`), so the usage
-   event's deterministic id is the provider's idempotency key and a retry is always safe.
-2. Stripe accepts an event only if its timestamp is within the past 35 days, so retrying must give up BEFORE
-   that (`BILLING_EXPORT_MAX_AGE_DAYS`, at most 34) and say so loudly: an event retried past the window isn't
-   delayed, the provider discards it without telling anyone.
-3. A provider can be down for hours, so every loop has a ceiling (an attempt budget, a backoff cap, a call
-   deadline, a batch size, an age) and a metric.
+A tenant linked to a provider that bills on usage (`USAGE_EXPORT`) gets one `billing_export_outbox` row per
+usage event, written in the event's own transaction (`usage.py`). This module drains that table and is the
+only code that sends usage to a provider. Three facts (research R1) shape it:
+1. Providers deduplicate by a caller-supplied id (Stripe `identifier`, Polar `external_id`), so the event's
+   deterministic id is the idempotency key and a retry is always safe.
+2. Stripe accepts an event only within 35 days of its timestamp, so retrying must give up BEFORE that
+   (`BILLING_EXPORT_MAX_AGE_DAYS`, at most 34) and say so loudly: a late event isn't delayed, the provider
+   discards it silently.
+3. A provider can be down for hours, so every loop has a ceiling (attempt budget, backoff cap, call deadline,
+   batch size, age) and a metric.
 
 ## The duplicate story (constitution IV)
 
-- A replayed usage event queued twice: `PRIMARY KEY (provider, tenant, event_id)` + `ON CONFLICT DO NOTHING`,
-  in the event's transaction.
-- Two workers claiming the same row: `FOR UPDATE SKIP LOCKED`, so each takes a disjoint batch.
-- A crash between "sent" and "marked sent": the provider's own idempotency key (the event id) reports the
-  resend as a duplicate, which is success. **This is the one window the database cannot see.**
-- A call that timed out but landed: the same; it is retried with the same id.
+- A replayed event queued twice: `PRIMARY KEY (provider, tenant, event_id)` + `ON CONFLICT DO NOTHING` in the
+  event's transaction.
+- Two workers claiming one row: `FOR UPDATE SKIP LOCKED` gives disjoint batches.
+- A crash between "sent" and "marked sent", or a call that timed out but landed: the resend carries the same
+  id and the provider reports a duplicate, which is success. **This is the one window the database cannot
+  see.**
 
-## What a worker does, per provider, per pass
+## Per provider, per pass
 
-Claim the due batch (`pending`, `next_attempt_at <= now()`, oldest first) with `FOR UPDATE SKIP LOCKED`, send
-it to the adapter one customer at a time under a deadline, and record every row's verdict, all in ONE
-transaction, so a process that dies mid-way leaves the rows pending again. The locks are held while the
-provider is called, which is why that call has a deadline (`BILLING_EXPORT_CALL_TIMEOUT_SECONDS`).
+Claim the due batch (`pending`, `next_attempt_at <= now()`, oldest first), send it one customer at a time
+under a deadline (`BILLING_EXPORT_CALL_TIMEOUT_SECONDS`, needed because the locks are held during the call),
+and record every verdict, all in ONE transaction, so a process that dies mid-way leaves the rows pending.
 
-## Verdicts (`verdicts`, pure, so each rule has its own test)
+## Verdicts (`verdicts`, pure)
 
 - accepted or duplicate -> `sent`.
-- retryable failure -> back off (`min(base * 2**(k-1), cap)` after the k-th failure), `failed` once the
-  attempt budget is spent.
-- permanent failure -> `failed` at once.
+- retryable failure -> back off (`min(base * 2**(k-1), cap)`), `failed` once the attempt budget is spent;
+  permanent failure -> `failed` at once.
 - an id the adapter didn't mention, or an adapter that raised or timed out -> retryable (nothing is known to
-  have landed, and a resend is safe).
-- a customer with no link left to send under -> `failed`, not retried for 30 days to no purpose.
-- `expired` is decided by age, before sending.
+  have landed).
+- a customer with no link left -> `failed`, not retried for 30 days to no purpose; `expired` is decided by
+  age, before sending.
 
-## Gaps this leaves, disclosed
+## Gaps, disclosed
 
-- The worker's own liveness isn't alerted: a dead worker shows only as `UsageExportStuck` once the oldest
-  event is old.
-- An event is queued only by a process that has the provider enabled (`BILLING_PROVIDERS`); one written
-  elsewhere is never queued and nothing back-fills it yet (the reconciliation, PR 6, compares events with the
-  gateway and the ledger, and is where this would be found).
-- The adapters came later, so the call deadline and response mapping are proven against the `fake` only.
-- The outbox is keyed `(provider, tenant, event_id)` but the provider gets the event id alone as its
-  idempotency key. A caller must keep event ids unique across the tenants of one instance, or the provider
-  treats the second tenant's event as a duplicate of the first's and the revenue is lost with no error
-  anywhere.
+- Worker liveness isn't alerted: a dead worker shows only as `UsageExportStuck` once the oldest event is old.
+- An event is queued only by a process with the provider enabled (`BILLING_PROVIDERS`); one written elsewhere
+  is never queued and nothing back-fills it (the reconciliation would find it).
+- The call deadline and response mapping are proven against the `fake` adapter only.
+- The outbox is keyed `(provider, tenant, event_id)` but the provider gets the event id alone. Callers must
+  keep event ids unique across the tenants of one instance, or the second tenant's event counts as a duplicate
+  and the revenue is lost with no error.
 
 Imports nothing from `app` (enforced by tests/test_boundary.py).
 """

@@ -1,18 +1,17 @@
-"""Recording billable usage against a REAL Postgres (sql/24-billing-usage-events.sql and 25-billing-export-outbox.sql, credit_billing/usage.py;
-specs/013-billing-owns-the-meter). These are the guarantees the agent app proved of its own table when it did this work (specs/010 T015/T023),
-now proved of the package's.
-
-tests/test_usage_record.py proves which statements run, on which connection and inside which savepoint, through a fake. A fake cannot show
-what the DATABASE does with them, and every guarantee here is database behaviour (constitution VII: reliance on a real constraint, lock or
-transaction is stated and tested at this tier, not assumed):
-
-  * the event, its debit and its export row are ONE transaction, so a replayed call is one event and one debit, and a rollback takes all three;
-  * `PRIMARY KEY (tenant, event_id)` arbitrates concurrent writers, and the tenant is part of the key (two tenants may share an id);
-  * a debit that blows up part-way is rolled back by its SAVEPOINT without taking the event with it, and leaves no orphan transaction row;
-  * 50 concurrent recordings to one tenant lose no update (SC-003 of spec 010);
-  * the table is append-only, refuses credits without a rate, and has exactly ONE unique constraint (a second would make `ON CONFLICT`
-    unreliable under concurrency: the host's table was bitten by exactly that);
-  * the script can be applied twice, and the outbox can only carry its own tenant's event.
+"""Recording billable usage against a REAL Postgres (sql/24 and 25, credit_billing/usage.py; specs/013): the
+guarantees the agent app proved of its own table (specs/010 T015/T023), now proved of the package's.
+tests/test_usage_record.py proves which statements run, on which connection and savepoint, through a fake;
+only the DATABASE shows what it does with them (constitution VII):
+- the event, its debit and its export row are ONE transaction: a replayed call is one event and one debit, and
+  a rollback takes all three;
+- `PRIMARY KEY (tenant, event_id)` arbitrates concurrent writers, and the tenant is part of the key (two
+  tenants may share an id);
+- a debit that blows up part-way is rolled back by its SAVEPOINT without taking the event, leaving no orphan
+  transaction row;
+- 50 concurrent recordings to one tenant lose no update (SC-003 of spec 010);
+- the table is append-only, refuses credits without a rate, and has exactly ONE unique constraint (a second
+  would make `ON CONFLICT` unreliable under concurrency, which bit the host's table);
+- the script can be applied twice, and the outbox can only carry its own tenant's event.
 
 Each test uses its own tenant: the container is shared across tests and xdist workers.
 """

@@ -1,16 +1,15 @@
-"""Bound what a tool hands the model.
+"""Bound what a tool hands the model. A sandbox command can print a megabyte and a remote MCP server can return
+anything, and whatever a tool returns goes into the model's context and bill (specs/009 A3: a one-megabyte
+stdout came back as a 1,000,021-character string). The cap keeps the head AND the tail: the start says what
+ran, and the end of command output, a log or a stack trace is usually where the failure is.
 
-A sandbox command can print a megabyte, a remote MCP server can return anything, and whatever a tool returns goes into the model's
-context and its bill (specs/009 A3: a one-megabyte stdout came back as a 1,000,021-character string). The cap keeps the head AND the
-tail: the beginning says what ran, and the end of a command's output, a log or a stack trace is usually where the failure is, so
-cutting only the end would drop the part a person needs most.
+The marker says how much was left out, so neither the model nor a reader of the trace mistakes a cut result
+for a whole one. Every cut is counted (`agent_tool_output_truncated_total`), so a cap too small for what a
+tool legitimately returns shows as a rate on that dependency, not as quietly wrong answers.
 
-The marker says how much was left out, so neither the model nor a person reading the trace mistakes a cut result for a whole one.
-Every cut is counted (`agent_tool_output_truncated_total`), so a cap that is too small for what a tool legitimately returns shows
-up as a rate on that dependency, not as answers that are quietly wrong.
-
-This bounds TEXT that is about to reach the model. It must not be applied to a structured payload another piece of code parses
-(the sandbox bridge's JSON): cutting that in the middle leaves it unparseable. Bound the parts of it that go on to the model instead.
+This bounds TEXT about to reach the model. Don't apply it to a structured payload another piece of code parses
+(the sandbox bridge's JSON): cutting it mid-way leaves it unparseable. Bound the parts that go on to the model
+instead.
 """
 from app.core import metrics
 

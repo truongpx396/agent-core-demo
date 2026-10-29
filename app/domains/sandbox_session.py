@@ -1,45 +1,35 @@
 """Pure helper logic behind each domain's three sandbox tools (`run_command_in_sandbox`, `read_sandbox_file`,
-`write_sandbox_file`), wrapped per domain in app/domains/{ops,support,sales}/tools.py. Built on OpenSandbox's
-raw MCP catalog (sandbox_tools.py, pattern 50) instead of exposing that catalog to the LLM. Domain-agnostic,
-hence under app/domains/ rather than app/domains/ops/.
+`write_sandbox_file`), wrapped per domain in app/domains/{ops,support,sales}/tools.py over OpenSandbox's raw
+MCP catalog (sandbox_tools.py, pattern 50). Domain-agnostic, hence not under ops/.
 
-## Why this exists
-A small local model (qwen2.5:3b) given OpenSandbox's raw ~19-tool catalog (stateful create -> connect -> run,
-nested schemas) failed reproducibly: it hallucinated a sandbox_id, then looped on `sandbox_connect` with no
-args until the no-progress safety net (pattern 34) cut it off. A prompt-only fix didn't help; it is an
-instruction-following ceiling. Every other tool here has 1-3 flat fields, so this module gives sandbox access
-the same shape: one flat string arg per tool, with the create/reuse/connect lifecycle handled in code. The
-model never sees a sandbox_id.
+Why it exists: a small local model (qwen2.5:3b) given the raw ~19-tool catalog (stateful create -> connect ->
+run, nested schemas) failed reproducibly: it invented a sandbox_id, then looped on `sandbox_connect` with no
+args until the no-progress net (pattern 34) cut it off. A prompt-only fix didn't help; it is an
+instruction-following ceiling. So sandbox access gets the shape of every other tool, one flat string arg, with
+create/reuse/connect handled in code. The model never sees a sandbox_id.
 
-## Per-conversation reuse, server-side
-Each (tenant, conversation) pair gets ONE sandbox, tagged `{SANDBOX_TENANT_KEY: sha(tenant),
-SANDBOX_THREAD_KEY: sha(thread_id)}` at creation and found again via `sandbox_list`'s metadata filter. The
-lookup is server-side, not a process-local dict, so it holds across horizontally scaled workers (pattern 43):
-a resume on a different worker still finds the sandbox.
+Per-conversation reuse, server-side: each (tenant, conversation) pair gets ONE sandbox, tagged
+`{SANDBOX_TENANT_KEY: sha(tenant), SANDBOX_THREAD_KEY: sha(thread_id)}` and found again via `sandbox_list`'s
+metadata filter. The lookup is server-side, not a process-local dict, so a resume on a different worker still
+finds it (pattern 43).
 
-The tags hash the RAW values and never rewrite them. This used to tag the conversation id after squeezing it
-into OpenSandbox's metadata-value rules (disallowed characters became `-`, cut to 63), so `telegram:12345` and
-`telegram-12345`, or any two ids sharing their first 63 characters, resolved to ONE sandbox, and the tenant
-was never looked at (spec 009 B24; Principle I). A hash always satisfies the value rules (hex), keeps a chat
-id out of the sandbox service in the clear, and differs whenever the input does. Tenant and conversation are
-separate tags, not one concatenation, so no pair of values can be read as another. After the filtered lookup
-the returned tags are compared again, so a service that ignored the filter still can't hand one conversation
-another's files; an entry with no readable tags is not reused.
+The tags hash the RAW values and never rewrite them. It used to squeeze the conversation id into OpenSandbox's
+value rules (bad characters to `-`, cut to 63), so `telegram:12345` and `telegram-12345` resolved to ONE
+sandbox and the tenant was never looked at (spec 009 B24; Principle I). A hash always satisfies the rules,
+keeps a chat id out of the sandbox service in the clear, and differs whenever the input does. Tenant and
+conversation are separate tags so no pair reads as another. After the filtered lookup the returned tags are
+compared again, so a service that ignored the filter still can't hand one conversation another's files; an
+entry with no readable tags is not reused.
 
-`connect_if_missing=True` is passed on every `command_run`/`file_read`/`file_write` call: `load_remote_tools`
-spawns a fresh opensandbox-mcp subprocess per call (app/mcp/client.py), so the bridge's sandbox registry never
-persists and every call after the creating one would otherwise 404.
+`connect_if_missing=True` goes on every `command_run`/`file_read`/`file_write`: `load_remote_tools` spawns a
+fresh opensandbox-mcp subprocess per call (app/mcp/client.py), so the bridge's registry never persists and
+later calls would 404.
 
-## Response shapes
-Confirmed live against a real opensandbox-server (port 8090, `make sandbox-up`) and tested in
-tests/domains/test_sandbox_session.py:
-- sandbox_create -> `{"sandbox_id": ..., "info": {...}}`
-- sandbox_list -> `{"sandbox_infos": [{"id": ..., "status": {"state": "RUNNING", ...}, "metadata": {...},
-  ...}], "pagination": {...}}`
-- command_run -> `{"exit_code": int|None, "logs": {"stdout": [{"text": ...}], "stderr": [{"text": ...}]},
-  ...}`
-- file_read -> `{"path": ..., "content": ...}`
-- file_write -> `{"status": "written"}`
+Response shapes (confirmed against a real opensandbox-server, `make sandbox-up`;
+tests/domains/test_sandbox_session.py): sandbox_create `{"sandbox_id", "info"}`; sandbox_list
+`{"sandbox_infos": [{"id", "status": {"state"}, "metadata"}], "pagination"}`; command_run `{"exit_code":
+int|None, "logs": {"stdout": [{"text"}], "stderr": [{"text"}]}}`; file_read `{"path", "content"}`; file_write
+`{"status": "written"}`.
 """
 import hashlib
 import json

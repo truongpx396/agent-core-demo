@@ -79,25 +79,20 @@ async def upsert_session(
 async def claim_session(
     ctx: SecurityCtx | None, thread_id: str, title: str | None = None, domain: str = "ecorp"
 ) -> bool:
-    """The ownership gate for sending a message: claim `thread_id` for `ctx`
-    if nobody has it yet, then report whether `ctx` owns it — `True` for the
-    first claimant and for the owner on every later call, `False` for
-    anyone else (a different tenant, principal or domain) and for an invalid
-    ctx.
+    """The ownership gate for sending a message: claim `thread_id` for `ctx` if nobody has it, then report
+    whether `ctx` owns it: `True` for the first claimant and the owner on every later call, `False` for anyone
+    else (another tenant, principal or domain) and for an invalid ctx.
 
-    Why it exists: conversation state (the checkpoint, the cancel flag, the
-    thread lock, the submission-dedup key) is keyed by `thread_id` alone and
-    the id is client-supplied, so without a gate whoever names an id
-    continues that conversation. `upsert_session` — the bookkeeping that ran
-    on every turn — is `ON CONFLICT DO UPDATE` and never asked who owned the
-    row. `INSERT … ON CONFLICT DO NOTHING` makes the claim atomic: two
-    callers racing for a new id cannot both win (the loser blocks on the
-    unique index until the winner commits, then sees its row).
+    Conversation state (checkpoint, cancel flag, thread lock, submission-dedup key) is keyed by `thread_id`
+    alone and the id is client-supplied, so without a gate whoever names an id continues that conversation.
+    `upsert_session`, the per-turn bookkeeping, is `ON CONFLICT DO UPDATE` and never asked who owned the row.
+    `INSERT ... ON CONFLICT DO NOTHING` makes the claim atomic: of two racers for a new id the loser blocks on
+    the unique index until the winner commits, then sees its row.
 
-    Unlike `upsert_session` this does NOT swallow a store failure. That one
-    is best-effort bookkeeping and must never fail a turn; this is an
-    authorization decision, and when it can't be made the answer is "no".
-    The caller sees the exception (a 500), not a default-allow."""
+    Unlike `upsert_session` this does NOT swallow a store failure: that one is best-effort and must never fail
+    a turn, but this is an authorization decision, and when it can't be made the answer is "no" (the caller
+    sees the exception, a 500, not a default-allow).
+    """
     if not valid_ctx(ctx) or not thread_id:
         return False
     async with get_connection() as conn:

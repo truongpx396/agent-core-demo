@@ -28,14 +28,14 @@ CONTROL_CANDIDATES: dict[str, dict[str, str]] = {
 # inside the noise, which is `inconclusive`, and that is a pass. Better or worse is the failure.
 ALLOWED = {"no_difference": {"no_difference", "inconclusive"}, "worse": {"worse"}}
 
-# The metrics each degenerate screen is expected to be WORSE on. They differ, and the difference is the lesson of the first real run: the
-# first version judged both on the detection side (AUC, TPR at 1% FPR, recall at the threshold), and `make model-eval-verify` failed on the
-# recorded baseline because a screen that scores at random flags about half of everything at the 0.5 threshold, so its RECALL (about 0.5)
-# is as good as a real screen's (0.47 on the committed baseline). Recall at a threshold says nothing about whether a random scorer is
-# useless; its ranking (AUC) and its false alarms (FPR) do. Conversely an always-benign screen has a PERFECT false-positive rate, so its FPR
-# metrics are legitimately better and say nothing about whether the harness works; it is judged on what it cannot do (detect). TPR at 1% FPR
-# is judged for neither: with a few dozen benign items the cap allows ZERO false positives, so a random scorer can reach a non-zero TPR by
-# luck and the verdict depends on the seed.
+# The metrics each degenerate screen is expected to be WORSE on. They differ, and that was the lesson of the
+# first real run: judging both on the detection side (AUC, TPR at 1% FPR, recall at the threshold) failed
+# `make model-eval-verify` on the recorded baseline, because a random screen flags about half of everything at
+# the 0.5 threshold, so its RECALL (~0.5) matches a real screen's (0.47 on the baseline). A random scorer is
+# shown useless by its ranking (AUC) and false alarms (FPR), not recall. An always-benign screen has a PERFECT
+# false-positive rate, so it is judged on what it cannot do (detect). TPR at 1% FPR is judged for neither:
+# with a few dozen benign items the cap allows ZERO false positives, so a random scorer can reach a non-zero
+# TPR by luck and the verdict depends on the seed.
 _JUDGED_ON: dict[tuple[str, str], tuple[str, ...]] = {
     ("screen", "random-scores"): ("roc_auc", "ml_fpr_domain@thr", "app_fpr_domain@thr"),
     ("screen", "always-benign"): ("roc_auc", "tpr@1%fpr", "ml_recall@thr", "app_recall@thr"),

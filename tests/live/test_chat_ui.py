@@ -1,30 +1,22 @@
 """Browser E2E against the built-in web UI (app/api/static/index.html), the one client this app ships that a
-Python-level test can't drive, since its job is a real browser's `fetch()`-based SSE parsing (see the file's
-module comment: "no build step, no CDN dependency"). Needs `real_stack` (tests/live/conftest.py): a real
-uvicorn + agent-worker on real Postgres/Redis/Qdrant/Ollama, because the page calls `POST /chat/stream/queued`
-and `POST /chat/resume` (its `send()`/`resume()`), which work only through the real Redis queue and a real
-agent-worker, never in-process.
+Python-level test can't drive, since its job is a real browser's `fetch()`-based SSE parsing. Needs
+`real_stack` (tests/live/conftest.py): the page calls `POST /chat/stream/queued` and `POST /chat/resume`,
+which work only through the real Redis queue and a real agent-worker.
 
-Timeouts are generous throughout (`RESPONSE_TIMEOUT_MS`): a small CPU-bound real model takes far longer per
-turn than this suite's sub-second fake-LLM tests, and a mutating-tool turn waits through TWO model round trips
-(the tool-call decision, then synthesis of the tool result after approval). `RESPONSE_TIMEOUT_MS` must stay
-comfortably ABOVE `tests/live/conftest.py::real_stack`'s `REQUEST_TIMEOUT_SECONDS` override, or the assertion
-times out first and reports a misleading "element never appeared" instead of the app's `[error: Request
-exceeded Ns timeout]` text that explains the slow turn. A real CI run measured one `qwen2.5:1.5b` tool-calling
-turn at 67.7s end to end.
+Timeouts are generous (`RESPONSE_TIMEOUT_MS`): a small CPU-bound model takes far longer than the suite's
+fake-LLM tests, and a mutating-tool turn waits through TWO model round trips (the tool-call decision, then
+synthesis after approval). It must stay comfortably ABOVE `real_stack`'s `REQUEST_TIMEOUT_SECONDS` override,
+or the assertion times out first with a misleading "element never appeared" instead of the app's `[error:
+Request exceeded Ns timeout]`. A CI run measured one `qwen2.5:1.5b` tool-calling turn at 67.7s end to end.
+`MULTI_STEP_RESPONSE_TIMEOUT_MS` is wider still, for skill and subagent turns that chain several model calls.
 
-The agentic-feature tests below (approved `remember` write, citations, a skill, a subagent) use
-`real_stack_with_retrieval` instead: a REAL embedding model plus seeded Qdrant (see that fixture's docstring).
-`search_docs`/`skill_search` are Qdrant-backed and return nothing real against `real_stack`'s deliberately
-unembedded setup, and `remember` embeds what it stores: against `real_stack` it fails with a 404 for the
-embedding model, the model asks again, and the second approval pause leaves the Approve button on screen (see
-the `remember` test). Each names its tool/skill/subagent in the prompt, the same low-risk posture as the
-calculator/remember tests: this suite proves the real integration works end to end, not that a 1.5B model can
-infer intent.
-
-`MULTI_STEP_RESPONSE_TIMEOUT_MS` is wider still: a skill or subagent turn chains several real model calls
-(skill_search -> use_skill -> the skill's tool calls, or the parent's tool-call decision -> a full NESTED
-subagent turn -> the parent's synthesis), beyond the one or two `RESPONSE_TIMEOUT_MS` budgets for.
+The agentic tests below (approved `remember` write, citations, a skill, a subagent) use
+`real_stack_with_retrieval`: a REAL embedding model plus seeded Qdrant. `search_docs`/`skill_search` return
+nothing real against `real_stack`'s unembedded setup, and `remember` embeds what it stores: there it fails
+with a 404 for the embedding model, the model asks again, and the second approval pause leaves the Approve
+button on screen (see the `remember` test). Each prompt names its tool/skill/subagent, the same low-risk
+posture as the calculator/remember tests: this proves the integration works end to end, not that a 1.5B model
+can infer intent.
 """
 import re
 import time
@@ -154,23 +146,20 @@ def test_a_mutating_tool_call_pauses_for_approval_and_resumes_on_approve(
 
 
 def test_a_read_only_tool_call_returns_real_data(page: Page, real_stack: str):
-    """query_employees, not calculator — proves the browser round trip
-    works for a tool whose result comes from a real Postgres row
-    (postgres-init/02-appdata.sql's seeded `employees` table), not just
-    arithmetic the model could plausibly fake. Read-only (TOOL_CAPABILITIES),
-    so no approval pause — needs no `real_stack_with_retrieval`, unlike the
-    tests below.
+    """query_employees, not calculator: proves the browser round trip for a tool whose result comes from a real
+    Postgres row (postgres-init/02-appdata.sql's seeded `employees`), not arithmetic the model could fake.
+    Read-only (TOOL_CAPABILITIES), so no approval pause and no `real_stack_with_retrieval`.
 
     The question is asked BY NAME on purpose. It used to be "Who is Ecorp's Support Lead?", which needs the
-    model to turn a job title into `department=Support`; qwen2.5:3b does not do that reliably, and the gate
-    went red on it from 2026-10-24 (the call it made was `name_contains="Support Lead"`, which matches nobody).
-    Measured on 2026-10-28 against the Ollama this fixture pulls: of nine phrasings of a role question the 3B
-    got none right, seven of them dropped as malformed tool-call JSON; of eight variants of the name question
-    below it got all eight right, and its answer after the tool's real output named the person in all eight.
-    That is a limit of the 3B, not of the tool: qwen2.5:7b, the chat model, got seven of nine role questions
-    right. Whether a model can map a title to a department is not what this test is for. "Dana Whitfield" is
-    still proof of the round trip: the surname exists only in the database row (the question gives the first
-    name alone)."""
+    model to turn a job title into `department=Support`; qwen2.5:3b doesn't do that reliably, and the gate
+    went red on it from 2026-10-24 (it called `name_contains="Support Lead"`, matching nobody). Measured
+    2026-10-28 against the Ollama this fixture pulls: of nine phrasings of a role question the 3B got none
+    right (seven dropped as malformed tool-call JSON), while all eight variants of the name question were
+    right and named the person after the tool output. That is the 3B's limit, not the tool's (qwen2.5:7b, the
+    chat model, got seven of nine role questions right), and mapping a title to a department is not what this
+    test is for. "Dana Whitfield" still proves the round trip: the surname exists only in the database row
+    (the question gives the first name alone).
+    """
     page.goto(real_stack)
 
     _send(page, "Is there anyone named Dana at Ecorp? Use the query_employees tool.")

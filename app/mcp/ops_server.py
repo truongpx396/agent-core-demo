@@ -1,33 +1,19 @@
-"""MCP server exposing read-only ops-domain tools
-(`app/domains/ops/tools.py`'s `fetch_metrics_summary`/
-`list_recent_incidents`) over MCP — GRAPH_PATTERNS.md pattern 50, the same
-story `app/mcp/server.py` tells for `query_employees`, extended to a
-second domain.
+"""MCP server exposing the read-only ops tools (`app/domains/ops/tools.py`'s
+`fetch_metrics_summary`/`list_recent_incidents`) over MCP (GRAPH_PATTERNS.md pattern 50):
+`app/mcp/server.py`'s story for `query_employees`, for a second domain. It is a SEPARATE server/process, not
+another `@mcp.tool()` on `ecorp-structured-data`, because this app runs one process per domain everywhere else
+(`AGENT_DOMAIN`). The use case: an on-call engineer's Claude Desktop/Cursor pulls live incident status and
+metrics directly, no chat UI.
 
-A SEPARATE server/process from `app/mcp/server.py`'s
-`ecorp-structured-data` rather than one more `@mcp.tool()` bolted on —
-this app runs one process per domain everywhere else
-(`app/job_queue/agent_worker.py`, `AGENT_DOMAIN`), so this keeps that
-shape instead of mixing Ecorp's directory and ops data behind one name.
+Identity, same seam as server.py: ops data isn't tenant-scoped (`ctx` proves "a legitimate caller of this
+deployment", not a row filter; see `ops/tools.py`), but `OPS_POLICY.permit` still fails closed on a missing or
+malformed ctx. The identity comes from an `IdentitySource` (`app/mcp/identity.py`) chosen where the server is
+built, never a tool argument the connected assistant could set. Over stdio it is the launcher's principal
+under `DEFAULT_TENANT` (it refuses to start without a principal, saying why on stderr). Over HTTP
+(`app/mcp/gateway.py`) it is the verified token's tenant and principal, and because this data belongs to the
+deployment, the gateway lets in only the operator tenants (`MCP_GATEWAY_OPS_TENANTS`).
 
-Real use case: an on-call engineer's Claude Desktop/Cursor can pull live
-incident status and metrics directly, no chat UI needed.
-
-## Identity over MCP, same seam as app/mcp/server.py
-
-Ops data isn't tenant-scoped (`ctx` here proves "a legitimate caller of
-this deployment," not a row filter — see `ops/tools.py`), but
-`OPS_POLICY.permit` still fails closed on a missing/malformed ctx. The
-identity comes from an `IdentitySource` (`app/mcp/identity.py`) chosen where
-the server is built, never from a tool argument the connected assistant could
-set. Over stdio it is the launcher's principal under `DEFAULT_TENANT` (the
-server refuses to start without a principal, and says why on stderr). Over HTTP
-(`app/mcp/gateway.py`) it is the verified token's tenant and principal, and
-because this data belongs to the deployment and not to a tenant, the gateway
-only lets the operator tenants in (`MCP_GATEWAY_OPS_TENANTS`).
-
-Run with: `make mcp-serve-ops` (stdio transport, same as app/mcp/server.py;
-needs MCP_PRINCIPAL).
+Run with `make mcp-serve-ops` (stdio; needs MCP_PRINCIPAL).
 """
 import sys
 from typing import Any

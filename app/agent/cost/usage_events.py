@@ -1,46 +1,26 @@
-"""One immutable usage event per model call (postgres-init/19-usage-events.sql).
+"""One immutable usage event per model call (postgres-init/19-usage-events.sql): the meter the dollar caps and
+`GET /usage` sum (`spend.py`).
 
-The per-turn `usage_ledger` had no key that named a call; a meter must say "this exact call, once", so a
-replayed write and everything built on the record agree on what one call is. This module is that meter, and
-the dollar caps and `GET /usage` sum it (`app/agent/cost/spend.py`).
+Identity: `event_id = uuid5(NAMESPACE, f"{tenant}|{message_id}")`, with `message_id` the response's
+`AIMessage.id`. langchain-core assigns `run-<run id>-<index>`, unique per invocation and stable across a
+checkpoint round trip (specs/010 R5, pinned by tests/agent/cost/test_usage_events.py). The provider's
+`chatcmpl-...` id is not used: a backend may return a fixed or missing one. A LangGraph node retry that calls
+the model again is a second paid call and gets a new event.
 
-## Identity
+Failure policy: fail OPEN, counted, alerted, since a failed write mustn't fail the turn but is spend no cap
+sees. `agent_cost_governance_degraded_total{path=...}`: `usage_event_write` -> UsageEventWriteFailing
+(critical); `usage_event_table_missing` (migration 19 not applied) -> UsageEventTableMissing;
+`usage_event_identity` (no message id, so a random one that can't be de-duplicated); `usage_missing` (the
+provider reported no usage; counted only, a local model may do this). There is no kill switch, since switching
+writes off would make every cap read $0 (`USAGE_EVENTS_ENABLED=false` is refused at startup).
 
-`event_id = uuid5(NAMESPACE, f"{tenant}|{message_id}")`, with `message_id` the response's `AIMessage.id`.
-Verified against the installed langchain-core / langchain-openai / langgraph (specs/010 research R5, pinned by
-tests/agent/cost/test_usage_events.py): langchain-core assigns `run-<run id>-<index>`, unique per invocation
-(two identical calls whose provider returned the SAME id still got different ones) and identical after a
-checkpoint round trip. The provider's own `chatcmpl-...` id is deliberately not used: a backend may return a
-fixed or missing one. A LangGraph node retry that calls the model again gets a new id and a new event, which
-is right: a second paid call happened.
+Billing is one call and not this module's business: after inserting its row, on the same connection and
+transaction and only for a newly inserted row, it hands the billing package ONE plain value (tenant, event id,
+kind, cost, model, tokens) through `app/billing_integration/port.py`. What the package does with it is its own
+(`packages/billing/src/credit_billing/usage.py`); the table has no billing column.
 
-## Failure policy
-
-Fail OPEN, counted, alerted: a failed write mustn't fail the turn, but a lost event is lost spend no cap sees
-and a log line tells nobody.
-  * `agent_cost_governance_degraded_total{path="usage_event_write"}` -> UsageEventWriteFailing (critical)
-  * `...{path="usage_event_table_missing"}` (migration 19 not applied) -> UsageEventTableMissing (warning)
-  * `...{path="usage_event_identity"}`: a response with no message id got a random one and can't be
-    de-duplicated (a replay would double-count it);
-  * `...{path="usage_missing"}`: the provider reported no usage, so nothing was metered. Counted, not alerted:
-    a local model may do this.
-There is no kill switch: the caps sum these rows, so switching writes off would make every cap read $0
-(`USAGE_EVENTS_ENABLED=false` is refused at startup, `config.py`). A failing write is also a cap
-under-counting; `UsageEventWriteFailing` is the alert for both.
-
-## Billing is one call, and not this module's business
-
-After inserting its row, this module hands the billing package ONE plain value (tenant, event id, kind, cost,
-model, token count) through `app/billing_integration/port.py`, on the same connection and transaction, and
-only when the row was newly inserted (a replay hands over nothing). What the package does with it and how it
-fails (it never raises; every failure is counted and alerted by the package) is its own:
-`packages/billing/src/credit_billing/usage.py`. The table carries no billing column.
-
-## No second record
-
-The per-turn `usage_ledger` is gone (specs/010 T030c): nothing writes it, the reconciliation compares the
-events with the gateway's spend log, and the old table is frozen history that
-`scripts/usage_events_carry_over.py` copied here.
+The per-turn `usage_ledger` is gone (specs/010 T030c); `scripts/usage_events_carry_over.py` copied its history
+here.
 """
 import logging
 import uuid

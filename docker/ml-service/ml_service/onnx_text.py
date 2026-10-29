@@ -1,18 +1,17 @@
-"""The one tokenise -> run -> pool -> normalise path every text model in this service uses.
+"""The one tokenise -> run -> pool -> normalise path every text model in this service uses. The prompt-injection
+guard, the embedding endpoint and the routing classifier all feed an ONNX graph through it, and the evaluation
+harness imports it to embed text outside the service. A classifier head must never be trained on one pipeline
+and served on another (different pooling, truncation, a quantized file instead of fp32), because a head is a
+plain vector and silently gives wrong answers on a different pipeline's vectors (specs/014 research.md C1).
 
-The prompt-injection guard, the embedding endpoint and the routing classifier all feed text to an ONNX graph through this module, and
-the evaluation harness imports it to embed text outside the service. That is deliberate: a classifier head must never be trained on one
-pipeline and served on another (different pooling, different truncation, a quantized file instead of the fp32 one), because the head
-is a plain vector and silently gives wrong answers on vectors from a different pipeline (specs/014 research.md C1).
-
-Rules this module enforces, each from a real hazard:
-  * The pad id comes from the tokenizer's own pad token, or from a token the registry names. It is NEVER guessed: the old guard code
-    hard-coded `pad_id=0`, which happens to be right for that model and wrong for others.
-  * Truncation and padding are set explicitly from the model's declared `max_length`. A model's own tokenizer.json is not trusted
-    to do it: all-MiniLM-L6-v2's ships fixed-length-128 padding AND truncation at 128, which would pad every short query to 128
-    tokens (slow) and cut long passages (wrong) if left alone. Padding here is to the longest item in the batch.
-  * `token_type_ids` is fed only if the graph names it (BERT-style models want it, ModernBERT-style ones do not). Any other graph
-    input is refused at construction, never silently zero-filled.
+Rules, each from a real hazard:
+- The pad id comes from the tokenizer's own pad token or a token the registry names, NEVER guessed: the old
+  guard hard-coded `pad_id=0`, right for that model and wrong for others.
+- Truncation and padding are set explicitly from the model's declared `max_length`; a model's own
+  tokenizer.json isn't trusted (all-MiniLM-L6-v2's pads AND truncates at 128, which would pad every short
+  query to 128 tokens and cut long passages). Padding is to the longest item in the batch.
+- `token_type_ids` is fed only if the graph names it (BERT-style wants it, ModernBERT-style doesn't). Any
+  other graph input is refused at construction, never zero-filled.
 """
 from collections.abc import Sequence
 from dataclasses import dataclass

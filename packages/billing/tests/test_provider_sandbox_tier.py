@@ -1,15 +1,15 @@
-"""The provider-sandbox tier's own safety rails (tests/provider_sandbox/, specs/010 T029a).
-
-That tier talks to a real payment provider's sandbox over the internet with the operator's own key and creates objects there. What keeps
-that safe is not exercised by the tier itself (it skips without a key), so it is pinned here, hermetically:
-
-  * the default run and CI never select it, so no pull request depends on, or spends, a third party's API;
-  * every test in it carries the marker, so a test added there cannot slip into the default run;
-  * a LIVE-mode (or any non-test) key, or a Polar deployment configured for production, makes it fail before a request is made, never
-    skip and never create;
-  * it will not run beside someone's own `stripe listen` / `polar listen`, whose app would receive the tier's sample events too;
-  * what it prints from the provider CLIs, which includes the webhook signing secrets, is redacted;
-  * a rate-limited Polar token is reported as that, with how long to wait, not as an unexplained `HTTP 429 None field=None`.
+"""The provider-sandbox tier's own safety rails (tests/provider_sandbox/, specs/010 T029a). That tier talks to a
+real provider's sandbox with the operator's key and creates objects there; the tier skips without a key, so
+what keeps it safe is pinned here, hermetically:
+- the default run and CI never select it, so no PR depends on or spends a third party's API;
+- every test in it carries the marker, so a new test can't slip into the default run;
+- a LIVE (or any non-test) key, or a Polar deployment configured for production, makes it fail before a
+  request, never skip or create;
+- it won't run beside someone's own `stripe listen` / `polar listen`, whose app would receive the tier's
+  sample events too;
+- what it prints from the provider CLIs, which includes webhook signing secrets, is redacted;
+- a rate-limited Polar token is reported as that, with how long to wait, not as an unexplained `HTTP 429 None
+  field=None`.
 """
 import ast
 import tomllib

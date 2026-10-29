@@ -1,18 +1,16 @@
 """What a stopped turn leaves in the thread (GRAPH_PATTERNS.md pattern 80).
 
-`POST /chat/cancel` stops a turn that is running. The thread already holds the person's message by
-then (`validate_input` wrote it, and every checkpoint since carries it), and nothing took it out: the
-stop was only accounted for (`stream._record_unfinished_turn`). The next turn the person sent was
-built on a thread with two unanswered messages, and the model, which sees the thread and not the
-click, answered the OLDER one. Langfuse trace `d6a00248`: "run it through a script" was stopped, then
-"Check our API docs page ..." was sent, and the agent proposed the script (and paused for approval to
-run it) and never touched the docs question.
+`POST /chat/cancel` stops a running turn, but the thread already holds the person's message (`validate_input`
+wrote it) and nothing took it out; the stop was only accounted for (`stream._record_unfinished_turn`). The
+next turn was built on a thread with two unanswered messages, and the model, which sees the thread and not the
+click, answered the OLDER one (Langfuse trace `d6a00248`: "run it through a script" was stopped, then "Check
+our API docs page ..." was sent, and the agent proposed the script and never touched the docs question).
 
-A stop means "that did not happen", so by default the whole turn is taken out of the thread. The one
-exception is a turn in which a tool had already RUN: its result is a fact the model must keep (a note
-was added, a ticket was filed; forgetting it invites doing it again under a new call id, which the
-exactly-once guard cannot catch), so that turn stays and is closed with a short assistant line
-saying the person stopped it, which also answers the dangling question.
+A stop means "that did not happen", so by default the whole turn is removed from the thread. The exception is
+a turn in which a tool had already RUN: its result is a fact the model must keep (a note was added, a ticket
+filed; forgetting it invites doing it again under a new call id, which the exactly-once guard can't catch).
+That turn stays and is closed with a short assistant line saying the person stopped it, which also answers the
+dangling question.
 """
 import asyncio
 import logging

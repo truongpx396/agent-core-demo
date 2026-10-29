@@ -1,19 +1,23 @@
-"""Operator command that applies the billing package's schema scripts to an existing database (`credit_billing/migrate.py`; spec 012; `make billing-migrate`).
+"""Operator command that applies the package's schema scripts to an existing database
+(`credit_billing/migrate.py`; spec 012; `make billing-migrate`).
 
     credit-billing-migrate                          # apply what is pending or changed, in order
     credit-billing-migrate --status                 # what is applied and what is not; writes nothing
-    credit-billing-migrate --check                  # the same, and exit 1 if anything is pending or changed: a deploy gate
+    credit-billing-migrate --check                  # as --status, and exit 1 if anything is pending or
+    changed: a deploy gate
     credit-billing-migrate --lock-timeout-seconds 30
 
-Safe to run again: a second run applies nothing. Safe to run twice at once: each script is applied once. Safe on a database the agent app
-initialised: the scripts are idempotent, so applying one to a database that already has it changes no row, and then it is recorded.
+Safe to run again (a second run applies nothing), twice at once (each script is applied once), and on a
+database the agent app initialised (the scripts are idempotent, so applying one to a database that has it
+changes no row, and then it is recorded).
 
-Exit status: 0 done, up to date, or a `--status`; 1 `--check` found a script pending or changed; 2 invalid arguments; 3 the database could not be
-reached (within a few seconds, one `error:` line naming host, port and database, never the password); 4 a migration did not complete (a lock
-wait timed out or a script failed; nothing from that script was applied or recorded, and running again is safe).
+Exit status: 0 done, up to date, or `--status`; 1 `--check` found a script pending or changed; 2 invalid
+arguments; 3 the database could not be reached (within seconds, one `error:` line naming host, port and
+database, never the password); 4 a migration did not complete (a lock wait timed out or a script failed;
+nothing from it was applied or recorded, so running again is safe).
 
-The connection comes from `APPDATA_DATABASE_URL` as in the other operator commands. Nothing runs this by itself: not on import, not on
-application start, not in the container image.
+The connection comes from `APPDATA_DATABASE_URL`, as in the other operator commands. Nothing runs this by
+itself: not on import, application start or in the image.
 """
 import argparse
 import asyncio

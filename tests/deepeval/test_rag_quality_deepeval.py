@@ -1,49 +1,37 @@
-"""LLM-judged RAG quality metrics against the real graph, via deepeval (https://github.com/confident-ai/deepeval)
-(`@pytest.mark.deepeval`, `make deepeval`; GRAPH_PATTERNS.md pattern 48).
+"""LLM-judged RAG quality metrics against the real graph, via deepeval (`@pytest.mark.deepeval`, `make deepeval`;
+GRAPH_PATTERNS.md pattern 48).
 
-A different kind of check from everything else here, not a smaller copy of one:
-- promptfoo/support.yaml's assertions are deterministic (`icontains`/`not-icontains`): keyword presence, no
-  judgment.
-- scripts/eval.py's `ungrounded_claims_count` is a structural heuristic: it counts citation markers used
-  against sentence count and never reads whether a cited CLAIM is true relative to the context.
-- test_prompt_injection_via_retrieval.py is a binary leak/no-leak keyword check on one adversarial input.
-deepeval's FaithfulnessMetric/AnswerRelevancyMetric are semantic, LLM-judged: do the answer's claims follow
-from the retrieved context (not just cite something), and does it address the question asked (not just contain
-the right keywords)? Nothing else here asks that.
+A different kind of check, not a smaller copy of another: promptfoo/support.yaml asserts keyword presence
+(deterministic); scripts/eval.py's `ungrounded_claims_count` counts citation markers against sentences and
+never reads whether a cited CLAIM is true; test_prompt_injection_via_retrieval.py is a binary leak check on
+one adversarial input. deepeval's FaithfulnessMetric/AnswerRelevancyMetric are semantic and LLM-judged: do the
+answer's claims follow from the retrieved context, and does it address the question asked?
 
-DISCLOSED FINDING, verified by running this against the same small `qwen2.5:1.5b` tests/live/ uses for CI
-speed: the judge is unreliable at that size, as promptfoo's redteam grading was at a similarly small model
-(pattern 48). A hand-verified GOOD answer scored `FaithfulnessMetric` 0.0 with a `reason` reading "There are
-no contradictions... both statements align perfectly" (a direct contradiction between score and stated
-verdict), and `AnswerRelevancyMetric` scored a good on-topic answer and a deliberately bad off-topic one THE
-SAME (0.5 each), failing to discriminate the one thing it exists to measure.
+Disclosed finding, verified against the small `qwen2.5:1.5b` that tests/live/ uses for CI speed: a judge that
+small is unreliable (as with promptfoo's redteam grading, pattern 48). A hand-verified GOOD answer scored
+`FaithfulnessMetric` 0.0 with a `reason` saying "no contradictions... both statements align perfectly", and
+`AnswerRelevancyMetric` scored a good answer and a deliberately off-topic one the same (0.5).
 
-JUDGE MODEL: the judge is `deepeval_judge` (tests/deepeval/conftest.py, `DEEPEVAL_JUDGE_MODEL`, default
-`gemini-3.1-flash-lite`), a SEPARATE knob from `deepeval_ollama`/`DEEPEVAL_MODEL`, which still drives the
-TARGET (`graph_module.CHAT_MODEL` below) and stays local. Bumping the target to `qwen2.5:3b` helped some (see
-`DEEPEVAL_MODEL`'s comment in conftest.py) but still needed the read-the-reason-by-hand caveat; moving the
-JUDGE to a hosted model is the lever promptfoo's `redteam.provider` pulled (Gemini 3.1 Flash-Lite) for the
-same reason, a deliberate, disclosed exception to this suite's otherwise-local posture. It was briefly Groq's
-`openai/gpt-oss-120b` before settling on the SAME model and key `redteam.provider` uses (see conftest.py's
-`DEEPEVAL_JUDGE_MODEL` comment): one shared exception instead of two.
+Judge: `deepeval_judge` (tests/deepeval/conftest.py, `DEEPEVAL_JUDGE_MODEL`, default `gemini-3.1-flash-lite`),
+a SEPARATE knob from `deepeval_ollama`/`DEEPEVAL_MODEL`, which drives the TARGET (`graph_module.CHAT_MODEL`)
+and stays local. A bigger target (`qwen2.5:3b`) helped some but still needed reading reasons by hand; moving
+the JUDGE to a hosted model is the lever promptfoo's `redteam.provider` pulled, a deliberate, disclosed
+exception to the suite's local posture. It uses the same model and key as `redteam.provider`, one shared
+exception instead of two.
 
-CI WIRING: `LLMTestCase(..., flaky=True)` is deepeval's first-class mechanism for this unreliability
-(confirmed in the installed `deepeval==4.2.0` source, `deepeval/evaluate/evaluate.py`'s `assert_test`): when a
-flaky case's metrics fail it `warnings.warn(...)`s instead of raising `AssertionError`, so the test PASSES
-(visible in pytest's warning summary) rather than turning CI red on judge noise. This is NOT the same as `make
-promptfoo-redteam`/`make garak`, which stay fully manual (pattern 48): a genuine crash (a broken
-`build_graph()`, an unreachable Ollama, an import error) still fails the job, since `flaky` swallows only a
-failed METRIC. Still read the `reason` fields in the CI log by hand: `flaky=True` makes a bad score
+CI: `LLMTestCase(..., flaky=True)` is deepeval's mechanism for this: a flaky case's failed metrics
+`warnings.warn` instead of raising `AssertionError` (verified in `deepeval==4.2.0` `assert_test`), so judge
+noise doesn't turn CI red. This is not the manual `make promptfoo-redteam`/`make garak` (pattern 48): a
+genuine crash (broken `build_graph()`, unreachable Ollama, import error) still fails the job, since `flaky`
+swallows only a failed METRIC. Still read the `reason` fields by hand: `flaky=True` makes a bad score
 non-blocking, not meaningful.
 
-The system prompt needs no seeding here: the agent node puts the domain's prompt first on every call, so a
-graph built directly is never an un-guided agent (an earlier version of this suite ran exactly that, for
-weeks, before it was noticed).
+No system prompt needs seeding: the agent node puts the domain's prompt first on every call, so a graph built
+directly is never un-guided (an earlier version ran that way for weeks unnoticed).
 
-Two cases: the grounded case above asks "is a claim the model DID make faithful to its context";
-`test_ungrounded_question_is_answered_without_hallucination` asks the complement nothing else here asked: does
-the model decline or hedge on something the retrieved context doesn't cover, instead of inventing an answer?
-Same two metrics, same judge, a different scenario.
+Two cases: the grounded one asks whether a claim the model DID make is faithful to its context;
+`test_ungrounded_question_is_answered_without_hallucination` asks the complement: does the model decline or
+hedge on what the context doesn't cover, rather than inventing an answer? Same metrics and judge.
 """
 import uuid
 

@@ -1,19 +1,19 @@
-"""Every route the API serves is classified, on purpose, in the front door's route table (specs/018, task T064).
+"""Every route the API serves is classified, on purpose, in the front door's route table (specs/018, T064).
 
-`services/authlimit/routes.json` says, per route, what the front door does with a request: `public` (no token), `read` (verified, never limited),
-`cancel` (verified, never limited, stopping a runaway turn must not be throttled), `turn` and `upload` (verified AND charged to the tenant's and the
-person's token buckets). A route the table does not list is not unsafe: it falls to the `turn` class, which verifies it and limits it. But that is a
-silent choice, and a quiet wrong one for a read-only page (every fetch would burn a turn from a person's bucket of 5). So a route added to the API
-without a decision about its class fails here, with the list of what is unclassified.
+`services/authlimit/routes.json` says per route what the door does: `public` (no token), `read` (verified,
+never limited), `cancel` (verified, never limited: stopping a runaway turn must not be throttled), `turn` and
+`upload` (verified AND charged to the tenant and person buckets). An unlisted route falls to `turn`, which is
+safe but a silent, quietly wrong choice for a read-only page (every fetch would burn a turn from a bucket of
+5). So a route added without a decision fails here, listing what is unclassified.
 
-The Go side pins the same intent from its own end (`TestEveryRouteTheAPIServesIsInTheDefaultTable`); this walks the REAL app, so the two cannot
-drift apart. The matcher below is a port of `internal/limiter/routes.go`'s (first match wins; `{name}` is one non-empty segment; a trailing `*` is any
-tail; a `*` method is any method).
+The Go side pins the same intent (`TestEveryRouteTheAPIServesIsInTheDefaultTable`); this walks the REAL app so
+the two cannot drift. The matcher is a port of `internal/limiter/routes.go`'s (first match wins; `{name}` is
+one non-empty segment; a trailing `*` is any tail; a `*` method is any method).
 
-What this can and cannot see. The documented surface comes from OpenAPI (the technique tests/api/test_routes_mounted.py uses, because FastAPI does
-not flatten included routers into `app.routes`); the payment webhook, hidden from OpenAPI on purpose, is read from its router; FastAPI's own pages
-are plain routes on the app. A NEW route hidden from OpenAPI inside another router is not seen here. It is still safe (the fallback verifies and
-limits it); it is only unclassified.
+The documented surface comes from OpenAPI (as tests/api/test_routes_mounted.py does, since FastAPI doesn't
+flatten included routers into `app.routes`); the payment webhook, hidden from OpenAPI, is read from its
+router; FastAPI's own pages are plain routes. A NEW route hidden from OpenAPI inside another router isn't seen
+here; it is still safe (the fallback verifies and limits it), only unclassified.
 """
 import json
 from pathlib import Path

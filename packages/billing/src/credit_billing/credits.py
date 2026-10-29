@@ -1,47 +1,43 @@
 """The credit wallet: grants, debits and expiries as an append-only ledger (postgres-init/20).
 
 A tenant is on credit billing if and only if it has a `credit_accounts` row. For any other tenant every
-function here is a no-op reporting `no_account`, so adding the wallet changes nothing for an existing tenant
-until an operator, or a verified purchase webhook, opens an account.
+function here is a no-op reporting `no_account`, so the wallet changes nothing until an operator, or a
+verified purchase webhook, opens an account.
 
 ## Guarantees, and what gives each one
 
 - **Exactly once.** Every grant, debit and expiry carries an idempotency key, and `UNIQUE (tenant,
   idempotency_key)` on `credit_transactions` makes a replay insert nothing. A debit is keyed by the usage
-  event that caused it, so a replayed model call can't be charged twice.
+  event that caused it.
 - **A key stands for ONE request** (spec 012). The transaction stores a normalised description of its request
   (`credit_transactions.request`) and a reused key is compared with it: the same request is a harmless
-  `duplicate`; a DIFFERENT one raises `IdempotencyConflict` naming the differing fields and changes nothing.
-  Before this, a caller asking for 600 credits under a key that had granted 500 was told "already applied" and
-  its 600 was lost without a trace. Which fields identify a request is an explicit, validated choice per call
-  (`compare=`); the default is every field. A row from before the column existed has no stored request and
-  behaves as it always did.
+  `duplicate`; a DIFFERENT one raises `IdempotencyConflict` naming the differing fields and changes nothing
+  (before, a 600-credit request under a key that had granted 500 was told "already applied" and lost). Which
+  fields identify a request is chosen per call (`compare=`, default every field). A row from before the column
+  has no stored request and behaves as it did.
 - **A serial outcome under concurrency.** Every write for one tenant first takes
-  `pg_advisory_xact_lock(hash(tenant))`. The row locks on lots already stop a lost update on a lot's
-  `remaining`, and the tests show every other guarantee holds without the tenant lock. What only the lock
-  gives is the CANONICAL state: a debit racing a grant could otherwise book a debt next to live credit (same
-  net balance, but a wallet that owes and holds at once is one nobody can explain). With the lock, grants and
-  debits end exactly as a serial run would (`TestTheCanonicalState` fails 3 of 3 times without it). A
-  per-tenant lock is simpler to reason about than ordering locks across lots, and a tenant's model-call rate
-  is too low for it to bottleneck; revisit only if a measured rate says otherwise. It is held to the end of
-  the caller's transaction, which is the point: the debit commits (or not) together with whatever caused it.
-- **Credits are exact.** `NUMERIC(18,6)` and `Decimal`, never a float: floats drift, and an integer credit
-  would overcharge every small call.
+  `pg_advisory_xact_lock(hash(tenant))`. Row locks on lots already stop a lost update on `remaining`; what
+  only the tenant lock gives is the CANONICAL state, since a debit racing a grant could book a debt next to
+  live credit (same net balance, but a wallet that owes and holds at once is one nobody can explain;
+  `TestTheCanonicalState` fails 3 of 3 times without it). A per-tenant lock is simpler than ordering locks
+  across lots, and a tenant's call rate is too low for it to bottleneck. It is held to the end of the caller's
+  transaction, so a debit commits with whatever caused it.
+- **Credits are exact**: `NUMERIC(18,6)` and `Decimal`, never a float.
 - **The ledger is the truth.** `credit_entries` is append-only and a lot's `remaining` is a cache kept equal
-  to the sum of its entries inside the lock; `verify()` reports any drift.
+  to the sum of its entries inside the lock; `verify()` reports drift.
 - **A debit never fails because the balance is short.** The model call it pays for already happened, so
-  refusing to record it would only lose the fact. The shortfall is booked on the tenant's `overdraft` lot (a
-  negative `remaining`), counted, and repaid first by the next grant. Stopping the spend is gating's job
-  (`budgets.check_allowance`, BEFORE the call), not the debit's.
+  refusing to record it would only lose the fact. The shortfall goes on the tenant's `overdraft` lot (negative
+  `remaining`), is counted, and the next grant repays it first. Stopping the spend is gating's job
+  (`budgets.check_allowance`, BEFORE the call).
 
 ## Consumption order
 
 Earliest-expiring lot first (no expiry last), then oldest. A lot past its `expires_at` is never consumed,
-whether or not the sweep (`expire_due`) has booked its expiry yet, so the available balance is right the
-instant a lot expires.
+whether or not the sweep (`expire_due`) has booked it, so the available balance is right the instant a lot
+expires.
 
-The `*_in` functions run inside the caller's transaction (`sql_store.get_connection()` is one), so a debit can
-commit with the usage event that caused it; the plain ones open their own.
+The `*_in` functions run inside the caller's transaction (`sql_store.get_connection()` is one), so a debit
+commits with its usage event; the plain ones open their own.
 """
 import logging
 from collections.abc import Collection, Mapping, Sequence

@@ -2,35 +2,27 @@
 `inbox.py`).
 
 `billing_usage_events` is append-only and grows with every recorded unit of usage. This deletes events older
-than `BILLING_USAGE_EVENT_RETENTION_DAYS` (400 by default).
-
-## What it must not delete
-
+than `BILLING_USAGE_EVENT_RETENTION_DAYS` (400 by default), except:
 - **An event inside a window something still reads.** The wallet reconciliation reads back up to
   `CREDIT_RECONCILE_LOOKBACK_DAYS` (35 at most) and the export outbox gives up on an unsent event at 30. The
-  floor is 35 days (`BILLING_USAGE_EVENT_MIN_RETENTION_DAYS`) and a smaller `older_than_days` raises BEFORE
-  any row is touched, so the floor holds for every caller, not just the command.
-- **An event whose export never finished** (`billing_export_outbox.status` of `pending`, `failed` or
-  `expired`). That is usage meant to reach a provider and didn't: lost revenue with an alert on it. Deleting
-  the evidence because it is old would turn something unresolved into something nobody can see, so these are
-  kept and counted (`held_back`). `sent` is the only finished state: those events are deleted together with
-  their outbox rows, because the foreign key would refuse the delete otherwise (the guard the script
-  describes), and both go in ONE statement since the constraint is checked at its end.
-- **Anything younger than the cutoff**, in any tenant. Like the inbox sweep this deliberately spans tenants:
-  retention is a property of the table, and the job is an operator's, never reachable from a request.
+  floor is 35 days (`BILLING_USAGE_EVENT_MIN_RETENTION_DAYS`), and a smaller `older_than_days` raises BEFORE
+  any row is touched, so it holds for every caller, not just the command.
+- **An event whose export never finished** (`billing_export_outbox.status` `pending`, `failed` or `expired`):
+  usage meant to reach a provider and didn't, lost revenue with an alert on it. Deleting the evidence because
+  it is old would hide something unresolved, so these are kept and counted (`held_back`). `sent` is the only
+  finished state; those events go together with their outbox rows in ONE statement (the foreign key would
+  refuse otherwise, and the constraint is checked at statement end).
+- **Anything younger than the cutoff**, in any tenant. Like the inbox sweep this spans tenants (retention is a
+  property of the table) and is an operator job, never reachable from a request.
 
-## What deleting an event does NOT touch
-
-The wallet. A `credit_transactions` row keeps the `usage_event_id` it was charged for as lineage, but no
-foreign key points at it and the wallet is a permanent financial record: the debit stays, and so does the
-balance. What goes with the event is the ability to recompute that debit's credits from the event row, so keep
-events at least as long as you may need to explain a charge.
-
-## How the delete is allowed
+Deleting an event does NOT touch the wallet. A `credit_transactions` row keeps its `usage_event_id` as lineage
+but no foreign key points at it, and the wallet is a permanent financial record: the debit and balance stay.
+What goes is the ability to recompute that debit's credits from the event, so keep events as long as you may
+need to explain a charge.
 
 The table refuses DELETE unless the transaction says so (`billing_usage_events.allow_delete`).
-`set_config(..., true)` is LOCAL to the transaction, so it can't be left switched on, and each batch commits
-on its own so a sweep never holds a long lock.
+`set_config(..., true)` is LOCAL to the transaction, so it can't be left on, and each batch commits on its own
+so a sweep never holds a long lock.
 
 Imports nothing from `app` (enforced by tests/test_boundary.py).
 """

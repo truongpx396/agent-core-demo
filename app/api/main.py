@@ -1,48 +1,35 @@
-"""FastAPI service exposing the LangGraph agent over HTTP.
+"""FastAPI service exposing the LangGraph agent over HTTP (`make serve`, then http://localhost:8000/docs). It
+reuses the CLI's agent runtime, so memory (by thread_id) and Langfuse tracing behave the same.
 
 Endpoints:
 - GET  /                     built-in web UI (app/api/static/index.html)
-- GET  /health               liveness (200 while the process is up)
-- GET  /health/ready         readiness (200 only if Qdrant/Postgres/Redis/ml-service are reachable, see
-  app/api/health.py; metrics are pushed via OTLP, not pulled here)
-- POST /chat/stream/queued   the ONLY way to run a turn over HTTP: the SSE vocabulary an in-process
-  astream_events_turn would produce, but the turn runs on a separate agent_worker.py via a Redis Streams queue
-  (pattern 43; needs `make agent-worker`). Routes by the `X-Domain` header (default "ecorp", see get_domain)
-  to that domain's worker pool; with /chat/resume and /chat/cancel it is where this service serves every
-  registered domain
-- POST /chat/resume          continues a turn paused at human_approval (HTTP counterpart of
-  astream_events_resume), on the same per-domain queue
-- POST /chat/cancel          stops a turn, streaming or paused at human_approval
-- GET  /chat/sessions        this caller's past threads for the given X-Domain, most recent first (session
-  switcher)
-- GET  /chat/sessions/{thread_id}/messages            that thread's transcript (404 if it belongs to a
-  different domain)
-- GET  /chat/sessions/{thread_id}/pending_approval    null, or the tool call(s) still awaiting approval, so
-  the web UI can re-show the prompt after a reload or session switch
-- POST /billing/webhooks/{provider}   a payment provider's signed webhook (NOT behind the tenant headers:
-  authenticity is the signature; becomes credits exactly once, see
-  packages/billing/src/credit_billing/http.py)
+- GET  /health               liveness
+- GET  /health/ready         readiness: Qdrant, Postgres, Redis and ml-service reachable (app/api/health.py)
+- POST /chat/stream/queued   the ONLY way to run a turn over HTTP: the turn runs on a separate agent_worker.py
+  through a Redis Streams queue (pattern 43; needs `make agent-worker`), routed by the `X-Domain` header
+  (default "ecorp") to that domain's worker pool
+- POST /chat/resume          continues a turn paused at human_approval, on the same per-domain queue
+- POST /chat/cancel          stops a turn, streaming or paused
+- GET  /chat/sessions        this caller's past threads for the given X-Domain, most recent first
+- GET  /chat/sessions/{thread_id}/messages            a thread's transcript (404 if it belongs to another
+  domain)
+- GET  /chat/sessions/{thread_id}/pending_approval    null, or the tool call(s) awaiting approval, so the UI
+  can re-show the prompt after a reload
+- POST /billing/webhooks/{provider}   a payment provider's signed webhook (not behind the tenant headers:
+  authenticity is the signature; see packages/billing/src/credit_billing/http.py)
 - GET  /usage                this caller's tenant usage and cost, including the rolling-24h number
-  budgets.check_tenant_daily checks
-- POST /ingest/upload        upload PDF/DOCX; each file becomes its own job on a SEPARATE queue from chat
-  turns, processed by ingest_worker.py (this endpoint only does the MinIO upload and job publish)
+- POST /ingest/upload        upload PDF/DOCX; each file is its own job on a SEPARATE queue, processed by
+  ingest_worker.py
 - GET  /ingest/stream/{job_id}   SSE progress for one upload's job
 
-It reuses the agent runtime of the CLI, so memory (by thread_id) and Langfuse tracing behave the same here.
+This module is only the app: lifespan, middleware and `include_router` calls. Handlers are in app/api/routers/
+(chat, ingest, usage, system), the identity and domain dependencies in app/api/deps.py. `configure_logging()`
+must stay HERE: uvicorn imports `app.api.main:app` and never runs a `__main__` block.
 
-This module is only the app: lifespan, middleware and the `include_router` calls. Handlers live in
-app/api/routers/ (chat.py, ingest.py, usage.py, system.py), the identity and domain dependencies in
-app/api/deps.py. `configure_logging()` below must stay HERE: uvicorn imports `app.api.main:app` and never runs
-a `__main__` block.
-
-Run with: `make serve` (then open http://localhost:8000/docs)
-
-## Identity: two modes
-
-See app/api/deps.py (`get_ctx`): `AUTH_MODE=identity` (default) trusts only the signed identity the authlimit
-front door adds to a verified request; `AUTH_MODE=headers` trusts `X-Tenant-Id` / `X-Principal-Id` as sent and
-is for tests and a developer's own machine. The lifespan refuses to start in identity mode without the front
-door's key address, and announces the mode in force.
+Identity (`get_ctx` in app/api/deps.py): `AUTH_MODE=identity` (default) trusts only the signed identity the
+authlimit front door adds; `AUTH_MODE=headers` trusts `X-Tenant-Id`/`X-Principal-Id` as sent, for tests and a
+developer's machine. The lifespan refuses to start in identity mode without the front door's key address, and
+announces the mode.
 """
 import asyncio
 import contextlib

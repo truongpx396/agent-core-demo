@@ -1,39 +1,33 @@
-"""OpenSandbox (https://github.com/opensandbox-group/OpenSandbox) consumed over MCP (pattern 50) through the
-unmodified `app/mcp/client.py::load_remote_tools` (pattern 28). `opensandbox-mcp` is a purpose-built stdio MCP
-server bridging to a containerized `opensandbox-server` (`make sandbox-up`). It runs as its own packaged CLI,
-`python -m opensandbox_mcp ... --use-server-proxy`. That flag, added in release 1.1, is what a sandbox call
-needs: without it the call hangs 40+ seconds against a Docker-internal bridge IP the host can't reach. (Before
-1.1 the CLI couldn't set it, and `scripts/opensandbox_mcp_bridge.py` was a wrapper whose only job was to.)
+"""OpenSandbox (github.com/opensandbox-group/OpenSandbox) consumed over MCP (pattern 50) through the unmodified
+`app/mcp/client.py::load_remote_tools` (pattern 28). `opensandbox-mcp` is a stdio MCP server bridging to a
+containerized `opensandbox-server` (`make sandbox-up`), run as `python -m opensandbox_mcp ...
+--use-server-proxy`. Since release 1.1 that flag is what a sandbox call needs: without it the call hangs 40+
+seconds against a Docker-internal bridge IP the host can't reach.
 
 Historical gotcha: sandbox-creation calls 405'd because `opensandbox_mcp_domain`'s old port (8080) collided
-with `docker-compose.yml`'s `open-webui`, so requests silently landed there. Fixed with port 8090 and a real
+with `open-webui` in docker-compose.yml, so requests silently landed there. Fixed with port 8090 and a real
 `--api-key`.
 
-## Why a real code-execution tool, unlike `app/agent/tools/builtin.py::calculator`
-`calculator` is a narrow AST evaluator because the app had nowhere safe to run arbitrary code. An isolated,
-disposable container is a real security boundary, so OpenSandbox changes that. It is wired into the ops domain
-for investigations needing more than arithmetic (recompute a percentile, grep a log dump, diff two JSON
-configs).
+Why a real code-execution tool, unlike `calculator` (app/agent/tools/builtin.py): calculator is a narrow AST
+evaluator because the app had nowhere safe to run arbitrary code. An isolated, disposable container is a real
+boundary, so it is wired into the ops domain for investigations needing more than arithmetic (a percentile,
+grepping a log dump, diffing configs).
 
-## Fail-soft, lazy loading
-The tool catalog is served from static definitions, not proxied to the backend, so `load_sandbox_tools()`
-returns near-instantly even with no `opensandbox-server` running (only calling a tool needs the backend). Its
-one caller, `sandbox_session.py::load_raw_sandbox_tools`, calls it lazily and caches it. It must degrade,
-never crash, if opensandbox-mcp is missing or the bridge hangs: it runs under `arun_with_timeout`, catches all
-exceptions, and degrades to `([], {})` with a logged warning.
+Fail-soft, lazy: the catalog is served from static definitions, not the backend, so `load_sandbox_tools()`
+returns near-instantly even with no `opensandbox-server` (only calling a tool needs it). Its caller,
+`sandbox_session.py::load_raw_sandbox_tools`, calls it lazily and caches. It must degrade, never crash, if
+opensandbox-mcp is missing or the bridge hangs: it runs under `arun_with_timeout`, catches everything, and
+returns `([], {})` with a warning.
 
-A connection-shaped failure (`ConnectionError`/`TimeoutError`: a bridge that started but couldn't yet reach
-`opensandbox-server`, or hung past `_SANDBOX_LIST_TIMEOUT_SECONDS`) gets one retry via
-`app/core/resilience.py::CircuitBreaker`. That rides out the server still booting, the scenario
-`sandbox_session.py`'s "never cache an empty result" comment tolerates on the caller's side. Any other
-exception (e.g. `FileNotFoundError`, the bridge package isn't installed) is never retried, since it would look
-identical a second later. After enough consecutive exhausted retries, `_OPENSANDBOX_BREAKER` fails calls fast
-(no subprocess spawn) until its cooldown elapses.
+A connection-shaped failure (`ConnectionError`/`TimeoutError`: a bridge that couldn't yet reach the server, or
+hung past `_SANDBOX_LIST_TIMEOUT_SECONDS`) gets one retry via `app/core/resilience.py::CircuitBreaker`, riding
+out a server still booting. Any other exception (e.g. `FileNotFoundError`, package not installed) is never
+retried. After enough consecutive exhausted retries `_OPENSANDBOX_BREAKER` fails calls fast until its
+cooldown.
 
-## Disclosed gap: no SecurityCtx, no tenant scoping
-Same limitation as any remote MCP tool (app/mcp/client.py): MCP has no `RunnableConfig`/`SecurityCtx` channel.
-Acceptable because a code sandbox is a shared operational resource, not tenant data; the mandatory-approval
-gate (every tool forced to "outward") is the actual safety boundary.
+Disclosed gap: no SecurityCtx or tenant scoping, as for any remote MCP tool (MCP has no `RunnableConfig`
+channel). Acceptable because a code sandbox is a shared operational resource, not tenant data; the
+mandatory-approval gate (every tool forced to "outward") is the actual boundary.
 """
 import logging
 import sys

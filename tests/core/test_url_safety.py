@@ -1,23 +1,15 @@
-"""The shared SSRF guard (`app/core/url_safety.py`) in front of every fetch of a
-caller- or agent-supplied URL: `ingest_url` and the headless-browser crawl.
+"""The shared SSRF guard (`app/core/url_safety.py`) in front of every fetch of a caller- or agent-supplied URL:
+`ingest_url` and the headless-browser crawl. Two defects were reproduced first (spec 009):
+- B26: the guard refused only private, loopback, link-local, reserved, multicast or unspecified addresses.
+  `100.64.0.0/10` (carrier-grade NAT, RFC 6598) is none of those, and `100.100.100.200` is Alibaba Cloud's
+  instance-metadata address, the same class of target as `169.254.169.254`. It is now an allow-list: only a
+  *globally routable* address passes.
+- B27: `assert_safe_url` resolves with the blocking `socket.getaddrinfo` and both `async def` callers called
+  it directly, so one slow DNS answer froze the event loop (every other turn, stream and health check on that
+  worker). Measured: a 0.5 s resolver stalled a concurrent heartbeat for 0.51 s.
 
-Two defects were found and reproduced before this file existed (spec 009):
-
-  * B26 — the guard refused an address only if it was private, loopback,
-    link-local, reserved, multicast or unspecified. `100.64.0.0/10` (carrier-grade
-    NAT, "shared address space", RFC 6598) is none of those, so it was allowed —
-    and `100.100.100.200` is Alibaba Cloud's instance-metadata address, the same
-    class of target as `169.254.169.254`. The check is now an allow-list:
-    only a *globally routable* address passes.
-  * B27 — `assert_safe_url` resolves the host with the blocking
-    `socket.getaddrinfo`, and both callers are `async def` and called it
-    directly, so one slow DNS answer froze the whole event loop (every other
-    turn, stream and health check on that worker) for as long as it took.
-    Measured: a 0.5 s resolver stalled a concurrent heartbeat for 0.51 s.
-
-Classification is tested through a patched resolver so the result does not
-depend on the machine's DNS or on how its libc spells an address; a few IP-literal
-hosts are also run through the real resolver, which needs no network.
+Classification is tested through a patched resolver so results don't depend on the machine's DNS or libc's
+address spelling; a few IP-literal hosts also run through the real resolver, which needs no network.
 """
 import asyncio
 import socket

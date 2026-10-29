@@ -1,37 +1,31 @@
 """`route_model`: the one node that may ask for a different model, and what happens when asking fails (specs/014,
-specs/015; GRAPH_PATTERNS pattern 68).
+015; GRAPH_PATTERNS pattern 68).
 
-WHAT THE ROUTER MAY DO. Write `State.model_route` ("local", "medium" or "strong") and nothing else. It can't
-see or change which tools a turn may call, whether a write needs approval, whose data is read, or whether a
-write repeats: `human_approval`, `SecurityCtx` and `idempotent()` decide those, unchanged under every tier. A
-router that could touch them would be a second authority over the non-negotiable rules; this one advises on a
-price and capability level, and a test pins identical tool-gating under all three tiers.
+What it may do: write `State.model_route` ("local", "medium" or "strong") and nothing else. It can't see or
+change which tools a turn may call, whether a write needs approval, whose data is read or whether a write
+repeats: `human_approval`, `SecurityCtx` and `idempotent()` decide those under every tier (a test pins
+identical tool-gating under all three). A router that could touch them would be a second authority over the
+non-negotiable rules.
 
-HOW IT DECIDES. Two signals each name the lowest tier they accept (`app/core/routing_policy.py`, a pure module
-the evaluation harness runs too): rules over the user's message, and the label the ML service's label set
-gives it (`app/core/classification.py`). The tier is the highest configured tier at or below `min(ceiling,
-max(rules, label))`. A label that can't be had (service down or slow, no topic found, or a topic this app's
-table doesn't know) leaves the rules to decide, and is counted.
+How it decides: two signals each name the lowest tier they accept (`app/core/routing_policy.py`, pure, also
+run by the evaluation harness): rules over the user's message, and the label from the ML service's label set
+(`app/core/classification.py`). The tier is the highest configured tier at or below `min(ceiling, max(rules,
+label))`. A label that can't be had (service down or slow, no topic, unknown topic) leaves the rules to
+decide, and is counted.
 
-THREE MODES (`ROUTER_MODE`). `off` does nothing: no work, no call, byte-identical to a build without routing.
-`shadow` makes and logs every decision but runs the turn locally, so an operator reads what the router WOULD
-have spent before it spends anything. `on` acts. One code path: the mode only picks what is written to
-`State`.
+`ROUTER_MODE`: `off` does nothing (byte-identical to a build without routing); `shadow` makes and logs every
+decision but runs the turn locally, so an operator reads what the router WOULD have spent; `on` acts. One code
+path: the mode only picks what is written to `State`.
 
-WHERE IT RUNS. After moderation, the semantic cache and compaction, before retrieval (build.py): never for a
-refused input, a cache hit or a resumed turn, so only a turn about to reach a model pays for asking. Parent
-graph only; a nested subagent has its own model and budgets (`SUBAGENT_PROFILE`).
+It runs after moderation, the semantic cache and compaction, before retrieval (build.py), so only a turn about
+to reach a model pays for asking; parent graph only (a subagent has its own model and budgets). It sends only
+the user's current message, under a short deadline: no tenant, principal, history or retrieved text.
 
-WHAT IT SENDS. The user's current message, to the ML service, under a short deadline; not the tenant,
-principal, history or retrieved text.
-
-EVERY FAILURE LANDS ON A TIER THE OPERATOR ALREADY PAYS FOR. No label: the rules decide. An alias with no
-price under `UNPRICED_MODEL_POLICY=block` (which would make `agent()` refuse the turn; the router must never
-be why a turn is refused): step down a tier. Anything unexpected: `local`. The one exception is a routed model
-failing mid-turn, which `agent()` handles by repeating that one call locally (`routed_unreachable` below;
-checked against a real LiteLLM).
-
-NOTHING HERE RAISES: a raising node would turn an advisory feature into an outage.
+Every failure lands on a tier the operator already pays for. No label: the rules decide. An alias with no
+price under `UNPRICED_MODEL_POLICY=block`: step down a tier (the router must never be why a turn is refused).
+Anything unexpected: `local`. A routed model failing mid-turn is `agent()`'s to handle by repeating that call
+locally (`routed_unreachable`). Nothing here raises: a raising node would turn an advisory feature into an
+outage.
 """
 import logging
 import time
@@ -80,18 +74,21 @@ def tier_alias(route: object) -> str | None:
 
 
 def routed_unreachable(exc: BaseException) -> bool:
-    """True if `exc` means a routed alias never produced an answer: a connection failure, a timeout, or the gateway reporting a server error (5xx).
+    """True if `exc` means a routed alias never produced an answer: a connection failure, a timeout, or the
+    gateway reporting a server error (5xx).
 
-    WHY ANY 5xx AND NOT 502/503/504. The first version listed those three, from reading about proxies. A real LiteLLM in front of an unreachable
-    upstream answers HTTP **500** (`litellm.APIConnectionError: ... Cannot connect to host`), and so does an upstream that is up but does not have
-    the model, so that list would never have fired for the failure it exists for. The gateway does not distinguish "down" from "broken" by status,
-    and for this decision it does not need to: either way the routed model did not answer, and repeating the one call on the local model is the
-    behaviour the app had before routing existed. It is counted (`routed_unreachable_fell_back`) and alerted on, so a persistently broken alias is loud,
-    not hidden.
+    Any 5xx, not just 502/503/504: a real LiteLLM in front of an unreachable upstream answers HTTP **500**
+    (`APIConnectionError: ... Cannot connect to host`), as does an upstream that is up but lacks the model, so
+    the first version's 502/503/504 list never fired for the failure it exists for. The gateway doesn't
+    distinguish "down" from "broken" by status and this decision doesn't need it: either way the routed model
+    didn't answer, and repeating that one call locally is what the app did before routing. It is counted
+    (`routed_unreachable_fell_back`) and alerted, so a persistently broken alias is loud.
 
-    NOT the gateway's budget stop (`provider_budget_exceeded`): that refusal repeats until the budget resets and is the operator's signal, which a
-    silent fallback would hide. NOT any 4xx: the routed model was reached and refused the request (a bad request, a bad key, a rate limit), which
-    a retry on another model would paper over rather than fix. Checked in this order so a budget stop that arrives as a 5xx is still not caught."""
+    NOT the gateway's budget stop (`provider_budget_exceeded`): it repeats until the budget resets and is the
+    operator's signal, which a silent fallback would hide. NOT any 4xx: the model was reached and refused (bad
+    request, bad key, rate limit), which a retry elsewhere would paper over. Checked in that order, so a
+    budget stop that arrives as a 5xx is still not caught.
+    """
     if gateway.is_budget_exceeded(exc):
         return False
     if isinstance(exc, openai.APIConnectionError):  # includes APITimeoutError

@@ -1,53 +1,37 @@
 """What has this tenant (or one person in it) spent? The read behind every dollar cap and `GET /usage`.
 
-It sums `usage_events` (postgres-init/19), the per-CALL meter that billing, the credit wallet and the export
-outbox are built on, replacing the old per-TURN `usage_ledger` sum (specs/010 T030). One record of spend
-instead of two a test keeps agreeing, and three gaps close:
-  * **A turn is counted as it spends, not when it ends.** The ledger row was written after the last step, so a
-    turn that timed out, was cancelled or sat paused spent money no cap saw. An event lands when its call
-    returns.
-  * **Every call kind is counted by construction:** follow-ups, compaction, subagents and the cron scripts all
-    write events through `metering.metered_invoke`.
-  * **The cap and the bill can't disagree:** they sum the same rows.
+It sums `usage_events` (postgres-init/19), the per-CALL meter that billing, the wallet and the export outbox
+are built on (it replaced the per-TURN `usage_ledger` sum, specs/010 T030). Compared with the ledger:
+- A turn is counted as it spends, not when it ends, so a turn that timed out, was cancelled or sat paused no
+  longer spends money no cap saw.
+- Every call kind is counted by construction (follow-ups, compaction, subagents, cron scripts all write events
+  through `metering.metered_invoke`), and the cap and the bill can't disagree because they sum the same rows.
+- An unpriced call adds $0 (`cost_usd` is NULL) but still its tokens; it is counted as
+  `agent_unpriced_usage_total`, and `UNPRICED_MODEL_POLICY=block` refuses a model with no price.
+- The window is `occurred_at` (indexed by `(tenant, occurred_at)`), so a long turn lands in the window it ran
+  in.
+- A running turn is counted twice, in the safe direction: its finished calls are events while its hold
+  (`budget_holds.reserve_budget`) still stands. That over-counts by at most what it has spent and never lets a
+  burst through. A person's limit ignores holds.
 
-## Deliberately different from the ledger sum
+## What a read costs (measured with 2,000,000 events for one tenant in 30 days)
 
-  * An unpriced call adds $0 (`cost_usd` is NULL: unknown, not free; `SUM` skips NULLs) but still its tokens.
-    It is already counted as `agent_unpriced_usage_total`; `UNPRICED_MODEL_POLICY=block` is what refuses a
-    model with no price.
-  * The window is `occurred_at` (the moment of the call, indexed by `(tenant, occurred_at)`), not the end of
-    the turn, so a long turn is counted in the window it ran in.
-  * A running turn is counted twice, in the safe direction: its finished calls are events while its hold
-    (`budget_holds.reserve_budget`) still stands, so a sibling's tenant check sees "spent so far + the whole
-    hold". That over-counts by at most what the turn has spent and never lets a burst through. (A person's
-    limit ignores holds.)
+Tenant rolling 24h (the always-on cap) 9.3 ms; one person 24h 5.8 ms; one person calendar month 98 ms;
+**tenant calendar month 426 ms, a sequential scan**. A `(tenant, principal, occurred_at)` index was measured
+and NOT added: it saves ~5 ms on an opt-in cap and costs 118 MB (32% of the table) plus a write per model
+call. The monthly caps are linear in a month's calls and off by default; the lever, if a tenant makes them
+slow, is a per-day rollup written in the event's transaction (not built; in the README's known gaps).
 
-## What a read costs (measured 2026-10-08, throwaway Postgres, one tenant with 2,000,000 events in 30 days)
+## History and failure
 
-All served by `usage_events (tenant, occurred_at)`; a person's read filters `principal` after that range:
-  * tenant, rolling 24h (the always-on cap): 9.3 ms;
-  * one person, 24h: 5.8 ms; one person, calendar month: 98 ms;
-  * **tenant, calendar month: 426 ms, a sequential scan of the 2,000,000 rows** (194 ms with a covering index,
-    measured and not adopted).
+Events begin when postgres-init/19 is applied, so `scripts/usage_events_carry_over.py` copies the older ledger
+rows once (ids `ledger:<id>`, never rated, charged or exported). Run it BEFORE a deployment starts reading
+from here (README upgrade note).
 
-A `(tenant, principal, occurred_at)` index was measured and NOT added: it saves ~5 ms on an opt-in cap while
-costing 118 MB (32% of the table) and a write per model call. **The monthly caps are linear in a month's calls
-and off by default**; the lever, if a tenant makes them slow, is a per-day rollup written in the event's
-transaction (not built; disclosed in the README's known gaps).
-
-## History from before the events existed
-
-Events begin when postgres-init/19 is applied, so a straight switch would make a monthly cap forget the month
-so far. `scripts/usage_events_carry_over.py` copies the older ledger rows once (ids `ledger:<id>`; never
-rated, charged or exported: history, not calls). Run it BEFORE a deployment starts reading from here (README
-upgrade note).
-
-## When this cannot answer
-
-A missing table or unreachable database raises, and the caller applies `BUDGET_CHECK_FAILURE_POLICY` as it did
-for the ledger ("open" serves the turn and counts `agent_cost_governance_degraded_total{path="ledger_read"}`,
-alert `TenantAllowanceUnenforced`; "closed" refuses). Nothing here swallows an error: a cap that silently
-reads zero is a cap that is off.
+A missing table or unreachable database raises, and the caller applies `BUDGET_CHECK_FAILURE_POLICY` ("open"
+serves the turn and counts `agent_cost_governance_degraded_total{path="ledger_read"}`, alert
+`TenantAllowanceUnenforced`; "closed" refuses). Nothing here swallows an error: a cap that silently reads zero
+is a cap that is off.
 """
 from datetime import datetime
 

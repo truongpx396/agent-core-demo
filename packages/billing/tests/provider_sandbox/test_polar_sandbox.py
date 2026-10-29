@@ -1,23 +1,25 @@
-"""The Polar adapter against Polar's real SANDBOX (specs/010 T029b). Manual: `make test-provider-sandbox`, never CI.
+"""The Polar adapter against Polar's real SANDBOX (specs/010 T029b). Manual: `make test-provider-sandbox`, never
+CI.
 
-The hermetic suite proves the adapter against Polar's documentation and Polar's own SDK (its signature vectors are verified by the SDK's
-verifier; its payload fixtures come from `polar trigger --json`). This proves it against Polar itself, in three ways nothing else can:
+The hermetic suite proves the adapter against Polar's documentation and SDK (signature vectors verified by the
+SDK; payloads from `polar trigger --json`). This proves it against Polar itself:
+- a Checkout request the real API accepts, with the session shape `tests/fake_polar_api.py` assumes, and the
+  fact the design rests on: **Polar ignores an `Idempotency-Key`** (this file sends one twice and gets two
+  sessions), which is why the adapter searches before it creates; the reconciliation runs against the real
+  list endpoint;
+- a delivery SIGNED BY POLAR (via `polar listen`, whose secret the CLI prints) verifies, and the same bytes
+  are refused when altered, stale, in the future, under another secret or signature version;
+- the events `polar trigger` produces for every handled or ignored type normalize as intended, a purchase and
+  its refund share one `payment_ref`, and a partial refund isn't a full one.
 
-  * a Checkout request the real API accepts, whose session has the shape `tests/fake_polar_api.py` assumes, and the fact that
-    shapes the whole checkout design: **Polar ignores an `Idempotency-Key`** (this file sends one twice and gets two sessions), which is why
-    the adapter searches before it creates. The reconciliation is exercised against the real list endpoint;
-  * a delivery SIGNED BY POLAR (via `polar listen`, whose secret the CLI prints) verifies with the adapter's code, and the same bytes are
-    refused when altered, stale, in the future, under another secret, or under another signature version;
-  * the events Polar's own `polar trigger` produces for every type the adapter handles or must ignore normalize as intended, a purchase
-    and the refund that reverses it share one `payment_ref`, and a partial refund is not a full one.
+It does NOT pay a checkout (that takes a browser), so purchase and refund events here are Polar's SAMPLES,
+signed by its real delivery path. An order actually PAID through a session this adapter created is
+test_polar_paid_checkout.py.
 
-What this module does NOT do: pay a checkout (that takes a browser: a Stripe Elements card form), so the purchase and refund events here are
-Polar's SAMPLE events (a generator's payloads, signed by Polar's real delivery path). An order a buyer actually PAID, through a session this
-app's adapter created, is tests/provider_sandbox/test_polar_paid_checkout.py.
-
-Needs: POLAR_ACCESS_TOKEN (an Organization Access Token from sandbox.polar.sh; `POLAR_ENVIRONMENT` must be `sandbox` or the run FAILS) and
-the `polar` CLI logged in to the same organization. It creates labelled objects (`metadata.agent_core_demo_test=true`), archives the
-product and deletes the customer afterwards; checkout sessions expire on their own.
+Needs POLAR_ACCESS_TOKEN (an Organization Access Token from sandbox.polar.sh; `POLAR_ENVIRONMENT` must be
+`sandbox` or the run FAILS) and the `polar` CLI logged in to the same organization. It creates labelled
+objects (`metadata.agent_core_demo_test=true`), archives the product and deletes the customer afterwards;
+sessions expire on their own.
 """
 import os
 import shutil

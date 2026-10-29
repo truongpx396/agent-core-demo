@@ -1,33 +1,28 @@
 """What an operator CLI needs to run as its own process, with nothing from any application (spec 011 D24, D11).
 
-The two CLIs (`credit-billing`, `credit-billing-inbox-sweep`) used to borrow the agent app's connection pool
-and job bootstrap. A package another project installs can't, so each CLI brings its own, built from the same
-environment variables the app uses, with the same names and defaults: `APPDATA_DATABASE_URL`,
-`OTEL_EXPORTER_OTLP_ENDPOINT` and the billing variables (read by `credit_billing.settings`). A `.env` in the
-working directory is read as the app reads it.
+The two CLIs (`credit-billing`, `credit-billing-inbox-sweep`) used to borrow the app's connection pool and job
+bootstrap, which a package other projects install can't. Each now brings its own, built from the same
+variables and defaults the app uses: `APPDATA_DATABASE_URL`, `OTEL_EXPORTER_OTLP_ENDPOINT` and the billing
+variables (`credit_billing.settings`). A `.env` in the working directory is read as the app reads it.
 
-**The pool.** `wired_pool()` opens one `psycopg_pool` pool, gives the core its `connection` (so
-`credit_billing.db` works), and closes it afterwards. `pool.connection()` commits on a clean exit and rolls
-back on an exception, the contract `credit_billing.db` documents for a provider.
-
-**An unreachable database fails fast and says so.** The pool retries a refused connection until its open
-timeout, and psycopg's default is 30 s of multi-line warnings ending in a raw `PoolTimeout` traceback. That's
-the wrong failure for a command an operator types or an unwatched cron job. So the wait is
-`CONNECT_TIMEOUT_SECONDS`, and the error is `DatabaseUnavailable`, naming host, port and database (never user
-or password) and the variable to check. Both CLIs turn it into one `error:` line and exit status
-`EXIT_DATABASE_UNAVAILABLE`.
-
-**The job bootstrap.** `scheduled_job()` is the CLI's `app/core/job_runtime.py::scheduled_job`. A CLI lives
-for seconds but the OpenTelemetry exporter pushes on a 15 s timer, so a faster job would export NOTHING, and
-an unattended job's most important counters are its failures (spec 008 B22). So the provider is flushed on the
-way out whether the body returned or raised, and a failing flush never turns a finished job into a failed one.
-- The SDK and OTLP exporter are an optional extra (`credit-billing[otel]`); without them, or with a blank
-  endpoint, metrics are simply not pushed and the CLI works the same.
-- Logging is the standard library's, configured only if the process hasn't already, so the CLI takes whatever
-  a host application set up. When the CLI does configure it, a record is one JSON line on stderr with the
-  agent app's keys (`timestamp`, `level`, `logger`, `event`) plus every `extra=` field. The operator audit
-  line (`credit_operator_action`: action, tenant, actor, amount, key) is only useful with its fields, which
-  the default format drops.
+- **The pool.** `wired_pool()` opens one `psycopg_pool` pool, gives the core its `connection` (so
+  `credit_billing.db` works) and closes it afterwards. `pool.connection()` commits on a clean exit and rolls
+  back on an exception, the contract `credit_billing.db` documents.
+- **An unreachable database fails fast.** The pool retries a refused connection until its open timeout, and
+  psycopg's default is 30 s of warnings ending in a raw `PoolTimeout` traceback, the wrong failure for an
+  operator command or an unwatched cron job. So the wait is `CONNECT_TIMEOUT_SECONDS` and the error is
+  `DatabaseUnavailable`, naming host, port and database (never user or password) and the variable to check.
+  Both CLIs turn it into one `error:` line and exit `EXIT_DATABASE_UNAVAILABLE`.
+- **The job bootstrap.** `scheduled_job()` is the CLI's `app/core/job_runtime.py::scheduled_job`. A CLI lives
+  seconds but the OTel exporter pushes every 15 s, so a quick job would export NOTHING, and an unattended
+  job's key counters are its failures (spec 008 B22). So the provider is flushed on the way out, whether the
+  body returned or raised, and a failing flush never turns a finished job into a failed one.
+  - The SDK and OTLP exporter are an optional extra (`credit-billing[otel]`); without them, or with a blank
+    endpoint, metrics aren't pushed and the CLI works the same.
+  - Logging is the standard library's, configured only if the process hasn't already. When the CLI configures
+    it, a record is one JSON line on stderr with the app's keys (`timestamp`, `level`, `logger`, `event`) plus
+    every `extra=` field, since the operator audit line (`credit_operator_action`) is useless without its
+    fields.
 
 Imports nothing from `app` (tests/test_boundary.py).
 """

@@ -1,19 +1,23 @@
-"""POST /v1/decide asked a `choice` question of a label set: which predefined choice is this text nearest to, and the rules that keep a label
-set from doing harm (specs/015 FR-001..007, specs/016 contracts/decide.md). The first tests pin the wire shape, the table of
-rejected requests its errors, and the rest what the matcher does behind it.
+"""POST /v1/decide asked a `choice` question of a label set: which predefined choice is this text nearest to, and
+the rules that keep a set from doing harm (specs/015 FR-001..007, specs/016 contracts/decide.md). First the
+wire shape, then the table of rejected requests, then what the matcher does behind it.
 
-The real app, lifespan, registry, supervisor and label-set files are used; only the two text models are fakes, because what is under test is the
-set's validation, the per-model index and cutoff, and the failover, not the ONNX pass. The geometry is chosen so every expected number is worked
-out by hand: the examples of `alpha`, `beta` and `gamma` sit exactly on the three axes, so each label's centroid is that axis, and a query's
-similarity to a label is its unit vector's coordinate on that axis. `[3, 1, 0]` is (0.9487, 0.3162, 0); `[1, 1, 0]` is (0.7071, 0.7071, 0).
+The real app, lifespan, registry, supervisor and label-set files are used; only the two text models are fakes,
+because what's tested is the set's validation, the per-model index and cutoff, and failover, not the ONNX
+pass. The geometry makes every number checkable by hand: `alpha`, `beta` and `gamma` examples sit on the three
+axes, so each centroid is that axis and a query's similarity to a label is its unit vector's coordinate there
+(`[3, 1, 0]` is (0.9487, 0.3162, 0); `[1, 1, 0]` is (0.7071, 0.7071, 0)).
 
-The rules pinned here, each with the failure it prevents:
-- a set is served only by a model that has a cutoff for it (a fallback on another similarity scale must not be given the primary's number);
-- the examples are embedded by the serving model, and re-embedded when that model's revision changes (a stale vector is confident nonsense);
-- a malformed set is that set's `refused` line and nothing else (a bad file must not stop embeddings, the reranker or the guard);
-- a primary that raises, overruns its deadline or returns NaN hands the request to the fallback, with the fallback's own cutoff;
-- the questions of one request are answered by one model, with one embedding pass;
-- with no model usable the answer is 503 `model_unavailable`, never a 500 and never a guess;
+Pinned rules, each with the failure it prevents:
+- a set is served only by a model with a cutoff for it (a fallback on another similarity scale must not get
+  the primary's number);
+- examples are embedded by the serving model and re-embedded when its revision changes (a stale vector is
+  confident nonsense);
+- a malformed set is that set's `refused` line and nothing else (embeddings, reranker and guard keep working);
+- a primary that raises, overruns its deadline or returns NaN hands the request to the fallback with the
+  fallback's own cutoff;
+- one request's questions are answered by one model in one embedding pass;
+- with no usable model the answer is 503 `model_unavailable`, never a 500 or a guess;
 - no request text reaches a log.
 """
 import asyncio

@@ -1,46 +1,35 @@
 """Tool-call TRAJECTORY correctness against the real graph, via deepeval (`@pytest.mark.deepeval`, `make
 deepeval`; GRAPH_PATTERNS.md pattern 48).
 
-A different question from every other check here: `scripts/eval.py`'s `GoldenCase.expect_tool` checks only
-"was this tool called at all", never its arguments; `test_rag_quality_deepeval.py` and
-`test_conversation_simulator_deepeval.py` judge the FINAL ANSWER's quality, never the tool-call trajectory
-that produced it. Nothing else asks "did the agent call the right tool, and call it well".
+A different question from every other check: `scripts/eval.py`'s `GoldenCase.expect_tool` checks only that a
+tool was called, never its arguments, and the RAG-quality and conversation files judge the FINAL ANSWER.
+Nothing else asks whether the agent called the right tool, and called it well.
 
-Two metrics with different reliability profiles (checked in deepeval's installed source, not assumed from
-class names):
-- `ToolCorrectnessMetric`'s core score (`_calculate_score()` -> `_calculate_non_exact_match_score()`) is a
-  DETERMINISTIC name/type match between `tools_called` and `expected_tools`, no LLM call in that path;
-  `model=`/`include_reason=True` only generates the natural-language explanation, never the verdict. The same
-  reliability as `scripts/eval.py`'s `expect_tool`, but richer (a real tool-call SET comparison).
-- `ArgumentCorrectnessMetric`'s core score genuinely IS LLM-judged (`measure()` ->
-  `self._generate_verdicts(...)`, the per-claim verdict pattern `FaithfulnessMetric` uses): does the search
-  QUERY the agent generated make sense for the question, not just "was search_docs called". It is the metric
-  that needed the stronger judge (tests/deepeval/conftest.py's `deepeval_judge`, Gemini 3.1 Flash-Lite, the
-  model and key `promptfoo/redteam.yaml`'s `redteam.provider` uses) to be worth trusting; on the small local
-  judge used before, "is this query well-formed" is the kind of question that produced self-contradictory
-  scores elsewhere in pattern 48's findings.
+Two metrics with different reliability (checked in deepeval's installed source):
+- `ToolCorrectnessMetric`'s score is a DETERMINISTIC name/type match between `tools_called` and
+  `expected_tools` (`model=`/`include_reason=True` only writes the explanation), as reliable as `expect_tool`
+  but a real set comparison.
+- `ArgumentCorrectnessMetric` IS LLM-judged (per-claim verdicts like `FaithfulnessMetric`): does the generated
+  search QUERY make sense for the question? It is the metric that needed the stronger judge (`deepeval_judge`,
+  Gemini 3.1 Flash-Lite, the model and key `promptfoo/redteam.yaml` uses); on the small local judge such
+  questions gave self-contradictory scores (pattern 48).
 
-Six cases, in two groups:
-- `search_docs`/`calculator`/`query_employees`: one per tool this domain's small-model routing has been found
-  confused about (see the word-collision finding below). `search_docs` reuses `test_rag_quality_deepeval.py`'s
-  "Ecorp support hours" wording, the wording `scripts/eval.py`'s `retrieval_company_topic_filter` golden case
-  used before that case (and `calculator_basic`) was retired 2026-09-16 in favor of this file's richer checks
-  (see the comment at the retirement site in scripts/eval.py). `calculator` and `query_employees` are
-  regression checks from the OTHER two directions: did tightening the prompt to fix the search_docs collision
-  scope them too narrowly to fire on a genuine question? A fix for one failure mode overcorrecting into
-  another already happened once (calculator briefly stopped firing on real math after an early SYSTEM_PROMPT
-  edit; see app/agent/graph/core.py's history).
-- `skill_search`/`use_skill`, `run_subagent`, `fetch_external_reference`: added 2026-09-16 to close a real
-  gap. Skills and subagents had ZERO live/semantic coverage (only hermetic fake-LLM tests in tests/agent/),
-  and crawl4ai's only live coverage (`test_domain_crawl_tools_live.py`) uses a scripted fake LLM too, proving
-  the crawl MECHANICS but never whether a REAL model chooses to reach for it.
+Six cases in two groups:
+- `search_docs`/`calculator`/`query_employees`: the tools this domain's small-model routing has been confused
+  about. `search_docs` reuses the "Ecorp support hours" wording of `test_rag_quality_deepeval.py`, which
+  replaced `scripts/eval.py`'s `retrieval_company_topic_filter` and `calculator_basic` cases (retired
+  2026-09-16). `calculator` and `query_employees` guard the other direction: did tightening the prompt for the
+  search_docs collision make them too narrow to fire? That overcorrection happened once (calculator briefly
+  stopped firing on real math after an early SYSTEM_PROMPT edit).
+- `skill_search`/`use_skill`, `run_subagent`, `fetch_external_reference` (added 2026-09-16): skills and
+  subagents had no live coverage, only hermetic fake-LLM tests, and crawl4ai's live test uses a scripted LLM,
+  proving the mechanics but not whether a REAL model reaches for it.
 
 History worth keeping: this file surfaced a word collision between "support hours" and the
-`Department.support` enum value (the model called `query_employees` instead of `search_docs`), and then that
-three prompt edits meant to fix it had no effect, because the agent ran with NO system prompt at all (a
-directly built graph was never seeded). The agent node now puts the domain's prompt first on every call, so a
-graph built directly is never an un-guided agent (an earlier version of this suite ran exactly that, for
-weeks, before it was noticed).
+`Department.support` enum value (the model called `query_employees` instead of `search_docs`), and that three
+prompt edits to fix it had no effect because the agent ran with NO system prompt (a directly built graph was
+never seeded). The agent node now puts the domain's prompt first on every call, so a directly built graph is
+never un-guided (this suite ran that way for weeks unnoticed).
 """
 import uuid
 
@@ -260,26 +249,17 @@ async def test_skill_tool_calls_are_correct_and_well_argued(deepeval_ollama, dee
 
 
 async def test_subagent_delegation_is_correct_and_well_argued(deepeval_ollama, deepeval_judge):
-    """The other genuinely different mechanism nothing live/semantic
-    tested before today: does the model correctly delegate a
-    self-contained lookup to `run_subagent` when a bundled subagent's own
-    description clearly fits, and — since ArgumentCorrectnessMetric is in
-    play here too — does it hand that subagent a CLEAR, COMPLETE task
-    description, which matters more here than anywhere else in this file:
-    SYSTEM_PROMPT itself warns a subagent "has no access to this
-    conversation," so a vague task description is a real failure mode a
-    deterministic presence check would never catch.
+    """Does the model delegate a self-contained lookup to `run_subagent` when a bundled subagent's description
+    fits, and, since ArgumentCorrectnessMetric applies here too, hand it a CLEAR, COMPLETE task description?
+    That matters most here: SYSTEM_PROMPT warns a subagent "has no access to this conversation", so a vague
+    task is a real failure a presence check would never catch.
 
-    `researcher` (subagents/researcher/AGENT.md) is the right fixture for
-    the same reason `onboarding-brief` was above: no `domains:` frontmatter
-    restriction, and its own tool list (`search_docs`, `calculator`,
-    `query_employees`) matches this file's existing fixtures exactly. The
-    question is phrased to lean into the subagent's own stated purpose
-    ("a self-contained lookup whose reasoning doesn't need to appear in the
-    main thread") rather than leaving delegation ambiguous — SYSTEM_PROMPT
-    only ever says the model "may" delegate, never must, so a genuinely
-    ambiguous prompt would be testing the model's optional judgment call,
-    not this mechanism's own correctness."""
+    `researcher` (subagents/researcher/AGENT.md) is the fixture, as `onboarding-brief` was above: no
+    `domains:` restriction, and its tools (`search_docs`, `calculator`, `query_employees`) match this file's
+    fixtures. The question leans into the subagent's stated purpose ("a self-contained lookup whose reasoning
+    doesn't need to appear in the main thread"), because SYSTEM_PROMPT says the model "may" delegate, never
+    must, and an ambiguous prompt would test its optional judgment, not this mechanism.
+    """
     from deepeval import assert_test
     from deepeval.metrics import ArgumentCorrectnessMetric, ToolCorrectnessMetric
     from deepeval.test_case import LLMTestCase, ToolCall

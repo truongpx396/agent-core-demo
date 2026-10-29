@@ -1,39 +1,32 @@
 """Ask a typed question about a text and get one of a few predefined answers: the app's client for `POST
 /v1/decide` (specs/016, contracts/decide.md).
 
-THE INTERFACE IS NOT OURS, ON PURPOSE. `/v1/decide` takes and returns the shape of the TypeSafe "System One" /
-Jev decision interface: `{state, questions}` in, `{model, answers, usage}` out, with `choice` questions whose
-`criteria` map each option to a description. The ML service is one (local) implementation; a hosted one is
-another. This is the only module that knows the wire, so pointing the app at the hosted one is a change here
-(the URL, an `Authorization` header, a `model` field) and in nothing that calls it. `Choice` carries what the
-hosted one needs and the local one ignores (the instructions and a description of every option), so a caller
-written once works on both.
+The interface is not ours, on purpose: `/v1/decide` takes and returns the shape of the TypeSafe "System One" /
+Jev decision interface (`{state, questions}` in, `{model, answers, usage}` out, `choice` questions whose
+`criteria` map each option to a description). The ML service is one local implementation, a hosted one
+another. This is the only module that knows the wire, so pointing the app at the hosted one changes only this
+(URL, `Authorization` header, `model` field). `Choice` carries what the hosted one needs and the local one
+ignores (instructions, option descriptions).
 
-THE SERVICE ANSWERS WITH FACTS; THE CALLER DECIDES. What comes back is the chosen option (or `None`: the local
-implementation abstains when the text is near none of them) and, when offered, how near it was and how sure.
-What an option MEANS (a model tier, an email, a queue) is the caller's: `routing_policy.LABEL_TIERS` for the
-model router, and whatever table the next agent step writes.
+The service answers with facts; the caller decides. The result is the chosen option (or `None`: the local
+service abstains when the text is near none) and, when offered, how near and how sure. What an option MEANS (a
+model tier, a queue) is the caller's (`routing_policy.LABEL_TIERS` for the router).
 
-IT NEVER RAISES, AND A FAILURE IS A VALUE. A service that is down, slow, wrong-shaped or has nothing to say is
-an `outcome` the caller turns into "decide without an answer". 503 `model_unavailable` ("no model has indexed
-this set yet", "both models are down") is its own outcome, because an operator must tell "the classifier is
-broken" from "the classifier has nothing to say".
+It never raises; a failure is a value. A service that is down, slow, wrong-shaped or has nothing to say is an
+`outcome` the caller turns into "decide without an answer". 503 `model_unavailable` is its own outcome, so an
+operator can tell "the classifier is broken" from "it has nothing to say".
 
-WHAT IS SENT. The question (name, instructions, options) and the first `MAX_CHARS` characters of the text: a
-message's topic is evident from its opening, and the service would reject a long paste outright. Not the
-tenant, principal, history or retrieved text: the classifier only needs the text, and sending less can't leak
-more (specs/014 FR-031). A test pins the request body, and it is also the whole of what a hosted
-implementation would receive.
+What is sent: the question and the first `MAX_CHARS` characters of the text (a topic is evident from the
+opening, and a long paste would be rejected). Not the tenant, principal, history or retrieved text (specs/014
+FR-031); a test pins the request body.
 
-WHAT COMES BACK is validated, not trusted: a status other than 200, a body not in the documented shape, an
-answer that isn't a `choice` for the question asked, a `choice` outside the options, a similarity or
-confidence that isn't a finite in-range number, or an `x_served_by` this app doesn't know is an error, not an
-answer.
+What comes back is validated, not trusted: a non-200, a body off the documented shape, an answer that isn't a
+`choice` for the question asked, a `choice` outside the options, a non-finite or out-of-range similarity or
+confidence, or an unknown `x_served_by` is an error.
 
-A fresh `httpx.AsyncClient` per call, as `moderation.py` does and for the same reason: a client shared across
-event loops (the worker runs turns in more than one) breaks on the loop that didn't create it, and a call this
-small needs no pool. The deadline is enforced twice, by httpx's per-phase timeouts and by a hard wall-clock
-bound around the whole exchange, because a peer that trickles bytes defeats the former.
+A fresh `httpx.AsyncClient` per call, as `moderation.py` does: a client shared across event loops (the worker
+has several) breaks on the loop that didn't create it. The deadline is enforced twice, by httpx's phase
+timeouts and a wall-clock bound around the exchange, because a peer that trickles bytes defeats the former.
 """
 import asyncio
 import logging

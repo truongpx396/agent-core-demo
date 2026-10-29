@@ -1,19 +1,16 @@
-"""Regression tests for what Langfuse traces `b376e4d8` and `2c8e76a4` (2026-10-21) showed.
+"""Regression tests for Langfuse traces `b376e4d8` and `2c8e76a4` (2026-10-21). A gateway content guardrail
+("Denied Financial Advice", set in LiteLLM's admin UI) refused "should i invest in testla stock ?" with HTTP
+400, and three things went wrong:
+1. The `agent` node retried the refusal three times (~5 s of backoff, three more refused calls): LangGraph's
+   default `retry_on` excludes `httpx` 4xx, but the OpenAI SDK's status errors aren't `httpx.HTTPStatusError`,
+   so EVERY 4xx counted as transient.
+2. The person got an anonymous `internal` error for a policy decision.
+3. The refused message stayed in the checkpointed thread. LiteLLM scans the WHOLE message list, so the next
+   turn ("hey") was refused for the earlier message, and every turn after: one refusal ended the session.
 
-A gateway content guardrail ("Denied Financial Advice", set up in LiteLLM's admin UI) refused
-"should i invest in testla stock ?" with an HTTP 400. Three things then went wrong in the app:
-
-1. The `agent` node retried the refusal three times (~5 s of backoff, three more refused calls in
-   the gateway's log): LangGraph's default `retry_on` excludes `httpx` 4xx errors, but the OpenAI
-   SDK's status errors are not `httpx.HTTPStatusError`, so EVERY 4xx counted as transient.
-2. The person got an anonymous `internal` error for what was a policy decision.
-3. The refused message stayed in the checkpointed thread. LiteLLM scans the WHOLE message list, so the
-   next turn ("hey") was refused for the earlier message ("stock + should i"), and so was every turn
-   after it: one refusal ended the session.
-
-A refusal is now final (not retried), is the turn's answer, and the message it refused is replaced in
-the thread. Also here: the model calls that billed output tokens and returned nothing at all, which
-is how Ollama's dropped `remember` tool calls reached the graph, are counted instead of silent.
+Now a refusal is final (not retried), is the turn's answer, and the refused message is replaced in the thread.
+Also here: model calls that billed output tokens and returned nothing (how Ollama's dropped `remember` tool
+calls reached the graph) are counted, not silent.
 """
 import httpx
 import openai

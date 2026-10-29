@@ -1,21 +1,22 @@
-"""Scoring a label set on sentences whose topic is known (specs/015 FR-010..012).
+"""Scoring a label set on sentences whose topic is known (specs/015 FR-010..012): given a sentence, does the
+nearest-centroid matcher name the right topic, and say "none of these" for one that belongs to no topic?
+Scored by `suites.IntentSuite` (in-scope accuracy and macro-F1, and how out-of-scope and in-scope sentences
+fare against the cutoff), with the shuffled-predictions control every intent run carries: a matcher no better
+than the same answers handed to the wrong sentences is reported INVALID.
 
-The question: given a sentence, does the set's nearest-centroid matcher name the right topic, and does it say "none of these" for a sentence
-that belongs to no topic? Scored by `suites.IntentSuite` (in-scope accuracy and macro-F1, and how out-of-scope sentences and in-scope sentences
-fare against the cutoff), with the shuffled-predictions control every intent run carries: a matcher whose answers are no better than the same
-answers handed to the wrong sentences is reported INVALID.
+It runs the service's own code: the candidate loads its ONNX file here (`InProcessEmbedding`, the same
+tokenise/pool code the ML service serves with), embeds the examples and sentences, and calls
+`ml_service.labelsets.build_index` and `label_results`, which `POST /v1/decide` calls. What is measured is
+what would be served, without a container or HTTP hop. The cutoff is the one stored in the label set for this
+candidate's model (`source.model`); a model with no entry can't be scored, as the service refuses to serve it.
 
-IT RUNS THE SERVICE'S OWN CODE. The candidate loads its ONNX file here (`InProcessEmbedding`, the same tokenise/pool code the ML service
-serves with), embeds the set's examples and the sentences, and calls `ml_service.labelsets.build_index` and `label_results`, the functions
-`POST /v1/decide` calls. What is measured is what would be served, without a container and without the HTTP hop. The cutoff is the
-one stored in the label set for this candidate's model (`source.model`); a model with no entry cannot be scored, exactly as the service
-refuses to serve it.
+The cutoff is never chosen on the reported split: `calibrate` picks it on `dev` (the cutoff keeping a stated
+share of in-scope `dev` sentences) and prints the line for the label set; `run` reports on `test` only. Both
+use the same two functions.
 
-THE CUTOFF IS NEVER CHOSEN ON THE REPORTED SPLIT. `calibrate` picks it on `dev` (the cutoff that keeps a stated share of in-scope `dev`
-sentences) and prints the line to put in the label set; `run` reports on `test` only. Both read the same two functions.
-
-LIMITS, said in every report. The sentences are authored and unreviewed, so the report is PROVISIONAL. `ece_in_scope` treats a cosine similarity
-as a probability, which it is not; read accuracy, macro-F1 and the two cutoff rates instead.
+Limits, said in every report: the sentences are authored and unreviewed, so the report is PROVISIONAL, and
+`ece_in_scope` treats a cosine similarity as a probability, which it isn't; read accuracy, macro-F1 and the
+two cutoff rates instead.
 """
 import time
 from collections.abc import Sequence

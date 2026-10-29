@@ -1,16 +1,11 @@
-"""Locust load test against every HTTP surface app/job_queue/agent_worker.py's
-queued path touches — POST /chat/stream/queued, /chat/resume, /chat/cancel,
-and /ingest/upload — built so running it moves the panels on the
-"Agent Core Overview" Grafana dashboard (observability/grafana/dashboards/
-agent-overview.json), not just raw throughput numbers.
+"""Locust load test against every HTTP surface the queued path touches (POST /chat/stream/queued, /chat/resume,
+/chat/cancel, /ingest/upload), built to move the panels of the "Agent Core Overview" Grafana dashboard
+(observability/grafana/dashboards/agent-overview.json), not just raw throughput.
 
-Meant to run against loadtest/fake_llm_server.py, not native Ollama — same
-reasoning as before: native Ollama on this project's own dev stack
-serializes to exactly one in-flight generation (`-np 1`, verified directly),
-so a load test against it can't tell whether app/job_queue/agent_worker.py's own
-concurrency (`_MAX_CONCURRENCY`, the pooled checkpointer) does anything —
-every result would be dominated by Ollama's own ceiling. Every OTHER piece
-of infra (Postgres, Redis, Qdrant, MinIO) stays real; only the LLM is faked.
+Run it against loadtest/fake_llm_server.py, not native Ollama: Ollama on the dev stack serializes to one
+generation (`-np 1`), so every result would be Ollama's ceiling and could not show whether the worker's
+`_MAX_CONCURRENCY` or the pooled checkpointer helps. Everything else (Postgres, Redis, Qdrant, MinIO) stays
+real.
 
     OPENAI_API_BASE=http://localhost:9009/v1 make serve
     OPENAI_API_BASE=http://localhost:9009/v1 make agent-worker
@@ -18,77 +13,37 @@ of infra (Postgres, Redis, Qdrant, MinIO) stays real; only the LLM is faked.
     make fake-llm             # in a separate terminal, :9009
     make loadtest-queued      # this file, interactive UI at :8089
 
-Several User classes, each aimed at a different cluster of panels on that
-dashboard — weights are relative to EACH OTHER across the whole run, tuned
-so realistic conversational traffic (ChatTurnUser) dominates while every
-specialized path still gets a steady trickle of real signal. Toggle
-individual classes off from Locust's own UI (Edit running load) if you only
-want a subset.
+Each User class aims at a cluster of panels. Weights are relative, so realistic conversation (ChatTurnUser)
+dominates while every other path keeps a trickle; switch classes off in Locust's UI to run a subset.
 
-What's deliberately NOT covered here, and why — each of these was checked
-against the actual source before being ruled out, not assumed:
-  - agent_cost_ceiling_exceeded_total, and both tenant-daily-budget metrics
-    (warning + exceeded): CHAT_MODEL defaults to "chat", which prices at $0
-    in PRICE_PER_1K_TOKENS_USD (app/core/config.py) — cost-based guardrails
-    can never trip regardless of load, no matter what a request contains.
-    Set CHAT_MODEL=gpt-4o (or extend that price table) to exercise these;
-    it's a config change, not a payload shape this file can produce.
-  - agent_tool_budget_exceeded_total, agent_invalid_tool_call_total,
-    agent_no_progress_total: fake_llm_server.py's 3 tool simulators each
-    return exactly one well-formed, registered tool call and never repeat
-    themselves after seeing a result (it explicitly stops offering a tool
-    call once the last message has role "tool") — these guardrails need a
-    model that misbehaves in specific ways nothing here does.
-  - agent_capability_gate_total{capability="outward"}: outward-capability
-    tools only exist in the sales/support/ops domains (app/domains/*), and
-    none of fake_llm_server.py's simulators name one — switching X-Domain
-    alone doesn't help since the fake LLM would still never call it. Needs
-    a new @tool_simulator there, not a Locust change.
-  - agent_retrieval_degraded_total: only fires on a genuine local
-    ONNX-sparse-embedding or reranker failure (app/retrieval/qdrant_store.py)
-    — an infra fault, not something any request content can cause.
-  - agent_checkpoint_issue_total{reason="checkpoint_incompatible"}: needs
-    STATE_SCHEMA_VERSION (app/agent/graph/core.py) bumped mid-test, i.e. a
-    redeploy between pausing and resuming the SAME thread — an operational
-    scenario, not a payload variant.
-  - agent_memory_deletion_total: delete_memories (app/retrieval/memory.py) has
-    no HTTP caller anywhere in this app and isn't wrapped as an agent tool
-    either (its own docstring: a trusted operational caller, never the
-    graph) — genuinely unreachable from outside the process.
-  - agent_unattended_pause_total: only astream_events_turn_unattended
-    increments it, and the worker runs that only for a job published with
-    `unattended=True` — which only app/channels/telegram.py does. The HTTP
-    API's queued path always publishes an attended job, which the worker runs
-    through the interactive astream_events_turn instead, by design.
-  - agent_tool_errors_total: fake_llm_server.py's calculator simulator only
-    ever emits a clean "{a}{op}{b}" expression, and the REAL calculator
-    tool (app/agent/tools/builtin.py::_calculator_impl) catches every exception
-    itself and returns a string instead of raising — even a "5/0"-shaped
-    message never reaches on_tool_error. Not reachable with this fake LLM
-    as written; would need a real misbehaving tool or model.
-  - Ingestion refusal reasons besides "no_ctx" — bad_file_type/
-    ssrf_blocked/fetch_failed/too_large at the *ingestor* level
-    (app/ingestion/ingestor.py's ingest_file/ingest_url): those functions
-    have zero HTTP callers in this app (ingest_file is CLI-only, via
-    scripts/seed.py; ingest_url has no caller at all) — only
-    POST /ingest/upload is reachable, and its OWN rejections
-    (agent_upload_rejected_total, a separate, earlier metric recorded
-    synchronously in the API process) are covered by IngestionUser below.
-  - outcome="timeout": needs a turn to exceed REQUEST_TIMEOUT_SECONDS
-    (60s default) within MAX_ITERATIONS — fake_llm_server.py's default
-    ~1.5s/call latency won't get there from message content alone; raise
-    FAKE_LLM_LATENCY_SECONDS on the fake-LLM process to exercise this.
-  - outcome="error": needs an unhandled exception in the graph — an infra
-    fault (e.g. Postgres/Redis down mid-turn), not content-driven.
+## Deliberately not covered (each checked against the source)
 
-One caveat worth knowing before reading the "Turn rate by outcome" panel:
-_turn_outcome (app/agent/runtime/stream.py) reports outcome="rejected" whenever a
-turn never reaches the agent node — which includes reject_input/
-reject_context/reject_moderation (genuine rejections) AND a semantic-cache
-HIT (a fast, correct, non-rejected answer that happens to also skip the
-agent node). SemanticCacheUser below will make "rejected" rise for a reason
-that isn't actually a rejection — that's the app's own metric semantics,
-not a bug in this file.
+- Cost guardrails (`agent_cost_ceiling_exceeded_total`, the tenant-daily-budget metrics): `chat` prices at $0
+  in `PRICE_PER_1K_TOKENS_USD`, so they can't trip. Set `CHAT_MODEL=gpt-4o` to exercise them.
+- `agent_tool_budget_exceeded_total`, `agent_invalid_tool_call_total`, `agent_no_progress_total`: the fake
+  LLM's tool simulators each return one well-formed call and stop offering tools after a result; these need a
+  misbehaving model.
+- `agent_capability_gate_total{capability="outward"}`: outward tools exist only in support/ops/sales and no
+  simulator names one. Needs a new `@tool_simulator` there.
+- `agent_retrieval_degraded_total`: fires only on a local sparse-embedding or reranker failure (an infra
+  fault).
+- `agent_checkpoint_issue_total{reason="checkpoint_incompatible"}`: needs `STATE_SCHEMA_VERSION` bumped
+  between pausing and resuming a thread.
+- `agent_memory_deletion_total`: `delete_memories` has no HTTP caller and is not an agent tool.
+- `agent_unattended_pause_total`: only jobs published with `unattended=True` (Telegram) run unattended; the
+  HTTP queued path is always attended.
+- `agent_tool_errors_total`: the calculator simulator emits only clean expressions and the real tool catches
+  every exception and returns a string.
+- Ingestion refusals other than `no_ctx` (`bad_file_type`, `ssrf_blocked`, `fetch_failed`, `too_large`):
+  `ingest_file` is CLI-only and `ingest_url` has no caller. Only `POST /ingest/upload` is reachable, and its
+  own rejections (`agent_upload_rejected_total`) are covered by IngestionUser.
+- `outcome="timeout"`: needs a turn past `REQUEST_TIMEOUT_SECONDS` (60s); raise `FAKE_LLM_LATENCY_SECONDS` on
+  the fake LLM.
+- `outcome="error"`: needs an unhandled graph exception (an infra fault).
+
+Caveat for the "Turn rate by outcome" panel: `_turn_outcome` (app/agent/runtime/stream.py) reports `rejected`
+for any turn that never reaches the agent node, which includes a semantic-cache HIT. SemanticCacheUser
+therefore raises "rejected" without a real rejection; that is the metric's semantics, not a bug here.
 """
 import random
 import uuid
@@ -374,31 +329,18 @@ class StreamCancelUser(HttpUser):
 
 
 class HistoryCompactionUser(HttpUser):
-    """One thread, reused for this user's entire run, fed long messages
-    every turn — compact_history (app/agent/graph/core.py) only fires once raw
-    history crosses HISTORY_TOKEN_CEILING=24000 tokens AND the thread
-    already has more than one turn on it, so this needs sustained traffic
-    on a single thread rather than one-off requests.
+    """One thread, reused for this user's whole run and fed long messages every turn: `compact_history`
+    (app/agent/graph/core.py) fires only once raw history crosses HISTORY_TOKEN_CEILING=24000 tokens AND the
+    thread has more than one turn, so this needs sustained traffic on one thread.
 
-    BOUNDED at MAX_TURNS, not left to run for the whole test — verified
-    live that leaving this unbounded is actively harmful, not just
-    wasteful: fake_llm_server.py's _final_answer_text ECHOES the user's
-    own message back as the "answer" (so the assistant's reply is roughly
-    as large as this class's own padded input), and compact_history's own
-    summarization call ALSO goes through the same fake LLM, which ALSO
-    just echoes the (now-large) prompt back instead of actually
-    compressing it — so "compaction" here makes history bigger, not
-    smaller, while still paying its full real cost (tiktoken counting, an
-    LLM round-trip, a checkpoint write) every time. Left running, one
-    thread's checkpoint blob grew to 15MB+ across 1125+ writes, and
-    agent-worker's own RSS grew from ~250MB to 3.6GB (every turn on that
-    thread has to deserialize an ever-larger, never-actually-shrinking
-    message list) — confirmed directly against a real run's checkpointer
-    rows and `docker stats`, not inferred. A real model would genuinely
-    summarize and this wouldn't happen in production; this fake one
-    structurally can't, so the test itself has to stop feeding it once
-    it's proven the metric fires, rather than assume compaction is
-    self-limiting the way it would be for real."""
+    BOUNDED at MAX_TURNS, because unbounded is actively harmful (verified live): fake_llm_server.py echoes the
+    user's message back as the "answer", and compact_history's summarization call also goes through the fake
+    LLM, which echoes the large prompt back instead of compressing it. So "compaction" makes history bigger
+    while paying its full cost (tiktoken, an LLM round trip, a checkpoint write): one thread's checkpoint grew
+    to 15MB+ over 1125+ writes and agent-worker's RSS from ~250MB to 3.6GB (checkpointer rows and `docker
+    stats`, not inferred). A real model would summarize; this fake structurally can't, so the test stops
+    feeding it once the metric has fired.
+    """
 
     weight = 1
     wait_time = between(1, 2)

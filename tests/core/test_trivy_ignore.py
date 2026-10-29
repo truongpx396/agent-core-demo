@@ -1,21 +1,20 @@
 """The Trivy gate, the dependencies it is about, and the exception list, which is empty today.
 
-On 2026-10-21/22 CI's `trivy` job went red on every PR without any of them touching a dependency: its
-vulnerability database learned about CRITICAL findings in packages the lock already pinned.
+On 2026-10-21/22 CI's `trivy` job went red on every PR with no dependency change: its database learned of
+CRITICAL findings in packages the lock already pinned.
+- certifi 2026.7.22 (GHSA-6q48-6c7w-9gw2): the bundle trusts emSign intermediates with compromised keys. Fixed
+  by pinning 2026.10.19 and by keeping pip out of the shipped image: its vendored copy (pip/_vendor/certifi)
+  was what Trivy read as a second certifi the lock can't reach (the two-stage build removes it,
+  ENGINEERING_PATTERNS.md pattern 76).
+- pillow 12.3.0 (five CVEs, fixed only in 13.0.0) and brotli 1.2.0 (GHSA-9v8h-qqgm-4m35, fixed in 1.2.1).
+  fastembed declared `pillow<13` until 0.9.1 (2026-10-24), so `.trivyignore.yaml` carried a dated exception
+  for a week; 0.9.1 allows `pillow<14`, the lock moved and the exception went (pattern 72). The gate had been
+  red on `main` for five days (16 runs) first.
 
-  * certifi 2026.7.22 (GHSA-6q48-6c7w-9gw2): the bundle trusts emSign intermediates whose keys are compromised.
-    Fixed by pinning 2026.10.19, and by keeping pip out of the shipped image: its vendored copy
-    (pip/_vendor/certifi) is what Trivy's image scan read as a second certifi that the lock cannot reach. (The image
-    first upgraded pip for a fresh copy; the two-stage build removes it, ENGINEERING_PATTERNS.md pattern 76.)
-  * pillow 12.3.0 (five CVEs, fixed only in 13.0.0) and brotli 1.2.0 (GHSA-9v8h-qqgm-4m35, fixed in 1.2.1). Pillow was
-    held back by fastembed, which declared `pillow<13` until 0.9.1 (2026-10-24), so for a week `.trivyignore.yaml` carried
-    a dated exception for three of the five. fastembed 0.9.1 allows `pillow<14`; the lock moved and the exception went
-    (ENGINEERING_PATTERNS.md pattern 72). The gate was then red on `main` for five days (16 runs) before that was done.
-
-A security gate is only honest while the fixes stay in place and any exception stays reasoned. These tests are those
-conditions, written down so a change that breaks one fails here and not in a quiet drift: the lock keeps the fixed
-versions, requirements.txt keeps the floor that allows them, every exception entry (there are none now) has a reason
-and an expiry, and only the hard gates read the file. A TEXT test: no Docker and no Trivy needed.
+A security gate is honest only while the fixes stay and any exception stays reasoned. These tests write that
+down: the lock keeps the fixed versions, requirements.txt keeps the floor that allows them, every exception
+entry (none now) has a reason and an expiry, and only the hard gates read the file. A TEXT test: no Docker or
+Trivy needed.
 """
 import re
 from datetime import date

@@ -1,22 +1,20 @@
 """A turn that does not finish still spent tokens, and the tokens metric must say so.
 
-`_run_graph_stream` counted tokens only on its success branch. The timeout, error and cancel branches called
-`_record_turn_metrics` with no state, on the stated reasoning that those turns "have total_tokens == 0 anyway", which is
-false: the model had already answered some steps, and the checkpoint holds the tokens they cost (spec 008, B17; reproduced
-with a model that returns a 500-token step and then stalls past the timeout). So `_record_unfinished_turn` reads the last
-checkpoint, bounded, and feeds `agent_tokens_total`.
+`_run_graph_stream` counted tokens only on its success branch; the timeout, error and cancel branches called
+`_record_turn_metrics` with no state, assuming "total_tokens == 0 anyway". That's false: the model had
+answered some steps and the checkpoint holds their cost (spec 008, B17; reproduced with a model returning a
+500-token step and then stalling past the timeout). So `_record_unfinished_turn` reads the last checkpoint,
+bounded, and feeds `agent_tokens_total`.
 
-It used to feed the per-turn `usage_ledger` row as well, which was what made this matter for MONEY: a turn that ran until
-the timeout never reached the end-of-turn write, so the daily tenant budget was checked against a ledger that left out the
-turns most likely to have spent a lot. That is over (specs/010 T030c2): the dollar caps sum the usage events, each written
-the moment its call returned (tests/agent/cost/test_usage_events.py), so an unfinished turn's spend is counted whatever happens
-to it afterwards, and these tests no longer have a ledger to check. What they pin is the metric, and that reading the
-checkpoint can never make a failing turn worse.
+It also fed the per-turn `usage_ledger` row, which made this matter for MONEY; that is over (specs/010
+T030c2): the dollar caps sum usage events written when each call returns
+(tests/agent/cost/test_usage_events.py). These tests pin the metric, and that reading the checkpoint can never
+make a failing turn worse.
 
-The fake graph here is the minimum `_run_graph_stream` needs: an event stream that ends in the chosen failure and a
-checkpoint that already holds the spend. That proves this function reads the checkpoint on each unfinished path and
-counts what it finds; it does not prove what a real checkpointer holds at the moment a real model call is cut off
-mid-flight (tokens of an in-flight call that never completed are not in any checkpoint, so they are not counted).
+The fake graph is the minimum `_run_graph_stream` needs: an event stream ending in the chosen failure and a
+checkpoint already holding the spend. That proves the function reads the checkpoint on each unfinished path
+and counts what it finds, not what a real checkpointer holds when a model call is cut off mid-flight (tokens
+of an in-flight call never reach a checkpoint and aren't counted).
 """
 import asyncio
 from types import SimpleNamespace

@@ -1,58 +1,42 @@
-"""MCP client: consuming a REMOTE tool catalog as LangChain tools this
-app's graph can bind — the reverse direction from `app/mcp/server.py`
-(this app exposing a tool). Closes GRAPH_PATTERNS.md pattern 28: a
-`DomainPlugin` can include tools it doesn't implement itself, sourced from
-any MCP server reachable over stdio.
+"""MCP client: consuming a REMOTE tool catalog as LangChain tools the graph can bind, the reverse of
+`app/mcp/server.py`. Closes GRAPH_PATTERNS.md pattern 28: a `DomainPlugin` can include tools it doesn't
+implement, sourced from any MCP server reachable over stdio.
 
-A remote server is someone else's code, and everything it sends is input: its tool
-names, descriptions and schemas are shown to the model, its results go into the
-model's context. Four rules follow, each one a decision made HERE rather than left to
+A remote server is someone else's code and everything it sends is input: tool names, descriptions and schemas
+are shown to the model, results go into its context. Four rules follow, each decided HERE rather than left to
 the server.
 
 ## Capability is the caller's, never the remote's (AR-004b)
 
-Every tool declares a capability (`read_only`/`mutating`/`outward` —
-`app/agent/tools/builtin.py::SHARED_TOOL_CAPABILITIES`) that `should_continue` uses to
-gate human approval. A remote MCP tool's self-reported `ToolAnnotations`
-(`readOnlyHint`, etc.) are HINTS per the MCP spec, not verified
-guarantees — a malicious or unmaintained server could claim
-`readOnlyHint=True` for a tool that deletes data. So `load_remote_tools`'s
-`capability_overrides` — supplied by the LOCAL caller, never read from the
-remote's own metadata — is the ONLY source of truth for a remote tool's
-capability. Any tool not named in `capability_overrides` defaults to
-`"outward"`, same fail-closed default as `tool_capability` for an
-in-process tool missing from `TOOL_CAPABILITIES`.
+Every tool declares a capability (`read_only`/`mutating`/`outward`,
+`app/agent/tools/builtin.py::SHARED_TOOL_CAPABILITIES`) that `should_continue` uses to gate approval. A remote
+tool's `ToolAnnotations` (`readOnlyHint`, ...) are hints per the MCP spec, not guarantees. So
+`load_remote_tools`'s `capability_overrides`, supplied by the LOCAL caller, is the ONLY source of a remote
+tool's capability, and a tool it doesn't name defaults to `"outward"` (the same fail-closed default as
+`tool_capability`).
 
 ## What the model is told is pinned, not trusted
 
-A tool's description is text the model obeys, which makes it the place a tool-poisoning
-instruction lives, and a server can change it after the first look (a dependency
-upgrade nobody read is the ordinary way). `pinned` maps each tool the caller expects to a
-`tool_fingerprint` of its name, description and input schema, exactly what the model
-would be shown. A tool not in the map is dropped (least privilege: the sandbox bridge
-offers 19 tools and the app uses 5), a tool whose fingerprint differs is dropped and
-counted (`agent_mcp_tool_pin_failures_total{reason=changed}`), and one that has gone is
-counted as `missing`. Without `pinned` every tool the server offers is wrapped as it is
-described: trust on first use, so a caller that loads a server it did not write should pin.
+A tool's description is text the model obeys, so it is where a tool-poisoning instruction lives, and a server
+can change it later (an unread dependency upgrade). `pinned` maps each expected tool to a `tool_fingerprint`
+of its name, description and input schema. A tool not in the map is dropped (least privilege: the sandbox
+bridge offers 19 tools and the app uses 5); one whose fingerprint differs is dropped and counted
+(`agent_mcp_tool_pin_failures_total{reason=changed}`); one that has gone is counted as `missing`. Without
+`pinned` every tool is wrapped as described (trust on first use), so a caller loading a server it did not
+write should pin.
 
 ## What comes back is rendered, scrubbed and bounded
 
-Text blocks are joined; an embedded text resource is included; a link is shown as one;
-an image or audio block, which the model cannot read, becomes a one-line note instead of
-vanishing; a result with no text but with structured content is that JSON. The result is
-credential-scrubbed BEFORE it is cut (a secret that straddles the cut would otherwise
-escape the pattern that finds it whole) and then bounded to
-`MCP_TOOL_OUTPUT_MAX_CHARS` (`app/core/output_limits.py`). A caller that parses the
-reply itself and bounds what goes on to the model passes `cap_output=False`: cutting a
-JSON document in the middle leaves it unparseable.
+Text blocks are joined, an embedded text resource is included, a link is shown as one, an image or audio block
+becomes a one-line note, and a result with only structured content is that JSON. The result is
+credential-scrubbed BEFORE it is cut (a secret straddling the cut would escape the pattern that finds it
+whole), then bounded to `MCP_TOOL_OUTPUT_MAX_CHARS` (`app/core/output_limits.py`). A caller that parses the
+reply itself passes `cap_output=False`, since a cut JSON document is unparseable.
 
 ## One connection per server, kept open
 
-Every call on an event loop shares one long-lived stdio connection to a given server
-(`app/mcp/connection.py`): the process starts once, not once per call. A connection found
-dead is replaced on the next call, a call that may have reached the server is never sent a
-second time, and `close_all_connections()` ends them at shutdown. That module's docstring
-has the measured behaviour and the reasons.
+Every call on an event loop shares one stdio connection per server (`app/mcp/connection.py`, whose docstring
+has the failure behaviour and reasons).
 """
 import hashlib
 import json

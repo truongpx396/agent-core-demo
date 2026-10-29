@@ -221,19 +221,18 @@ def make_agent_node(
         if system_prompt:
             messages.insert(0, SystemMessage(content=system_prompt))
 
-        # The one place a call is made, priced and recorded (app/agent/cost/metering.py): it tells the
-        # gateway whose call this is (its spend logs and Langfuse are otherwise one anonymous
-        # caller), prices the usage once from the call's own input/output/cached split by the
-        # model this node's client actually talks to — `model_alias` for a delegated run whose
-        # specialist declares its own model, else the global chat alias — and writes one usage
-        # event. The in-run ceiling below and the event all come from that one pricing, so the ceiling and the bill can never
-        # disagree about what a turn cost (pattern 35).
+        # The one place a call is made, priced and recorded (app/agent/cost/metering.py): it tells the gateway
+        # whose call this is (else its spend logs and Langfuse show one anonymous caller), prices the usage
+        # once from the call's own input/output/cached split by the model this node's client talks to
+        # (`model_alias` for a delegated run whose specialist declares one, else the global chat alias), and
+        # writes one usage event. The in-run ceiling below and the event come from that one pricing, so the
+        # ceiling and the bill can't disagree (pattern 35).
         #
-        # A turn the router sent to the medium or strong tier (`route_model`, specs/014, specs/015) calls that tier's alias in place of this client's
-        # own, and is priced and recorded as the alias that served. Every other turn makes exactly the call it always did, with no extra keyword. If the
-        # routed call never reaches a model, THAT ONE CALL is repeated on the local alias: the ledger then names the local model (a call that failed
-        # records nothing), and the next call this turn tries the routed alias again. This lives here and not in the gateway's `fallbacks` because a
-        # gateway fallback would be priced and recorded as the routed alias that did not answer.
+        # A turn the router sent to the medium or strong tier (`route_model`, specs/014, 015) calls that
+        # tier's alias instead, and is priced and recorded as the alias that served; every other turn makes
+        # exactly the call it always did. If the routed call never reaches a model, THAT ONE CALL is repeated
+        # on the local alias (the next call tries the routed alias again). This lives here and not in the
+        # gateway's `fallbacks`, which would price and record the routed alias that did not answer.
         routed = tier_alias(state.get("model_route"))
         try:
             if routed is None:

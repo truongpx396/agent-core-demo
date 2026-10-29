@@ -1,60 +1,35 @@
-"""Redis Streams as a persistent message queue between the SSE-serving
-process and one or more agent-executing worker processes (GRAPH_PATTERNS.md
-pattern 43) — so the two scale independently: more `uvicorn` processes for
-concurrent SSE connections, more `app/job_queue/agent_worker.py` processes
-for concurrent turns.
+"""Redis Streams as a persistent queue between the SSE-serving process and the agent workers (GRAPH_PATTERNS.md
+pattern 43), so the two scale independently: more `uvicorn` processes for SSE connections, more
+`agent_worker.py` processes for concurrent turns.
 
-Two streams per JOB — a job is one of three kinds (`"turn"`/`"resume"`/
-`"cancel"`), each with its own fresh request_id/results pair, never shared
-across jobs even on the SAME thread_id:
-- `requests_stream_key(domain)` (`agent:requests:{domain}`) — one shared
-  stream PER DOMAIN, consumed via a Redis consumer group (`CONSUMER_GROUP`)
-  so N workers bound to that domain (`AGENT_DOMAIN`) split its load, with
-  no request delivered twice (Redis's own semantics). Splitting by domain
-  is what lets `app/api/main.py` stay one unified process routing by
-  `X-Domain` while each domain's worker pool scales independently —
-  pattern 43's SSE/worker split, one level deeper.
-- A per-request results stream (`results_stream_key(request_id)`) —
-  created fresh per job, written by whichever worker picks it up, read by
-  the producer, `EXPIRE`d so an abandoned one (client disconnects
-  mid-stream) self-cleans — same TTL-on-write shape as
-  `app/retrieval/semantic_cache.py`'s keys.
+A job (`"turn"`, `"resume"` or `"cancel"`) uses two streams, never shared across jobs even on the same
+thread_id:
+- `requests_stream_key(domain)` (`agent:requests:{domain}`): one stream PER DOMAIN, consumed via a consumer
+  group (`CONSUMER_GROUP`) so N workers bound to a domain (`AGENT_DOMAIN`) split its load with no request
+  delivered twice. This is what lets `app/api/main.py` stay one process routing by `X-Domain` while each
+  domain's pool scales alone.
+- `results_stream_key(request_id)`: created per job, written by the worker, read by the producer, and
+  `EXPIRE`d so an abandoned one self-cleans (the same TTL-on-write shape as
+  `app/retrieval/semantic_cache.py`).
 
-A separate, per-THREAD mechanism: the cancel flag (`cancel_flag_key`/
-`set_cancel_flag`/`is_cancelled`/`clear_cancel_flag`) — a short-lived key a
-`"turn"`/`"turn_continue"`/`"resume"` job's worker polls between graph
-events, so `POST /chat/cancel` can stop an ACTIVELY STREAMING turn (which has
-no queued job to target, unlike one paused at human_approval — see
-`agent_worker.py`'s `"cancel"` dispatch for that case). That includes the run an
-approval started: `"resume"` polls it too.
+Three per-THREAD mechanisms:
+- The cancel flag (`cancel_flag_key`/`set_cancel_flag`/`is_cancelled`/`clear_cancel_flag`): a short-lived key
+  a `"turn"`/`"turn_continue"`/`"resume"` worker polls between graph events, so `POST /chat/cancel` can stop a
+  turn that is ACTIVELY STREAMING (no queued job to target, unlike one paused at human_approval; see
+  agent_worker.py's `"cancel"` dispatch).
+- The thread lock (`thread_lock_key`/`acquire_thread_lock`/`release_thread_lock`): mutual exclusion across
+  every job kind touching one thread's checkpoint. The consumer group guarantees no ONE request is delivered
+  twice, not that two DIFFERENT requests (a double-submit, a resume racing a new turn) don't hit the same
+  thread at once, possibly on two replicas. Both would read the latest state as parent and the last commit
+  would silently win. The worker acquires the lock before any job and rejects the loser fast
+  (`ErrorCode.THREAD_BUSY`) instead of queueing it. It only covers CONCURRENT jobs.
+- Submission dedup (`claim_or_get_existing_submission`): closes the gap the lock leaves, a retry arriving
+  AFTER the first job finished, which would run as a second independent turn. For `POST /chat/stream/queued`;
+  see its docstring.
 
-A second per-THREAD mechanism: the thread lock (`thread_lock_key`/
-`acquire_thread_lock`/`release_thread_lock`) — mutual exclusion across
-every job kind touching one `thread_id`'s checkpoint. The consumer-group
-split above guarantees no ONE request is delivered twice, but says
-nothing about two DIFFERENT requests (a double-submit, a client retry, a
-resume racing a new turn) landing on the SAME thread_id at the same real
-moment, possibly on two different worker replicas. Two such jobs both
-read the checkpointer's "latest" state as their parent and both write a
-child from it — whichever commits last silently wins, and the other
-job's turn vanishes from the thread's visible history. `agent_worker.py`
-acquires this lock before running ANY job for a thread_id and rejects a
-losing job fast (`ErrorCode.THREAD_BUSY`) rather than queueing it behind
-the winner — but only while both are genuinely CONCURRENT: a retry that
-arrives after the first job already finished races nothing, the lock is
-free again, and (without the third mechanism below) would run as a
-second, fully independent turn.
-
-A third per-THREAD mechanism: submission dedup
-(`claim_or_get_existing_submission`) — closes exactly that gap, for
-`POST /chat/stream/queued` specifically. See its own docstring.
-
-This module only wraps queue mechanics (publish/read, group setup) — it
-doesn't know what a "turn" or "event" IS. Producers: `app/api/routers/chat.py`
-(`POST /chat/stream/queued`, `/chat/resume`, `/chat/cancel`) and
-`app/job_queue/producer.py`, which the CLI (`app/channels/chat.py`) and the
-Telegram channel (`app/channels/telegram.py`) publish through. Consumer:
-`app/job_queue/agent_worker.py`, the only place that runs the graph.
+This module only wraps queue mechanics; it doesn't know what a "turn" is. Producers: `app/api/routers/chat.py`
+and `app/job_queue/producer.py` (used by the CLI and Telegram). Consumer: `agent_worker.py`, the only place
+that runs the graph.
 """
 import json
 import logging
@@ -175,32 +150,22 @@ async def publish_request(
     images: list[str] | None = None,
     unattended: bool = False,
 ) -> None:
-    """Producer side: enqueue one new-turn (`"kind": "turn"`) request onto
-    `domain`'s requests stream — only a worker pool with matching
-    `AGENT_DOMAIN` reads it. `request_id` is generated by the CALLER
-    (app/api/routers/chat.py, app/job_queue/producer.py) so it can start
-    listening on `results_stream_key(request_id)` before publishing, with no
-    race against a worker finishing first. `images` (pattern 44) rides along as
-    plain JSON strings (URLs/data URIs) — no special handling needed.
+    """Producer side: enqueue one new-turn (`"kind": "turn"`) request onto `domain`'s requests stream; only a
+    worker pool with that `AGENT_DOMAIN` reads it. `request_id` is generated by the CALLER
+    (app/api/routers/chat.py, app/job_queue/producer.py) so it can listen on `results_stream_key(request_id)`
+    before publishing, with no race against a fast worker. `images` (pattern 44) ride along as plain JSON
+    strings (URLs/data URIs).
 
-    `unattended` is for a caller with nobody to show an approval to (the
-    Telegram channel): the worker then runs the turn through
-    `astream_events_turn_unattended`, which declines a pause instead of
-    forwarding it. It is a property of the JOB, not of the worker, so it
-    survives a reclaim (`republish_job` keeps the payload) and a crashed
-    unattended turn is continued unattended too.
+    `unattended` is for a caller with nobody to show an approval to (Telegram): the worker runs the turn
+    through `astream_events_turn_unattended`, which declines a pause instead of forwarding it. It is a
+    property of the JOB, not the worker, so it survives a reclaim (`republish_job` keeps the payload) and a
+    crashed unattended turn is continued unattended.
 
-    `domain` never rides IN the payload — the stream it landed on already
-    tells the worker which domain it's for.
-
-    Sibling functions `publish_resume_request`/`publish_cancel_request`
-    publish the other two job kinds onto this SAME per-domain stream (one
-    consumer group per domain, dispatch-by-`kind` in `agent_worker.py`)
-    rather than a queue per kind. A resume/cancel MUST land on the SAME
-    domain's stream as the original turn — the paused graph was built from
-    that domain's manifest/tools, so a different domain's worker resuming
-    it would run the wrong tool universe; `X-Domain` keeps all three calls
-    for one conversation aimed at the same domain.
+    `domain` never rides in the payload; the stream it landed on says which domain it is for.
+    `publish_resume_request`/`publish_cancel_request` use this SAME per-domain stream (dispatch-by-`kind` in
+    agent_worker.py) and a resume/cancel MUST land on the same domain as the original turn, since the paused
+    graph was built from that domain's tools; `X-Domain` keeps all three calls for one conversation aimed
+    alike.
     """
     payload = json.dumps(
         {
@@ -410,31 +375,20 @@ async def read_results(
     block_ms: int = 5000,
     first_event_deadline_seconds: float | None = None,
 ):
-    """Producer side: yield each event published for `request_id`, in
-    order, blocking up to `block_ms` per read, until a terminal event
-    (`type` is `done`, `error`, or `approval_required`) is seen. Treating
-    `approval_required` as terminal matters: it's the last event
-    `_run_graph_stream` yields for a paused turn, and the worker's own
-    forwarding loop stops right after publishing it — resuming is a
-    SEPARATE job (`publish_resume_request`) with its own results stream, so
-    without this the generator would block forever waiting for a done/error
-    a paused worker will never send. A caller that stops iterating early
-    just leaves the stream to expire via TTL.
+    """Producer side: yield each event published for `request_id`, in order, blocking up to `block_ms` per read,
+    until a terminal event (`type` is `done`, `error` or `approval_required`). `approval_required` is terminal
+    because it is the last event `_run_graph_stream` yields for a paused turn and the worker stops forwarding
+    right after it; resuming is a SEPARATE job with its own results stream, so without this the generator
+    would wait forever for a done/error a paused worker never sends. A caller that stops iterating early
+    leaves the stream to expire via TTL.
 
-    `first_event_deadline_seconds`, when given, bounds ONLY the wait for
-    the FIRST event ever published here — not the whole job. Without it,
-    `if not response: continue` below loops forever the moment nobody is
-    ever going to publish anything (no agent-worker running for this
-    domain at all, or a submission-dedup claim left pointing at a
-    request_id whose own publish then failed — see app/api/routers/chat.py's
-    compensating delete for that case), silently hanging whatever's
-    iterating this generator (an open SSE connection) instead of ever
-    erroring. Once a real event has arrived the deadline is cleared for
-    the rest of this call — a legitimately long-running job (bounded by
-    its OWN worker-side timeout, or not bounded at all for an ingest job)
-    is never cut short here. On expiry, yields one `error` event (the
-    same terminal shape a real worker-reported failure takes, so every
-    existing caller already knows how to render it) and returns.
+    `first_event_deadline_seconds` bounds ONLY the wait for the FIRST event, not the job. Without it `if not
+    response: continue` loops forever when nobody will ever publish (no agent-worker for this domain, or a
+    submission-dedup claim pointing at a request_id whose publish failed; see the compensating delete in
+    app/api/routers/chat.py), silently hanging an open SSE connection. Once a real event arrives the deadline
+    is cleared, so a legitimately long job (bounded by its own worker-side timeout, or not at all for ingest)
+    is never cut short. On expiry it yields one `error` event, the same terminal shape a worker-reported
+    failure has, and returns.
     """
     key = results_stream_key(request_id)
     last_id = "0"
@@ -481,26 +435,19 @@ async def delete_results_stream(client: redis.Redis, request_id: str) -> None:
         logger.warning("queue_results_cleanup_failed", extra={"error_class": type(exc).__name__})
 
 
-# --- Crash recovery for a requests stream's consumer group (agent_worker.py
-# and ingest_worker.py both use these against their own stream/group) ---
+# --- Crash recovery for a requests stream's consumer group (agent_worker.py and ingest_worker.py use these
+# against their own stream/group) ---
 #
-# Neither worker's own xreadgroup loop redelivers on failure — process_request/
-# process_job always ack, even on an exception, specifically so a redelivered
-# job never re-runs already-applied side effects (a duplicated tool call, a
-# duplicated vector upsert). That leaves exactly one failure mode uncovered:
-# the WORKER PROCESS ITSELF dying mid-job (OOM kill, host failure, a bug that
-# segfaults the interpreter) before it ever reaches its own try/finally.
-# Redis never learns that job failed — the entry just sits in the consumer
-# group's Pending Entries List forever, unacked and undelivered to anyone
-# else, and whoever's waiting on its results stream hangs until their own
-# client-side timeout.
+# Neither worker's xreadgroup loop redelivers on failure: process_request/process_job always ack, even on an
+# exception, so a redelivered job never re-runs applied side effects (a duplicated tool call or vector
+# upsert). That leaves one uncovered failure: the WORKER PROCESS dying mid-job (OOM, host failure, a segfault)
+# before its own try/finally. Redis never learns the job failed, the entry sits in the consumer group's
+# Pending Entries List unacked, and whoever waits on its results stream hangs until their own client timeout.
 #
-# The fix is NOT to blindly redeliver it either, for the same duplicate-
-# side-effect reason above — a job reclaimed this way is instead surfaced
-# as a failure (an error event on its own results stream) and archived to a
-# dead-letter stream for operator inspection/manual replay, then acked so
-# it's never attempted again. See agent_worker.py's/ingest_worker.py's own
-# reclaim loops for the policy; this module only owns the Streams mechanics.
+# Blind redelivery is wrong for the same duplicate-side-effect reason. A job reclaimed this way is surfaced as
+# a failure (an error event on its results stream), archived to a dead-letter stream for inspection or manual
+# replay, and acked so it is never attempted again. The policy is in the workers' own reclaim loops; this
+# module owns only the Streams mechanics.
 DEAD_LETTER_MAXLEN = 1000  # approx-trimmed (see publish_dead_letter) — bounds
 # growth for an unattended deployment; operators pull recent entries, not
 # the full history.
