@@ -1,29 +1,23 @@
-"""Shared SSRF guard for anything fetching a caller- or agent-supplied URL:
-app/ingestion/ingestor.py::ingest_url and app/ingestion/web_crawler.py's
-crawl4ai-backed render. One implementation so the two don't drift.
+"""Shared SSRF guard for anything fetching a caller- or agent-supplied URL: app/ingestion/ingestor.py::ingest_url
+and app/ingestion/web_crawler.py's crawl4ai-backed render. One implementation so the two can't drift.
 
-https-only; every A/AAAA record the hostname resolves to must be a globally
-routable address, checked against ALL of them so a mixed public+private record
-set is still refused. It is an allow-list (`ipaddress.is_global`), not a list of
-known-bad ranges: the earlier list (private/loopback/link-local/reserved/
-multicast/unspecified) missed `100.64.0.0/10`, carrier-grade NAT, which holds
-cloud metadata services too (`100.100.100.200` is Alibaba Cloud's). The old
-flags are still checked as well, so a Python version whose `is_global` differs
-can only ever refuse MORE, never less.
+https only. Every A/AAAA record the hostname resolves to must be a globally routable address, checked against
+ALL of them so a mixed public+private set is still refused. It is an allow-list (`ipaddress.is_global`), not a
+list of known-bad ranges: the earlier list (private/loopback/link-local/reserved/multicast/unspecified) missed
+`100.64.0.0/10`, carrier-grade NAT, which also holds cloud metadata services (`100.100.100.200` is Alibaba
+Cloud's). The old flags are still checked as well, so a Python version whose `is_global` differs can only ever
+refuse MORE.
 
-Two entry points over one classification: `assert_safe_url_async` for async
-callers (both production callers are) and `assert_safe_url` for sync ones. Name
-resolution is blocking `getaddrinfo`; called straight from a coroutine it froze
-the whole event loop for as long as the lookup took (measured: a 0.5 s resolver
-stalled a concurrent heartbeat for 0.51 s), so the async entry point resolves
-through the loop's own resolver, which runs it on a worker thread.
+Two entry points over one classification: `assert_safe_url_async` for async callers (both production callers)
+and `assert_safe_url` for sync ones. Name resolution is blocking `getaddrinfo`; called straight from a
+coroutine it froze the event loop for the lookup's duration (measured: a 0.5 s resolver stalled a heartbeat
+0.51 s), so the async entry point resolves through the loop's own resolver, which runs it on a worker thread.
 
-Disclosed limitation: this validates resolution now, but the caller (httpx /
-headless browser) resolves and connects separately a moment later — a
-DNS-rebinding attack could slip through that gap. Closing it fully means pinning
-the connection to the address validated here, real added complexity neither
-caller takes on. Also not bounded here: how long a lookup may take (it no longer
-blocks the loop, but a hung resolver holds the calling task and a worker thread).
+Disclosed limitation: this validates resolution now, but the caller (httpx / headless browser) resolves and
+connects separately a moment later, so a DNS-rebinding attack could slip through that gap. Closing it means
+pinning the connection to the address validated here, real added complexity neither caller takes on. Also
+unbounded: how long a lookup may take (it no longer blocks the loop, but a hung resolver holds the calling
+task and a worker thread).
 """
 import asyncio
 import ipaddress

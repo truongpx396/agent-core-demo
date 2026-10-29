@@ -1,59 +1,45 @@
-"""Pure helper logic behind each domain's three sandbox tools
-(run_command_in_sandbox, read_sandbox_file, write_sandbox_file), wrapped
-per domain in app/domains/{ops,support,sales}/tools.py — built on
-OpenSandbox's raw MCP catalog (app/domains/sandbox_tools.py, pattern 50)
-instead of exposing that catalog to the LLM directly.
-
-Domain-agnostic on purpose: nothing below is ops-specific, hence living
-under app/domains/ rather than app/domains/ops/.
+"""Pure helper logic behind each domain's three sandbox tools (`run_command_in_sandbox`, `read_sandbox_file`,
+`write_sandbox_file`), wrapped per domain in app/domains/{ops,support,sales}/tools.py. Built on OpenSandbox's
+raw MCP catalog (sandbox_tools.py, pattern 50) instead of exposing that catalog to the LLM. Domain-agnostic,
+hence under app/domains/ rather than app/domains/ops/.
 
 ## Why this exists
-Handing a small local model (qwen2.5:3b) OpenSandbox's raw ~19-tool
-catalog (stateful create -> connect -> run, nested schemas) produced
-reproducible failures: it hallucinated a sandbox_id, then looped on
-sandbox_connect with no args until the no-progress safety net (pattern 34)
-cut it short. A prompt-only fix didn't help — a real instruction-following
-ceiling, not a prompting problem. Every other tool in this app is 1-3 flat
-fields; this module gives sandbox access the same shape — one flat string
-arg per tool, full create/reuse/connect lifecycle handled here in code.
-The model never sees a sandbox_id or calls sandbox_create/sandbox_connect.
+A small local model (qwen2.5:3b) given OpenSandbox's raw ~19-tool catalog (stateful create -> connect -> run,
+nested schemas) failed reproducibly: it hallucinated a sandbox_id, then looped on `sandbox_connect` with no
+args until the no-progress safety net (pattern 34) cut it off. A prompt-only fix didn't help; it is an
+instruction-following ceiling. Every other tool here has 1-3 flat fields, so this module gives sandbox access
+the same shape: one flat string arg per tool, with the create/reuse/connect lifecycle handled in code. The
+model never sees a sandbox_id.
 
 ## Per-conversation reuse, server-side
-Each (tenant, conversation) pair gets ONE sandbox, tagged with
-`{SANDBOX_TENANT_KEY: sha(tenant), SANDBOX_THREAD_KEY: sha(thread_id)}` at
-creation and found again via sandbox_list's metadata filter — a server-side
-lookup, not a process-local dict, so it stays correct across this app's
-horizontally-scaled workers (pattern 43): a resume picked up by a different
-worker than the one that created the sandbox still finds it.
+Each (tenant, conversation) pair gets ONE sandbox, tagged `{SANDBOX_TENANT_KEY: sha(tenant),
+SANDBOX_THREAD_KEY: sha(thread_id)}` at creation and found again via `sandbox_list`'s metadata filter. The
+lookup is server-side, not a process-local dict, so it holds across horizontally scaled workers (pattern 43):
+a resume on a different worker still finds the sandbox.
 
-The tags are hashes of the RAW values, never a rewrite of them. This used to
-tag the conversation id after squeezing it into OpenSandbox's metadata-value
-rules (every disallowed character became `-`, cut to 63), which made
-`telegram:12345` and `telegram-12345` — and any two ids sharing their first 63
-characters — resolve to ONE sandbox, and never looked at the tenant at all, so
-the same id under two tenants shared one too (spec 009 B24; Principle I). A
-hash always satisfies the value rules (hex), keeps a chat id out of the sandbox
-service in the clear, and differs whenever the input does. The tenant and the
-conversation are separate tags rather than one concatenation so no pair of
-values can be read as another. After the filtered lookup the tags on what came
-back are compared again, so a service that ignored the filter still can't hand
-one conversation another's files; an entry with no readable tags is not reused.
+The tags hash the RAW values and never rewrite them. This used to tag the conversation id after squeezing it
+into OpenSandbox's metadata-value rules (disallowed characters became `-`, cut to 63), so `telegram:12345` and
+`telegram-12345`, or any two ids sharing their first 63 characters, resolved to ONE sandbox, and the tenant
+was never looked at (spec 009 B24; Principle I). A hash always satisfies the value rules (hex), keeps a chat
+id out of the sandbox service in the clear, and differs whenever the input does. Tenant and conversation are
+separate tags, not one concatenation, so no pair of values can be read as another. After the filtered lookup
+the returned tags are compared again, so a service that ignored the filter still can't hand one conversation
+another's files; an entry with no readable tags is not reused.
 
-`connect_if_missing=True` is passed on every command_run/file_read/
-file_write call unconditionally: `load_remote_tools` spawns a fresh
-opensandbox-mcp subprocess per call (app/mcp/client.py), so the bridge's
-local sandbox registry never persists between calls anyway — every call
-after the creating one would otherwise 404 regardless of sandbox_id.
+`connect_if_missing=True` is passed on every `command_run`/`file_read`/`file_write` call: `load_remote_tools`
+spawns a fresh opensandbox-mcp subprocess per call (app/mcp/client.py), so the bridge's sandbox registry never
+persists and every call after the creating one would otherwise 404.
 
 ## Response shapes
-Confirmed live against a real opensandbox-server (port 8090, `make
-sandbox-up`):
+Confirmed live against a real opensandbox-server (port 8090, `make sandbox-up`) and tested in
+tests/domains/test_sandbox_session.py:
 - sandbox_create -> `{"sandbox_id": ..., "info": {...}}`
-- sandbox_list -> `{"sandbox_infos": [{"id": ..., "status": {"state": "RUNNING", ...}, "metadata": {...}, ...}], "pagination": {...}}`
-- command_run -> Execution: `{"exit_code": int|None, "logs": {"stdout": [{"text": ...}], "stderr": [{"text": ...}]}, ...}`
+- sandbox_list -> `{"sandbox_infos": [{"id": ..., "status": {"state": "RUNNING", ...}, "metadata": {...},
+  ...}], "pagination": {...}}`
+- command_run -> `{"exit_code": int|None, "logs": {"stdout": [{"text": ...}], "stderr": [{"text": ...}]},
+  ...}`
 - file_read -> `{"path": ..., "content": ...}`
 - file_write -> `{"status": "written"}`
-Tested against these shapes in tests/domains/test_sandbox_session.py.
 """
 import hashlib
 import json

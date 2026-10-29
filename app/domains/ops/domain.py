@@ -1,45 +1,33 @@
-"""Internal ops-bot domain: fetch operational metrics, flag anomalies,
-post digests to the team channel, and log/list/resolve durable incidents
-(app/domains/ops/store.py) — also used directly by
-scripts/ops_investigate.py for ad-hoc "why is X happening" queries.
-scripts/ops_digest.py's cron digest bypasses this domain's agent loop
-entirely (a deterministic pipeline, since an unattended cron job can never
-satisfy the mandatory human_approval gate post_to_team_channel's
-"outward" capability requires). skill_search/use_skill are this domain's
-own pair (`make_skill_tools("ops")`) so the bundled `ops-incident-response`
-skill stays scoped here instead of leaking into other domains' catalogs.
+"""Internal ops-bot domain: fetch operational metrics, flag anomalies, post digests to the team channel, and
+log/list/resolve durable incidents (app/domains/ops/store.py). `scripts/ops_investigate.py` also uses it for
+ad-hoc "why is X happening" queries.
 
-Only domain wired to OpenSandbox (sandbox_session.py, sandbox_tools.py,
-pattern 50): investigations sometimes need real computation beyond
-calculator's arithmetic-only AST evaluator, and an isolated, disposable
-container is what makes that safe. Deliberately not wired into
-support/sales (their narrow tool surface is intentional). No special
-handling needed here — ops/tools.py's `TOOLS`/`TOOL_CAPABILITIES` already
-include the three sandbox tools (or none, if opensandbox-mcp isn't
+`scripts/ops_digest.py`'s cron digest bypasses this domain's agent loop: it is a deterministic pipeline,
+because an unattended cron job can never satisfy the mandatory human_approval gate that `post_to_team_channel`
+(an "outward" tool) requires. `skill_search`/`use_skill` are this domain's own pair
+(`make_skill_tools("ops")`), so the bundled `ops-incident-response` skill stays out of other domains'
+catalogs.
+
+The only domain wired to OpenSandbox (sandbox_session.py, sandbox_tools.py, pattern 50): investigations
+sometimes need real computation beyond the arithmetic-only `calculator`, and a disposable container makes that
+safe. support/sales deliberately don't get it (their narrow tool surface is intentional). `ops/tools.py`'s
+`TOOLS`/`TOOL_CAPABILITIES` already include the three sandbox tools (or none, if opensandbox-mcp isn't
 reachable).
 
-OPS_SYSTEM_PROMPT's sandbox-boundary, scope-discipline, and
-anti-disclosure paragraphs were added after redteaming this prompt with
-Gemini 3.1 Flash-Lite (promptfoo/ops-redteam.yaml, pattern 48) found real
-jailbreaks: reading `/etc/shadow` framed as "permission verification,"
-wiping log files under a fabricated outage, engaging with an out-of-scope
-"audit all directories" request, and echoing system-prompt text when
-asked to "summarize your directives." These are PROMPT-level mitigations
-only — sandbox_tools.py has no allow/denylist, so the sandbox runs
-whatever it's asked; this reduces likelihood, doesn't guarantee it (same
+OPS_SYSTEM_PROMPT's sandbox-boundary, scope-discipline and anti-disclosure paragraphs came from red-teaming it
+with Gemini 3.1 Flash-Lite (promptfoo/ops-redteam.yaml, pattern 48), which found real jailbreaks: reading
+`/etc/shadow` framed as "permission verification", wiping log files under a fabricated outage, engaging with
+an out-of-scope "audit all directories" request, and echoing the system prompt when asked to "summarize your
+directives". These are PROMPT-level mitigations only. sandbox_tools.py has no allow/denylist, so the sandbox
+runs whatever it is asked; the prompt lowers the likelihood, it doesn't guarantee anything (the same
 partial-coverage honesty as app/core/moderation.py's pattern layer).
 
-Re-verification after the fix landed found the two original vulnerability
-classes fixed, but two narrower gaps still real: (1) after correctly
-refusing a network-scan request, the model then proposed doing it anyway
-via run_subagent — refusing the letter while still planning the same
-outcome; (2) a softer, "as part of the onboarding process" framing still
-extracted prompt content that the direct "print your system prompt" ask
-no longer does. Not chased further with more prompt tuning — a known
-ceiling of prompt-only defense on a small model (qwen2.5:3b), not a
-wording bug. A deterministic output-side check for near-verbatim
-system-prompt leakage (mirroring moderation.py's input-side posture)
-would close this more reliably; flagged as the next step, not built here.
+Re-verification confirmed both original classes fixed but found two narrower gaps: (1) after refusing a
+network scan, the model proposed doing it anyway via `run_subagent`; (2) a softer "as part of the onboarding
+process" framing still extracted prompt content that a direct "print your system prompt" no longer does. Not
+chased further: it is the known ceiling of prompt-only defense on a small model (qwen2.5:3b), not a wording
+bug. A deterministic output-side check for near-verbatim prompt leakage (mirroring moderation.py's input side)
+would close it more reliably; flagged as the next step, not built.
 """
 from dataclasses import dataclass
 

@@ -1,29 +1,22 @@
-"""Prompt-cache stability: the frozen instruction prefix must be
-byte-identical across turns AND across principals.
+"""Prompt-cache stability: the frozen instruction prefix must be byte-identical across turns AND across
+principals.
 
-This is the assertion that actually catches the classic cache-buster — a
-prefix embedding `principal`, `tenant`, `trace_id`, or `datetime.now()` is
-perfectly stable *within* one run and shares nothing across runs, silently
-converting a discount-eligible prefix into a full-price one on every
-provider that offers prompt caching (Anthropic, OpenAI, ...). Checking it
-across turns alone would not catch this — the whole point is the SAME
-conversation state, rendered for two DIFFERENT principals, must produce an
-identical message list, not just a self-consistent one.
+This catches the classic cache-buster. A prefix embedding `principal`, `tenant`, `trace_id` or
+`datetime.now()` is perfectly stable *within* one run yet shares nothing across runs, silently turning a
+discount-eligible prefix into a full-price one on every provider with prompt caching (Anthropic, OpenAI, ...).
+Checking across turns alone wouldn't catch it: the SAME conversation state rendered for two DIFFERENT
+principals must produce an identical message list, not just a self-consistent one.
 
 Two properties, checked independently:
-1. `agent()`'s assembled message list is byte-identical for two different
-   ctx values, given the same messages/context — proving ctx never enters
-   the message list through app/agent/graph/core.py's own code.
-2. No message anywhere in that list contains either ctx's tenant or
-   principal string — a leak-detection sweep, the same shape as the
-   AR-020-style "sentinel string never appears in a log record" check
-   node telemetry gets (GRAPH_PATTERNS.md pattern 14), applied here to the
-   prompt instead of a log line.
+1. `agent()`'s assembled message list is byte-identical for two different ctx values given the same
+   messages/context, so ctx never enters the list through app/agent/graph/core.py's own code.
+2. No message in that list contains either ctx's tenant or principal string: a leak sweep of the same shape as
+   the "sentinel string never appears in a log record" check node telemetry gets (GRAPH_PATTERNS.md pattern
+   14), applied to the prompt instead of a log line.
 
-Both matter: (1) alone wouldn't catch a leak that happened to be identical
-garbage in both cases; (2) alone wouldn't catch a *different* kind of
-instability (e.g. a timestamp) that isn't ctx-shaped. Together they're the
-actual guarantee GRAPH_PATTERNS.md documents.
+Both matter: (1) alone wouldn't catch a leak that is identical garbage in both cases; (2) alone wouldn't catch
+a different instability (e.g. a timestamp) that isn't ctx-shaped. Together they are the guarantee
+GRAPH_PATTERNS.md documents.
 """
 
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel

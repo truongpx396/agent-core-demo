@@ -1,53 +1,61 @@
 """The Polar adapter: sells a prepaid credit pack and tells the app it was paid (specs/010 T029b, D16).
 
-Same shape and the same promise as the Stripe adapter: Polar takes the money and nothing more, so this declares `CHECKOUT` only (no
-`USAGE_EXPORT`, no `BALANCE_READ`), translates two wire formats and holds no business rule: a Checkout going out, a signed webhook
-coming in.
+Same shape and promise as the Stripe adapter: Polar takes the money and nothing more, so this declares
+`CHECKOUT` only (no `USAGE_EXPORT`, no `BALANCE_READ`). It translates two wire formats and holds no business
+rule: a Checkout going out, a signed webhook coming in.
 
 ## What was checked against Polar, and how
 
-Every claim below is from Polar's documentation, from Polar's own Python SDK (1.0.2, read as the ORACLE for the wire formats), or from a
-run against Polar's SANDBOX (2026-10-08), not from memory.
+Every claim below comes from Polar's documentation, Polar's own Python SDK (1.0.2, read as the ORACLE for wire
+formats), or a run against Polar's SANDBOX (2026-10-08), not from memory.
 
-  * **The signature** is the Standard Webhooks scheme: headers `webhook-id`, `webhook-timestamp` (seconds) and `webhook-signature` (a
-    SPACE-separated list of `v1,<base64>`, several while a secret is rolled); the MAC is HMAC-SHA256 over `"<id>.<floor(timestamp)>.<body>"`.
-    What is unusual is the KEY. Polar's docs say a secret created before 2026-09-08 is used as the UTF-8 bytes of the whole string, and one
-    created on or after that date is a Standard Webhooks `whsec_` secret whose base64 remainder is decoded. A secret does not say which it
-    is, so (exactly as Polar's SDK does) BOTH derived keys are tried. The secret `polar listen --print-secret` printed in the sandbox was 32
-    characters with no `whsec_` prefix and verified under the raw-bytes key. Unlike Stripe's verifier, Polar's refuses a timestamp in
-    the FUTURE as well as a stale one (300 s either way); that is mirrored here.
-  * **The event id is the `webhook-id` header.** The body has none (`{type, timestamp, api_version, data}`), and Polar's SDK documentation
-    names that header "a durable deduplication key". It is covered by the MAC, so it cannot be altered in transit.
-  * **The events** (docs and the SDK's models, identical across API versions 2026-04, 2026-10 and 2027-01): `order.paid` ("the order is
-    fully processed and payment has been received") whose `data` is an Order with `billing_reason` (`purchase` for a one-time product),
-    `status`, `customer_id`, `product_id`, `total_amount`, `currency`; and `order.refunded` ("fully or partially refunded") whose Order
-    `status` is `refunded` or `partially_refunded` and whose `refunded_amount` is the running total. That `status` is exactly the
-    distinction the app needs between `PAYMENT_REFUNDED` and `PAYMENT_PARTIALLY_REFUNDED`.
-  * **There is no dispute event.** Neither the docs, the SDK nor `polar trigger --list` has one; a Refund carries a `dispute` object only
-    for a dispute Polar PREVENTED by refunding. So `DISPUTE_OPENED`/`DISPUTE_CLOSED` are never produced by this adapter (disclosed).
-  * **Checkout has no idempotency.** The docs mention no key, Polar's SDK guidance says to reconcile at the application level before
-    retrying a mutation, and a real sandbox run proved a sent `Idempotency-Key` header is ignored (the same body and key made two
-    sessions). `create_checkout` therefore looks for an existing session of this attempt first; see its docstring.
+- **The signature** is the Standard Webhooks scheme: headers `webhook-id`, `webhook-timestamp` (seconds) and
+  `webhook-signature` (a SPACE-separated list of `v1,<base64>`, several while a secret is rolled); the MAC is
+  HMAC-SHA256 over `"<id>.<floor(timestamp)>.<body>"`. The unusual part is the KEY. Polar's docs say a secret
+  created before 2026-09-08 is used as the UTF-8 bytes of the whole string, and one created on or after is a
+  Standard Webhooks `whsec_` secret whose base64 remainder is decoded. A secret doesn't say which it is, so
+  (as Polar's SDK does) BOTH derived keys are tried. The secret `polar listen --print-secret` printed in the
+  sandbox was 32 characters with no `whsec_` prefix and verified under the raw-bytes key. Unlike Stripe's
+  verifier, Polar's refuses a FUTURE timestamp as well as a stale one (300 s either way); that is mirrored
+  here.
+- **The event id is the `webhook-id` header.** The body has none (`{type, timestamp, api_version, data}`), and
+  Polar's SDK documentation calls that header "a durable deduplication key". The MAC covers it, so it can't be
+  altered in transit.
+- **The events** (docs and SDK models, identical across API versions 2026-04, 2026-10 and 2027-01):
+  `order.paid` ("the order is fully processed and payment has been received"), whose `data` is an Order with
+  `billing_reason` (`purchase` for a one-time product), `status`, `customer_id`, `product_id`, `total_amount`,
+  `currency`; and `order.refunded` ("fully or partially refunded"), whose Order `status` is `refunded` or
+  `partially_refunded` and whose `refunded_amount` is the running total. That `status` is the distinction the
+  app needs between `PAYMENT_REFUNDED` and `PAYMENT_PARTIALLY_REFUNDED`.
+- **There is no dispute event.** Neither the docs, the SDK nor `polar trigger --list` has one; a Refund
+  carries a `dispute` object only for a dispute Polar PREVENTED by refunding. So this adapter never produces
+  `DISPUTE_OPENED`/`DISPUTE_CLOSED` (disclosed).
+- **Checkout has no idempotency.** The docs mention no key, Polar's SDK guidance says to reconcile at the
+  application level before retrying a mutation, and a real sandbox run showed a sent `Idempotency-Key` header
+  is ignored (the same body and key made two sessions). So `create_checkout` first looks for an existing
+  session of this attempt; see its docstring.
 
-## How a purchase is tied to a refund and to a catalog entry
+## How a purchase ties to a refund and a catalog entry
 
-`BillingEvent.payment_ref` is the ORDER id: it is on `order.paid` and on every later `order.refunded` for that order, so a refund finds the
-grant it takes back. The catalog entry (`credit_products.product_ref`) is the Polar PRODUCT id, which an Order carries directly (unlike
-Stripe, nothing has to travel through metadata). An order with no single product (`product_id` null) has no catalog entry and the app
-quarantines it as `unknown_product`.
+`BillingEvent.payment_ref` is the ORDER id, on `order.paid` and every later `order.refunded` for that order,
+so a refund finds the grant it takes back. The catalog entry (`credit_products.product_ref`) is the Polar
+PRODUCT id, which an Order carries directly (unlike Stripe, nothing travels through metadata). An order with
+no single product (`product_id` null) has no catalog entry, and the app quarantines it as `unknown_product`.
 
 ## What this adapter must never do
 
-The same list as the Stripe adapter's: name a tenant, let a payload decide an amount, keep buyer details (a Polar Order carries the
-buyer's name, billing address and email; only a whitelist is ever read), put a tenant on the wire, or repeat a provider's own words in an
-error (they are reported by status, error type and the NAME of the field Polar objected to).
+The same list as the Stripe adapter's: name a tenant, let a payload decide an amount, keep buyer details (a
+Polar Order carries the buyer's name, billing address and email; only a whitelist is ever read), put a tenant
+on the wire, or repeat a provider's own words in an error (reported by status, error type and the NAME of the
+field Polar objected to).
 
 ## Not done here, and said so
 
-  * Subscriptions are ignored: an `order.paid` whose `billing_reason` is anything but `purchase` grants nothing.
-  * Nothing calls `create_checkout` yet: no route starts a purchase.
-  * Two concurrent `create_checkout` calls with the SAME key can each create a session (the list-then-create is not atomic and Polar offers
-    no lock). Only an unpaid session results; two PAYMENTS would be two real orders, each correctly granted once.
+- Subscriptions are ignored: an `order.paid` whose `billing_reason` isn't `purchase` grants nothing.
+- Nothing calls `create_checkout` yet: no route starts a purchase.
+- Two concurrent `create_checkout` calls with the SAME key can each create a session (list-then-create isn't
+  atomic and Polar offers no lock). Only an unpaid session results; two PAYMENTS would be two real orders,
+  each correctly granted once.
 """
 import base64
 import binascii

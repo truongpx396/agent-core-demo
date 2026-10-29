@@ -1,22 +1,17 @@
-"""Real (not hollow) input moderation — screens each turn's input before
-retrieval, the semantic cache, or any LLM spend (pattern 25; wired in via
-`app/agent/graph/core.py`'s `moderate_input` node, right after `validate_input`).
+"""Real (not hollow) input moderation: screens each turn's input before retrieval, the semantic cache or any LLM
+spend (pattern 25; the `moderate_input` node in `app/agent/graph/core.py`, right after `validate_input`).
 
 Two layers, cheapest first:
-1. Pattern-based check (known injection/jailbreak phrasings + a small
-   denylist) — near-instant regex, honestly scoped as "catches known
-   patterns," not "understands intent." Short-circuits on a hit.
-2. ML classifier (Meta's Llama Prompt Guard 2, 22M, via the `ml-service`
-   container the reranker also uses — `/prompt-guard` endpoint), catching
-   paraphrased/novel attempts the patterns miss. Viable because
-   `ml-service` is already local/offline (no hosted API, no new model
-   pull) and adds only ~25-100ms per call.
+1. A pattern check (known injection/jailbreak phrasings plus a small denylist): near-instant regex, honestly
+   scoped as "catches known patterns", not "understands intent". Short-circuits on a hit.
+2. An ML classifier (Meta's Llama Prompt Guard 2, 22M, via the `ml-service` container the reranker also uses,
+   `/prompt-guard`) that catches paraphrased or novel attempts the patterns miss. Viable because `ml-service`
+   is already local/offline (no hosted API, no new model pull) and adds only ~25-100 ms per call.
 
-A genuine match at either layer fails closed (`allowed=False`). A failure
-of the check ITSELF (regex bug, ml-service unreachable) fails open — same
-degrade-don't-crash posture as elsewhere in this app — but a real hit
-still gets refused. No default here would make an unscreened deployment
-look configured, which is worse than no default at all.
+A genuine match at either layer fails closed (`allowed=False`). A failure of the check ITSELF (regex bug,
+ml-service unreachable) fails open, the same degrade-don't-crash posture as elsewhere in this app, but a real
+hit is still refused. There is no default here, because one would make an unscreened deployment look
+configured, which is worse than none.
 """
 import re
 

@@ -37,28 +37,20 @@ RESERVATION_STALE_AFTER_MINUTES = 5
 
 
 async def reserve_budget(ctx: SecurityCtx | None, amount_usd: float) -> str | None:
-    """Records a hold of `amount_usd` against `ctx`'s tenant — one row for this
-    turn, with its own timestamp — called right before a turn that passed
-    `budgets.check_tenant_daily`'s check actually starts spending. Closes the gap
-    between "checked" and "recorded": the calls this turn has yet to
-    make aren't in usage_events yet (each call's event lands when the call returns), so without a
-    hold a sibling turn racing the same tenant would see nearly the SAME "spent
-    so far" and pass the check too. Always paired with
-    `release_budget_reservation` once the turn ends (success, failure, or
-    timeout) — callers use a `finally` for that, same shape as
-    `app/job_queue/queue.py::acquire_thread_lock`'s own release contract.
+    """Hold `amount_usd` against `ctx`'s tenant for one turn, taken just before it starts spending.
 
-    Returns the hold's id — hand it back to `release_budget_reservation` — or
-    None if nothing was reserved (invalid ctx, non-positive amount, or the write
-    failed). Best-effort, same fail-open posture as every other write in this
-    module: a reservation failure must not block a turn, it just means this one
-    turn's spend goes unprotected against a concurrent sibling, exactly the
-    pre-reservation behavior.
+    Closes the gap between "checked" and "recorded": this turn's remaining calls aren't events yet, so without
+    a hold a sibling turn racing the same tenant reads nearly the same "spent so far" and passes too. Always
+    paired with `release_budget_reservation` in a `finally`, as with
+    `app/job_queue/queue.py::acquire_thread_lock`.
 
-    The sweep and the insert share one transaction (`get_connection` is one —
-    see core/sql_store.py). The sweep removes this tenant's abandoned holds so the
-    table doesn't grow; the read already ignores them, so it is housekeeping,
-    not correctness."""
+    Returns the hold id, or None if nothing was reserved (invalid ctx, non-positive amount, write failed).
+    Best-effort and fail-open like every write here: a failure just leaves this turn unprotected against a
+    concurrent sibling.
+
+    The sweep of this tenant's abandoned holds shares the insert's transaction (`get_connection` is one, see
+    core/sql_store.py). It is housekeeping, not correctness: the read already ignores stale holds.
+    """
     if not valid_ctx(ctx) or amount_usd <= 0:
         return None
     hold_id = str(uuid.uuid4())

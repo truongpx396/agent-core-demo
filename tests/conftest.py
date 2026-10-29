@@ -1,99 +1,62 @@
 """Shared test fixtures.
 
-`mock_search_docs`/`mock_semantic_cache` are autouse: no test in this suite
-should reach a live Qdrant/Redis/embeddings backend just because it happens
-to invoke `retrieve_context`/`check_semantic_cache`/`write_semantic_cache`
-on its way through the graph via build_graph()'s default GraphDeps. Tests
-that care about a specific retrieved/cached value inject their own fake
-instead — via `GraphDeps(search_docs=fake)`/`GraphDeps(cache_get=fake, ...)`
-(build_graph) or `graph_retrieval.make_retrieve_context_node(fake)`/
-`graph_cache.make_check_semantic_cache_node(fake)` (node-level) — which simply
-bypasses these defaults.
+`mock_search_docs`/`mock_semantic_cache` are autouse: no test should reach a live Qdrant/Redis/embeddings
+backend just because it runs `retrieve_context`/`check_semantic_cache`/`write_semantic_cache` on its way
+through the graph via build_graph()'s default GraphDeps. Tests that care about a specific retrieved or cached
+value inject their own fake instead, through `GraphDeps(search_docs=fake)` / `GraphDeps(cache_get=fake, ...)`
+(build_graph) or `graph_retrieval.make_retrieve_context_node(fake)` /
+`graph_cache.make_check_semantic_cache_node(fake)` (node level), which bypasses these defaults.
 
-`mock_classification` is the same guarantee for the model router's one live call (`app/core/classification.py`, a POST to the ML service's
-/v1/decide): every hermetic test sees "no answer", whatever the environment says.
+`mock_classification` is the same guarantee for the model router's one live call
+(`app/core/classification.py`, a POST to the ML service's /v1/decide): every hermetic test sees "no answer",
+whatever the environment says. The usage event's model-alias lookup against LiteLLM is guarded the same way
+inside `usage_event_sink` (the only caller of `model_resolver.resolve_model`).
 
-The usage event's model-alias lookup against LiteLLM is guarded the same way, inside `usage_event_sink` (the only caller of
-`model_resolver.resolve_model` since the per-turn ledger write was retired).
+`mock_ml_moderation` is the guarantee for `app/core/moderation.py`'s ML injection-classifier layer.
+`moderate_input` runs on every full-graph turn, and its ML layer is a real HTTP call to `ml-service`
+(`ML_SERVICE_URL`) when no pattern catches the input first. Real bug: the suite passed whenever `ml-service`
+was unreachable (fails open, same as no mock) but started failing unrelated tests (test_manifest.py's
+leak-detection proof, among others) the moment a real `ml-service` container was left running locally, because
+ordinary phrases like "what are your instructions?" scored above the real model's malicious threshold. A
+test's outcome must not depend on which containers happen to be up. Tests about the ML layer
+(tests/core/test_moderation.py's TestMlInjectionLayer) override this patch locally, as
+mock_search_docs/mock_semantic_cache have with their exceptions.
 
-`mock_ml_moderation` is the same guarantee for `app/core/moderation.py`'s
-ML injection-classifier layer: `moderate_input` runs on every full-graph
-turn, unconditionally, and `moderation.screen`'s ML layer is a real HTTP
-call to `ml-service` (app/core/config.py's `ML_SERVICE_URL`) when a
-pattern doesn't already catch the input first. Real bug, found live: this
-suite passed cleanly whenever `ml-service` happened to be unreachable
-(fails open, same as no mock at all) but started failing real, unrelated
-tests (test_manifest.py's leak-detection proof, among others) the moment a
-real `ml-service` container was left running locally — ordinary test
-phrases like "what are your instructions?" scored above the real model's
-own malicious threshold, blocking turns those tests never expected
-blocked. A test's outcome must not depend on which containers happen to be
-up on the machine running it. Tests that care about the ML layer
-specifically (tests/core/test_moderation.py's own TestMlInjectionLayer)
-override this fixture's patch locally, same override relationship
-mock_search_docs/mock_semantic_cache already have with their own
-exceptions.
-
-`mock_appdata_postgres` is the equivalent guarantee for the third live
-service (`appdata` Postgres, app/core/sql_store.py) — a gap this suite
-had until it was found the hard way: `app/agent/runtime/stream.py::astream_events_turn`
-calls `_check_allowance`/`upsert_session` UNCONDITIONALLY
-on every turn (`spend.usage_summary`/`sessions.upsert_session` underneath),
-and every model call writes a usage event (`usage_events._insert`, guarded by
-`usage_event_sink` below) — all of these already degrade gracefully on a connection FAILURE (each
-has its own try/except, independently tested — see
-tests/agent/cost/test_tenant_budget.py/test_sessions.py), but none of them were
-ever meant to degrade gracefully from a slow, real TCP connection attempt
-with no Postgres listening (CI has never run one for this job — see
-.github/workflows/ci.yml's own comment). Without this fixture, every test
-that drives a real `astream_events_turn` call pays a real psycopg
-connection-pool timeout on each of those calls — individually survivable,
-but stacked across a turn (and across the whole suite) it was pushing
-individual turns past their own REQUEST_TIMEOUT_SECONDS and the whole
-suite from ~10s (locally, against a real docker-compose Postgres) to
-~20+ minutes in CI (see GRAPH_PATTERNS.md pattern 46's note on the
+`mock_appdata_postgres` covers the third live service (`appdata` Postgres, app/core/sql_store.py), a gap found
+the hard way: `app/agent/runtime/stream.py::astream_events_turn` calls `_check_allowance`/`upsert_session`
+UNCONDITIONALLY every turn (`spend.usage_summary`/`sessions.upsert_session` underneath), and every model call
+writes a usage event (`usage_events._insert`, guarded by `usage_event_sink`). Each already degrades gracefully
+on a connection FAILURE (own try/except, independently tested in tests/agent/cost/test_tenant_budget.py and
+test_sessions.py), but none was meant to degrade from a slow TCP attempt with no Postgres listening (CI never
+ran one for this job; see .github/workflows/ci.yml). Without the fixture, every `astream_events_turn` paid a
+real psycopg pool timeout per call: individually survivable, but stacked it pushed turns past
+REQUEST_TIMEOUT_SECONDS and the suite from ~10 s to ~20+ minutes in CI (see GRAPH_PATTERNS.md 46's note on the
 recursion_limit fix found the same way).
 
-Patched at `budget_holds.get_connection`/`spend.get_connection`/`sessions.get_connection`/
-`tool_idempotency.get_connection` — each module's OWN
-`from app.core.sql_store import get_connection` binding, not
-`sql_store.get_connection` itself (a `from X import Y` binding is a
-separate reference; patching the origin module wouldn't reach it) — and
-specifically NOT the higher-level functions themselves
-(`_check_allowance`, `usage_summary`, `upsert_session`,
-`idempotent`), because tests/agent/cost/test_tenant_budget.py,
-tests/agent/runtime/test_sessions.py, and tests/core/test_tool_idempotency.py test
-several of those AS the function under test, monkeypatching `get_connection`
-locally to inject their own fake — this fixture's patch is simply
-overridden by theirs within the same test, so both guarantees hold
-together. Raises immediately rather than trying to fabricate a
-query-shape-correct fake row for every possible query this could ever run —
-every call site already independently degrades on a connection FAILURE by
-design, so this exercises that same, already-tested real path instead of
-inventing a new one.
+It patches `budget_holds.get_connection`, `spend.get_connection`, `sessions.get_connection` and
+`tool_idempotency.get_connection` (each module's OWN `from app.core.sql_store import get_connection` binding;
+patching the origin wouldn't reach it) and deliberately NOT the higher-level functions (`_check_allowance`,
+`usage_summary`, `upsert_session`, `idempotent`), because tests/agent/cost/test_tenant_budget.py,
+tests/agent/runtime/test_sessions.py and tests/core/test_tool_idempotency.py test several of those AS the
+function under test and monkeypatch `get_connection` locally; their patch overrides this one within the same
+test, so both guarantees hold. It raises immediately rather than fabricating a query-shaped fake row for every
+possible query: every call site already degrades on a connection FAILURE by design, so this exercises that
+tested path instead of inventing a new one.
 
-`TEST_CTX`: a valid SecurityCtx (app/core/security.py) every test that drives a
-turn through validate_input needs — route_after_validation fails closed
-without one (see app/agent/graph/core.py). Each test file imports it directly
-(`from tests.conftest import TEST_CTX`) rather than via a pytest fixture,
-since most call sites need it as a plain value inside a hand-built
-config/state dict, not injected as a test function parameter.
+`TEST_CTX`: a valid SecurityCtx (app/core/security.py) for every test that drives a turn through
+validate_input, since route_after_validation fails closed without one. Test files import it directly (`from
+tests.conftest import TEST_CTX`), not as a fixture, because most call sites need a plain value inside a
+hand-built config/state dict.
 
-`metric_value`: installs the ONE real `opentelemetry.metrics.MeterProvider`
-this whole test session uses (an `InMemoryMetricReader`-backed one) at THIS
-module's import time — conftest.py is guaranteed to load before any test
-module is collected, so this always wins OTel's one-shot
-`set_meter_provider` race (see app/core/telemetry.py's own docstring for
-why that race matters — app/core/telemetry.py::configure_telemetry, which
-would otherwise compete for that same slot with a real network-bound
-exporter, only ever runs from a real process entrypoint, never at import
-time, so it never actually enters this race under pytest). Every test file
-that asserts on a app/core/metrics.py Counter's value imports this rather
-than reaching into OTel/prometheus_client internals directly.
+`metric_value` installs the ONE real `opentelemetry.metrics.MeterProvider` the test session uses (an
+`InMemoryMetricReader`-backed one) at THIS module's import time. conftest.py loads before any test module is
+collected, so it always wins OTel's one-shot `set_meter_provider` race (see app/core/telemetry.py:
+`configure_telemetry`, which would otherwise compete with a real network exporter, runs only from a real
+process entrypoint, never at import). Every test asserting on an app/core/metrics.py Counter imports this
+rather than reaching into OTel/prometheus_client internals.
 
-`pytest_sessionfinish` (bottom of this file) is the cross-worker teardown
-point for `tests/containers.py`'s Docker-backed real services — see that
-module's own docstring.
+`pytest_sessionfinish` (bottom of this file) is the cross-worker teardown point for `tests/containers.py`'s
+Docker-backed services; see that module's docstring.
 """
 import pytest
 from opentelemetry import metrics as metrics_api
@@ -416,32 +379,23 @@ def identity_mode(monkeypatch):
 
 
 def pytest_sessionfinish(session, exitstatus):
-    """Tears down every Docker container `tests/containers.py::ensure_*()`
-    started this run (Postgres/Redis/Qdrant/Ollama, for
-    tests/agent/runtime/test_durable_checkpoint.py, tests/integration/, tests/live/) —
-    see that module's own docstring for why teardown lives here rather than
-    each container's default Ryuk-on-process-exit behavior (disabled) or a
-    fixture's own finalizer.
+    """Tears down every Docker container `tests/containers.py::ensure_*()` started this run
+    (Postgres/Redis/Qdrant/Ollama, for tests/agent/runtime/test_durable_checkpoint.py, tests/integration/,
+    tests/live/). That module's docstring explains why teardown lives here rather than in each container's
+    default Ryuk-on-process-exit (disabled) or a fixture finalizer.
 
-    Under pytest-xdist, EVERY worker process runs its own
-    `pytest_sessionfinish` as it individually finishes — too early, since
-    other workers may still be mid-test against a container this would just
-    removed out from under them. `session.config.workerinput` exists ONLY on
-    a worker's own config (injected by xdist); its absence means this is
-    either the xdist CONTROLLER process (which runs no tests itself and only
-    reaches its own `pytest_sessionfinish` after every worker has finished
-    and reported back) or a plain, non-distributed run — the one correct
-    place, in both cases, to actually tear down.
+    Under pytest-xdist, EVERY worker runs its own `pytest_sessionfinish` as it finishes, which is too early:
+    other workers may still be mid-test against a container this would remove. `session.config.workerinput`
+    exists ONLY on a worker's config (injected by xdist). Its absence means this is the xdist CONTROLLER
+    (which runs no tests and reaches `pytest_sessionfinish` only after every worker has reported back) or a
+    plain non-distributed run, the one correct place in both cases to tear down.
 
-    Also skips entirely when THIS process never called any `ensure_*()` —
-    see `tests.containers.used_shared_cache`'s own docstring for the real
-    incident this guards against: an ordinary `pytest -q` run (no live/e2e/
-    integration marker selected) still reached this function and tore down
-    a real Postgres/Qdrant/Ollama a SEPARATE, concurrently-running `tests/
-    live/` invocation was actively using, the moment the unrelated run
-    finished — the shared cache is a fixed path across ALL invocations
-    against this repo (see tests/containers.py's module docstring), not
-    scoped to just this one.
+    It also skips entirely when THIS process never called any `ensure_*()` (see
+    `tests.containers.used_shared_cache` for the incident this guards against): an ordinary `pytest -q` run,
+    with no live/e2e/integration marker selected, still reached this function and tore down a real
+    Postgres/Qdrant/Ollama that a SEPARATE, concurrent `tests/live/` invocation was using, the moment the
+    unrelated run finished. The shared cache is a fixed path across ALL invocations against this repo (see
+    tests/containers.py's module docstring), not scoped to one.
     """
     if hasattr(session.config, "workerinput"):
         return

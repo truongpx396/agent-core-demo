@@ -1,43 +1,43 @@
 """Which free providers sit at the END of a deepeval judge's failover chain, and in what order.
 
 The chain itself (what counts as transient, the hand-off, the cooldown, the log line) is
-`tests/deepeval/fallback.py`; this module is only the registry of backup providers that are appended to
-it after the primary and its same-provider fallbacks. Keeping the two apart means there is one rule for
-"is this error worth handing off on", not one per provider.
+`tests/deepeval/fallback.py`; this module is only the registry of backup providers appended after the primary
+and its same-provider fallbacks. Keeping them apart gives one rule for "is this error worth handing off on",
+not one per provider.
 
-Why backups at all: both primaries' free tiers are real, finite ceilings a busy `make deepeval` run can
-hit (GOOGLE_API_KEY's 30 req/min, GROQ_API_KEY's 1,000 RPD; see tests/deepeval/conftest.py). A backup
-engages only once the primary, and the other models on its own provider, have been rate limited or
-overloaded past their own retry policy. With no backup key set a judge behaves exactly as without them.
+Why backups: both primaries' free tiers are finite ceilings a busy `make deepeval` can hit (GOOGLE_API_KEY's
+30 req/min, GROQ_API_KEY's 1,000 RPD; see tests/deepeval/conftest.py). A backup engages only once the primary
+and the other models on its provider have been rate limited or overloaded past their own retry policy. With no
+backup key set, a judge behaves exactly as without them.
 
-The providers, in try-order (`BACKUP_PROVIDERS`); each is enabled by its own key alone:
+The providers, in try-order (`BACKUP_PROVIDERS`), each enabled by its own key alone:
 
 1. Plugsky (https://plugsky.com, OpenAI-compatible, `PLUGSKY_API_KEY`): `plugsky-micro` (NVIDIA Nemotron 3
    Super 120B), then `plugsky-lite`, the two models its free plan grants. `DEEPEVAL_BACKUP_MODEL` overrides
-   the list (the knob's original name, kept so an existing `.env` still works).
+   the list (the knob's original name, kept so an existing `.env` works).
 2. OpenRouter (https://openrouter.ai, OpenAI-compatible, `OPENROUTER_API_KEY`):
    `nvidia/nemotron-3-super-120b-a12b:free`, then `qwen/qwen3.8-27b:free`. `DEEPEVAL_OPENROUTER_MODEL`
-   overrides the list. Last, because its free quota is the thinnest (below).
+   overrides the list. Last, because its free quota is the thinnest.
 
 Both lists are comma-separated; `none` switches one provider's models off even when its key is set.
 
-What is NOT fixed, stated so a longer chain is not mistaken for more capacity:
+What is NOT fixed, so a longer chain isn't mistaken for more capacity:
 - Plugsky documents its free plan's 30 req/min per PLAN, not per model, so `plugsky-lite` only rescues a
-  limit that is actually per model, or an outage specific to `plugsky-micro`'s upstream.
-- OpenRouter limits `:free` models ACCOUNT-WIDE ("we govern capacity globally"): 20 req/min, and 50
-  requests/day, or 1,000/day once the account has bought $10 of credits. A second OpenRouter model adds a
-  different upstream, not more quota; the link's real value is a provider whose quota is separate from
-  Gemini's, Groq's and Plugsky's. 50/day is small enough for one `make deepeval` run to exhaust.
-- `:free` ids churn (several carry an `expiration_date`). A retired id comes back as a 404, which is
-  deliberately not transient, so it fails loudly instead of being skipped. Re-pick it from
+  per-model limit or an outage specific to `plugsky-micro`'s upstream.
+- OpenRouter limits `:free` models ACCOUNT-WIDE ("we govern capacity globally"): 20 req/min and 50
+  requests/day (1,000/day once the account has bought $10 of credits). A second OpenRouter model adds a
+  different upstream, not more quota; the link's value is a provider whose quota is separate from Gemini's,
+  Groq's and Plugsky's. 50/day is small enough for one `make deepeval` run to exhaust.
+- `:free` ids churn (several carry an `expiration_date`). A retired id returns 404, deliberately not
+  transient, so it fails loudly instead of being skipped; re-pick from
   https://openrouter.ai/models?variant=free. The defaults were chosen on 2026-10-05 for being large (small
-  models are unreliable graders), having no `expiration_date`, ~99.9% endpoint uptime, and different
-  upstreams from each other and from Gemini. `openrouter/free` (a router that picks a random model per
-  call) was left out on purpose: a grader that changes between calls makes scores irreproducible.
-- Neither OpenRouter default has been exercised against a real key, and how those reasoning models behave
-  with deepeval's JSON-in-text parsing is untested.
+  models grade unreliably), having no `expiration_date`, ~99.9% endpoint uptime, and different upstreams from
+  each other and from Gemini. `openrouter/free` (a router picking a random model per call) was left out on
+  purpose: a grader that changes between calls makes scores irreproducible.
+- Neither OpenRouter default has been exercised against a real key, and how those reasoning models behave with
+  deepeval's JSON-in-text parsing is untested.
 
-Imports no deepeval, openai or SDK at module level: the fast `test` job collects `tests/deepeval/` without
+No deepeval, openai or SDK import at module level: the fast `test` job collects `tests/deepeval/` without
 deepeval installed, and the registry is tested there.
 """
 import os

@@ -1,30 +1,29 @@
-"""The output checks: one registry of the reasons an answer is sent back, instead of a flag per
-check scattered over `State`, `check_output`, `retry_reason`, `retry_output` and a fallback table.
+"""The output checks: one registry of the reasons an answer is sent back, instead of a flag per check scattered
+over `State`, `check_output`, `retry_reason`, `retry_output` and a fallback table.
 
-An `OutputCheck` is everything one reason needs, in one place:
+An `OutputCheck` holds everything one reason needs:
 
-- `code` — the short name recorded as `State.last_retry_reason`;
-- `detect(ctx)` — falsy when the answer passes, otherwise the DETAIL the feedback needs (the
-  offending markers, the skipped tool's name, or just `True`);
-- `feedback(detail)` — the corrective message `retry_output` sends back to the model, naming the
-  actual problem rather than a generic "try again";
-- `counter` — the metric incremented every time it fires (`app/core/metrics.py`);
-- `trust_on_exhaust` — whether an answer rejected for this reason over and over is still safe to
-  show verbatim. `too_short` and `uncited` say yes: short-but-real beats no answer, and a correct
-  answer missing only its `[1]` marker is an attribution nitpick, not untrustworthy content. The rest
-  mean the CONTENT is untrustworthy (invented numbers, an unverified hand-computed figure, pure
-  narration, an actively misattached citation, a leak) and are always replaced.
-- `fallback` — what the user is told when the answer is replaced; `None` means the generic message.
-  Only reasons where naming the CATEGORY of problem is genuinely actionable have their own; never
-  `leaked_prompt` (confirming a leak attempt registered would just help someone iterate a
-  jailbreak) and never text that quotes the rejected content.
+- `code`: the short name recorded as `State.last_retry_reason`;
+- `detect(ctx)`: falsy when the answer passes, else the DETAIL the feedback needs (offending markers, the
+  skipped tool's name, or just `True`);
+- `feedback(detail)`: the corrective message `retry_output` sends back, naming the actual problem rather than
+  "try again";
+- `counter`: the metric incremented whenever it fires (`app/core/metrics.py`);
+- `trust_on_exhaust`: whether an answer rejected for this reason over and over is still safe to show verbatim.
+  `too_short` and `uncited` say yes (short-but-real beats no answer; a correct answer missing only its `[1]`
+  is an attribution nitpick). The rest mean the CONTENT is untrustworthy (invented numbers, an unverified
+  hand-computed figure, pure narration, a misattached citation, a leak) and are always replaced;
+- `fallback`: what the user is told when the answer is replaced; `None` means the generic message. Only
+  reasons where naming the CATEGORY of problem is actionable have their own; never `leaked_prompt` (confirming
+  a leak attempt registered would help someone iterate a jailbreak) and never text quoting the rejected
+  content.
 
-`CHECKS` is ordered by priority: the first one that fires names the reason, so feedback targets the
-most severe or most actionable problem. Every check is still run and counted, and all that fired are
-recorded in `State.output_findings`. Adding a check is one entry here, plus its metric if it has one.
+`CHECKS` is ordered by priority: the first to fire names the reason, so feedback targets the most severe or
+actionable problem. Every check still runs and is counted, and all that fired are recorded in
+`State.output_findings`. Adding a check is one entry here, plus its metric.
 
-The heuristics themselves live in `graph/output_guardrails.py` (deferral, fabrication, leak,
-skipped tool) and `graph/citations.py` (grounding).
+The heuristics live in `graph/output_guardrails.py` (deferral, fabrication, leak, skipped tool) and
+`graph/citations.py` (grounding).
 """
 from collections.abc import Callable
 from dataclasses import dataclass

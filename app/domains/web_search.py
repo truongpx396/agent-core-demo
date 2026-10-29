@@ -1,29 +1,34 @@
 """The `web_search` tool, built once per domain that offers it (support, ops, sales).
 
-Why these three domains and not Ecorp: each already has an `outward` tool that reads a page the MODEL names
-(`fetch_external_reference`, `check_vendor_status_page`, `enrich_lead_from_website`), and until now the only way to get it an
-address was for the person to paste one or for the model to guess one. A guessed address is a hallucination with a button on it. Search
-is the missing first half of "find the page, then read it". Ecorp has no such tool and its prompt says it cannot open links
-(`tests/domains/test_ecorp_cannot_open_links.py`); search does not open anything, but giving it the discovery half without the reading
-half would be a worse tool than neither.
+Why these three and not Ecorp: each already has an `outward` tool that reads a page the MODEL names
+(`fetch_external_reference`, `check_vendor_status_page`, `enrich_lead_from_website`), and until now the only
+way to give it an address was for the person to paste one or for the model to guess it. A guessed address is a
+hallucination with a button on it; search is the missing first half of "find the page, then read it". Ecorp
+has no such tool and its prompt says it cannot open links (`tests/domains/test_ecorp_cannot_open_links.py`).
+Search opens nothing, but giving Ecorp the discovery half without the reading half would be worse than
+neither.
 
-Tier: `outward`, so every call waits for a human (constitution Principle II, `should_continue`). A search is read-only in effect, but it
-SENDS TEXT THE MODEL WROTE to a third party and spends a paid credit, and the model's context is untrusted on essentially every turn
-(pattern 12): a poisoned document could put something it should not into a query string. The approval prompt shows the query. Nothing here
-makes that optional, and nothing should.
+Tier: `outward`, so every call waits for a human (Principle II, `should_continue`). A search is read-only in
+effect, but it SENDS TEXT THE MODEL WROTE to a third party and spends a paid credit, and the model's context
+is untrusted on nearly every turn (pattern 12): a poisoned document could put something into a query string
+that shouldn't be there. The approval prompt shows the query. Nothing here makes that optional, and nothing
+should.
 
-Why a factory taking a policy rather than one shared tool object: the ctx check is fail-closed per domain (`SUPPORT_POLICY`, `OPS_POLICY`,
-`SALES_POLICY` each list the actions that domain may run), and a tool object closes over its policy. Same reason the sandbox wrappers
-exist once per domain around one shared implementation.
+Why a factory taking a policy rather than one shared tool: the ctx check is fail-closed per domain
+(`SUPPORT_POLICY`, `OPS_POLICY`, `SALES_POLICY` each list the actions that domain may run) and a tool closes
+over its policy. The sandbox wrappers exist once per domain around one shared implementation for the same
+reason.
 
-What reaches the model (Principle VI): the result is third-party text, so it is framed as untrusted data like a crawled page. It is
-deliberately NOT numbered `[1] [2]`: those markers belong to the knowledge base's citation records (`graph/citations.py` maps a `[n]` in an
-answer to `State["citations"]`), and a web result numbered the same way would be attributed to an unrelated document. A result is a title,
-an address and a snippet, and the answer cites the address.
+What reaches the model (Principle VI): the result is third-party text, framed as untrusted data like a crawled
+page. It is deliberately NOT numbered `[1] [2]`: those markers belong to the knowledge base's citation records
+(`graph/citations.py` maps a `[n]` in an answer to `State["citations"]`), and a web result numbered the same
+way would be attributed to an unrelated document. A result is a title, an address and a snippet; the answer
+cites the address.
 
-Idempotency: `idempotent()` keyed by the tool call id, like every non-read-only tool (Principle IV). There is no row to make unique here, so
-it is the whole story, and what it buys is real: a redelivered job or a replayed call returns the stored result and does not spend a second
-credit. Its limit is the same as everywhere: a call replayed under a NEW id is a new search.
+Idempotency: `idempotent()` keyed by the tool call id, like every non-read-only tool (Principle IV). There is
+no row to make unique, so this is the whole story, and it buys something real: a redelivered job or replayed
+call returns the stored result instead of spending a second credit. The limit is the usual one: a call
+replayed under a NEW id is a new search.
 """
 import re
 from typing import Annotated

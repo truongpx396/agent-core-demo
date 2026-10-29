@@ -1,21 +1,26 @@
-"""Which model tier a message should be routed to: two signals, one combining rule, and nothing else (specs/015, contracts/tiered-router.md).
+"""Which model tier a message should be routed to: two signals, one combining rule, and nothing else (specs/015,
+contracts/tiered-router.md).
 
-PURE, ON PURPOSE. This module imports nothing from the app and does no I/O, so the graph node that routes a turn and the harness that scores a
-router (`make model-eval`, `scripts/model_eval/runners/classify.py` via `run(backend=...)`) run THE SAME `decide`. A router that is evaluated by a
-copy of its logic is evaluated by something else.
+PURE, ON PURPOSE. This module imports nothing from the app and does no I/O, so the graph node that routes a
+turn and the harness that scores a router (`make model-eval`, `scripts/model_eval/runners/classify.py` via
+`run(backend=...)`) run THE SAME `decide`. A router evaluated by a copy of its logic is evaluated by something
+else.
 
 TWO SIGNALS, EACH NAMING THE LOWEST TIER IT WILL ACCEPT.
-  * Rules over the user's current message: its length, whether it contains code, whether it asks several things, whether it uses the words people
-    use when they want reasoning. Free, instant, deterministic, and they cannot fail.
-  * A label from the ML service's label set (`route-topics`): which kind of work the message asks of a model, and a table here (`LABEL_TIERS`)
-    says what tier that kind of work needs. It can be missing (the service is down, slow, or found the message near no topic); then the rules decide.
+  * Rules over the user's current message: length, code, several questions, the words people use when they
+    want reasoning. Free, instant, deterministic, and they can't fail.
+  * A label from the ML service's `route-topics` label set: which kind of work the message asks of a model,
+    with a table here (`LABEL_TIERS`) saying what tier that work needs. It can be missing (the service is down
+    or slow, or found the message near no topic); then the rules decide.
 
-`tier = the highest configured tier at or below min(ceiling, max(rule tier, label tier))`. `max` is the cost-safe reading of "either signal can
-ask for more"; `min` with the operator's ceiling bounds spend; a signal that is missing contributes `local`, so it never cancels the other one.
+`tier = the highest configured tier at or below min(ceiling, max(rule tier, label tier))`. `max` is the
+cost-safe reading of "either signal can ask for more"; `min` with the operator's ceiling bounds spend; a
+missing signal contributes `local`, so it never cancels the other.
 
-WHAT THE LABEL TABLE AND THE RULES ARE. Policy, written by a person, with the reasons next to each line. They describe the kind of work a model must
-do, not how hard a message is, and nothing measured says they predict where a stronger model answers better: the only routing outcomes that exist
-could not tell a perfect router from a random one (spec 014; `specs/015.../research.md`). That is why the router ships in `shadow` mode first. Change
+THE LABEL TABLE AND THE RULES ARE POLICY, written by a person with the reasons beside each line. They describe
+the kind of work a model must do, not how hard a message is, and nothing measured says they predict where a
+stronger model answers better: the only routing outcomes that exist couldn't tell a perfect router from a
+random one (spec 014; `specs/015.../research.md`). That is why the router ships in `shadow` mode first. Change
 a line knowingly, and re-run the evaluation.
 """
 import re

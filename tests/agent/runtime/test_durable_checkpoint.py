@@ -1,39 +1,23 @@
-"""Tests for the durable checkpointer machinery in app/agent/runtime/core.py
-(init_graph_async) and app/agent/graph/hitl.py's resumability_error_async.
+"""Tests for the durable checkpointer in app/agent/runtime/core.py (`init_graph_async`) and
+app/agent/graph/hitl.py's `resumability_error_async`.
 
-Everything here uses a real AsyncPostgresSaver — no Qdrant/LiteLLM — so it
-stays as close as possible to this suite's "no live services" contract
-while actually exercising the real dependency (the
-langgraph-checkpoint-postgres/psycopg version pairing is exactly the kind
-of thing that breaks silently without a real test, the same reasoning the
-original SQLite-backed version of this file used). Unlike a SQLite file
-(a bare tmp_path, no service required), a real Postgres server IS an
-external dependency this suite otherwise avoids — so every test here goes
-through `tests/containers.py::ensure_postgres()`, which starts its own
-ephemeral, pre-seeded Postgres container (no `make up` required) and skips
-cleanly (not fails) when Docker itself isn't reachable, keeping `pytest -q`
-green with zero services running. See that module's own docstring for the
-cross-worker container-sharing mechanics under `pytest -n auto` (this file
-used to instead probe docker-compose's own already-running `checkpointer`
-database — `ensure_postgres()` is a drop-in replacement for that probe, not
-a change to what's actually being tested). Test isolation doesn't need a
-fresh database per test (unlike the old tmp_path-per-test SQLite file):
-every test already scopes its checkpoint rows by a unique `uuid.uuid4()`
-thread_id, and AsyncPostgresSaver's tables are keyed by thread_id — sharing
-one database across test runs just means old rows accumulate harmlessly in
-a throwaway container, not a correctness issue.
+Everything uses a real AsyncPostgresSaver (no Qdrant/LiteLLM), staying close to this suite's "no live
+services" contract while exercising the real dependency: the langgraph-checkpoint-postgres/psycopg version
+pairing is the kind of thing that breaks silently without a real test. Unlike a bare SQLite file, a real
+Postgres server is an external dependency, so every test goes through
+`tests/containers.py::ensure_postgres()`, which starts its own ephemeral container (no `make up`) and SKIPS,
+not fails, when Docker isn't reachable, keeping `pytest -q` green with no services. That module's docstring
+covers the cross-worker container sharing under `pytest -n auto`. Isolation needs no fresh database per test:
+every test scopes its rows by a unique `uuid.uuid4()` thread_id, and old rows accumulate harmlessly in a
+throwaway container.
 
-`app.agent.runtime.core._graph`/`_checkpointer_pool` are module-level singletons; the
-`reset_agent_singleton` fixture below resets them before and after every
-test in this file so tests don't leak state into each other (or into other
-test modules, which never touch app.agent.runtime.core and would otherwise be affected
-by whichever checkpointer happened to win the singleton race). The same
-fixture also points `agent_module.CHECKPOINTER_DATABASE_URL` at the
-ephemeral container for the run — `app/agent/runtime/core.py`'s own `from
-app.core.config import CHECKPOINTER_DATABASE_URL` binding, specifically,
-not `app.core.config.CHECKPOINTER_DATABASE_URL` itself (same "a `from X
-import Y` binding is a separate reference" reasoning tests/conftest.py's
-own docstring already spells out for `get_connection`).
+`app.agent.runtime.core._graph`/`_checkpointer_pool` are module-level singletons; the `reset_agent_singleton`
+fixture resets them before and after every test so state doesn't leak into other tests or modules (which never
+touch app.agent.runtime.core and would be affected by whichever checkpointer won the singleton race). It also
+points `agent_module.CHECKPOINTER_DATABASE_URL` at the ephemeral container: that is core.py's own `from
+app.core.config import CHECKPOINTER_DATABASE_URL` binding, not `app.core.config.CHECKPOINTER_DATABASE_URL`
+itself (a `from X import Y` binding is a separate reference, as tests/conftest.py's docstring spells out for
+`get_connection`).
 """
 import asyncio
 import uuid
@@ -262,32 +246,24 @@ class TestAsyncEntryPoints:
     async def test_astream_events_resume_checks_resumability_without_raising(
         self, monkeypatch
     ):
-        """Same bug class, different call site: astream_events_resume
-        used the SYNC `resumability_error` (app/agent/graph/core.py), which also
-        raises InvalidStateError from the checkpointer's own loop. Fixed
-        by resumability_error_async (aget_state) — this is the real
-        production resume path (`make chat-hitl`'s HITL round trip),
-        so it gets its own regression test.
+        """Same bug class, different call site: `astream_events_resume` used the SYNC `resumability_error`
+        (app/agent/graph/core.py), which also raises InvalidStateError from the checkpointer's own loop. Fixed
+        by `resumability_error_async` (aget_state). This is the real production resume path (`make
+        chat-hitl`'s HITL round trip), so it gets its own regression test.
 
-        Drives the pause via a plain `graph.ainvoke(...)`, not
-        `astream_events_turn` — same reasoning as
-        `test_cancel_run_ends_a_paused_run_against_a_real_checkpointer`
-        below: `graph.astream_events()` raises "No generations found in
-        stream" for a `.bind_tools()`-wrapped `GenericFakeChatModel`'s
-        tool-calling response (a pre-existing fake-LLM/streaming fixture
-        limitation, unrelated to what's under test here). Confirmed
-        directly while adding TestResumabilityErrorRejectsAnActivelyRunningThread's
-        stricter check above: using `astream_events_turn` here left the
-        checkpoint with `state.next=('agent',)` and a task-level `.error`
-        set (the agent node had genuinely failed, not paused) rather than
-        a real interrupt — `state.tasks[i].interrupts` was empty. Before
-        that stricter check existed, `resumability_error_async` didn't
-        notice the difference and let the resume proceed into an already
-        broken, non-interrupted checkpoint anyway; the stricter check
-        correctly rejects it instead — this test's OWN premise (a genuine
-        pause) needed fixing, not the stricter check. `ainvoke` reaches
-        the exact same paused-at-human_approval checkpoint without
-        tripping the fake-LLM/streaming issue at all.
+        The pause is driven by a plain `graph.ainvoke(...)`, not `astream_events_turn`, for the reason given
+        in `test_cancel_run_ends_a_paused_run_against_a_real_checkpointer` below: `graph.astream_events()`
+        raises "No generations found in stream" for a `.bind_tools()`-wrapped `GenericFakeChatModel`'s
+        tool-calling response (a pre-existing fake-LLM/streaming fixture limitation, unrelated to what's under
+        test).
+
+        Confirmed while adding the stricter check in TestResumabilityErrorRejectsAnActivelyRunningThread:
+        using `astream_events_turn` here left the checkpoint with `state.next=('agent',)` and a task-level
+        `.error` (the agent node had failed, not paused) and an empty `state.tasks[i].interrupts`. Before that
+        check, `resumability_error_async` missed the difference and let the resume proceed into an already
+        broken checkpoint; the stricter check rightly rejects it. So this test's OWN premise (a genuine pause)
+        needed fixing, not the check. `ainvoke` reaches the same paused-at-human_approval checkpoint without
+        tripping the fake-LLM/streaming issue.
         """
         from langchain_core.messages import AIMessage
 

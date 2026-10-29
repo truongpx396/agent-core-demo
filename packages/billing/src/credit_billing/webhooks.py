@@ -1,44 +1,55 @@
 """Money in: one provider event becomes a grant, a clawback, or a visible refusal, exactly once
-(specs/010-credit-billing-readiness, contracts/billing-provider-port.md steps 4-7; postgres-init/22-billing.sql).
+(specs/010-credit-billing-readiness, contracts/billing-provider-port.md steps 4-7;
+postgres-init/22-billing.sql).
 
-A webhook is a statement by a stranger that a payment happened. It proves nothing the app hasn't checked: the
-adapter has verified the signature before this module sees the event (`parse_webhook`), and this module then
+A webhook is a stranger's statement that a payment happened, and proves nothing the app hasn't checked. The
+adapter has verified the signature before this module sees the event (`parse_webhook`); this module then
 decides everything that matters from tables the app wrote itself: WHO from `billing_customers`, HOW MUCH from
-`credit_products`, and WHETHER IT IS NEW from the inbox. Nothing in the payload names a tenant or an amount that
-counts (`BillingEvent` has no field for either).
+`credit_products`, and WHETHER IT IS NEW from the inbox. Nothing in the payload names a tenant or an amount
+that counts (`BillingEvent` has no field for either).
 
 ## The duplicate story (constitution IV)
 
-| Duplicate arrives as | Caught by |
-|---|---|
-| the same event delivered twice | inbox `PRIMARY KEY (provider, event_id)`: the second delivery finds a terminal row |
-| the same event delivered twice AT ONCE | the same key: the second INSERT blocks on the first's transaction, then finds its row |
-| a crash between "granted" and "marked applied" | impossible by construction: the grant and the status change are ONE transaction |
-| the inbox row swept, then the event redelivered | the grant's own key `"{provider}:{event_id}"` in `credit_transactions`, kept for good. The wallet compares what the key stood for (every field but the expiry, which is `now + days` and so always differs on a replay): the same grant is a duplicate; a DIFFERENT one (the catalogue changed in between) is quarantined as `idempotency_conflict`, never granted twice and never silently dropped |
-| one payment described by two DIFFERENT events | the app checks for an existing grant of that `(tenant, provider, payment_ref)` and ignores the second; the unique index in 22 is the backstop for a race |
-| a refund described by two different events | the clawback is keyed by the PAYMENT, `clawback:{provider}:{payment_ref}`, so a payment is taken back at most once. Only the kind is compared on a reused key: the amount an event reads depends on when it read the lot, so two events for one refund can differ there and must stay a duplicate |
+- The same event delivered twice: inbox `PRIMARY KEY (provider, event_id)`; the second delivery finds a
+  terminal row.
+- The same event delivered twice AT ONCE: the same key; the second INSERT blocks on the first's transaction,
+  then finds its row.
+- A crash between "granted" and "marked applied": impossible by construction, since the grant and the status
+  change are ONE transaction.
+- The inbox row swept, then the event redelivered: the grant's own key `"{provider}:{event_id}"` in
+  `credit_transactions`, kept for good. The wallet compares what the key stood for (every field but the
+  expiry, which is `now + days` and so always differs on a replay). The same grant is a duplicate; a DIFFERENT
+  one (the catalogue changed in between) is quarantined as `idempotency_conflict`, never granted twice and
+  never silently dropped.
+- One payment described by two DIFFERENT events: the app checks for an existing grant of that `(tenant,
+  provider, payment_ref)` and ignores the second; the unique index in 22 backstops a race.
+- A refund described by two different events: the clawback is keyed by the PAYMENT,
+  `clawback:{provider}:{payment_ref}`, so a payment is taken back at most once. Only the kind is compared on a
+  reused key, because the amount an event reads depends on when it read the lot: two events for one refund can
+  differ there and must stay a duplicate.
 
 ## What can happen to an event, and what the caller is told
 
-| Outcome | Inbox status | Provider is told | Counted |
-|---|---|---|---|
-| `applied` | `applied` | 2xx (stop retrying) | yes |
-| `duplicate` | unchanged | 2xx | yes |
-| `ignored` | `ignored` | 2xx | yes |
-| `quarantined` | `quarantined` | 2xx: retrying cannot fix it (an unlinked customer stays unlinked; a replayed grant whose request changed is `idempotency_conflict`) | yes, and ALERTED |
-| `retry` | `received` | 5xx: a refund whose purchase has not arrived yet, bounded by `BILLING_REFUND_HOLD_HOURS` | yes |
-| `failed` | `failed` | 5xx: it will be retried, `BILLING_WEBHOOK_MAX_ATTEMPTS` times, then quarantined | yes, and ALERTED |
+- `applied`: inbox `applied`; provider told 2xx (stop retrying); counted.
+- `duplicate`: inbox unchanged; 2xx; counted.
+- `ignored`: inbox `ignored`; 2xx; counted.
+- `quarantined`: inbox `quarantined`; 2xx, since retrying can't fix it (an unlinked customer stays unlinked; a
+  replayed grant whose request changed is `idempotency_conflict`); counted and ALERTED.
+- `retry`: inbox `received`; 5xx, for a refund whose purchase hasn't arrived yet, bounded by
+  `BILLING_REFUND_HOLD_HOURS`; counted.
+- `failed`: inbox `failed`; 5xx, retried `BILLING_WEBHOOK_MAX_ATTEMPTS` times and then quarantined; counted
+  and ALERTED.
 
 `quarantined` is the outcome that hides money: the customer has paid and received nothing, and nobody is
-retrying. It is therefore the one that pages (`BillingWebhookQuarantined`). Everything the app has not decided
-how to handle goes there rather than being guessed at: a chargeback (what a dispute is worth is a product
-decision) and a partial refund (likewise).
+retrying. It is the one that pages (`BillingWebhookQuarantined`). Everything the app hasn't decided how to
+handle goes there rather than being guessed at: a chargeback (what a dispute is worth is a product decision)
+and a partial refund (likewise).
 
 ## The one gap this leaves, disclosed
 
-An event stuck in `received` or `failed` whose provider then STOPS redelivering is not noticed until someone
-looks: nothing polls the inbox. `BILLING_WEBHOOK_MAX_ATTEMPTS` bounds the loop while the provider keeps
-retrying; it cannot bound one that has given up. The reconciliation (specs/010 PR 6) is the detector.
+An event stuck in `received` or `failed` whose provider then STOPS redelivering goes unnoticed until someone
+looks, because nothing polls the inbox. `BILLING_WEBHOOK_MAX_ATTEMPTS` bounds the loop while the provider
+keeps retrying; it can't bound one that has given up. The reconciliation (specs/010 PR 6) is the detector.
 """
 import logging
 from dataclasses import dataclass

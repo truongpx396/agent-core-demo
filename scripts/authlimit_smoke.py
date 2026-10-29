@@ -1,19 +1,22 @@
 """Does the front door work, end to end, the way a client sees it? `make authlimit-smoke` (specs/018).
 
-It acts like a client: an OAuth authorization-code + PKCE sign-in as a PUBLIC client with the RFC 8707 `resource` parameter, through Caddy over
-TLS signed by Caddy's local CA; then requests to the chat API's address and to the MCP routes. Behind the chat API's address is the STUB
-upstream (`authlimit-echo`), which answers with every header it received, so each check can say what a real API would have been given.
+It acts like a client: an OAuth authorization-code + PKCE sign-in as a PUBLIC client with the RFC 8707 `resource`
+parameter, through Caddy over TLS signed by Caddy's local CA, then requests to the chat API's address and the MCP
+routes. Behind the chat API's address is a STUB upstream (`authlimit-echo`) that answers with every header it received,
+so each check can say what a real API would have been given.
 
-Stages (default: the ones that change nothing; `--all` adds the ones that stop things):
+Stages (default: those that change nothing; `--all` adds those that stop things):
 
-  identity    a valid token yields an identity for that tenant and person, signed by the key in the key directory, and the external token
-              does not reach the upstream (Q1)
-  refusals    no token, a tampered token, a token for another audience or none, garbage: refused at the door, the upstream untouched (Q2)
-  spoofing    forged identity and tenant headers, duplicated headers, forged X-Forwarded-*, and path tricks never change who the caller is
-              or make a route public (Q3)
+  identity    a valid token yields an identity for that tenant and person, signed by the key in the key directory,
+              and the external token does not reach the upstream (Q1)
+  refusals    no token, a tampered token, a token for another audience or none, garbage: refused at the door,
+              upstream untouched (Q2)
+  spoofing    forged identity and tenant headers, duplicated headers, forged X-Forwarded-*, and path tricks never
+              change who the caller is or make a route public (Q3)
   limits      the person bucket, the tenant bucket, a colleague, another tenant, and cancel/read never limited (Q4)
   mcp         limit-only mode: no or bad tokens reach the MCP gateway's own 401; a valid token is metered (Q10)
-  revoke      a revoked person is refused on every replica within seconds, on a chat route and an MCP route, and can sign in again (Q9)
+  revoke      a revoked person is refused on every replica within seconds, on a chat route and an MCP route, and
+              can sign in again (Q9)
   logs        no token and no key in any service's log (Q11)
   -- need --compose, and stop or restart things (the Makefile passes it; `--all` runs them):
   observe     observation mode serves and counts instead of refusing (Q5)
@@ -21,22 +24,23 @@ Stages (default: the ones that change nothing; `--all` adds the ones that stop t
   rotate      rotating the internal signing key under traffic fails nothing (Q8)
   outage      Casdoor down: existing tokens work inside the grace, are refused beyond it, and service resumes (Q7)
 
-It needs the stack up and bootstrapped (`make authlimit-up`, `make mcp-gateway-bootstrap`, `make mcp-gateway-ca`). It creates throwaway users and
-deletes them however the run ends. A manual tier, like `make mcp-gateway-smoke`: it needs Docker services and is not part of CI. Exit status 0
-only if every check passed.
+Needs the stack up and bootstrapped (`make authlimit-up`, `make mcp-gateway-bootstrap`, `make mcp-gateway-ca`). It
+creates throwaway users and deletes them however the run ends. A manual tier like `make mcp-gateway-smoke`: it needs
+Docker services and is not part of CI. Exit status 0 only if every check passed.
 
-`--upstream api` runs the same door against the REAL API instead of the stub (`make authlimit-up-app`, the API in identity mode; the worker's model
-must be able to call `query_employees`: loadtest/fake_llm_server.py does, and `make fake-llm` runs it). The stages that read what the stub reports
-(identity, spoofing, rotate) have nothing to read there and are left out; the rest run as they are, except that a chat turn carries a real body,
-and one more stage joins them:
+`--upstream api` runs the same door against the REAL API instead of the stub (`make authlimit-up-app`, the API in
+identity mode; the worker's model must be able to call `query_employees`, which loadtest/fake_llm_server.py does via
+`make fake-llm`). Stages that read what the stub reports (identity, spoofing, rotate) have nothing to read there and are
+left out; the rest run as they are, except that a chat turn carries a real body. One more stage joins them:
 
-  api         the real API acts for the person the token names and for no one a header names: the page and its script are public; two tenants
-              asking the same question through the same door each get only their own rows from the real tool; a forged X-Tenant-Id, and even a
-              VALIDLY SIGNED internal identity for another tenant, change nothing; a request that skips the door and reaches the API directly is
+  api         the real API acts for the person the token names and for no one a header names: the page and its
+              script are public; two tenants asking the same question through the same door each get only their
+              own rows from the real tool; a forged X-Tenant-Id, and even a VALIDLY SIGNED internal identity for
+              another tenant, change nothing; a request that skips the door and reaches the API directly is
               refused; one tenant cannot read another's conversation
-  apikeys     (with --all; needs --compose) the API's own copy of the door's public keys: with the door stopped, identities are still accepted
-              inside the key cache and the grace and are refused with 503 auth_unavailable (not 401) beyond them, and the API recovers by itself
-              when the door returns
+  apikeys     (with --all; needs --compose) the API's own copy of the door's public keys: with the door stopped,
+              identities are still accepted inside the key cache and the grace, are refused with 503
+              auth_unavailable (not 401) beyond them, and the API recovers by itself when the door returns
 """
 import argparse
 import asyncio

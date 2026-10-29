@@ -1,24 +1,20 @@
 """The process-wide Langfuse client.
 
-Every turn used to build its own `Langfuse()` (`_open_trace`) and, at its end,
-another one just to call `.flush()` on it. A client is not cheap: construction
-starts three background threads (ingestion consumer(s) and media-upload
-consumer) that nothing stops, keys set or not — measured on the installed SDK
-(2.60.10) at +3 threads per client, so a worker gained six per turn (spec 008,
-B18). The second client also did nothing useful: `Langfuse.flush()` joins THAT
-instance's own queue, so flushing a fresh client flushed an empty one and never
-the trace's events.
+Every turn used to build its own `Langfuse()` (`_open_trace`) and, at its end, another one just to call
+`.flush()`. A client is not cheap: construction starts three background threads (ingestion consumer(s) and
+media-upload consumer) that nothing stops, keys set or not, measured on the installed SDK (2.60.10) at +3
+threads per client, so a worker gained six per turn (spec 008, B18). The second client also did nothing
+useful: `Langfuse.flush()` joins THAT instance's own queue, so flushing a fresh client flushed an empty one,
+never the trace's events.
 
-So there is one client, created on first use and shared by every trace in the
-process. Its own background consumer sends events as they arrive; it is flushed
-and stopped once, at process exit (`atexit`), which is the one place a blocking
-flush is acceptable — `flush()` joins the queue, so calling it per turn from the
-event loop would stall the loop for the length of a network round trip to a
-Langfuse that may be down.
+So there is one client, created on first use and shared by every trace in the process. Its background consumer
+sends events as they arrive; it is flushed and stopped once, at process exit (`atexit`), the one place a
+blocking flush is acceptable, since `flush()` joins the queue and calling it per turn from the event loop
+would stall the loop for a network round trip to a Langfuse that may be down.
 
-Tracing is optional. If the SDK is missing or the client cannot be built,
-`get_langfuse()` returns `None` and the turn runs untraced; the failure is
-remembered, so a broken tracing setup costs one attempt, not one per turn.
+Tracing is optional: if the SDK is missing or the client can't be built, `get_langfuse()` returns `None` and
+the turn runs untraced. The failure is remembered, so a broken tracing setup costs one attempt, not one per
+turn.
 """
 import atexit
 import logging

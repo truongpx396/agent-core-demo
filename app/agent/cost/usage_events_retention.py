@@ -1,24 +1,26 @@
 """Retention for the usage events: the sweep spec D7 promised and nothing built (specs/010 T030c3).
 
-`usage_events` is append-only and, since the caps sum it (T030b), it grows with every model call. Nothing trimmed it: the ledger
-had a sweep (since retired with it), the table that replaced it had none, so a year of calls was a year of rows read by
-the reconciliation and scanned by the monthly caps. This deletes events older than `USAGE_EVENT_RETENTION_DAYS`.
+`usage_events` is append-only and, since the caps sum it (T030b), grows with every model call; nothing trimmed
+it, so a year of calls was a year of rows read by the reconciliation and scanned by monthly caps. This deletes
+events older than `USAGE_EVENT_RETENTION_DAYS`.
 
 ## What it must not delete
 
-  * **An event inside a window something still reads.** A monthly cap reads back up to a calendar month (31 days) and the
-    gateway reconciliation up to `USAGE_RECONCILE_LOOKBACK_DAYS` (35). The floor is 35 days (`USAGE_EVENT_MIN_RETENTION_DAYS`) and a smaller
-    `older_than_days` raises BEFORE any row is touched, so the floor holds for every caller and not just the script.
-  * Anything younger than the cutoff, in any tenant. Like the ledger sweep this deliberately spans tenants: retention is a
-    property of the table, and the job is an operator's, never reachable from a request.
+  * **An event inside a window something still reads.** A monthly cap reads back a calendar month (31 days)
+    and the gateway reconciliation up to `USAGE_RECONCILE_LOOKBACK_DAYS` (35). The floor is 35 days
+    (`USAGE_EVENT_MIN_RETENTION_DAYS`), and a smaller `older_than_days` raises BEFORE any row is touched, so
+    the floor holds for every caller, not just the script.
+  * Anything younger than the cutoff, in any tenant. Retention is a property of the table, so the sweep spans
+    tenants on purpose; the job is an operator's, never reachable from a request.
 
-What billing keeps of a call is its own record, with its own retention (`credit-billing-usage-sweep`); deleting an event here never touches it,
-and the wallet's debits are permanent financial records either way.
+Billing keeps its own record with its own retention (`credit-billing-usage-sweep`); deleting an event here
+never touches it, and the wallet's debits are permanent either way.
 
 ## How the delete is allowed
 
-The table refuses DELETE unless the transaction says so (`usage_events.allow_delete`, postgres-init/19). `set_config(..., true)` is
-LOCAL to the transaction, so it cannot be left switched on, and each batch commits on its own so one sweep never holds a long lock.
+The table refuses DELETE unless the transaction says so (`usage_events.allow_delete`, postgres-init/19).
+`set_config(..., true)` is LOCAL to the transaction, so it can't be left on, and each batch commits on its own
+so a sweep never holds a long lock.
 """
 import logging
 from dataclasses import dataclass

@@ -1,37 +1,24 @@
-"""A real crawl4ai round trip THROUGH the graph, not just through
-app/ingestion/web_crawler.py directly (see test_web_crawler_live.py for
-that narrower check) — proves the actual wiring in
-app/domains/ops/tools.py::check_vendor_status_page and
-app/domains/support/tools.py::fetch_external_reference (GRAPH_PATTERNS.md
-pattern 50) end to end: a scripted tool call pauses at human_approval
-(mandatory, "outward"), and once approved, ACTUALLY renders a real page and
-returns its content as a ToolMessage — not a mocked
-`render_url_to_markdown` the way tests/domains/ops/test_domain.py and
-tests/domains/support/test_domain.py's own approval-gate tests use.
+"""A real crawl4ai round trip THROUGH the graph, not just through app/ingestion/web_crawler.py
+(test_web_crawler_live.py is that narrower check). It proves the wiring of
+app/domains/ops/tools.py::check_vendor_status_page and app/domains/support/tools.py::fetch_external_reference
+(GRAPH_PATTERNS.md pattern 50) end to end: a scripted tool call pauses at human_approval (mandatory,
+"outward"), and once approved ACTUALLY renders a real page and returns its content as a ToolMessage.
+tests/domains/ops/test_domain.py and tests/domains/support/test_domain.py's approval-gate tests mock
+`render_url_to_markdown` instead.
 
-No LLM needed — `GenericFakeChatModel` scripts the tool call, same
-technique every tests/domains/*/test_domain.py file already uses — only
-the CRAWL leg is real, hence `@pytest.mark.crawl` (not `llm`) and no
-`ollama_endpoint` fixture. Neither domain's tool here touches Postgres
-either (`check_vendor_status_page`/`fetch_external_reference` are pure
-crawl-and-return, unlike e.g. sales's `enrich_lead_from_website`, which
-also needs a real lead row — left to a hermetic, mocked-store test instead
-since covering that combination live would need a real Postgres too, for
-comparatively little extra proof over what this file already establishes).
+No LLM is needed: `GenericFakeChatModel` scripts the tool call, as in every tests/domains/*/test_domain.py.
+Only the CRAWL leg is real, hence `@pytest.mark.crawl` (not `llm`) and no `ollama_endpoint` fixture. Neither
+tool touches Postgres (`check_vendor_status_page`/`fetch_external_reference` are pure crawl-and-return, unlike
+sales's `enrich_lead_from_website`, which also needs a real lead row; that combination is left to a hermetic
+mocked-store test, since covering it live would need a real Postgres for little extra proof).
 
-`_use_crawl4ai_server` (2026-09-17) — both tools here bottom out in
-`app.ingestion.web_crawler.render_url_to_markdown`, same as
-test_web_crawler_live.py, so it needs the same `crawl4ai_server`
-fixture + monkeypatch shape (see that file's own fixture docstring) —
-its own copy, from `tests/live/conftest.py` rather than
-`tests/integration/conftest.py`'s, since this file stayed in `tests/live/`
-(it drives the real graph through a `human_approval` interrupt,
-test_web_crawler_live.py doesn't) even after moving to a
-testcontainers-managed crawl4ai stopped being the thing that made
-test_web_crawler_live.py `tests/live/`-shaped. This file previously had no
-such fixture at all and just relied on a `docker compose up -d crawl4ai`
-server already sitting at the app's own config default, which
-`ensure_crawl4ai()`'s self-provisioning now replaces.
+`_use_crawl4ai_server` (2026-09-17): both tools bottom out in
+`app.ingestion.web_crawler.render_url_to_markdown`, as in test_web_crawler_live.py, so it needs the same
+`crawl4ai_server` fixture + monkeypatch shape (see that file's fixture docstring). This is its own copy, from
+`tests/live/conftest.py` rather than `tests/integration/conftest.py`, because this file stayed in
+`tests/live/` (it drives the real graph through a `human_approval` interrupt; test_web_crawler_live.py
+doesn't). It replaces the previous reliance on a `docker compose up -d crawl4ai` server sitting at the app's
+config default.
 """
 
 import pytest

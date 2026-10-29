@@ -1,35 +1,32 @@
 """Advisory AI review of one pull request, through ANY OpenAI-compatible endpoint.
 
-Run by `.github/workflows/ai-review.yml`; `AI_REVIEW_DRY_RUN=1` prints the review instead of
-posting it, which is how to try a provider from a laptop (README, "AI review").
+Run by `.github/workflows/ai-review.yml`. `AI_REVIEW_DRY_RUN=1` prints the review instead of posting it, which
+is how to try a provider from a laptop (README, "AI review").
 
-The model is whatever `AI_REVIEW_BASE_URL` + `AI_REVIEW_MODEL` point at: OpenAI, Groq,
-OpenRouter, Gemini's OpenAI-compat endpoint, a self-hosted vLLM/LiteLLM/Ollama that the runner
-can reach. Nothing here is vendor-specific beyond `POST {base}/chat/completions`, and the
-request body is deliberately only `model` + `messages`: newer models reject `temperature` or
-`max_tokens` (they want `max_completion_tokens`), so every optional knob is a way to break
-somebody's provider.
+The model is whatever `AI_REVIEW_BASE_URL` + `AI_REVIEW_MODEL` point at: OpenAI, Groq, OpenRouter, Gemini's
+OpenAI-compat endpoint, or a self-hosted vLLM/LiteLLM/Ollama the runner can reach. Nothing is vendor-specific
+beyond `POST {base}/chat/completions`, and the request body is deliberately only `model` + `messages`: newer
+models reject `temperature` or `max_tokens` (they want `max_completion_tokens`), so every optional knob is a
+way to break somebody's provider.
 
-Why an in-repo script rather than a marketplace review Action: this job holds an LLM API key and
-a token that can write to the PR, so every third-party component is a supply-chain input
-(.github/dependabot.yml and tests/core/test_workflow_action_pins.py exist for the same reason).
-Stdlib only also means the job installs nothing, not even this repo's requirements.
+Why an in-repo script rather than a marketplace review Action: this job holds an LLM API key and a token that
+can write to the PR, so every third-party component is a supply-chain input (.github/dependabot.yml and
+tests/core/test_workflow_action_pins.py exist for the same reason). Stdlib only also means the job installs
+nothing, not even this repo's requirements.
 
 Design points that are NOT obvious from the code:
-- ADVISORY, always. Every failure path prints a `::warning::` and exits 0. A flaky provider must
-  never turn a PR red, and a review that can block a merge would need a quality bar an LLM
-  reviewer doesn't have (README, "AI review"). Transient model errors (429/5xx, a dropped
-  connection) are retried twice with exponential backoff; a timeout or a 4xx is not, and a
-  skipped review names the provider's short error code (never its message) in the log.
-- The diff is untrusted DATA. It is fetched from the API (the PR's code is never checked out or
-  executed), wrapped in a per-run random boundary the author cannot predict (a fixed
-  `</diff>` could be forged inside the diff), and the model is given no tools. The worst a
-  hostile diff can do is steer the wording of one comment; `defang_mentions` stops that comment
-  from pinging people. This reduces the risk, it does not remove it.
-- This repo is PUBLIC, so Actions logs are public. Nothing derived from the diff or the model's
-  answer is ever printed on the real path, only counts, HTTP statuses and exception class names.
-- HTTP never follows a redirect: urllib re-sends the Authorization header to the new host, and a
-  misconfigured or hijacked endpoint must not be able to collect the API key that way.
+- ADVISORY, always. Every failure path prints a `::warning::` and exits 0. A flaky provider must never turn a
+  PR red, and a review that can block a merge would need a quality bar an LLM reviewer doesn't have (README,
+  "AI review"). Transient errors (429/5xx, a dropped connection) are retried twice with exponential backoff; a
+  timeout or a 4xx is not. A skipped review logs the provider's short error code, never its message.
+- The diff is untrusted DATA. It is fetched from the API (the PR's code is never checked out or executed),
+  wrapped in a per-run random boundary the author can't predict (a fixed `</diff>` could be forged inside the
+  diff), and the model gets no tools. The worst a hostile diff can do is steer the wording of one comment, and
+  `defang_mentions` stops that comment from pinging people. This reduces the risk; it doesn't remove it.
+- This repo is PUBLIC, so Actions logs are public. On the real path nothing derived from the diff or the
+  model's answer is printed, only counts, HTTP statuses and exception class names.
+- HTTP never follows a redirect: urllib re-sends the Authorization header to the new host, and a misconfigured
+  or hijacked endpoint must not be able to collect the API key that way.
 """
 import ast
 import fnmatch

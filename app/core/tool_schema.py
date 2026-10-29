@@ -1,27 +1,30 @@
 """The strict-mode form of a tool's schema: what `make_llm` sends when `TOOL_CALLS_STRICT` is on.
 
-OpenAI's strict function calling (`"strict": true`) makes a provider that supports it decode the arguments against the schema,
-so a call can only name an enum value that exists and can only carry the fields that were declared. It wants a narrower
-dialect of JSON Schema than Pydantic writes, and LangChain's `convert_to_openai_tool(tool, strict=True)` only closes the
-objects (`additionalProperties: false`). It does not make the dialect fit, and for a tool whose arguments are ALL optional it
-does not even close the object (its helper keys on `required`, which Pydantic omits when nothing is required), so the
-provider would reject the tool. Found by converting every tool of every domain; `tests/core/test_tool_schema.py` does it
-again on every run. The rewrite, and how well each part is known:
+OpenAI's strict function calling (`"strict": true`) makes a provider that supports it decode the arguments
+against the schema, so a call can only name an enum value that exists and carry only declared fields. It wants
+a narrower JSON Schema dialect than Pydantic writes, and LangChain's `convert_to_openai_tool(tool,
+strict=True)` only closes the objects (`additionalProperties: false`). It doesn't make the dialect fit, and
+for a tool whose arguments are ALL optional it doesn't even close the object (its helper keys on `required`,
+which Pydantic omits when nothing is required), so the provider would reject the tool. Found by converting
+every tool of every domain; `tests/core/test_tool_schema.py` does it again on every run. The rewrite, and how
+well each part is known:
 
-- Every property is listed in `required`, and every object is closed. An optional argument stays optional by being nullable,
-  which the schemas already say (`Topic | None` is `anyOf: [enum, null]`); it is just no longer allowed to be absent. A
-  property whose only claim to optionality was a `None` default is made nullable. (Checked against the installed `openai`
-  SDK's own converter, `_ensure_strict_json_schema`, which does the same three things and finds nothing left to change.)
-- A `default` is removed, and one that is not null is told to the model in the property's description, because a field it
-  cannot omit has to say what "no preference" is. `minLength`/`maxLength` are removed and told the same way ("At most 200
-  characters."). These two are the cautious reading of OpenAI's list of supported keywords, which as I remember it has no
-  length bounds for strings. They have NOT been run against a live strict provider (none is configured here), and the SDK's
-  converter does not touch them. If a provider accepts them, this loses the model a hint, not correctness.
+- Every property is listed in `required` and every object is closed. An optional argument stays optional by
+  being nullable, which the schemas already say (`Topic | None` is `anyOf: [enum, null]`); it is just no
+  longer allowed to be absent. A property whose only claim to optionality was a `None` default becomes
+  nullable. (Checked against the installed `openai` SDK's own converter, `_ensure_strict_json_schema`, which
+  does the same three things and finds nothing left to change.)
+- A `default` is removed, and a non-null one is told to the model in the property's description, because a
+  field it can't omit has to say what "no preference" is. `minLength`/`maxLength` are removed and told the
+  same way ("At most 200 characters."). These two are the cautious reading of OpenAI's list of supported
+  keywords, which as I remember it has no string length bounds. They have NOT been run against a live strict
+  provider (none is configured here) and the SDK's converter doesn't touch them. If a provider accepts them,
+  this costs the model a hint, not correctness.
 
-Only the copy sent to the model is rewritten. A tool's `args_schema` is untouched, so a real length bound is still enforced
-when a call arrives, and a call from a model (or provider) that ignores `strict` is validated as before; `ToolArgs` below
-is what makes that call fine when it leaves a nullable argument out. The schema a provider sees and the schema the app
-enforces are two documents, and only the first has a dialect to fit.
+Only the copy sent to the model is rewritten. A tool's `args_schema` is untouched, so a real length bound is
+still enforced when a call arrives, and a call from a model or provider that ignores `strict` is validated as
+before; `ToolArgs` below is what makes that call fine when it leaves a nullable argument out. The schema a
+provider sees and the schema the app enforces are two documents, and only the first has a dialect to fit.
 """
 from __future__ import annotations
 

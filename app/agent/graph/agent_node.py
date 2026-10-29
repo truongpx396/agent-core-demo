@@ -91,33 +91,25 @@ def make_agent_node(
     *,
     system_prompt: str,
 ):
-    """Factory, not a plain function, because `agent` needs an LLM client.
-    Tests build it with a fake (e.g. GenericFakeChatModel) via
-    `make_agent_node(fake_llm)(state)` (see test_agent_node.py) to cover
-    message-assembly logic without a network call.
+    """Factory, not a plain function, because `agent` needs an LLM client; tests build it with a fake (e.g.
+    GenericFakeChatModel) via `make_agent_node(fake_llm)(state)` to cover message assembly without a network
+    call (test_agent_node.py).
 
-    `model_alias` is the LiteLLM alias `llm` is bound to, used only to price its
-    calls. `build_graph` resolves it (`GraphDeps.model_alias`, else the configured
-    chat alias); a caller building the node directly passes its own.
-
-    `citation_reminder=False` (a nested subagent run) leaves out the tail
-    reminder that every sentence must end with a `[n]` marker. A subagent's
-    prompt says the opposite (its markers would name ITS sources, meaningless
-    to the parent), and a model handed both rules obeys neither. The retrieved
-    context is still passed, framed as untrusted data.
-
-    `skill_required_tools` is the subset of `SKILL_REQUIRED_TOOL_MARKERS` the calling domain
-    really has; the "call it now" reminder is only ever about one of those.
-
-    `cannot_open_links` is True for a domain with no tool that reaches an address (`links.cannot_open_links`):
-    a turn whose question contains a link then carries a reminder that it cannot be opened.
-
-    `system_prompt` is the calling domain's (`manifest.system_prompt`, bound by `build_graph`).
-    It is the first message of EVERY call, taken from the manifest at call time rather than read
-    out of the thread: nothing persists a prompt in the checkpoint, so editing a prompt reaches
-    every conversation on the next call with no migration, and a graph built directly (a test, a
-    script) is never an un-guided agent because nobody remembered to seed it. Pass `""` only to
-    unit-test message assembly.
+    - `model_alias`: the LiteLLM alias `llm` is bound to, used only to price its calls. `build_graph` resolves
+      it (`GraphDeps.model_alias`, else the configured chat alias); a direct caller passes its own.
+    - `citation_reminder=False` (a nested subagent run) drops the tail "every sentence must end with a `[n]`
+      marker" reminder: a subagent's prompt says the opposite (its markers would name ITS sources, meaningless
+      to the parent), and a model handed both rules obeys neither. Retrieved context is still passed, framed
+      as untrusted data.
+    - `skill_required_tools`: the subset of `SKILL_REQUIRED_TOOL_MARKERS` the calling domain really has; the
+      "call it now" reminder is only ever about one of those.
+    - `cannot_open_links`: True for a domain with no tool that reaches an address (`links.cannot_open_links`);
+      a turn whose question contains a link then carries a reminder that it can't be opened.
+    - `system_prompt`: the calling domain's (`manifest.system_prompt`, bound by `build_graph`), the first
+      message of EVERY call, taken from the manifest at call time rather than from the thread. Nothing
+      persists a prompt in the checkpoint, so a prompt edit reaches every conversation on the next call with
+      no migration, and a graph built directly is never an un-guided agent because nobody seeded it. Pass `""`
+      only to unit-test message assembly.
     """
 
     async def agent(state: State, config: RunnableConfig | None = None) -> dict:

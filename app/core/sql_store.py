@@ -62,27 +62,22 @@ async def _get_pool() -> AsyncConnectionPool:
 
 @asynccontextmanager
 async def get_connection():
-    """A pooled connection, checked out and returned (not closed) on
-    exit — commits on normal exit, which every single-statement writer
-    here (`usage_events._insert`, the budget holds) depends on. Wrapped in its own `@asynccontextmanager` so the pool is
-    only looked up (and lazily opened) from inside a real `async with`
-    block.
+    """A pooled connection, checked out and returned (not closed) on exit. It commits on normal exit, which every
+    single-statement writer here (`usage_events._insert`, the budget holds) depends on. It is its own
+    `@asynccontextmanager` so the pool is only looked up (and lazily opened) from inside a real `async with`.
 
-    This IS a transaction boundary, not just a connection checkout:
-    `AsyncConnectionPool.connection()` wraps the connection in its own
-    `async with conn:`, and `psycopg.AsyncConnection.__aexit__` commits on
-    normal exit / rolls back on exception (connections here are never
-    autocommit — verified against the installed psycopg/psycopg_pool).
-    So every `conn.execute(...)` call made inside ONE `async with
-    get_connection() as conn:` block is already atomic together — see
-    e.g. `app/domains/support/store.py::add_comment` or
-    `app/domains/sales/store.py::mark_lead_lost`, each of which makes
-    several related writes inside a single such block specifically to get
-    this for free, with no explicit `BEGIN`/`COMMIT` needed. The one way
-    to accidentally lose this: splitting what should be one atomic
-    operation across TWO separate `get_connection()` calls — each is its
-    own pool checkout and its own transaction, so they can commit
-    independently, reopening a real crash window between them."""
+    This IS a transaction boundary, not just a checkout: `AsyncConnectionPool.connection()` wraps the
+    connection in `async with conn:`, and `psycopg.AsyncConnection.__aexit__` commits on normal exit and rolls
+    back on exception (connections here are never autocommit; verified against the installed
+    psycopg/psycopg_pool). So every `conn.execute(...)` inside ONE `async with get_connection() as conn:`
+    block is atomic together, with no explicit `BEGIN`/`COMMIT`. See
+    `app/domains/support/store.py::add_comment` and `app/domains/sales/store.py::mark_lead_lost`, which make
+    several related writes in one block for exactly that.
+
+    The one way to lose this: splitting what should be one atomic operation across TWO `get_connection()`
+    calls. Each is its own checkout and transaction, so they can commit independently, reopening a crash
+    window between them.
+    """
     pool = await _get_pool()
     async with pool.connection() as conn:
         yield conn

@@ -1,27 +1,20 @@
-"""Tests for app/ingestion/web_crawler.py. Two boundaries are mocked,
-matching this suite's general "mock the boundary, not the whole library"
-convention (e.g. tests/mcp/test_mcp_client.py mocks `_list_remote_tools`/
-`_call_remote_tool`, not the stdio transport underneath them):
+"""Tests for app/ingestion/web_crawler.py. Two boundaries are mocked, per this suite's "mock the boundary, not
+the whole library" convention (e.g. tests/mcp/test_mcp_client.py mocks
+`_list_remote_tools`/`_call_remote_tool`, not the stdio transport beneath them):
 
-- `render_url_to_markdown`'s own tests patch `web_crawler._crawl` (the
-  async function actually talking to the crawl4ai server) — proves the
-  SSRF guard runs BEFORE any crawl is attempted, and that truncation
-  applies after.
-- `_crawl`'s own tests patch `web_crawler.Crawl4aiDockerClient` with a fake
-  async context manager — proves the CrawlFailed/success-flag handling
-  this module adds on top of crawl4ai's own result object, and that a
-  server-unreachable/auth-rejected error (`Crawl4aiConnectionError`/
-  `Crawl4aiRequestError`) becomes a `CrawlFailed` too, without a real
-  server. That result shape (`result.success`, `result.error_message`,
-  a str-compatible `result.markdown`) was verified empirically against a
-  real crawl before this module was written — see its own docstring.
+- `render_url_to_markdown`'s tests patch `web_crawler._crawl` (the async function that talks to the crawl4ai
+  server). They prove the SSRF guard runs BEFORE any crawl is attempted and truncation applies after.
+- `_crawl`'s tests patch `web_crawler.Crawl4aiDockerClient` with a fake async context manager. They prove the
+  CrawlFailed/success-flag handling this module adds on top of crawl4ai's result object, and that a
+  server-unreachable or auth-rejected error (`Crawl4aiConnectionError`/`Crawl4aiRequestError`) also becomes a
+  `CrawlFailed`, without a real server. That result shape (`result.success`, `result.error_message`, a
+  str-compatible `result.markdown`) was verified against a real crawl before the module was written (see its
+  docstring).
 
-`TestCrawl` also gets a fresh `_CRAWL4AI_BREAKER` per test (the
-`_fresh_breaker` fixture below), so one test's failures never carry over —
-via shared module-level circuit-breaker state — into another; see
-app/core/resilience.py's own docstring for what that breaker does.
-`_CRAWL4AI_RETRY_BASE_DELAY_SECONDS` is monkeypatched down too, so the
-retry tests don't actually wait out real backoff delays.
+`TestCrawl` gets a fresh `_CRAWL4AI_BREAKER` per test (the `_fresh_breaker` fixture below), so one test's
+failures never leak through shared module-level breaker state into another (see app/core/resilience.py's
+docstring). `_CRAWL4AI_RETRY_BASE_DELAY_SECONDS` is monkeypatched down too, so retry tests don't wait out real
+backoff.
 """
 
 import pytest

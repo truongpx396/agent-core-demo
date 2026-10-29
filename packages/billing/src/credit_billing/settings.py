@@ -1,27 +1,32 @@
 """The billing core's own settings (specs/011-billing-module-boundary, contracts/billing-core-boundary.md).
 
-These ten fields used to live in `app/core/config.py::Settings`, which the billing code imported. That made
-`packages/billing/src/credit_billing/` unable to import anywhere the agent's central settings were not: a billing module that
-needs the whole host to be importable is a folder of a larger program, not a module another project could
-reuse. They are here now, with their validators and their comments, and the host's `Settings` INHERITS this
-class, so every field, default, bound, validator, error message and environment variable is exactly what it
-was and `Settings()` is still the one object the rest of the app reads.
+These ten fields used to live in `app/core/config.py::Settings`, which the billing code imported. That left
+`packages/billing/src/credit_billing/` unable to import anywhere the agent's central settings weren't: a
+billing module needing the whole host importable is a folder of a larger program, not something another
+project could reuse. They are here now with their validators and comments, and the host's `Settings` INHERITS
+this class, so every field, default, bound, validator, error message and environment variable is what it was,
+and `Settings()` is still the one object the rest of the app reads.
 
 Two instances therefore parse the same `.env`: the host's `Settings` (a superset) and this module's own
-`settings` below. They cannot disagree, because the fields are defined once, here. The constants at the
-bottom are computed exactly as `app/core/config.py` computed them, and `config.py` re-exports them, so a
-host module that did `from app.core.config import BILLING_PROVIDERS` is untouched. A core module imports
-the same names from here and keeps them as module-level names, which is what lets a test re-point one with
-`monkeypatch.setattr(webhooks, "BILLING_REFUND_HOLD_HOURS", ...)`.
+`settings` below. They can't disagree, because the fields are defined once, here. The constants at the bottom
+are computed exactly as `app/core/config.py` computed them, and `config.py` re-exports them, so a host module
+doing `from app.core.config import BILLING_PROVIDERS` is untouched. A core module imports the same names from
+here and keeps them as module-level names, which lets a test re-point one with `monkeypatch.setattr(webhooks,
+"BILLING_REFUND_HOLD_HOURS", ...)`.
 
-Spec 013 moved the rest of billing's variables here, with their validators, defaults and environment names unchanged: the price of
-a credit and whether to gate on it (`credits_per_usd`, `markup`, `credits_enforcement`, `credit_check_failure_policy`), the usage
-export worker's bounds (`billing_export_*`), the wallet reconciliation's window (`credit_reconcile_*`) and the retention of the
-package's own usage events. They used to be host policy about the agent's meter; the package now owns the meter's billing half, so a
-project that installs it needs them. What stays in the host's `Settings` is what is about the host's own meter: the caps, the
-retention of the agent's `usage_events`, and the gateway reconciliation's tolerance and page ceiling.
+Spec 013 moved the rest of billing's variables here, with validators, defaults and environment names
+unchanged:
+- the price of a credit and whether to gate on it (`credits_per_usd`, `markup`, `credits_enforcement`,
+  `credit_check_failure_policy`);
+- the usage export worker's bounds (`billing_export_*`);
+- the wallet reconciliation's window (`credit_reconcile_*`);
+- the retention of the package's own usage events.
 
-This module imports nothing from `app` (enforced by tests/billing/test_billing_core_boundary.py).
+They used to be host policy about the agent's meter; the package now owns the meter's billing half, so a
+project installing it needs them. What stays in the host's `Settings` is about the host's own meter: the caps,
+the retention of the agent's `usage_events`, and the gateway reconciliation's tolerance and page ceiling.
+
+Imports nothing from `app` (enforced by tests/billing/test_billing_core_boundary.py).
 """
 from decimal import Decimal
 from typing import Any, Literal

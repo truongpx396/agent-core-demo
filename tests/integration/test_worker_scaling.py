@@ -1,48 +1,32 @@
-"""Real-subprocess capacity test: do N independently-scaled
-app/job_queue/agent_worker.py processes, each running M turns concurrently
-(AGENT_WORKER_MAX_CONCURRENCY), genuinely absorb N*M concurrent real HTTP
-requests against POST /chat/stream/queued — correctly, not just without
-crashing?
+"""Real-subprocess capacity test: do N independently scaled app/job_queue/agent_worker.py processes, each running
+M turns concurrently (AGENT_WORKER_MAX_CONCURRENCY), absorb N*M concurrent real HTTP requests against POST
+/chat/stream/queued correctly, not just without crashing?
 
-tests/agent/runtime/test_concurrent_turns.py already proves the underlying
-mechanism is correct at small scale, in-process (direct function calls,
-one Python interpreter). This is the complementary question at PRODUCTION
-shape and real scale: real OS processes, a real HTTP server, real
-concurrent client connections, real Redis queueing across real worker
-processes — the one level nothing else in this suite drives.
+tests/agent/runtime/test_concurrent_turns.py proves the mechanism at small scale in-process (direct calls, one
+interpreter). This asks the question at PRODUCTION shape: real OS processes, a real HTTP server, real
+concurrent client connections, real Redis queueing across real worker processes. Nothing else in the suite
+drives that level.
 
-Deliberately doesn't need a real LLM: loadtest/fake_llm_server.py stands in
-(see that module's own docstring for why — native Ollama on a dev machine
-serializes to exactly one in-flight generation, which would make a test
-like this measure Ollama's ceiling, not this app's own). `@pytest.mark.integration`,
-not `@pytest.mark.llm`/`e2e`: needs Docker (real Postgres + Redis via
-tests/containers.py) but no Ollama/GPU sidecar, so it runs in the same CI
-job as the rest of tests/integration/ — same reasoning tests/live/conftest.py's
-own module docstring gives for why THAT file's `real_stack` needs the
-`llm`/`e2e` markers and this one doesn't.
+It needs no real LLM: loadtest/fake_llm_server.py stands in (see its docstring; native Ollama on a dev machine
+serializes to one in-flight generation, so a test like this would measure Ollama's ceiling, not the app's).
+`@pytest.mark.integration`, not `llm`/`e2e`: it needs Docker (real Postgres + Redis via tests/containers.py)
+but no Ollama/GPU sidecar, so it runs in the same CI job as the rest of tests/integration/
+(tests/live/conftest.py's docstring gives the reverse reasoning for why ITS `real_stack` needs `llm`/`e2e`).
 
-TestScaledWorkersAbsorbConcurrentLoad is a regression guard for a real
-capacity bug found while manually verifying this exact scenario before
-writing it: 250 concurrent requests against 5 agent_worker.py processes at
-AGENT_WORKER_MAX_CONCURRENCY=50 each initially failed ~83% of the time with
-redis.exceptions.MaxConnectionsError — app/job_queue/queue.py::get_client()'s
-Redis pool silently inherited redis-py's own 100-connection default, a
-ceiling with nothing to do with how many workers or how much per-worker
-concurrency was configured (every POST /chat/stream/queued SSE connection
-holds a pooled connection for the FULL blocking-read duration of its turn,
-so concurrent SSE connections map ~1:1 onto pool connections held). Fixed
-via REDIS_MAX_CONNECTIONS (app/core/config.py). Correctness alone wouldn't
-have caught this — every individual turn that DID get a connection still
-completed correctly; only running at a concurrency level past the old
-silent default surfaces it, which is exactly what that class does on every
-run.
+TestScaledWorkersAbsorbConcurrentLoad guards a real capacity bug found while manually verifying this scenario:
+250 concurrent requests against 5 agent_worker.py processes at AGENT_WORKER_MAX_CONCURRENCY=50 each failed
+~83% of the time with redis.exceptions.MaxConnectionsError. app/job_queue/queue.py::get_client()'s Redis pool
+silently inherited redis-py's 100-connection default, a ceiling unrelated to the configured workers or
+concurrency (every POST /chat/stream/queued SSE connection holds a pooled connection for the FULL blocking
+read of its turn, so concurrent SSE connections map ~1:1 onto held pool connections). Fixed via
+REDIS_MAX_CONNECTIONS (app/core/config.py). Correctness alone wouldn't have caught it, since every turn that
+got a connection still completed correctly; only running past the old default surfaces it, which that class
+does on every run.
 
-TestScaledWorkersHandleHITLAndSubagentDelegation extends the same real
-stack to the two other real-production paths a queued turn can take: a
-paused human_approval gate resumed via POST /chat/resume, and a
-run_subagent delegation whose OWN nested LLM call goes back over the wire
-to loadtest/fake_llm_server.py — both real, at real concurrency, across
-the same 5 real worker processes.
+TestScaledWorkersHandleHITLAndSubagentDelegation extends the same real stack to the other two production paths
+of a queued turn: a paused human_approval gate resumed via POST /chat/resume, and a run_subagent delegation
+whose OWN nested LLM call goes over the wire to loadtest/fake_llm_server.py, both at real concurrency across
+the same 5 worker processes.
 """
 import asyncio
 import collections

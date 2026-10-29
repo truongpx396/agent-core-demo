@@ -1,37 +1,27 @@
-"""What a model costs, and the arithmetic that turns token usage into dollars
-(spec 008 A2, GRAPH_PATTERNS.md patterns 26 and 35).
+"""What a model costs, and the arithmetic from token usage to dollars (spec 008 A2, GRAPH_PATTERNS.md 26 and 35).
 
-Prices are READ from LiteLLM (`GET /model/info`), not kept in a table here. The
-proxy already owns the alias -> concrete-model mapping (app/core/model_resolver.py), so it
-is the one place that can say what an alias costs: its entry carries
-`input_cost_per_token`, `output_cost_per_token` and `cache_read_input_token_cost`,
-merged from LiteLLM's maintained cost map, with any `model_info` a deployment sets
-in the LiteLLM config taking precedence (verified in LiteLLM's
-`_get_proxy_model_info`). Swapping the model behind an alias therefore re-prices
-it with no code change, and a self-hosted model the cost map has never heard of is
-priced where the model is defined.
+Prices are READ from LiteLLM (`GET /model/info`), not kept in a table here: the proxy owns the alias ->
+concrete-model mapping (app/core/model_resolver.py), so it is the one place that can say what an alias costs.
+Its entry carries `input_cost_per_token`, `output_cost_per_token` and `cache_read_input_token_cost`, merged
+from LiteLLM's cost map with any `model_info` in the LiteLLM config taking precedence. Swapping the model
+behind an alias re-prices it with no code change, and a self-hosted model is priced where it is defined.
 
-The table this replaced held two entries and one blended rate per total token, so
-any other alias cost $0 with no signal — and every dollar ceiling (per turn, per
-subagent run, per tenant per day) multiplies tokens by a price, so they all went
-blind together the moment `chat` pointed at a paid model.
+The table this replaced held two entries and one blended rate, so any other alias cost $0 with no signal and
+every dollar ceiling (per turn, subagent run, tenant per day) went blind the moment `chat` pointed at a paid
+model.
 
 Three rules keep a ceiling from under-counting:
-  * Unknown is not free. A model LiteLLM reports no price for is `None` here, and
-    only a price LiteLLM states as 0 (Ollama) is $0. `UNPRICED_MODEL_POLICY=block`
-    refuses turns on an unpriced model; `allow` serves them but counts every call
-    (`agent_unpriced_usage_total`, with an alert).
-  * An alias served by several deployments is priced at its MOST EXPENSIVE one, and
-    as unknown if any deployment is unpriced — the ceiling must bound the worst
-    case, not the average.
-  * Cached input tokens get the cache-read rate only when LiteLLM states one;
-    otherwise they are billed at the full input rate.
+  * Unknown is not free. A model LiteLLM reports no price for is `None`; only a stated 0 (Ollama) is $0.
+    `UNPRICED_MODEL_POLICY=block` refuses turns on an unpriced model; `allow` serves them but counts every
+    call (`agent_unpriced_usage_total`, with an alert).
+  * An alias served by several deployments is priced at its MOST EXPENSIVE one, and as unknown if any is
+    unpriced: the ceiling must bound the worst case.
+  * Cached input tokens get the cache-read rate only when LiteLLM states one; otherwise the full input rate.
 
-Disclosed limits: a LiteLLM fallback (`chat` -> `chat-backup`) can serve a call at
-another deployment's price and the OpenAI-compatible response does not say so
-(the per-call `x-litellm-response-cost` header is not surfaced by `ChatOpenAI`);
-and cache WRITE tokens, which some providers bill above the input rate, are billed
-at the input rate because `langchain-openai` drops that field from `usage_metadata`.
+Disclosed limits: a LiteLLM fallback (`chat` -> `chat-backup`) can serve a call at another deployment's price
+without the response saying so (`ChatOpenAI` doesn't surface the `x-litellm-response-cost` header), and cache
+WRITE tokens, which some providers bill above the input rate, are billed at the input rate because
+`langchain-openai` drops that field from `usage_metadata`.
 """
 import logging
 import math

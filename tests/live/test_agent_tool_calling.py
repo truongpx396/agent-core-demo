@@ -1,34 +1,24 @@
-"""Fast, per-PR smoke checks that this app's REAL graph code (app/agent/graph/core.py)
-correctly drives a REAL model's REAL native tool-calling — the one thing
-every other test in this suite (`GenericFakeChatModel`, hand-scripted
-responses) structurally cannot prove, because a fake model's tool calls are
-authored by the test, not actually reasoned by anything. Deliberately the
-release-gating counterpart's fast, cheap sibling, not a replacement for it:
-`scripts/eval.py` runs its own (harder) golden cases `EVAL_REPETITIONS`
-times each against the REAL, full-size `CHAT_MODEL` this deployment
-actually ships, gated by a statistical pass threshold — deliberately kept
-OUT of CI (see .github/workflows/ci.yml's own comment) because that's
-real, maintainer-run, pre-release scanning. This file runs ONE repetition
-of the simplest case against a deliberately SMALL model, in CI, on every
-push — a smoke test that the real model/graph integration hasn't broken,
-not a quality gate on how well it answers.
+"""Fast per-PR smoke checks that this app's REAL graph code (app/agent/graph/core.py) correctly drives a REAL
+model's native tool-calling: the one thing every other test here (`GenericFakeChatModel`, hand-scripted
+responses) can't prove, because a fake model's tool calls are authored by the test, not reasoned.
 
-(`scripts/eval.py`'s own `calculator_basic` — the golden case this file's
-own comment below used to point at by name — was retired 2026-09-16,
-folded into tests/deepeval/test_tool_correctness_deepeval.py's own
-`test_calculator_tool_call_is_correct_and_well_argued` instead; this
-file's own smoke-test role is unaffected, since it's testing something
-that golden case never was: a deliberately SMALL, CI-speed model, not
-`scripts/eval.py`'s full-size production one.)
+It is the fast, cheap sibling of the release gate, not a replacement. `scripts/eval.py` runs its own, harder
+golden cases `EVAL_REPETITIONS` times each against the full-size `CHAT_MODEL` the deployment ships, gated by a
+statistical pass threshold, and is kept OUT of CI on purpose (see .github/workflows/ci.yml's comment) as
+maintainer-run pre-release scanning. This file runs ONE repetition of the simplest case against a deliberately
+SMALL model, in CI, on every push: a smoke test that the model/graph integration hasn't broken, not a quality
+gate.
 
-`build_graph()` is called directly — no `app.agent.runtime.core` wrapper, no
-Postgres/Redis/Qdrant needed at all (only `ollama_endpoint`, the cheapest of
-tests/live/conftest.py's two fixtures) — the exact same "assert the real
-dependency, mock everything orthogonal" scoping
-tests/agent/runtime/test_durable_checkpoint.py already uses for Postgres. Retrieval/
-the semantic cache are already mocked for every test in this whole suite by
-tests/conftest.py's autouse fixtures; nothing here needs them anyway, since
-neither scenario below calls search_docs.
+(`scripts/eval.py`'s `calculator_basic`, the golden case a comment below used to cite, was retired 2026-09-16
+into tests/deepeval/test_tool_correctness_deepeval.py's
+`test_calculator_tool_call_is_correct_and_well_argued`. This file's role is unaffected: it tests what that
+case never did, a SMALL CI-speed model rather than `scripts/eval.py`'s production one.)
+
+`build_graph()` is called directly, with no `app.agent.runtime.core` wrapper and no Postgres/Redis/Qdrant
+(only `ollama_endpoint`, the cheaper of tests/live/conftest.py's fixtures): the "assert the real dependency,
+mock everything orthogonal" scoping tests/agent/runtime/test_durable_checkpoint.py uses for Postgres.
+Retrieval and the semantic cache are already mocked suite-wide by tests/conftest.py's autouse fixtures, and
+neither scenario below calls search_docs anyway.
 """
 import uuid
 

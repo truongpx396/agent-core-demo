@@ -1,78 +1,43 @@
-"""Dedicated concurrency-correctness suite — does running several turns at
-once (agent_worker.py's own `_MAX_CONCURRENCY` + `app/agent/runtime/core.py`'s
-pooled checkpointer, both added specifically to let ONE worker process run
-multiple turns simultaneously instead of one at a time) actually produce
-correct, isolated results, or does it corrupt/cross-deliver state between
-concurrent turns?
+"""Concurrency-correctness suite: does running several turns at once (`agent_worker.py`'s `_MAX_CONCURRENCY` plus
+`app/agent/runtime/core.py`'s pooled checkpointer, both added so ONE worker process can run turns
+simultaneously) produce correct, isolated results, or does it corrupt or cross-deliver state?
 
-Separate from tests/agent/runtime/test_durable_checkpoint.py (this file's closest
-sibling, same "real Postgres, fake LLM, no live Ollama" shape, same
-`ensure_postgres()`/`reset_agent_singleton` pattern) because that file's own
-concurrent-access tests (`TestResumabilityErrorRejectsAnActivelyRunningThread`)
-are about a SPECIFIC race (a stale/racing resume hijacking an
-actively-streaming turn) — this file is about the general question a reader
-of that concurrency work would reasonably ask next: "does it work correctly
-under real concurrent load, with no shared-data contention or cache leak
-between unrelated turns?" Runs on CI (`make test-integration`,
-`@pytest.mark.integration`) against real, ephemeral Postgres + Redis Stack
-containers (tests/containers.py) and a fake LLM (langchain_core's
-GenericFakeChatModel, same technique test_durable_checkpoint.py already
-uses) — no live Ollama/LiteLLM dependency, so this runs in ordinary CI, not
-just by hand against `make up`.
+Separate from tests/agent/runtime/test_durable_checkpoint.py (same shape: real Postgres, fake LLM,
+`ensure_postgres()`/`reset_agent_singleton`), whose concurrent-access tests cover one SPECIFIC race (a stale
+resume hijacking an actively streaming turn). This file asks the general question: under real concurrent load,
+is there any shared-data contention or cache leak between unrelated turns? It runs in CI (`make
+test-integration`, `@pytest.mark.integration`) against ephemeral Postgres + Redis Stack containers
+(tests/containers.py) and a fake LLM (langchain_core's GenericFakeChatModel), with no live Ollama/LiteLLM.
 
-Seven angles, one per test class below:
-- TestNoCrossContaminationUnderConcurrency: N turns on N different THREADS,
-  run truly concurrently against the real pooled checkpointer — does each
-  thread's checkpointed history end up containing ONLY its own message?
-- TestSemanticCacheIsolationUnderConcurrency: two different TENANTS racing
-  an identical question against the real (not stubbed) semantic cache —
-  does a same-tenant repeat correctly hit while a different tenant's first
-  ask of the identical text, at the same real moment, correctly misses?
-- TestWorkerConcurrencyAgainstTheRealQueue: the actual production dispatch
-  code (`agent_worker._process_with_limit`, the same Semaphore-gated
-  asyncio.create_task shape `run()` itself uses) against a real Redis
-  queue — do N deliberately-slow turns actually finish in genuinely
-  overlapping wall-clock time, or does something silently re-serialize
-  them? This is the regression guard: if a future change reintroduces
-  serial processing, this test's timing assertion catches it even though
-  every individual turn would still complete "correctly."
-- TestHITLApprovalUnderConcurrency: N turns all pause at the mandatory
-  human_approval gate (a `remember` call, GRAPH_PATTERNS.md pattern 15) at
-  the same real moment, then all N resume concurrently — does each
-  thread's resume correctly unblock ITS OWN paused tool call (not a
-  concurrent sibling's), and does the real memory write it approves land
-  in Qdrant correctly scoped to the right owner?
-- TestSubagentCallUnderConcurrency: N turns all delegate to the real
-  `run_subagent` tool (GRAPH_PATTERNS.md pattern 46) at the same real
-  moment — a genuinely separate nested `build_graph()` run per call, on
-  the same shared graph singleton everything else here uses — does each
-  turn's own nested run answer ITS OWN delegated task, never a sibling's?
-- TestQdrantReadWriteUnderConcurrency: N different TENANTS concurrently
-  searching a real, pre-seeded Qdrant collection — does each tenant's
-  real hybrid-search hit ONLY ITS OWN documents, the same tenant-isolation
-  question TestSemanticCacheIsolationUnderConcurrency asks of Redis, asked
-  here of Qdrant's own tenant-scoped filter instead?
-- TestSameThreadTurnsAreSerializedNotCorrupted: the complementary case to
-  every class above — those all prove DIFFERENT thread_ids/tenants stay
-  isolated under concurrency; this proves the SAME thread_id does NOT
-  silently fork its checkpoint when two real "turn" jobs race it through
-  the real queue/worker dispatch. Before `app/job_queue/queue.py::acquire_thread_lock`
-  existed, both jobs would read the checkpointer's latest state as their
-  own parent and both write a child from it, so whichever committed last
-  would silently win and the other job's message would vanish from the
-  thread's visible history — never caught by any class above, since none
-  of them ever put two jobs on the SAME thread_id at the same moment.
+Seven angles, one test class each:
+- TestNoCrossContaminationUnderConcurrency: N turns on N THREADS against the real pooled checkpointer; does
+  each thread's history contain ONLY its own message?
+- TestSemanticCacheIsolationUnderConcurrency: two TENANTS racing an identical question against the real
+  semantic cache; a same-tenant repeat must hit while the other tenant's first ask of the same text must miss.
+- TestWorkerConcurrencyAgainstTheRealQueue: the production dispatch (`agent_worker._process_with_limit`, the
+  Semaphore-gated `asyncio.create_task` shape `run()` uses) against a real Redis queue; do N deliberately slow
+  turns finish in genuinely overlapping wall-clock time? The regression guard: if a change reintroduces serial
+  processing, the timing assertion catches it even though every turn would still complete "correctly".
+- TestHITLApprovalUnderConcurrency: N turns pause at the mandatory approval gate (a `remember` call, pattern
+  15) at once, then all resume concurrently; each resume must unblock ITS OWN call, and the approved memory
+  write must land in Qdrant scoped to the right owner.
+- TestSubagentCallUnderConcurrency: N turns delegate to the real `run_subagent` (pattern 46) at once, each a
+  separate nested `build_graph()` run on the shared singleton; each must answer ITS OWN task, never a
+  sibling's.
+- TestQdrantReadWriteUnderConcurrency: N TENANTS searching a pre-seeded real Qdrant collection; each must hit
+  only its own documents (the question the semantic-cache class asks of Redis, asked of Qdrant's tenant
+  filter).
+- TestSameThreadTurnsAreSerializedNotCorrupted: the complement. The classes above prove DIFFERENT
+  thread_ids/tenants stay isolated; this proves the SAME thread_id doesn't fork its checkpoint when two "turn"
+  jobs race it through the real queue/worker. Before `app/job_queue/queue.py::acquire_thread_lock`, both jobs
+  read the latest state as their parent and wrote a child from it, so the last commit silently won and the
+  other message vanished from history; no class above ever put two jobs on one thread_id.
 
-A real, reachable embedding backend is deliberately never required for any
-of this (`_fake_embed_text` below) — every real embedding call in this app
-(app/retrieval/embeddings.py::embed_text) needs a reachable
-OPENAI_API_BASE, which `test-integration` CI deliberately doesn't
-provision (see tests/integration/'s own "no LLM" scope) — a real CI run
-surfaced exactly this gap once already (see this file's own git history);
-what these tests actually check — RediSearch/Qdrant's own tenant-scoped
-filtering, HITL pause/resume routing, subagent delegation — was never
-about embedding QUALITY, so a deterministic, network-free stand-in is the
-more correct choice here, not just a CI-safety workaround.
+No reachable embedding backend is required (`_fake_embed_text`): every real embedding call
+(app/retrieval/embeddings.py::embed_text) needs a reachable OPENAI_API_BASE, which `test-integration` CI
+deliberately doesn't provision, and a CI run surfaced exactly that gap once. These tests check
+RediSearch/Qdrant tenant filtering, HITL pause/resume routing and subagent delegation, never embedding
+QUALITY, so a deterministic network-free stand-in is more correct, not just CI-safe.
 """
 import asyncio
 import hashlib
@@ -146,39 +111,26 @@ def _last_human_text(messages: list[BaseMessage]) -> str:
 
 
 def _echoing_llm(respond: Callable[[list[BaseMessage]], AIMessage]):
-    """A GenericFakeChatModel whose response is DERIVED from the incoming
-    messages (via `respond`) instead of played back from a fixed queue.
+    """A GenericFakeChatModel whose response is DERIVED from the incoming messages (via `respond`) instead of
+    played back from a fixed queue.
 
-    `_fixed_llm` above is enough when every concurrent turn should behave
-    IDENTICALLY (proving state isolation despite identical LLM behavior).
-    HITL and subagent-delegation correctness need the opposite: THIS
-    process's whole graph is one shared singleton, built once — every
-    concurrent turn's LLM calls land on the SAME model instance, so
-    proving turn A's own tool call/final answer never gets crossed with
-    concurrent turn B's requires a response that's actually a function of
-    turn A's own input, not a canned reply every turn would get alike.
+    `_fixed_llm` above suffices when every concurrent turn should behave IDENTICALLY (state isolation despite
+    identical LLM behavior). HITL and subagent delegation need the opposite: the whole graph is one shared
+    singleton, so every concurrent turn's LLM calls land on the SAME model instance, and proving turn A's tool
+    call and final answer never cross with turn B's needs a response that is a function of turn A's own input.
 
-    Overrides `_generate` only (not `_astream` directly) — GenericFakeChatModel's
-    own inherited `_stream`/async-streaming machinery already turns
-    whatever `AIMessage` `_generate` returns (including `tool_calls`) into
-    correctly-shaped streaming chunks, the same machinery the existing
-    fixed-queue tests already rely on; overriding only the RESPONSE
-    SELECTION here, not that plumbing, keeps this consistent with them.
+    It overrides `_generate` only, not `_astream`: GenericFakeChatModel's inherited `_stream` and
+    async-streaming machinery already turns whatever `AIMessage` `_generate` returns (including `tool_calls`)
+    into correctly shaped streaming chunks, the machinery the fixed-queue tests rely on; only the RESPONSE
+    SELECTION changes.
 
-    Also overrides `bind_tools` to a no-op returning `self` —
-    `BaseChatModel`'s own default raises `NotImplementedError` (verified
-    directly), which `GraphDeps(llm=...)`'s own top-level use of a fake
-    model never trips (`build_graph()` uses `deps.llm` raw, never calling
-    `.bind_tools()` on it — only its OWN `make_llm()` production
-    construction path does that), but
-    app/agent/tools/run_subagent.py::run_subagent_impl's fallback DOES call
-    `ChatOpenAI(...).bind_tools(nested_tools)` on whatever `ChatOpenAI`
-    constructs — needed for TestSubagentCallUnderConcurrency, which
-    monkeypatches `ChatOpenAI` itself to return one of these. Same
-    reasoning `_fixed_llm`/every fake model in this file already
-    embodies: a scripted response doesn't actually depend on which tools
-    were "offered," so a real bind implementation was never load-bearing
-    here."""
+    It also overrides `bind_tools` as a no-op returning `self`. `BaseChatModel`'s default raises
+    `NotImplementedError` (verified). `build_graph()` uses `deps.llm` raw and never calls `.bind_tools()` on
+    it, but app/agent/tools/run_subagent.py::run_subagent_impl's fallback DOES call
+    `ChatOpenAI(...).bind_tools(nested_tools)`, which TestSubagentCallUnderConcurrency satisfies by
+    monkeypatching `ChatOpenAI` to return one of these. A scripted response doesn't depend on which tools were
+    offered, so a real bind was never load-bearing.
+    """
 
     class _Model(GenericFakeChatModel):
         def _generate(self, messages, stop=None, run_manager=None, **kwargs):
@@ -377,38 +329,26 @@ _FAKE_EMBED_DIM = 32  # len(hashlib.sha256(...).digest()) — see _fake_embed_te
 
 @pytest.fixture
 async def real_qdrant(monkeypatch):
-    """Points every real Qdrant read/write path this app has
-    (app/agent/tools/builtin.py's remember/add_note/search_docs, all the way down
-    through app/retrieval/qdrant_store.py) at a real, ephemeral Qdrant
-    container — for TestHITLApprovalUnderConcurrency and
-    TestQdrantReadWriteUnderConcurrency specifically, not autouse, since
-    the other classes in this file never touch Qdrant at all.
+    """Point every real Qdrant read/write path (app/agent/tools/builtin.py's remember/add_note/search_docs, down
+    through app/retrieval/qdrant_store.py) at a real, ephemeral Qdrant container. For
+    TestHITLApprovalUnderConcurrency and TestQdrantReadWriteUnderConcurrency specifically, not autouse: the
+    other classes never touch Qdrant.
 
-    `embed_text` is patched in BOTH places that hold their own separate
-    binding of it (app/agent/tools/builtin.py's `from ... import embed_text`, and
-    app/retrieval/embeddings.py itself — read via a late `from
-    app.retrieval import embeddings; embeddings.embed_text(...)` inside
-    qdrant_store.hybrid_search, so patching the ORIGIN module is what that
-    one particular call site actually needs) — same "a `from X import Y`
-    binding is a separate reference" reasoning this file's own
-    `real_semantic_cache_redis` fixture already applies to
-    app/retrieval/semantic_cache.py's own copy of the same name.
+    `embed_text` is patched in BOTH places that hold a separate binding of it: app/agent/tools/builtin.py's
+    `from ... import embed_text`, and app/retrieval/embeddings.py itself (qdrant_store.hybrid_search reads it
+    late via `from app.retrieval import embeddings; embeddings.embed_text(...)`, so patching the ORIGIN module
+    is what that call site needs). A `from X import Y` binding is a separate reference, the same reasoning
+    `real_semantic_cache_redis` applies to semantic_cache.py's copy.
 
-    `COLLECTION` is also patched to a fresh, unique name per test — NOT
-    optional hygiene: `ensure_qdrant()`'s container is shared across the
-    whole pytest session (and, under `pytest -n auto`, across every xdist
-    worker — this is exactly what CI runs). A real CI run surfaced this
-    directly: this file's own `ensure_collection()` call (a DESTRUCTIVE
-    `recreate_collection`) and tests/integration/test_worker_scaling.py's
-    own identical call, racing on different xdist workers against the SAME
-    shared default `COLLECTION` ("docs"), wiped out each other's seeded
-    documents/memories mid-test — one run saw "no citations at all" from
-    its own just-seeded document, another saw a stray memory belonging to
-    a DIFFERENT file's same-named test principal. A unique collection name
-    per test is the same isolation idiom
-    tests/integration/test_queue_real_redis.py's own `real_redis` fixture
-    already applies to REQUESTS_STREAM/CONSUMER_GROUP, applied here to
-    Qdrant's collection name instead."""
+    `COLLECTION` is also patched to a unique name per test, and that is not optional hygiene:
+    `ensure_qdrant()`'s container is shared across the whole pytest session and, under `pytest -n auto`,
+    across every xdist worker (what CI runs). This file's `ensure_collection()` (a DESTRUCTIVE
+    `recreate_collection`) and tests/integration/test_worker_scaling.py's identical call raced on the SAME
+    default `COLLECTION` ("docs") on different workers and wiped each other's seeded data mid-test: one run
+    saw no citations from its own just-seeded document, another a stray memory from a DIFFERENT file's
+    same-named principal. A unique name per test is the idiom tests/integration/test_queue_real_redis.py's
+    `real_redis` fixture applies to REQUESTS_STREAM/CONSUMER_GROUP.
+    """
     qdrant = ensure_qdrant()
     monkeypatch.setattr(qdrant_store, "QDRANT_URL", qdrant["qdrant_url"])
     monkeypatch.setattr(qdrant_store, "COLLECTION", f"test-concurrent-turns-{uuid.uuid4().hex}")
@@ -743,32 +683,25 @@ class TestSameThreadTurnsAreSerializedNotCorrupted:
 
 
 class TestHITLApprovalUnderConcurrency:
-    """`remember` is declared "mutating" (app/domains/ecorp/tools.py::TOOL_CAPABILITIES),
-    so it ALWAYS pauses at the human_approval gate regardless of whether
-    the caller opted into require_approval (GRAPH_PATTERNS.md pattern
-    15's MANDATORY gate, not the opt-in one). Proves the pause/resume
-    round trip stays correctly matched to its own thread under real
-    concurrency: N turns all pause at the same real moment, then all N
-    resume at the same real moment — a resume that raced onto the wrong
-    thread's paused checkpoint would either hijack a sibling's approval or
-    corrupt its memory write. Checks both the routing (each resume's own
-    final answer echoes its own remembered text, never a sibling's) and
-    the real Qdrant write underneath it (each thread's memory point
-    exists, correctly owned, with the right text).
+    """`remember` is "mutating" (app/domains/ecorp/tools.py::TOOL_CAPABILITIES), so it ALWAYS pauses at the
+    human_approval gate whether or not the caller opted into require_approval (the MANDATORY gate of
+    GRAPH_PATTERNS.md pattern 15, not the opt-in one).
 
-    The PAUSE half drives via `graph.ainvoke()`, not `astream_events_turn`
-    — verified directly (the same limitation
-    tests/agent/runtime/test_durable_checkpoint.py's own `TestAsyncSeeding`/
-    `TestResumabilityErrorRejectsAnActivelyRunningThread` classes already
-    document and work around the identical way): `astream_events()`
-    raises "No generations found in stream" for a `.bind_tools()`-wrapped
-    `GenericFakeChatModel`'s tool-calling response — a pre-existing
-    fake-LLM/streaming fixture limitation, unrelated to what's under test
-    here. The RESUME half stays on the real `astream_events_resume`
-    streaming path (the same one `POST /chat/resume` actually uses) since
-    its own generation, synthesizing after the tool result, is plain text
-    and streams fine — the same reason every OTHER test in this file
-    streams without issue."""
+    Proves the pause/resume round trip stays matched to its own thread under real concurrency: N turns pause
+    at the same moment, then all N resume at the same moment. A resume racing onto the wrong thread's paused
+    checkpoint would hijack a sibling's approval or corrupt its memory write. Checks the routing (each
+    resume's final answer echoes its own remembered text, never a sibling's) and the real Qdrant write beneath
+    it (each thread's memory point exists, correctly owned, with the right text).
+
+    The PAUSE half drives via `graph.ainvoke()`, not `astream_events_turn`, verified directly (the same
+    limitation test_durable_checkpoint.py's `TestAsyncSeeding` and
+    `TestResumabilityErrorRejectsAnActivelyRunningThread` document and work around identically):
+    `astream_events()` raises "No generations found in stream" for a `.bind_tools()`-wrapped
+    `GenericFakeChatModel`'s tool-calling response, a pre-existing fake-LLM/streaming fixture limitation
+    unrelated to what's under test. The RESUME half stays on the real `astream_events_resume` streaming path
+    (the one `POST /chat/resume` uses), since its generation, synthesizing after the tool result, is plain
+    text and streams fine, like every other test in this file.
+    """
 
     async def test_n_concurrent_pauses_and_resumes_stay_matched_to_their_own_thread(
         self, monkeypatch, real_qdrant

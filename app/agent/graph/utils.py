@@ -29,31 +29,22 @@ logger = logging.getLogger(__name__)
 def instrumented(node_name: str):
     """Wrap a node with structured start/complete/failed/paused lifecycle logs.
 
-    Applied once, at graph-registration time (build_graph), to every node
-    — never hand-rolled inside a node function — so the logged field set
-    can't drift, and the plain node functions stay directly callable from
-    tests unwrapped.
+    Applied once, at registration (build_graph), to every node, never hand-rolled inside one, so the logged
+    field set can't drift and plain node functions stay directly callable from tests.
 
-    Logs carry node name, run_id, outcome, and duration_ms — NEVER message
-    content or the state dict, which would create a second, unscrubbed,
-    non-expiring copy of prompt/document text outside Langfuse's tracing
+    Logs carry node name, run_id, outcome and duration_ms, NEVER message content or the state dict, which
+    would be a second, unscrubbed, non-expiring copy of prompt/document text outside Langfuse
     (GRAPH_PATTERNS.md pattern 14).
 
-    `human_approval`'s `interrupt()` raises `GraphInterrupt` (a
-    `GraphBubbleUp`) to pause the run — normal control flow, logged as
-    `node_paused` and re-raised untouched, not caught as `node_failed`.
+    `human_approval`'s `interrupt()` raises `GraphInterrupt` (a `GraphBubbleUp`) to pause the run: normal
+    control flow, logged as `node_paused` and re-raised untouched, not `node_failed`.
 
-    Async-aware: nodes making a real LLM call or hitting Redis/Qdrant/
-    ml-service (`agent`, `compact_history`, `suggest_followups`,
-    `check_semantic_cache`, `retrieve_context`, `write_semantic_cache`,
-    `moderate_input`) are `async def` so their I/O waits on the event loop
-    instead of occupying a slot in LangChain's shared, process-wide
-    default executor (`min(32, cpu_count+4)` threads) — raising this
-    app's own concurrency limits to 50 barely moved throughput until this
-    was fixed, because that shared executor was the next bottleneck.
-    Every other node stays plain sync `def`, per LangGraph's own guidance,
-    since they're pure in-memory logic with nothing to await. Detected via
-    `asyncio.iscoroutinefunction(fn)`, not a caller flag.
+    Async-aware: nodes that call an LLM or hit Redis/Qdrant/ml-service (`agent`, `compact_history`,
+    `suggest_followups`, `check_semantic_cache`, `retrieve_context`, `write_semantic_cache`, `moderate_input`)
+    are `async def`, so their I/O waits on the event loop instead of occupying LangChain's shared default
+    executor (`min(32, cpu_count+4)` threads): raising this app's concurrency to 50 barely moved throughput
+    until that executor stopped being the bottleneck. Every other node stays sync `def` (pure in-memory logic,
+    per LangGraph's guidance). Detected via `asyncio.iscoroutinefunction(fn)`, not a flag.
     """
 
     def decorator(fn):
@@ -219,27 +210,20 @@ def make_llm(
         # MAX_TOKENS_PER_TURN never trips, and Langfuse shows 0 tokens.
         stream_usage=True,
     ).bind_tools([strict_tool_schema(t) for t in tools] if use_strict else tools)
-    # No `parallel_tool_calls=False` here (removed 2026-09-09) — genuine
-    # multi-tool-call turns are fully supported now.
+    # No `parallel_tool_calls=False` here (removed 2026-09-09): genuine multi-tool-call turns are supported.
     #
-    # History: two simultaneous tool calls used to come back from litellm's
-    # ollama_chat provider as ONE malformed tool_calls entry with
-    # concatenated ids/names/args (Langfuse `fc0a31db`/`dbd2c02b`,
-    # 2026-09-08). `parallel_tool_calls=False` was added as an apparent fix
-    # but was a proven no-op (ollama_chat doesn't support the param;
-    # litellm silently drops it) — confirmed when the corruption recurred
-    # later (`3c6ed3b0`).
+    # History: two simultaneous tool calls used to come back from litellm's ollama_chat provider as ONE
+    # malformed tool_calls entry with concatenated ids/names/args (Langfuse `fc0a31db`/`dbd2c02b`,
+    # 2026-09-08). `parallel_tool_calls=False` looked like a fix but was a proven no-op (ollama_chat doesn't
+    # support it; litellm silently drops it): the corruption recurred (`3c6ed3b0`).
     #
-    # Root cause was in litellm: OllamaChatCompletionResponseIterator's
-    # chunk_parser restarts its tool-call index at 0 per chunk instead of
-    # per response, so two calls in separate chunks both get index 0 and
-    # get string-concatenated by any OpenAI-compatible client. Fixed at
-    # that layer (deploy/litellm/patches/sitecustomize.py, loaded via PYTHONPATH
-    # in docker-compose.yml) to hand out a globally-increasing index.
+    # Root cause was in litellm: OllamaChatCompletionResponseIterator's chunk_parser restarts its tool-call
+    # index at 0 per chunk instead of per response, so two calls in separate chunks both get index 0 and any
+    # OpenAI-compatible client string-concatenates them. Fixed at that layer
+    # (deploy/litellm/patches/sitecustomize.py, loaded via PYTHONPATH in docker-compose.yml) with a globally
+    # increasing index.
     #
-    # `parallel_tool_calls=False` was then removed rather than kept as
-    # defense-in-depth: the approval/routing code already handled the full
-    # tool_calls list generically, just untested with a real batch — now
-    # verified live (tests/live/test_agent_parallel_tool_calls.py). A batch
-    # needing approval is approved/rejected as ONE decision covering every
-    # call, trading round trips for granularity, not visibility.
+    # The flag was then removed rather than kept as defense in depth: approval and routing already handled the
+    # full tool_calls list, just untested with a real batch, now verified live
+    # (tests/live/test_agent_parallel_tool_calls.py). A batch needing approval is approved or rejected as ONE
+    # decision covering every call, trading granularity for round trips, not visibility.

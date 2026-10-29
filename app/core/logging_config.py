@@ -1,31 +1,25 @@
-"""Structured (JSON) logging, shared by every long-running service process
-(app/api/main.py, agent_worker.py, ingest_worker.py, app/channels/telegram.py)
-— NOT the interactive CLI (app/channels/chat.py) or one-shot scripts, which
-print for a human and would just get JSON noise interleaved.
+"""Structured (JSON) logging, shared by every long-running service process (app/api/main.py, agent_worker.py,
+ingest_worker.py, app/channels/telegram.py), NOT the interactive CLI (app/channels/chat.py) or one-shot
+scripts, which print for a human and would get JSON noise interleaved.
 
-Built on structlog, but no log call site changes: every call already goes
-through stdlib `logging` (`logger = logging.getLogger(__name__)`) with
-per-call `extra={...}` correlation data. `configure_logging()` wires
-structlog's `ProcessorFormatter` onto the ROOT logger's handler (the
-standard "structlog processes stdlib logging" recipe), so every call site
-gets JSON rendering, request_id injection, and exception formatting for free.
+Built on structlog, but no log call site changed: every call already goes through stdlib `logging` (`logger =
+logging.getLogger(__name__)`) with per-call `extra={...}` correlation data. `configure_logging()` wires
+structlog's `ProcessorFormatter` onto the ROOT logger's handler (the standard "structlog processes stdlib
+logging" recipe), so every call site gets JSON rendering, request_id injection and exception formatting for
+free.
 
-Three problems this fixes, without changing what's logged:
-1. Plain `logging.basicConfig` silently drops every `extra` field —
-   unstructured, not just plain-text.
-2. app/api/main.py previously had no logging handler at all under
-   `make serve` — Python's logging module discarded every `logger.info(...)`
-   call outright (only WARNING+ reached stderr, with no `extra` fields).
-3. `request_id`/`thread_id` was only ever attached at a turn's failure
-   boundary — every other log line for that same turn had no correlation
-   id. `bind_request_id`/`request_id_var` fix this: a contextvar set once
-   at the entry point (propagates through every `await` in that task) plus
-   a structlog processor that reads it onto every event dict.
+Three problems this fixes without changing what's logged:
+1. Plain `logging.basicConfig` silently drops every `extra` field.
+2. app/api/main.py had no logging handler at all under `make serve`: Python discarded every `logger.info(...)`
+   (only WARNING+ reached stderr, without `extra`).
+3. `request_id`/`thread_id` was attached only at a turn's failure boundary, so every other log line of that
+   turn had no correlation id. `bind_request_id`/`request_id_var` fix it: a contextvar set once at the entry
+   point (it propagates through every `await` in that task) plus a structlog processor that reads it onto
+   every event.
 
-Output JSON keys are unchanged from the old formatter (`timestamp`,
-`level`, `logger`, `message`, `request_id` when bound, `extra=` fields,
-`exc_info` as a formatted traceback) except `level` is now lowercase
-(structlog convention), which the Promtail/Loki pipeline also expects.
+Output JSON keys match the old formatter (`timestamp`, `level`, `logger`, `message`, `request_id` when bound,
+`extra=` fields, `exc_info` as a formatted traceback) except `level` is now lowercase (structlog convention),
+which the Promtail/Loki pipeline also expects.
 """
 import logging
 import sys

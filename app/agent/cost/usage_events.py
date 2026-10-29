@@ -1,50 +1,46 @@
 """One immutable usage event per model call (postgres-init/19-usage-events.sql).
 
-`usage_ledger` recorded a completed TURN, summed, with no key that names a call. That was enough for a first spend cap and not enough for a
-meter: a meter must be able to say "this exact call, once", so that a replayed write and anything built on the record all agree on what one call
-is. This module is that meter, and since specs/010 T030 it is also what the dollar caps and `GET /usage` sum (`app/agent/cost/spend.py`).
+The per-turn `usage_ledger` had no key that named a call; a meter must say "this exact call, once", so a
+replayed write and everything built on the record agree on what one call is. This module is that meter, and
+the dollar caps and `GET /usage` sum it (`app/agent/cost/spend.py`).
 
 ## Identity
 
-`event_id = uuid5(NAMESPACE, f"{tenant}|{message_id}")`, where `message_id` is the response's
-`AIMessage.id`. Verified against the installed langchain-core / langchain-openai / langgraph
-(specs/010 research R5, pinned by tests/agent/cost/test_usage_events.py): langchain-core assigns it as
-`run-<run id>-<index>`, it is unique per invocation (two identical calls that came back with the
-SAME provider id still got different ones), and it is identical after a checkpoint round trip. The
-provider's own `chatcmpl-...` id is deliberately not used: a backend may return a fixed or missing one.
-A LangGraph node retry that calls the model again gets a new id and a new event, which is right: a
-second paid call happened.
+`event_id = uuid5(NAMESPACE, f"{tenant}|{message_id}")`, with `message_id` the response's `AIMessage.id`.
+Verified against the installed langchain-core / langchain-openai / langgraph (specs/010 research R5, pinned by
+tests/agent/cost/test_usage_events.py): langchain-core assigns `run-<run id>-<index>`, unique per invocation
+(two identical calls whose provider returned the SAME id still got different ones) and identical after a
+checkpoint round trip. The provider's own `chatcmpl-...` id is deliberately not used: a backend may return a
+fixed or missing one. A LangGraph node retry that calls the model again gets a new id and a new event, which
+is right: a second paid call happened.
 
 ## Failure policy
 
-Fail OPEN, counted, alerted. A failed write must not fail the turn it records, but a lost event is lost spend that no cap sees and
-nobody is told by a log line, so:
-  * `agent_cost_governance_degraded_total{path="usage_event_write"}`  -> UsageEventWriteFailing (critical)
+Fail OPEN, counted, alerted: a failed write mustn't fail the turn, but a lost event is lost spend no cap sees
+and a log line tells nobody.
+  * `agent_cost_governance_degraded_total{path="usage_event_write"}` -> UsageEventWriteFailing (critical)
   * `...{path="usage_event_table_missing"}` (migration 19 not applied) -> UsageEventTableMissing (warning)
-  * `...{path="usage_event_identity"}`: a response with no message id, so it got a random one
-    and cannot be de-duplicated (a replay would double-count it);
-  * `...{path="usage_missing"}`: the provider reported no usage for a call, so nothing could be
-    metered. Counted, not alerted: a local model may do this.
-There is no kill switch: the caps sum these rows, so switching the writes off would make every cap read $0
-(`USAGE_EVENTS_ENABLED=false` is refused at startup, `config.py`). Because the caps now depend on the write,
-a failing one is also a cap under-counting: `UsageEventWriteFailing` is the alert for both.
+  * `...{path="usage_event_identity"}`: a response with no message id got a random one and can't be
+    de-duplicated (a replay would double-count it);
+  * `...{path="usage_missing"}`: the provider reported no usage, so nothing was metered. Counted, not alerted:
+    a local model may do this.
+There is no kill switch: the caps sum these rows, so switching writes off would make every cap read $0
+(`USAGE_EVENTS_ENABLED=false` is refused at startup, `config.py`). A failing write is also a cap
+under-counting; `UsageEventWriteFailing` is the alert for both.
 
 ## Billing is one call, and not this module's business
 
-A model call is also billable usage. After inserting its own row this module hands the billing package ONE plain value (the tenant, the
-event id, the kind, the cost, the model and the token count) through `app/billing_integration/port.py`, on the same connection and in the same
-transaction, and only when the row was newly inserted, so a replay that finds its event already there hands over nothing. What the package does
-with it (rating it in credits, keeping its own record, debiting a wallet, queuing an export) and how it fails (it never raises; every way it can
-fail is counted and alerted by the package) is the package's: see `packages/billing/src/credit_billing/usage.py`. This module no longer knows
-what is done with the figures, and the table carries no billing column.
+After inserting its row, this module hands the billing package ONE plain value (tenant, event id, kind, cost,
+model, token count) through `app/billing_integration/port.py`, on the same connection and transaction, and
+only when the row was newly inserted (a replay hands over nothing). What the package does with it and how it
+fails (it never raises; every failure is counted and alerted by the package) is its own:
+`packages/billing/src/credit_billing/usage.py`. The table carries no billing column.
 
-## There is no second record any more
+## No second record
 
-For a while (specs/010 PR 1a to T030c1) a turn was ALSO summed into the per-turn `usage_ledger`: the caps read it, and then,
-after the caps moved here (T030b), it stayed as the way back and as a second record for the reconciliation. Both
-are gone (T030c): nothing writes the ledger, the reconciliation compares the events with the gateway's own spend log,
-and a failing write here is the one thing that makes a cap under-count (`UsageEventWriteFailing`). The old table is frozen history
-that `scripts/usage_events_carry_over.py` copied into this one.
+The per-turn `usage_ledger` is gone (specs/010 T030c): nothing writes it, the reconciliation compares the
+events with the gateway's spend log, and the old table is frozen history that
+`scripts/usage_events_carry_over.py` copied here.
 """
 import logging
 import uuid

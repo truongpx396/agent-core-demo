@@ -1,43 +1,30 @@
-"""Browser E2E against the built-in web UI (app/api/static/index.html) —
-the one client this app ships that a Python-level test can't drive, since
-its whole job is rendering a real browser's `fetch()`-based SSE parsing
-(see that file's own module comment: "no build step, no CDN dependency").
-Needs `real_stack` (tests/live/conftest.py): a real uvicorn + agent-worker
-pointed at real Postgres/Redis/Qdrant/Ollama, since the page actually calls
-`POST /chat/stream/queued` and `POST /chat/resume` (see its own `send()`/
-`resume()`) — both real only through the real Redis queue + a real
-agent-worker process, never in-process.
+"""Browser E2E against the built-in web UI (app/api/static/index.html), the one client this app ships that a
+Python-level test can't drive, since its job is a real browser's `fetch()`-based SSE parsing (see the file's
+module comment: "no build step, no CDN dependency"). Needs `real_stack` (tests/live/conftest.py): a real
+uvicorn + agent-worker on real Postgres/Redis/Qdrant/Ollama, because the page calls `POST /chat/stream/queued`
+and `POST /chat/resume` (its `send()`/`resume()`), which work only through the real Redis queue and a real
+agent-worker, never in-process.
 
-Generous timeouts throughout (`RESPONSE_TIMEOUT_MS`): a small, real,
-CPU-bound model genuinely takes longer per turn than this suite's usual
-sub-second fake-LLM tests, and a mutating-tool turn below waits through TWO
-full model round trips (the initial tool-call decision, then the
-post-approval synthesis of the tool result into a final answer).
-`RESPONSE_TIMEOUT_MS` must stay comfortably ABOVE
-`tests/live/conftest.py::real_stack`'s own `REQUEST_TIMEOUT_SECONDS`
-override, or this suite's own assertion times out first and reports a
-misleading "element never appeared" instead of the real app-level
-`[error: Request exceeded Ns timeout]` text that actually explains a slow
-turn — verified directly: a real CI run measured a single real
-`qwen2.5:1.5b` tool-calling turn taking 67.7s end to end.
+Timeouts are generous throughout (`RESPONSE_TIMEOUT_MS`): a small CPU-bound real model takes far longer per
+turn than this suite's sub-second fake-LLM tests, and a mutating-tool turn waits through TWO model round trips
+(the tool-call decision, then synthesis of the tool result after approval). `RESPONSE_TIMEOUT_MS` must stay
+comfortably ABOVE `tests/live/conftest.py::real_stack`'s `REQUEST_TIMEOUT_SECONDS` override, or the assertion
+times out first and reports a misleading "element never appeared" instead of the app's `[error: Request
+exceeded Ns timeout]` text that explains the slow turn. A real CI run measured one `qwen2.5:1.5b` tool-calling
+turn at 67.7s end to end.
 
-The agentic-feature tests below (the approved `remember` write, citations, a
-skill, a subagent) use `real_stack_with_retrieval` instead of `real_stack` —
-the one difference is a REAL embedding model + seeded Qdrant (see that
-fixture's own docstring), needed because `search_docs`/`skill_search` are both
-Qdrant-backed and return nothing real against `real_stack`'s deliberately
-unembedded setup, and because `remember` embeds what it stores: against
-`real_stack` it fails with a 404 for the embedding model, the model asks for it
-again, and the second approval pause leaves the Approve button on screen (see
-the `remember` test below). Each names its tool/skill/subagent explicitly in the
-prompt, same low-risk posture as the calculator/remember tests above —
-this suite is about proving the real integration works end to end, not
-about testing whether a 1.5B model can infer intent on its own.
-`MULTI_STEP_RESPONSE_TIMEOUT_MS` is wider still: a skill or subagent turn
-chains multiple real model calls (skill_search -> use_skill -> the
-skill's own tool calls, or the parent's tool-call decision -> a full
-NESTED subagent turn -> the parent's synthesis of that result), not just
-the one/two RESPONSE_TIMEOUT_MS already budgets for.
+The agentic-feature tests below (approved `remember` write, citations, a skill, a subagent) use
+`real_stack_with_retrieval` instead: a REAL embedding model plus seeded Qdrant (see that fixture's docstring).
+`search_docs`/`skill_search` are Qdrant-backed and return nothing real against `real_stack`'s deliberately
+unembedded setup, and `remember` embeds what it stores: against `real_stack` it fails with a 404 for the
+embedding model, the model asks again, and the second approval pause leaves the Approve button on screen (see
+the `remember` test). Each names its tool/skill/subagent in the prompt, the same low-risk posture as the
+calculator/remember tests: this suite proves the real integration works end to end, not that a 1.5B model can
+infer intent.
+
+`MULTI_STEP_RESPONSE_TIMEOUT_MS` is wider still: a skill or subagent turn chains several real model calls
+(skill_search -> use_skill -> the skill's tool calls, or the parent's tool-call decision -> a full NESTED
+subagent turn -> the parent's synthesis), beyond the one or two `RESPONSE_TIMEOUT_MS` budgets for.
 """
 import re
 import time

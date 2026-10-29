@@ -1,59 +1,36 @@
-"""Shared, Docker-backed real services for tests that need more than a fake
-— `tests/agent/runtime/test_durable_checkpoint.py` (real Postgres), `tests/integration/`
-(Postgres + Redis + Qdrant, no LLM), and `tests/live/` (adds a real, small
-Ollama model). See GRAPH_PATTERNS.md pattern 48 for the full design writeup;
-this module docstring covers the two mechanics every `ensure_*()` below
-depends on.
+"""Shared, Docker-backed real services for tests that need more than a fake:
+`tests/agent/runtime/test_durable_checkpoint.py` (real Postgres), `tests/integration/` (Postgres + Redis +
+Qdrant, no LLM) and `tests/live/` (adds a real, small Ollama model). GRAPH_PATTERNS.md pattern 48 has the
+design; this docstring covers the two mechanics every `ensure_*()` depends on.
 
-**Skip, don't fail, when Docker isn't reachable.** Same UX
-`tests/agent/runtime/test_durable_checkpoint.py`'s original `_require_postgres` already
-established (a real connectivity probe, `pytest.skip` on failure) — the only
-change is these no longer need `make up` already running: each starts its
-own ephemeral container instead of probing an assumed-external one. A `pytest
--q` run on a laptop with no Docker daemon at all stays exactly as green and
-fast as it is today.
+**Skip, don't fail, when Docker isn't reachable.** Each `ensure_*()` does a real connectivity probe and
+`pytest.skip` on failure, but starts its own ephemeral container instead of probing an assumed-external one
+(no `make up`). A `pytest -q` run on a laptop with no Docker daemon stays as green and fast as ever.
 
-**Cross-worker sharing under pytest-xdist is the whole point, and it's not
-free.** `-n auto` runs each worker as a SEPARATE OS process — a plain
-`@pytest.fixture(scope="session")` calling `SomeContainer().start()` would
-start one container PER WORKER, which is precisely the waste a shared Ollama
-endpoint is supposed to avoid (Ollama's own request queueing/thread pooling
-is what lets many parallel workers hit ONE warm model concurrently, cutting
-wall-clock time — see the Makefile's `test-live` target). So every `ensure_*`
-here uses a `filelock.FileLock` over a small JSON cache file: the first
-worker to grab the lock actually starts the container (and, for Ollama,
-pulls the model) and caches its connection info there; every other worker —
-and that same worker, on every later test — just reads the cache back.
+**Cross-worker sharing under pytest-xdist is the whole point, and it isn't free.** `-n auto` runs each worker
+as a SEPARATE OS process, so a plain `@pytest.fixture(scope="session")` calling `SomeContainer().start()`
+would start one container PER WORKER, exactly the waste a shared Ollama endpoint avoids (Ollama's own request
+queueing is what lets many workers hit ONE warm model, cutting wall-clock time; see the Makefile's
+`test-live`). Every `ensure_*` uses a `filelock.FileLock` over a small JSON cache file: the first worker to
+grab the lock starts the container (and for Ollama pulls the model) and caches its connection info; every
+other worker, and that worker on every later test, reads the cache back.
 
-The cache lives under a FIXED path (`tempfile.gettempdir()`, namespaced by a
-hash of this repo's own root — see `_shared_root`), deliberately NOT
-pytest's own per-invocation `tmp_path_factory` basetemp, even though that's
-the directory the standard pytest-xdist "run a session fixture once" recipe
-uses. Verified empirically that it doesn't fit this case: that recipe shares
-a directory across workers WITHIN one invocation by having each worker
-derive it from a value the xdist CONTROLLER computed and broadcast at
-session start — but nothing broadcasts it back to the controller's own,
-separate `pytest_sessionfinish` at session END, and a fresh
-`TempPathFactory` built there lazily allocates the NEXT rotating number
-instead of rediscovering the one workers actually used. A fixed path sidesteps
-that rediscovery problem entirely, at the cost of needing to treat a cached
-entry as possibly stale (see `_acquire`'s validation) rather than assuming a
-fresh directory is always empty.
+The cache lives under a FIXED path (`tempfile.gettempdir()`, namespaced by a hash of this repo's root, see
+`_shared_root`), deliberately NOT pytest's per-invocation `tmp_path_factory` basetemp, though that is the
+standard xdist "run a session fixture once" recipe. Verified empirically that it doesn't fit: the recipe works
+because each worker derives the directory from a value the xdist CONTROLLER broadcast at session start, but
+nothing broadcasts it back to the controller's own `pytest_sessionfinish` at the END, and a fresh
+`TempPathFactory` built there allocates the NEXT rotating number instead of rediscovering the one workers
+used. A fixed path sidesteps that, at the cost of treating a cached entry as possibly stale (see `_acquire`'s
+validation) rather than assuming a fresh directory is empty.
 
-Given that, teardown can't be "whichever worker's fixture finishes first
-tears it down" (the other workers would be pulled out from under) or
-testcontainers' own default Ryuk-reaper-on-process-exit (Ryuk's reaper
-session is per-Python-process; the FIRST worker to finish and exit would
-reap a container the other workers still need). Both are disabled/replaced
-deliberately: `TESTCONTAINERS_RYUK_DISABLED` is set before any container
-starts, and `teardown_all()` — called from `tests/conftest.py`'s
-`pytest_sessionfinish`, gated to only actually run once ALL workers have
-reported back (see that hook) — removes every container this run started,
-by id, read back from the same cache files. A container's id is genuinely
-process-independent (unlike the live testcontainers Python object, which
-only ever exists in whichever single worker process happened to start it),
-so teardown from the xdist controller process — which itself never started
-any container — works correctly.
+Given that, teardown can't be "whichever worker's fixture finishes first" (the others would be pulled out from
+under) or testcontainers' default Ryuk reaper (its session is per Python process, so the first worker to exit
+would reap containers the rest still need). Both are replaced: `TESTCONTAINERS_RYUK_DISABLED` is set before
+any container starts, and `teardown_all()`, called from `tests/conftest.py`'s `pytest_sessionfinish` and gated
+to run only once ALL workers have reported back, removes every container this run started, by id, read back
+from the cache files. A container id is process-independent (unlike the live testcontainers object, which
+exists only in the worker that started it), so teardown from the controller, which started none, works.
 """
 import hashlib
 import json
@@ -140,39 +117,24 @@ def _cache_paths(key: str) -> tuple[Path, Path]:
     return root / f"{_CACHE_PREFIX}-{key}.json", root / f"{_CACHE_PREFIX}-{key}.lock"
 
 
-# A marker FILE, not a plain Python global — `pytest_sessionfinish`
-# (tests/conftest.py) needs to tell "this invocation never touched the
-# shared cache at all" apart from "this invocation used it and should tear
-# down its share," but under pytest-xdist (CI's `test-live` job: `-n
-# auto`) the process that actually calls `_acquire` (a WORKER) and the
-# process that reaches `pytest_sessionfinish`'s teardown check (the
-# CONTROLLER — see that function's own docstring) are DIFFERENT OS
-# processes with separate memory, so a plain in-memory flag set by one is
-# invisible to the other; an earlier version of this fix used exactly that
-# and would have silently disabled teardown for every xdist run, including
-# every real CI run of `test-live`, without ever raising an error. A
-# WORKER's own `os.getppid()` is the xdist CONTROLLER's pid (workers are
-# its direct subprocesses — xdist sets `PYTEST_XDIST_WORKER` in a worker's
-# own environment, the documented way to detect this); a plain,
-# non-distributed run has no controller, so it uses its own pid instead.
-# Either way, `pytest_sessionfinish` (always running as the controller, or
-# standing in for one) checks for a marker under its OWN pid — written by
-# whichever process(es) actually called `_acquire`, be that itself or one
-# of its worker children.
+# A marker FILE, not a plain Python global. `pytest_sessionfinish` (tests/conftest.py) must tell "this
+# invocation never touched the shared cache" from "this invocation used it and should tear down its share".
+# Under pytest-xdist (CI's `test-live`: `-n auto`) the process that calls `_acquire` (a WORKER) and the one
+# that reaches the teardown check (the CONTROLLER) are DIFFERENT OS processes with separate memory, so an
+# in-memory flag set by one is invisible to the other; an earlier version used exactly that and would have
+# silently disabled teardown for every xdist run, CI included, without an error. A worker's `os.getppid()` is
+# the xdist controller's pid (workers are its direct subprocesses; xdist sets `PYTEST_XDIST_WORKER` in a
+# worker's environment, the documented way to detect this); a plain run has no controller, so it uses its own
+# pid. Either way, `pytest_sessionfinish` (the controller, or standing in for one) checks for a marker under
+# its OWN pid, written by whichever process(es) called `_acquire`, itself or its worker children.
 #
-# Real bug, caught live: an ordinary `pytest -q` run (no live/e2e/
-# integration marker, never calls any `ensure_*()` here) still hit
-# `pytest_sessionfinish` -> `teardown_all()` unconditionally, which tore
-# down the ENTIRE shared cache — including a real Postgres/Qdrant/Ollama a
-# SEPARATE, still-running `tests/live/` pytest invocation was actively
-# using — the moment the unrelated run finished. The existing `workerinput`
-# guard only protects against an xdist WORKER finishing early within one
-# invocation; it had no defense at all against a second, independent
-# pytest process racing in like this. Doesn't fully solve the reverse case
-# (two live-marked invocations overlapping still race, same as before) —
-# but that's a narrower, avoidable "don't do that" case; a routine
-# fast-suite run wiping out a concurrent live run's containers is the
-# common, surprising one this closes.
+# Real bug, caught live: an ordinary `pytest -q` run (no live/e2e/integration marker, never calling any
+# `ensure_*()`) still reached `teardown_all()` unconditionally and tore down the ENTIRE shared cache,
+# including a real Postgres/Qdrant/Ollama a SEPARATE, still-running `tests/live/` invocation was using, the
+# moment the unrelated run finished. The existing `workerinput` guard protects only against an xdist WORKER
+# finishing early within one invocation, not a second independent pytest process. It doesn't solve the reverse
+# (two live-marked invocations overlapping still race), a narrower "don't do that" case; a routine fast-suite
+# run wiping out a concurrent live run is the common, surprising one this closes.
 def _controller_pid() -> int:
     return os.getppid() if "PYTEST_XDIST_WORKER" in os.environ else os.getpid()
 
@@ -314,32 +276,23 @@ def ensure_postgres() -> dict[str, str]:
 
 
 def _setup_checkpointer_schema_once(checkpointer_url: str) -> None:
-    """Runs `AsyncPostgresSaver.setup()` — the same call
-    `app/agent/runtime/core.py::_open_checkpointer` makes on every real process
-    startup, "idempotently, on every process including each
-    independently-scaled agent_worker.py instance" per postgres-init/
-    05-checkpointer-db.sql's own comment — exactly ONCE here, inside
-    `ensure_postgres`'s own cross-worker lock, before any test gets a chance
-    to call it again concurrently.
+    """Runs `AsyncPostgresSaver.setup()` exactly ONCE, inside `ensure_postgres`'s cross-worker lock, before any
+    test can call it again concurrently. It is the same call `app/agent/runtime/core.py::_open_checkpointer`
+    makes on every real process start ("idempotently, on every process including each independently-scaled
+    agent_worker.py instance", per postgres-init/05-checkpointer-db.sql).
 
-    Found empirically, not theoretically: running this file's tests under
-    real `-n auto` parallelism (multiple xdist worker PROCESSES, each
-    independently calling `init_graph_async()` against
-    this ONE shared container) reliably hit
-    `psycopg.errors.UniqueViolation: duplicate key value violates unique
-    constraint "checkpoint_migrations_pkey"` — `.setup()`'s own
-    check-then-insert migration bookkeeping isn't safe against a genuine
-    concurrent race between two FIRST-EVER callers. That's a real
-    concurrency gap in `langgraph-checkpoint-postgres` itself (arguably a
-    latent one in production too, if the api process and several
-    agent_worker.py processes ever start up at the exact same instant
-    against a brand-new database — this app has just never happened to hit
-    that exact timing window), not something fixable here. Sidestepped,
-    not patched: pre-running `.setup()` once while every worker is still
-    serialized behind `ensure_postgres`'s own FileLock means every REAL
-    test's own later `.setup()` call lands on an already-fully-migrated
-    schema — a no-op read, not a racing write — regardless of how many
-    workers call it at once afterward.
+    Found empirically: under real `-n auto` parallelism (several xdist worker PROCESSES each calling
+    `init_graph_async()` against this ONE shared container), tests reliably hit
+    `psycopg.errors.UniqueViolation: duplicate key value violates unique constraint
+    "checkpoint_migrations_pkey"`. `.setup()`'s check-then-insert migration bookkeeping isn't safe against a
+    genuine race between two FIRST-EVER callers. That is a real concurrency gap in
+    `langgraph-checkpoint-postgres` itself (arguably latent in production too, if the api and several
+    agent_worker.py processes ever started at the same instant against a brand-new database; this app just
+    never hit that window), and not fixable here.
+
+    Sidestepped, not patched: pre-running `.setup()` once while every worker is still serialized behind
+    `ensure_postgres`'s FileLock means each real test's later `.setup()` lands on an already-migrated schema,
+    a no-op read rather than a racing write, however many workers call it.
     """
     import asyncio
 
@@ -453,36 +406,26 @@ CRAWL_TARGET_HEADING = "Example Domains"
 
 
 def ensure_crawl4ai() -> dict[str, str]:
-    """Real crawl4ai server (same image docker-compose.yml's own `crawl4ai`
-    service uses) — the real headless-Chromium rendering backend behind
-    `app/ingestion/web_crawler.py` (GRAPH_PATTERNS.md pattern 50), driven
-    through the generic `DockerContainer` API like `ensure_qdrant()` above
-    (no first-party testcontainers module for it either).
+    """Real crawl4ai server (the image docker-compose.yml's `crawl4ai` service uses): the headless-Chromium
+    rendering backend behind `app/ingestion/web_crawler.py` (GRAPH_PATTERNS.md pattern 50). Driven through the
+    generic `DockerContainer` API like `ensure_qdrant()` above (there is no first-party testcontainers module
+    for it either).
 
-    A fresh, random `CRAWL4AI_API_TOKEN` per container start (`secrets.
-    token_hex`, not a fixed test value) — same requirement docker-compose.
-    yml's own `crawl4ai` service comment discloses: crawl4ai 0.9.0+ is
-    secure-by-default, and without this env var the server binds
-    loopback-only INSIDE its own container, so the published port below
-    would just connection-reset. `shm_size="1g"` (`with_kwargs`, the one
-    docker-run option `DockerContainer` has no dedicated builder method
-    for) — Chromium needs real `/dev/shm`, crawl4ai's own docker-run docs.
-    Readiness is a real `GET /health` poll (needs no auth per crawl4ai's own
-    docs), same retry-loop shape `ensure_ml_service()` above uses, budgeted
-    to 60s — the same real-world margin `.github/workflows/ci.yml`'s own
-    prior `docker run` + `timeout 60 ... curl` sidecar steps used before
-    this fixture replaced them (crawl4ai's own docs only promise "up to
-    40s").
+    A fresh random `CRAWL4AI_API_TOKEN` per container start (`secrets.token_hex`, not a fixed test value), as
+    docker-compose.yml's `crawl4ai` comment discloses: crawl4ai 0.9.0+ is secure-by-default, and without it
+    the server binds loopback-only INSIDE its container, so the published port would connection-reset.
+    `shm_size="1g"` (via `with_kwargs`, the one docker-run option `DockerContainer` has no builder for)
+    because Chromium needs a real `/dev/shm` (crawl4ai's docker-run docs). Readiness is a real `GET /health`
+    poll (no auth needed per crawl4ai's docs), in the same retry-loop shape as `ensure_ml_service()` above,
+    budgeted to 60s: the margin `.github/workflows/ci.yml`'s earlier `docker run` + `timeout 60 ... curl`
+    sidecar steps used (crawl4ai's docs only promise "up to 40s").
 
-    Callers monkeypatch this into `app.ingestion.web_crawler`'s own
-    `CRAWL4AI_SERVER_URL`/`CRAWL4AI_API_TOKEN` module globals (the same
-    `monkeypatch.setattr(some_module, "SOME_CONSTANT", ...)` shape
-    `tests/live/conftest.py`'s `real_ollama_chat_model`-style fixtures
-    already use for `graph_module.CHAT_MODEL`) rather than exporting an env
-    var: the token is only known at container-start time, well after
-    `app/core/config.py`'s pydantic-settings module-level constants have
-    already been read once at import time. Returns `crawl4ai_server_url`/
-    `crawl4ai_api_token`.
+    Callers monkeypatch the result into `app.ingestion.web_crawler`'s
+    `CRAWL4AI_SERVER_URL`/`CRAWL4AI_API_TOKEN` module globals (the `monkeypatch.setattr(some_module,
+    "SOME_CONSTANT", ...)` shape `tests/live/conftest.py`'s `real_ollama_chat_model`-style fixtures use for
+    `graph_module.CHAT_MODEL`) rather than exporting an env var: the token is only known at container start,
+    long after `app/core/config.py`'s pydantic-settings constants were read at import. Returns
+    `crawl4ai_server_url`/`crawl4ai_api_token`.
     """
     _require_docker("a real crawl4ai server")
 
@@ -610,42 +553,28 @@ _OLLAMA_HOME = Path.home() / ".cache" / "agent-core-demo-ollama-models"
 
 
 def ensure_ollama(model: str, embed_model: str = "nomic-embed-text") -> dict[str, str]:
-    """Real Ollama serving a real, small CHAT model plus a real embedding
-    model, in the SAME shared container — the expensive fixture, used only
-    by `tests/live/`. Deliberately overrides testcontainers-python's own
-    default image pin (`ollama/ollama:0.1.44`, from before Qwen2.5 existed)
-    with `latest`: verified empirically (see tests/live/conftest.py's own
-    docstring) that a current Ollama's OpenAI-compatible endpoint emits real
-    native tool calls, which is the entire point of these tests — an old
-    pinned Ollama predating native tool-calling support would silently
-    defeat that. Returns `openai_api_base` (Ollama's own `/v1`, no LiteLLM
-    proxy in front — see GRAPH_PATTERNS.md pattern 48), `model` (the chat
-    model tag), and `embed_model` (the embedding model tag).
+    """Real Ollama serving a real, small CHAT model plus a real embedding model in the SAME shared container: the
+    expensive fixture, used only by `tests/live/`. It overrides testcontainers-python's default image pin
+    (`ollama/ollama:0.1.44`, from before Qwen2.5) with `latest`: verified (see tests/live/conftest.py) that a
+    current Ollama's OpenAI-compatible endpoint emits real native tool calls, the point of these tests, which
+    an old pinned Ollama would silently defeat. Returns `openai_api_base` (Ollama's own `/v1`, no LiteLLM
+    proxy; see GRAPH_PATTERNS.md 48), `model` (the chat model tag) and `embed_model` (the embedding model
+    tag).
 
-    `embed_model` defaults to `nomic-embed-text` — this app's own production
-    `EMBED_MODEL` default (`app/core/config.py`, `docker-compose.yml`'s
-    `pull-models` target) — added after `tests/live/test_qdrant_real.py`
-    (real `app.retrieval.qdrant_store.hybrid_search`, which calls
-    `app.retrieval.embeddings.embed_text` — a REAL dense-embedding API call,
-    not something `ensure_qdrant()` alone can satisfy) turned out to need a
-    real embedding backend too, not just a real Qdrant: caught directly in
-    CI as `openai.APIConnectionError` (`test-integration` deliberately
-    provisions no LLM at all), moving that test to `tests/live/` alongside
-    this fixture rather than trying to add a second, `test-integration`-only
-    Ollama just for embeddings.
+    `embed_model` defaults to `nomic-embed-text`, this app's production `EMBED_MODEL` default
+    (`app/core/config.py`, `docker-compose.yml`'s `pull-models`). It was added when
+    `tests/live/test_qdrant_real.py` (real `qdrant_store.hybrid_search`, which calls `embeddings.embed_text`,
+    a REAL dense-embedding call that `ensure_qdrant()` alone can't satisfy) failed in CI with
+    `openai.APIConnectionError`, since `test-integration` provisions no LLM at all; the test moved to
+    `tests/live/` beside this fixture rather than adding a second, integration-only Ollama.
 
-    `ollama_home=_OLLAMA_HOME` bind-mounts a stable HOST directory as the
-    container's own `/root/.ollama` (verified in `OllamaContainer.start()`'s
-    own source: `with_volume_mapping(self.ollama_home, "/root/.ollama",
-    "rw")`) — a fresh container still gets both models instantly if a PRIOR
-    run (this session's, an earlier local run, or — see .github/workflows/
-    ci.yml's `test-live`/`promptfoo`/`deepeval` jobs and redteam.yml, each
-    restoring this same path via `actions/cache/restore` keyed on the model tag(s), and saving it
-    with .github/actions/save-ollama-cache — an earlier CI run)
-    already pulled them into this same directory. Purely a speed
-    optimization, not a correctness dependency: an empty/missing directory
-    just means `pull_model` downloads fresh, exactly as it did before this
-    existed.
+    `ollama_home=_OLLAMA_HOME` bind-mounts a stable HOST directory as the container's `/root/.ollama`
+    (verified in `OllamaContainer.start()`: `with_volume_mapping(self.ollama_home, "/root/.ollama", "rw")`),
+    so a fresh container gets both models instantly if a PRIOR run (this session's, a local one, or a CI run:
+    .github/workflows/ci.yml's `test-live`/`promptfoo`/`deepeval` jobs and redteam.yml restore this path via
+    `actions/cache/restore` keyed on the model tag(s) and save it with .github/actions/save-ollama-cache)
+    already pulled them there. Purely a speed optimization: an empty or missing directory means `pull_model`
+    downloads fresh.
     """
     _require_docker(f"a real Ollama serving {model}/{embed_model}")
 

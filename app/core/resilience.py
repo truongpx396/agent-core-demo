@@ -1,59 +1,35 @@
-"""Retry-with-backoff + circuit-breaker for calls into this app's shared
-LOCAL external dependencies — opensandbox-server
-(app/domains/sandbox_tools.py) and crawl4ai (app/ingestion/web_crawler.py).
-Both are docker-compose services that can be genuinely, briefly unreachable
-(still starting, momentarily restarted) independent of anything this app's
-own code did wrong — the exact "opensandbox-mcp is unreachable" scenario
-app/domains/sandbox_session.py's own self-healing-cache docstring already
-describes for the "already warmed up" side; this module is the missing
-"still cold" half.
+"""Retry-with-backoff plus a circuit breaker for calls into this app's shared LOCAL external dependencies:
+opensandbox-server (app/domains/sandbox_tools.py) and crawl4ai (app/ingestion/web_crawler.py). Both are
+docker-compose services that can be briefly unreachable (still starting, momentarily restarted) through no
+fault of this app's code: the "opensandbox-mcp is unreachable" case that app/domains/sandbox_session.py's
+self-healing-cache docstring describes for the "already warmed up" side; this module is the "still cold" half.
 
-Deliberately narrow, matching this app's existing "surface the error, don't
-blindly retry" posture (see app/ingestion/ingest_worker.py::process_job's own
-docstring: most tool failures are deterministic, so retrying them just
-delays the same failure). `CircuitBreaker.call` only ever retries exceptions
-the CALLER explicitly names via `retry_on` — never a bare `except
-Exception` — so a caller must justify, case by case, that a given exception
-type means "this call never actually landed" (a refused/timed-out
-connection) rather than "it landed, and the answer is a real failure" (bad
-args, a 4xx, an application-level error already inside a response).
-Retrying the latter would just burn time reproducing the same failure, or
-worse, risk repeating a side effect that already happened — which is also
-exactly why nothing in app/domains/sandbox_session.py's own raw MCP tool
-calls (command_run, file_write, ...) is wrapped here: a connection dropping
-AFTER a command was already dispatched into a sandbox is indistinguishable,
-from out here, from one dropping before, and retrying could re-run a
-non-idempotent command a second time. Both dependencies wrapped in this
-module ARE read-only or safely re-attempted from scratch (listing a tool
-catalog, rendering a page) with nothing to duplicate.
+Deliberately narrow, matching the app's "surface the error, don't blindly retry" posture (see
+app/ingestion/ingest_worker.py::process_job: most tool failures are deterministic, so retrying only delays the
+same failure). `CircuitBreaker.call` retries only exceptions the CALLER names via `retry_on`, never a bare
+`except Exception`, so a caller must justify, case by case, that an exception means "this call never landed"
+(a refused or timed-out connection) rather than "it landed and the answer is a real failure" (bad args, a 4xx,
+an application error inside a response). Retrying the latter burns time reproducing the same failure or,
+worse, repeats a side effect that already happened. That is also why app/domains/sandbox_session.py's raw MCP
+tool calls (command_run, file_write, ...) aren't wrapped here: a connection dropping AFTER a command was
+dispatched is indistinguishable, from outside, from one dropping before, and a retry could re-run a
+non-idempotent command. Both wrapped dependencies ARE read-only or safely re-attempted from scratch (listing a
+tool catalog, rendering a page).
 
-Circuit-breaking is the other half: once `failure_threshold` consecutive
-`.call()`s have exhausted their own retries, the breaker trips OPEN and
-starts raising `CircuitOpenError` immediately, without even attempting the
-network — for `cooldown_seconds`. Once that elapses, it moves to
-CircuitState.HALF_OPEN and admits EXACTLY ONE call through as a trial —
-every other caller arriving before that trial resolves is rejected the
-same as OPEN, not admitted as a second concurrent probe (`_state` is
-flipped to HALF_OPEN atomically, under `_lock`, before the winning caller's
-own trial is released to run — see `_before_call`). That trial's own
-outcome decides whether the breaker fully closes (success) or re-opens
-with a fresh cooldown (failure). Without the OPEN/rejection half, every
-single call made while a dependency is actually down still pays its full
-connect-timeout, every time, for every concurrent caller — worse than not
-retrying at all under real, simultaneous, per-tenant traffic. Without the
-single-trial half, the INSTANT a cooldown expires, every caller queued up
-behind it (there can be many, under real per-tenant concurrency) piles
-onto a dependency that's only just now allowed to prove itself healthy
-again — a thundering herd the breaker exists to prevent in the first
-place.
+The breaker is the other half. After `failure_threshold` consecutive `.call()`s that each exhausted their
+retries, it trips OPEN and raises `CircuitOpenError` immediately, without touching the network, for
+`cooldown_seconds`. Then it moves to CircuitState.HALF_OPEN and admits EXACTLY ONE call as a trial; every
+other caller arriving before that trial resolves is rejected as in OPEN (`_state` flips to HALF_OPEN
+atomically under `_lock` before the winner's trial is released, see `_before_call`). The trial's outcome
+closes the breaker (success) or re-opens it with a fresh cooldown (failure). Without the rejection half, every
+call made while a dependency is down pays its full connect timeout, for every concurrent caller: worse than
+not retrying. Without the single-trial half, the instant a cooldown expires every queued caller piles onto a
+dependency only just allowed to prove itself: the thundering herd the breaker exists to prevent.
 
-Per-process, in-memory state (a plain asyncio.Lock, not Redis) — good
-enough here since both dependencies backed by this are local docker-compose
-services, not something this app's horizontally-scaled workers need a
-consistent shared view of (GRAPH_PATTERNS.md pattern 43). One replica's
-breaker opening slightly ahead of another's is an acceptable inefficiency,
-not a correctness bug — same "narrow accepted race, not worth closing"
-posture as app/core/tool_idempotency.py's own docstring.
+State is per process and in memory (a plain asyncio.Lock, not Redis): both dependencies are local compose
+services, so the horizontally scaled workers don't need a consistent shared view (GRAPH_PATTERNS.md pattern
+43). One replica's breaker opening slightly ahead of another's is an acceptable inefficiency, not a
+correctness bug: the same "narrow accepted race" posture as app/core/tool_idempotency.py.
 """
 import asyncio
 import enum
@@ -88,25 +64,21 @@ class CircuitOpenError(Exception):
 
 
 class CircuitBreaker:
-    """One dependency's rolling failure memory. Not a tool itself — wrap a
-    call site's own zero-arg async function with `.call(fn, retry_on=...)`.
+    """One dependency's rolling failure memory. Not a tool: wrap a call site's own zero-arg async function with
+    `.call(fn, retry_on=...)`.
 
-    Three states (`CircuitState`), transitioned only under `_lock` so a
-    concurrent caller never observes (or causes) a half-applied one:
-    - CLOSED — normal operation. `failure_threshold` consecutive `.call()`s
-      that each exhaust their own retries moves to OPEN.
-    - OPEN — every call rejected immediately with `CircuitOpenError`, no
-      network attempt at all, until `cooldown_seconds` elapses.
-    - HALF_OPEN — exactly ONE call, admitted the instant cooldown elapses,
-      is let through as a trial; every other caller arriving before that
-      trial resolves is rejected same as OPEN (see `_before_call`). The
-      trial's own outcome decides the next transition: success -> CLOSED
-      (fully reset), failure -> OPEN again with a fresh cooldown.
+    Three states (`CircuitState`), transitioned only under `_lock` so a concurrent caller never observes (or
+    causes) a half-applied one:
+    - CLOSED: normal. `failure_threshold` consecutive `.call()`s that each exhaust their retries move it to
+      OPEN.
+    - OPEN: every call is rejected immediately with `CircuitOpenError`, no network attempt, until
+      `cooldown_seconds` elapses.
+    - HALF_OPEN: exactly ONE call, admitted the instant the cooldown elapses, is let through as a trial; every
+      other caller arriving before it resolves is rejected as in OPEN (see `_before_call`). Its outcome
+      decides the next state: success -> CLOSED (fully reset), failure -> OPEN with a fresh cooldown.
 
-    Any success (first try or after a retry) fully resets to CLOSED,
-    whether or not the breaker was OPEN/HALF_OPEN — a real recovery doesn't
-    need to wait out the rest of a cooldown it triggered before proving
-    itself healthy again.
+    Any success (first try or after a retry) fully resets to CLOSED, whatever the prior state: a real recovery
+    needn't wait out the rest of a cooldown it triggered.
     """
 
     def __init__(self, name: str, *, failure_threshold: int = 3, cooldown_seconds: float = 30.0):

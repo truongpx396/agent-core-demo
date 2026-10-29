@@ -1,32 +1,37 @@
-"""`route_model`: the one node that may ask for a different model, and the rule for when asking failed (specs/014, specs/015; GRAPH_PATTERNS pattern 68).
+"""`route_model`: the one node that may ask for a different model, and what happens when asking fails (specs/014,
+specs/015; GRAPH_PATTERNS pattern 68).
 
-WHAT THE ROUTER MAY DO. Write `State.model_route` ("local", "medium" or "strong") and nothing else. It cannot see or change which tools a turn may
-call, whether a write needs approval, whose data is read, or whether a write is repeated: those are decided by `human_approval`, `SecurityCtx` and
-`idempotent()`, and they run unchanged under every tier. A router that could touch them would be a second authority over the non-negotiable rules;
-this one is advice that selects a price and a capability level for the model's reply, and a test pins that the tool-gating behaviour is identical
-under all three.
+WHAT THE ROUTER MAY DO. Write `State.model_route` ("local", "medium" or "strong") and nothing else. It can't
+see or change which tools a turn may call, whether a write needs approval, whose data is read, or whether a
+write repeats: `human_approval`, `SecurityCtx` and `idempotent()` decide those, unchanged under every tier. A
+router that could touch them would be a second authority over the non-negotiable rules; this one advises on a
+price and capability level, and a test pins identical tool-gating under all three tiers.
 
-HOW IT DECIDES. Two signals each name the lowest tier they will accept (`app/core/routing_policy.py`, a pure module the evaluation harness runs too):
-rules over the user's message, and the label the ML service's label set gives it (`app/core/classification.py`). The tier is the highest configured
-tier at or below `min(ceiling, max(rules, label))`. A label that cannot be had (the service is down, slow, found no topic, or named one this app's
-table does not know) leaves the rules to decide and is counted.
+HOW IT DECIDES. Two signals each name the lowest tier they accept (`app/core/routing_policy.py`, a pure module
+the evaluation harness runs too): rules over the user's message, and the label the ML service's label set
+gives it (`app/core/classification.py`). The tier is the highest configured tier at or below `min(ceiling,
+max(rules, label))`. A label that can't be had (service down or slow, no topic found, or a topic this app's
+table doesn't know) leaves the rules to decide, and is counted.
 
-THREE MODES (`ROUTER_MODE`). `off` does nothing at all: no work, no call, byte-identical to a build without routing. `shadow` makes every decision, counts
-it and logs it, and runs the turn on the local model, so an operator reads what the router WOULD have spent before it spends anything. `on` acts. The
-decision in `shadow` is exactly the one `on` would make: there is one code path and the mode only picks what is written to `State`.
+THREE MODES (`ROUTER_MODE`). `off` does nothing: no work, no call, byte-identical to a build without routing.
+`shadow` makes and logs every decision but runs the turn locally, so an operator reads what the router WOULD
+have spent before it spends anything. `on` acts. One code path: the mode only picks what is written to
+`State`.
 
-WHERE IT RUNS. After moderation, the semantic cache and compaction, before retrieval (build.py). So it is never reached for a refused input, a cache hit,
-or a resumed turn, and the cost of asking is only paid by a turn that is about to reach a model. It is a node of the parent graph only: a nested subagent
-run has its own model and its own budgets (`SUBAGENT_PROFILE`).
+WHERE IT RUNS. After moderation, the semantic cache and compaction, before retrieval (build.py): never for a
+refused input, a cache hit or a resumed turn, so only a turn about to reach a model pays for asking. Parent
+graph only; a nested subagent has its own model and budgets (`SUBAGENT_PROFILE`).
 
-WHAT IT SENDS. The user's current message, to the ML service, under a short deadline. Not the tenant, the principal, the history or the retrieved text.
+WHAT IT SENDS. The user's current message, to the ML service, under a short deadline; not the tenant,
+principal, history or retrieved text.
 
-EVERY FAILURE LANDS ON A TIER THE OPERATOR ALREADY PAYS FOR. A label that cannot be had means the rules decide; an alias with no price under
-`UNPRICED_MODEL_POLICY=block` (which would make `agent()` refuse the turn, and the router must never be the reason a turn is refused) steps down a tier;
-anything unexpected is `local`. The one exception to "the router never makes a turn worse" is a routed model failing mid-turn, which `agent()` handles
-by repeating that one call locally (`routed_unreachable` below; checked against a real LiteLLM, not assumed).
+EVERY FAILURE LANDS ON A TIER THE OPERATOR ALREADY PAYS FOR. No label: the rules decide. An alias with no
+price under `UNPRICED_MODEL_POLICY=block` (which would make `agent()` refuse the turn; the router must never
+be why a turn is refused): step down a tier. Anything unexpected: `local`. The one exception is a routed model
+failing mid-turn, which `agent()` handles by repeating that one call locally (`routed_unreachable` below;
+checked against a real LiteLLM).
 
-NOTHING HERE RAISES. A node that raised would turn an advisory feature into an outage.
+NOTHING HERE RAISES: a raising node would turn an advisory feature into an outage.
 """
 import logging
 import time

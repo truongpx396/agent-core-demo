@@ -1,29 +1,27 @@
-"""How a front door that is not the HTTP API runs a turn: publish a job, read its events back.
+"""How a front door other than the HTTP API runs a turn: publish a job, read its events back.
 
-The CLI (`app/channels/chat.py`) and the Telegram channel (`app/channels/telegram.py`) used to
-drive the graph in their own process. They now do what `app/api/routers/chat.py` does: publish
-the turn onto the domain's requests stream (`queue.py`) and read the events a worker publishes
-to the job's results stream. So every front door has one execution path — the worker's — and
-what the worker adds to a turn applies to all of them: the per-thread lock (two messages into
-one conversation cannot overlap), crash reclaim and the dead-letter archive, and the pool
-scaling on its own. A front door holds no checkpointer pool, no model client and no tool
-runtime.
+The CLI (`app/channels/chat.py`) and the Telegram channel (`app/channels/telegram.py`) used to drive the graph
+in their own process. They now do what `app/api/routers/chat.py` does: publish the turn onto the domain's
+requests stream (`queue.py`) and read the events a worker publishes to the job's results stream. Every front
+door therefore has one execution path, the worker's, and what the worker adds applies to all: the per-thread
+lock (two messages into one conversation can't overlap), crash reclaim and the dead-letter archive, and pool
+scaling. A front door holds no checkpointer pool, model client or tool runtime.
 
-Three entry points: `stream_turn` and `stream_resume` (the answer to an `approval_required`) are
-async generators of the same typed events `_run_graph_stream` yields, and `cancel_turn` publishes
-a stop and reads nothing back. All three take a `domain`, which MUST be the domain of the worker
-pool the conversation started on (pattern 49): a resume or a cancel that lands on another
-domain's stream would run the wrong tool universe against a paused graph.
+Three entry points: `stream_turn` and `stream_resume` (the answer to an `approval_required`) are async
+generators of the same typed events `_run_graph_stream` yields; `cancel_turn` publishes a stop and reads
+nothing back. All three take a `domain`, which MUST be the domain of the worker pool the conversation started
+on (pattern 49): a resume or cancel landing on another domain's stream would run the wrong tool universe
+against a paused graph.
 
-Callers wrap the iterator in `contextlib.aclosing` when they can stop reading early (an `error`
-event, an `approval_required` they hand to a person), as `.claude/rules/runtime-reliability.md`
-asks of every loop over a turn's stream.
+Callers wrap the iterator in `contextlib.aclosing` when they can stop reading early (an `error` event, an
+`approval_required` they hand to a person), as `.claude/rules/runtime-reliability.md` asks of every loop over
+a turn's stream.
 
-What this module does NOT do is authorize. The API checks conversation ownership
-(`_require_conversation_owner`) before it publishes because the caller there is a client; these
-callers derive their own `SecurityCtx` and `thread_id` in their own trusted process (the OS user
-for the CLI, the Telegram user and chat for the channel), exactly as they did when they ran the
-graph themselves, and the worker trusts the `ctx` on the job the same way for all three.
+This module does NOT authorize. The API checks conversation ownership (`_require_conversation_owner`) before
+publishing because its caller is a client. These callers derive their own `SecurityCtx` and `thread_id` in
+their own trusted process (the OS user for the CLI, the Telegram user and chat for the channel), exactly as
+they did when running the graph themselves, and the worker trusts the `ctx` on the job the same way for all
+three.
 """
 import hashlib
 import uuid
@@ -57,25 +55,25 @@ async def stream_turn(
 ) -> AsyncGenerator[dict, None]:
     """Publish one new turn and yield its events, ending at the terminal one.
 
-    `unattended` asks the worker to decline an approval pause rather than report it (the
-    Telegram channel, which has no way to answer one); without it a pause ends the stream at an
-    `approval_required` event and the caller answers with `stream_resume`.
+    `unattended` asks the worker to decline an approval pause rather than report it (the Telegram channel
+    can't answer one). Without it, a pause ends the stream at an `approval_required` event and the caller
+    answers with `stream_resume`.
 
-    `dedup_key` makes the submission idempotent per `(thread_id, dedup_key)`. A second call with
-    the same key does not publish a second job: it reads the FIRST attempt's results stream
-    instead (`queue.claim_or_get_existing_submission`). This is what a channel that is redelivered
-    its input needs, and the queue is what makes it necessary: when the channel ran the graph
-    itself, a crash took the turn down with it, so replaying the message was a retry; now the turn
-    outlives the channel, and replaying it would be a SECOND turn on the same conversation — a
-    second model call, a second copy of the question in the thread, and a second reply.
+    `dedup_key` makes the submission idempotent per `(thread_id, dedup_key)`. A second call with the same key
+    publishes nothing and reads the FIRST attempt's results stream instead
+    (`queue.claim_or_get_existing_submission`). A channel that is redelivered its input needs this, and the
+    queue is what makes it necessary: when the channel ran the graph itself, a crash took the turn down with
+    it, so replaying the message was a retry; now the turn outlives the channel, and replaying would be a
+    SECOND turn on the same conversation (a second model call, a second copy of the question in the thread, a
+    second reply).
 
-    The claim lasts as long as the results stream does (`RESULTS_STREAM_TTL_SECONDS`, refreshed
-    on every write, so it ends no sooner than the claim). A hit therefore always finds either
-    the first attempt's events or a job still waiting for a worker, never a stream that
-    already expired under a live claim. Without a key every call is a new turn.
+    The claim lasts as long as the results stream (`RESULTS_STREAM_TTL_SECONDS`, refreshed on every write, so
+    it ends no sooner than the claim). A hit therefore finds either the first attempt's events or a job still
+    waiting for a worker, never a stream that expired under a live claim. Without a key every call is a new
+    turn.
 
-    Nothing is awaited until the first `anext`, like any async generator, so a caller that
-    needs the job published before it does anything else must start iterating first.
+    Like any async generator, nothing is awaited until the first `anext`, so a caller that needs the job
+    published before doing anything else must start iterating first.
     """
     client = get_client()
     request_id = uuid.uuid4().hex

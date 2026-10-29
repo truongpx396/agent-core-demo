@@ -1,35 +1,39 @@
-"""Was every usage that was worth credits actually charged? The wallet reconciliation (specs/010 US6 and T026; the wallet half of the agent app's
-reconciliation until specs/013 moved it here).
+"""Was every usage that was worth credits actually charged? The wallet reconciliation (specs/010 US6 and T026;
+the wallet half of the agent app's reconciliation until specs/013 moved it here).
 
-`usage.record_usage_in` keeps a usage event even when the debit that follows it fails, on purpose: a lost record cannot be repaired and an
-uncharged one can (module docstring there). The price of that is that an event can exist uncharged, and nothing in the request path says
-so beyond a counter. This is the check that NAMES it: for a tenant that had a wallet when the usage was recorded, every
-`billing_usage_events` row worth credits (`credits > 0`) must have a debit in `credit_transactions` whose idempotency key is the event id.
+`usage.record_usage_in` keeps a usage event even when the debit after it fails, on purpose: a lost record
+can't be repaired and an uncharged one can (see its module docstring). The price is that an event can exist
+uncharged, with nothing in the request path saying so beyond a counter. This check NAMES it: for a tenant that
+had a wallet when the usage was recorded, every `billing_usage_events` row worth credits (`credits > 0`) must
+have a debit in `credit_transactions` whose idempotency key is the event id.
 
 ## What it reports
 
-For each tenant and UTC day with such events, how many there are, the credits they are worth and what they cost, so an operator can go
-straight to "acme, 2026-10-06, 12 events worth 340 credits were never debited". The pass also reports the credits outstanding across
-every wallet (usable and owed), which the dashboard shows.
+For each tenant and UTC day with such events: how many there are, the credits they're worth and what they
+cost, so an operator can go straight to "acme, 2026-10-06, 12 events worth 340 credits were never debited".
+The pass also reports the credits outstanding across every wallet (usable and owed), which the dashboard
+shows.
 
 ## What is deliberately not a finding
 
-  * **The newest minutes** (`CREDIT_RECONCILE_SETTLE_SECONDS`): a debit is in the same transaction as its event, but a pass reads at
-    its own instant, and a transaction in flight is not visible to it.
-  * **Usage recorded before the tenant had a wallet**: it was rightly never charged (`recorded_at >= created_at`).
-  * **An unpriced call or a free one** (`credits` NULL or 0): nothing was owed.
+- **The newest minutes** (`CREDIT_RECONCILE_SETTLE_SECONDS`): a debit is in the same transaction as its event,
+  but a pass reads at its own instant, and a transaction in flight isn't visible to it.
+- **Usage recorded before the tenant had a wallet**: rightly never charged (`recorded_at >= created_at`).
+- **An unpriced or free call** (`credits` NULL or 0): nothing was owed.
 
 ## What it does not check
 
-That a debit is for the right AMOUNT (the row and the transaction both hold the figure, and the ledger's own `verify` checks the lots), and
-that every usage the CALLER metered reached this package at all: a record that was never handed over is invisible here. That second gap is
-what the caller's own comparison with its upstream is for (the agent app compares its events with the LLM gateway's spend log), and what
-`BillingEventWriteFailing` pages on when the package could not record what it was given.
+That a debit is for the right AMOUNT (the row and the transaction both hold the figure, and the ledger's own
+`verify` checks the lots), and that every usage the CALLER metered reached this package at all: a record never
+handed over is invisible here. That second gap is what the caller's own comparison with its upstream is for
+(the agent app compares its events with the LLM gateway's spend log), and what `BillingEventWriteFailing`
+pages on when the package couldn't record what it was given.
 
 ## What a pass costs (disclosed)
 
-The events are read by TIME and the table's index is on `occurred_at`, so a pass reads the window's rows and probes the wallet's
-unique `(tenant, idempotency_key)` index once per event. Acceptable for a few passes a day; `CREDIT_RECONCILE_LOOKBACK_DAYS` is the lever.
+Events are read by TIME and the table's index is on `occurred_at`, so a pass reads the window's rows and
+probes the wallet's unique `(tenant, idempotency_key)` index once per event. Acceptable for a few passes a
+day; `CREDIT_RECONCILE_LOOKBACK_DAYS` is the lever.
 
 Imports nothing from `app` (enforced by tests/test_boundary.py).
 """

@@ -1,26 +1,17 @@
-"""Production streaming path: per-turn metrics/timeout helpers, multimodal
-content assembly (`_build_human_content`), Langfuse trace open
-(`_open_trace`, `_turn_trace`), the `astream_events` event-translation core
-(`_run_graph_stream`), and the public streaming entry points
-(`astream_events_turn`, `astream_events_turn_unattended`,
-`astream_events_resume`, `astream_events_continue_turn`, `cancel_run`,
-`get_session_messages`, `get_pending_approval`). Split out
-of `app/agent/runtime/core.py` (see that module's docstring).
+"""Production streaming path: per-turn metrics/timeout helpers, multimodal content assembly
+(`_build_human_content`), Langfuse trace open (`_open_trace`, `_turn_trace`), the `astream_events` translation
+core (`_run_graph_stream`), and the public entry points (`astream_events_turn`,
+`astream_events_turn_unattended`, `astream_events_resume`, `astream_events_continue_turn`, `cancel_run`,
+`get_session_messages`, `get_pending_approval`). Split out of `app/agent/runtime/core.py` (see its docstring).
 
-Reads `init_graph_async`/`upsert_session`/
-`allowance_refusal`/`RECURSION_LIMIT` via
-`runtime_module.X` rather than bare imports: tests
-`monkeypatch.setattr` these onto the live `app.agent.runtime.core` module
-object, and a bare imported name would bind to the original function at
-this module's own import time, permanently — the monkeypatch would
-silently never take effect. Applied uniformly even to names nothing
-patches today, so it doesn't need a per-name judgment call later.
+It reads `init_graph_async`/`upsert_session`/`allowance_refusal`/`RECURSION_LIMIT` as `runtime_module.X`, not
+bare imports: tests `monkeypatch.setattr` them onto the live `app.agent.runtime.core` module, and a bare
+imported name would bind the original at import time and silently ignore the patch. Applied uniformly, even to
+names nothing patches today, to avoid a per-name judgment call later.
 
-`_open_trace` stays a bare reference here: unlike the names above, both it
-and its caller (`_turn_trace`, the context manager the three streaming entry
-points open their trace through) live in this same file, so it already resolves
-dynamically against this module's own globals. Tests patch
-`app.agent.runtime.stream._open_trace` directly.
+`_open_trace` stays a bare reference: it and its caller `_turn_trace` (the context manager the three streaming
+entry points open their trace through) live in this file, so it already resolves dynamically against this
+module's globals. Tests patch `app.agent.runtime.stream._open_trace` directly.
 """
 import asyncio
 import logging
@@ -287,54 +278,37 @@ def _turn_trace(name: str, session_id: str, input_text: str) -> Iterator[tuple[_
 
 
 async def _run_graph_stream(graph, graph_input, cfg, trace, cancel_check=None):
-    """Shared core of astream_events_turn/astream_events_resume: drives one
-    `graph.astream_events()` call, translates events into this app's typed
-    event shapes, and yields exactly one terminal event:
+    """Shared core of astream_events_turn/astream_events_resume: drives one `graph.astream_events()` call,
+    translates events into this app's typed shapes, and yields exactly one terminal event:
 
-      {"type": "approval_required", "tool_calls": [...]} — paused at
-        human_approval's interrupt() (graph/hitl.py); resume via
-        astream_events_resume(thread_id, approved).
-      {"type": "retry"} — NOT terminal; tells the client to discard
-        everything streamed so far because that content was just
-        rejected/replaced (else old and retried answers render
-        concatenated with no separator — a real bug this fixes). Fired
-        from three `on_chain_end` sources, each replacing the last message
-        in place:
-          - `retry_output`: check_output rejected the answer; loops back
-            to `agent`, which supplies fresh tokens normally.
-          - `check_output` itself, when it mechanically inserted a missing
-            citation marker after the answer already streamed — no next
-            `agent` call is coming, so a synthetic "token" event carries
-            the corrected text right after "retry".
-          - `retry_exhausted`: route_after_check gave up after
-            MAX_CONSECUTIVE_SAME_RETRY_REASON and replaces the message
-            (same synthetic-token handling) — EXCEPT for
-            the checks marked `trust_on_exhaust` (e.g. a real answer just
-            missing its citation marker), where it no-ops and the
-            already-streamed content stands as the final answer; firing
-            "retry" unconditionally there would blank a good answer with
-            nothing to follow it.
-      (A nested `run_subagent` graph shares these node names and its events arrive on
-        this stream too; every `on_chain_end` tagged with `metadata.subagent_name` is
-        ignored, so none of the above can be fired by a subagent's own turn.)
-      {"type": "compacted"} — NOT terminal; `compact_history` (pattern 41)
-        already trimmed context before `agent` ran, so there's nothing to
-        clear — purely informational (lets a UI show "summarizing older
-        messages"). Only fires when it actually trimmed something; the
-        node runs every turn but no-ops on most of them.
-      {"type": "citations", "items": [...]} / {"type": "followups",
-        "items": [...]} — emitted right before "done", when the answer
-        cited something / suggest_followups (pattern 27) produced any.
-      {"type": "done"} — the turn finished.
-      {"type": "error", "content": "<message>"} — includes a
-        user-initiated stop (see TurnCancelled below), modeled as a
-        terminal envelope like any other error, not a separate SSE type
-        (pattern 30).
+      {"type": "approval_required", "tool_calls": [...]}: paused at human_approval's interrupt()
+      (graph/hitl.py); resume via astream_events_resume(thread_id, approved).
+      {"type": "retry"}: NOT terminal; tells the client to discard everything streamed so far because that
+      content was just rejected or replaced (else old and retried answers render concatenated; a real bug this
+      fixes). Fired from three `on_chain_end` sources, each replacing the last message in place:
+          - `retry_output`: check_output rejected the answer; loops to `agent`, which supplies fresh tokens.
+          - `check_output` itself, when it inserted a missing citation marker after the answer already
+            streamed: no next `agent` call is coming, so a synthetic "token" event carries the corrected text
+            right after "retry".
+          - `retry_exhausted`: route_after_check gave up after MAX_CONSECUTIVE_SAME_RETRY_REASON and replaces
+            the message (same synthetic token), EXCEPT for checks marked `trust_on_exhaust` (e.g. a real
+            answer just missing its marker), where it no-ops and the streamed content stands; an unconditional
+            "retry" there would blank a good answer with nothing to follow.
+        (A nested `run_subagent` graph shares these node names and its events arrive on this stream too; every
+        `on_chain_end` tagged with `metadata.subagent_name` is ignored, so a subagent's own turn can't fire
+        any of the above.)
+      {"type": "compacted"}: NOT terminal; `compact_history` (pattern 41) already trimmed context before
+      `agent` ran, so there is nothing to clear: informational (a UI can show "summarizing older messages").
+      Fires only when it actually trimmed something; the node runs every turn but no-ops on most.
+      {"type": "citations", "items": [...]} / {"type": "followups", "items": [...]}: right before "done", when
+      the answer cited something / suggest_followups (pattern 27) produced any.
+      {"type": "done"}: the turn finished.
+      {"type": "error", "content": "<message>"}: includes a user-initiated stop (TurnCancelled), as a terminal
+      envelope like any error, not a separate SSE type (pattern 30).
 
-    Handles Langfuse trace update/flush and turn metrics identically for
-    both entry points. `cancel_check` (optional) forwards to
-    `_iterate_with_timeout`; only `agent_worker.py`'s turn-job dispatch
-    passes one today.
+    Handles Langfuse trace update/flush and turn metrics identically for both entry points. `cancel_check`
+    (optional) forwards to `_iterate_with_timeout`; only `agent_worker.py`'s turn-job dispatch passes one
+    today.
     """
     trace = trace if isinstance(trace, _TurnTrace) else _TurnTrace(trace)
     start = time.monotonic()
@@ -741,26 +715,20 @@ async def astream_events_turn(
 
 
 def _release_turn_budget_in_background(ctx: SecurityCtx | None, budget_hold: str | None) -> None:
-    """Releases a turn's budget hold without awaiting it.
+    """Release a turn's budget hold without awaiting it.
 
-    Fire-and-forget, NOT awaited: the generator's caller
-    (agent_worker.py::_process_turn) only releases its own per-thread lock
-    (queue.py::acquire_thread_lock) once THAT generator is fully exhausted —
-    awaiting a real Postgres round trip in its `finally` would sit between
-    "terminal event already published to the results stream" and "thread lock
-    released," a window a caller reacting immediately to that terminal event
-    (e.g. POST /chat/resume fired the instant a client sees approval_required)
-    can land in, getting spuriously rejected as THREAD_BUSY even though the turn
-    it's resuming already finished from its own point of view. Reproduced
-    directly: tests/integration/test_worker_scaling.py's real-subprocess HITL
-    test started failing intermittently once this await was added.
+    Fire-and-forget on purpose: the generator's caller (agent_worker.py::_process_turn) releases its
+    per-thread lock (queue.py::acquire_thread_lock) only once THAT generator is exhausted, so awaiting a
+    Postgres round trip in its `finally` would sit between "terminal event published" and "thread lock
+    released". A caller reacting to that event at once (POST /chat/resume the instant a client sees
+    approval_required) can land in that window and be spuriously rejected as THREAD_BUSY. Reproduced:
+    tests/integration/test_worker_scaling.py's real-subprocess HITL test failed intermittently once this await
+    was added.
 
-    Safe to detach: release_turn_budget already fails open internally (never
-    raises in practice), and a reservation that takes a few extra milliseconds to
-    clear is harmless — it's not on any correctness-critical path, only
-    in_flight_reservation's own read, which also ignores a hold older than
-    RESERVATION_STALE_AFTER_MINUTES. Shared by every entry point that reserves
-    (a new turn, a resume, a crash-continue) so they cannot drift apart.
+    Safe to detach: release_turn_budget already fails open (never raises in practice), and a hold that takes a
+    few extra milliseconds to clear is harmless; only in_flight_reservation reads it, and it ignores a hold
+    older than RESERVATION_STALE_AFTER_MINUTES. Shared by every entry point that reserves (new turn, resume,
+    crash-continue) so they can't drift.
     """
     release_task = asyncio.create_task(runtime_module.release_turn_budget(ctx, budget_hold))
     release_task.add_done_callback(_log_if_release_task_failed)
@@ -783,25 +751,20 @@ async def astream_events_turn_unattended(
     require_approval: bool = False,
     images: list[str] | None = None,
 ):
-    """astream_events_turn, but auto-declines an approval_required pause
-    instead of yielding it — for callers with no interactive human on this
-    end of the call: telegram.py (no inline-keyboard approve/reject UX) and
-    any fire-and-forget caller (pattern 43). Never approves.
+    """astream_events_turn, but auto-declines an approval_required pause instead of yielding it, for callers with
+    no human on this end: telegram.py (no inline-keyboard approve/reject UX) and fire-and-forget callers
+    (pattern 43). Never approves.
 
-    The decline is a LOOP, bounded by `UNATTENDED_MAX_DECLINE_ROUNDS`, not a
-    single round. Real bug (fixed): after the first decline the model can
-    re-request the same gated write, which pauses the conversation again. A
-    single-round version forwarded that second `approval_required` and left
-    the checkpoint paused; an unattended channel cannot resolve a pause, so
-    every later message was refused with "pending approval" and the first
-    message got an empty reply (GRAPH_PATTERNS.md pattern 8). Each decline
-    counts `agent_unattended_pause_total`.
+    The decline is a LOOP bounded by `UNATTENDED_MAX_DECLINE_ROUNDS`, not one round. Real bug (fixed): after
+    the first decline the model can re-request the same gated write, pausing again; a single-round version
+    forwarded that second `approval_required` and left the checkpoint paused, so every later message was
+    refused with "pending approval" and the first got an empty reply (GRAPH_PATTERNS.md pattern 8). Each
+    decline counts `agent_unattended_pause_total`.
 
-    If the model is still asking once the ceiling is reached, the run is
-    CANCELLED (`cancel_run`) so the conversation is never left paused, and one
-    explicit assistant-visible message says the action needs a person's
-    approval and was not done. Exactly one terminal event is yielded either
-    way. Fails closed throughout: a declined or cancelled action never runs.
+    If the model still asks at the ceiling, the run is CANCELLED (`cancel_run`) so the conversation is never
+    left paused, and one assistant-visible message says the action needs a person's approval and was not done.
+    Exactly one terminal event is yielded either way. Fails closed throughout: a declined or cancelled action
+    never runs.
     """
     async with aclosing(
         _decline_every_pause(
@@ -889,47 +852,36 @@ async def _decline_every_pause(first_run, thread_id: str, ctx: SecurityCtx):
 async def astream_events_resume(
     thread_id: str, approved: bool, ctx: SecurityCtx, cancel_check=None, *, admitted: bool = False
 ):
-    """Resume a turn paused by astream_events_turn(require_approval=True) —
-    streaming counterpart to `graph.invoke(Command(resume=approved), config)`.
-    `thread_id` must match the paused turn.
+    """Resume a turn paused by astream_events_turn(require_approval=True): the streaming counterpart of
+    `graph.invoke(Command(resume=approved), config)`. `thread_id` must match the paused turn.
 
-    `cancel_check` (optional) forwards to `_run_graph_stream`, same contract
-    as `astream_events_turn`'s: without it, a `POST /chat/cancel` after the
-    user approved a tool set a flag nothing polled, so the approved write,
-    the model call that reads its result and any further tool rounds all ran
-    to the end. It is polled before the first event, so a cancel that lands
-    between the approval and the worker picking the job up stops the turn
-    *before* the approved tool runs; one that lands later stops it at the
-    next event boundary (an already-running tool call finishes — see
-    `_iterate_with_timeout`). Callers with no cancel path
-    (`astream_events_turn_unattended`, chat.py) pass nothing.
+    `cancel_check` (optional) forwards to `_run_graph_stream`, as in `astream_events_turn`. Without it, a
+    `POST /chat/cancel` after the user approved a tool set a flag nothing polled, so the approved write, the
+    model call reading its result and any further tool rounds ran to the end. It is polled before the first
+    event: a cancel landing between approval and the worker picking the job up stops the turn *before* the
+    approved tool runs; a later one stops it at the next event boundary (an already-running tool call
+    finishes; see `_iterate_with_timeout`). Callers with no cancel path (`astream_events_turn_unattended`,
+    chat.py) pass nothing.
 
-    `ctx` is required and re-supplied here rather than reused from the
-    original pause: `config["configurable"]` does not persist across a
-    resume (verified empirically), so whoever resolves the approval must
-    re-assert identity. (A stricter check — e.g. resuming principal must
-    match the pausing tenant — would go here too; today
-    `resumability_error_async` only checks checkpoint build compatibility,
-    not identity.)
+    `ctx` is required and re-supplied, not reused from the pause: `config["configurable"]` doesn't persist
+    across a resume (verified), so whoever resolves the approval re-asserts identity. (A stricter check, e.g.
+    the resuming principal must match the pausing tenant, would go here; today `resumability_error_async`
+    checks only checkpoint build compatibility.)
 
-    Opens its own Langfuse trace (correlated by session_id) rather than
-    extending the original, since the approval wait can be arbitrarily
-    long — also why `resumability_error_async` is checked here: this is
-    the entry point most likely to hit a stale/incompatible checkpoint in
-    practice.
+    It opens its own Langfuse trace (correlated by session_id) rather than extending the original, since the
+    approval wait can be arbitrarily long; that is also why `resumability_error_async` is checked here, the
+    entry point most likely to hit a stale or incompatible checkpoint.
 
-    The allowance is checked here like a new turn's (spec 008 A6, FR-022): the
-    approval wait is unbounded, so by the time someone approves, the tenant may
-    be well past its ceiling — and a resume goes on to run the approved tool and
-    then call the model again. The hold the paused turn took was released when its
-    generator ended at the pause, so a resume also takes its own, and N paused
-    turns resuming at once are visible to each other. A refused resume leaves the
-    thread paused (the caller can cancel it: `cancel_run` is never gated, since it
-    gives the model no turn); it does not discard the pending action.
+    The allowance is checked like a new turn's (spec 008 A6, FR-022): the approval wait is unbounded, so by
+    approval the tenant may be well past its ceiling, and a resume runs the approved tool and calls the model
+    again. The paused turn's hold was released when its generator ended at the pause, so a resume takes its
+    own, and N paused turns resuming at once see each other. A refused resume leaves the thread paused (the
+    caller can cancel: `cancel_run` is never gated, since it gives the model no turn) and doesn't discard the
+    pending action.
 
-    `admitted=True` skips the check for a resume that is a step of a request which
-    already passed it — `astream_events_turn_unattended`'s decline loop. Refusing
-    there would strand the conversation at its pause.
+    `admitted=True` skips the check for a resume that is a step of a request which already passed it
+    (`astream_events_turn_unattended`'s decline loop); refusing there would strand the conversation at its
+    pause.
     """
     refusal = None if admitted else await runtime_module.allowance_refusal(ctx)
     if refusal is not None:
@@ -963,52 +915,34 @@ async def astream_events_resume(
 
 
 async def astream_events_continue_turn(thread_id: str, ctx: SecurityCtx, cancel_check=None):
-    """Continues a `"turn"` that already started (its `HumanMessage` is
-    checkpointed) but crashed before finishing — streaming counterpart to
-    `graph.astream_events(None, config)`. The ONLY caller is
-    `agent_worker.py`'s reclaim path, for a `"turn"` job
-    `_classify_reclaimed_turn` proved is genuinely mid-flight: not paused
-    at `human_approval` (that's `astream_events_resume`'s job), not
-    already finished (nothing to continue).
+    """Continue a `"turn"` that started (its `HumanMessage` is checkpointed) but crashed before finishing: the
+    streaming counterpart of `graph.astream_events(None, config)`. The ONLY caller is `agent_worker.py`'s
+    reclaim path, for a job `_classify_reclaimed_turn` proved is genuinely mid-flight: not paused at
+    `human_approval` (`astream_events_resume`'s job), not already finished.
 
-    Why this is safe even if the crashed attempt already ran a
-    mutating/outward tool call, unconditionally, with no per-tool
-    capability check needed: passing `None` as input (vs a fresh
-    `{"messages": [...]}` dict) tells LangGraph's Pregel loop to set
-    `is_resuming=True` and proceed from wherever THIS checkpoint's own
-    unfinished superstep left off, matching any already-recorded task
-    write (verified directly against the installed `langgraph==0.2.76`'s
-    `pregel/loop.py::Loop._match_writes`, fed from
-    `checkpoint_pending_writes` — persisted per-task in Postgres by
-    `AsyncPostgresSaver`, not just at full-superstep boundaries) instead
-    of re-executing it. A tool call that already completed is never run
-    twice; the loop just moves on to whatever comes after it. This is the
-    exact mechanism that already makes `astream_events_resume` safe to
-    blindly retry, extended here to an ordinary crashed turn.
+    Why it is safe even if the crashed attempt already ran a mutating/outward tool, with no per-tool
+    capability check: passing `None` as input (not a fresh `{"messages": [...]}`) makes LangGraph's Pregel
+    loop set `is_resuming=True` and proceed from where THIS checkpoint's unfinished superstep left off,
+    matching any already-recorded task write instead of re-executing it (verified against the installed
+    `langgraph==0.2.76`'s `pregel/loop.py::Loop._match_writes`, fed from `checkpoint_pending_writes`, which
+    `AsyncPostgresSaver` persists per task, not only at superstep boundaries). A completed tool call is never
+    run twice. This is the mechanism that already makes `astream_events_resume` safe to retry, extended to an
+    ordinary crashed turn.
 
-    Contrast with re-issuing a brand-new `astream_events_turn` call
-    instead (what a naive crash-recovery retry would do): passing REAL
-    input hits `Loop._first`'s OTHER branch, which explicitly discards any
-    unfinished-task writes from the previous checkpoint and starts a fresh
-    superstep sequence from the graph's entry edges — a brand-new `agent`
-    call with brand-new `tool_call_id`s unrelated to the crashed attempt's
-    own. `app/core/tool_idempotency.py` dedupes by `tool_call_id`, so it
-    can't catch a duplicate there — which is exactly why restarting a turn
-    that already ran a mutating tool used to be treated as unsafe
-    (dead-lettered) rather than retried. Continuing instead of restarting
-    closes that gap structurally rather than by scanning for which tools
-    are dangerous to repeat.
+    Contrast with re-issuing `astream_events_turn` (what a naive crash retry does): REAL input hits
+    `Loop._first`'s other branch, which discards the previous checkpoint's unfinished-task writes and starts a
+    fresh superstep sequence: a new `agent` call with new `tool_call_id`s unrelated to the crashed attempt's.
+    `app/core/tool_idempotency.py` dedupes by `tool_call_id`, so it can't catch a duplicate there, which is
+    why restarting a turn that already ran a mutating tool used to be dead-lettered. Continuing instead of
+    restarting closes that gap structurally, rather than by scanning for which tools are dangerous to repeat.
 
-    No `upsert_session` here, deliberately: this thread is already mid-turn,
-    not starting a new one.
+    No `upsert_session`, deliberately: the thread is already mid-turn.
 
-    The allowance is NOT re-checked here, unlike `astream_events_resume`
-    (spec 008 A6): this is a retry of work that was already admitted, and
-    refusing it could strand a turn that already ran a mutating tool — the
-    exact state this path exists to finish rather than abandon. The overshoot
-    that costs is bounded by that one turn's own `MAX_COST_USD_PER_TURN`. What
-    it does take is a hold: the crashed worker's was lost with it, so without
-    one this turn's remaining spend is invisible to its siblings' checks.
+    The allowance is NOT re-checked here, unlike `astream_events_resume` (spec 008 A6): this retries
+    already-admitted work, and refusing could strand a turn that already ran a mutating tool, the state this
+    path exists to finish. The overshoot is bounded by that turn's own `MAX_COST_USD_PER_TURN`. It does take a
+    hold, since the crashed worker's was lost with it and this turn's remaining spend would otherwise be
+    invisible to its siblings' checks.
     """
     budget_hold = await runtime_module.reserve_turn_budget(ctx)
     try:
@@ -1075,27 +1009,19 @@ async def cancel_run(thread_id: str, ctx: SecurityCtx) -> bool:
 
 
 async def get_session_messages(thread_id: str) -> list[dict]:
-    """Session-switcher transcript replay
-    (`GET /chat/sessions/{thread_id}/messages`, app/api/routers/chat.py) — reads
-    the same Postgres checkpointer every resume/cancel path uses
-    (app/agent/runtime/sessions.py's `chat_sessions` table only has title/timestamps, not
-    content).
+    """Session-switcher transcript replay (`GET /chat/sessions/{thread_id}/messages`, app/api/routers/chat.py).
+    It reads the same Postgres checkpointer every resume/cancel path uses (`chat_sessions` in
+    app/agent/runtime/sessions.py holds only title and timestamps, not content).
 
-    No `ctx` here on purpose: a thread_id's checkpoint carries no owner to
-    check against. Ownership (does this thread_id belong to the caller's
-    tenant+principal) is the CALLER's job, via
-    app/agent/runtime/sessions.py::list_sessions, before calling this.
+    No `ctx` here on purpose: a thread_id's checkpoint carries no owner. Ownership (does this thread belong to
+    the caller's tenant+principal) is the CALLER's job, via `sessions.list_sessions`, before calling this.
 
-    Returns `[{"role": "user"|"assistant"|"system", "text": str}, ...]` —
-    a replay of what the user actually saw, not a full forensic trace
-    (that's Langfuse): `SystemMessage`s and `ToolMessage`s are omitted,
-    a tool-calling `AIMessage` with no text of its own is skipped, and so is a
-    retry artifact (`messages.RETRY_ARTIFACT_KEY`: the corrective feedback
-    `retry_output` wrote and the answer it rejected, or an untrusted answer a
-    fallback replaced) — neither was something the person said or was shown. One
-    exception: a compact_history breadcrumb (tagged via
-    `COMPACTION_MARKER_KEY`) comes back as `role: "system"` so a replay
-    shows that older turns were cut, not just silently missing.
+    Returns `[{"role": "user"|"assistant"|"system", "text": str}, ...]`: a replay of what the user actually
+    saw, not a forensic trace (that's Langfuse). Omitted: `SystemMessage`s, `ToolMessage`s, a tool-calling
+    `AIMessage` with no text, and retry artifacts (`messages.RETRY_ARTIFACT_KEY`: the corrective feedback
+    `retry_output` wrote, the answer it rejected, or an untrusted answer a fallback replaced), since the
+    person neither said nor saw them. One exception: a compact_history breadcrumb (`COMPACTION_MARKER_KEY`)
+    comes back as `role: "system"`, so a replay shows older turns were cut rather than silently missing.
     """
     graph = await runtime_module.init_graph_async()
     state = await graph.aget_state({"configurable": {"thread_id": thread_id}})

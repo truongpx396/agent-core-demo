@@ -1,24 +1,19 @@
-"""The Ecorp domain's data access: the knowledge-base and memory writes behind
-`add_note`/`remember` (Qdrant) and the employee directory read behind
-`query_employees` (SQL).
+"""The Ecorp domain's data access: the knowledge-base and memory writes behind `add_note`/`remember` (Qdrant) and
+the employee directory read behind `query_employees` (SQL).
 
-Each function takes the `SecurityCtx` the tool layer already validated and
-scopes by its `tenant` (and `principal` for memories); none of them is ever
-handed a tenant by the model. See `tools.py` for the tool layer (argument
-schemas, the `ctx_or_refuse` / `idempotent()` wrapping) and
-`.claude/rules/side-effect-tools.md` for the checklist both follow.
+Each function takes the `SecurityCtx` the tool layer already validated and scopes by its `tenant` (and
+`principal` for memories); none is ever handed a tenant by the model. `tools.py` is the tool layer (argument
+schemas, `ctx_or_refuse` / `idempotent()` wrapping); `.claude/rules/side-effect-tools.md` is the checklist
+both follow.
 
 ## Cross-session memory
 
-Memory is written only by `remember_impl` — nothing extracts facts from turn
-text automatically, since whatever writes memory decides what gets replayed
-into every future prompt. Recall is automatic (`gather_context` in
-`app/agent/tools/builtin.py`, alongside document retrieval) and re-filtered
-against *current* ctx every call (`Policy.lower(ctx, "memories")`, scoped to
-`tenant` AND `owner`), never trusted from a prior snapshot. A recalled memory
-is framed like a retrieved document — untrusted, delimited content — because
-a poisoned memory keeps recurring every turn until removed
-(`qdrant_store.delete_by_filter`; deliberately not agent-facing).
+Memory is written only by `remember_impl`; nothing extracts facts from turn text automatically, since whatever
+writes memory decides what replays into every future prompt. Recall is automatic (`gather_context` in
+`app/agent/tools/builtin.py`, alongside document retrieval) and re-filtered against *current* ctx every call
+(`Policy.lower(ctx, "memories")`, scoped to `tenant` AND `owner`), never trusted from a prior snapshot. A
+recalled memory is framed like a retrieved document (untrusted, delimited) because a poisoned memory recurs
+every turn until removed (`qdrant_store.delete_by_filter`; deliberately not agent-facing).
 """
 import asyncio
 import uuid

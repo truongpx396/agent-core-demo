@@ -1,24 +1,28 @@
-"""Request dependencies shared by every router: who is calling (`get_ctx`) and
-which domain they mean (`get_domain`).
+"""Request dependencies shared by every router: who is calling (`get_ctx`) and which domain they mean
+(`get_domain`).
 
 ## Identity: two modes, chosen by `AUTH_MODE` (specs/018)
 
-`get_ctx` stamps a `SecurityCtx` (app/core/security.py) from one of two sources, and which one is a setting, never an inference.
+`get_ctx` stamps a `SecurityCtx` (app/core/security.py) from one of two sources; which one is a setting, never
+an inference.
 
-**`identity` (the default).** The front door (the authlimit service, in front of this API) verifies a person's access token and adds a
-short-lived signed identity to the request it forwards, in `X-Internal-Identity`. This mode verifies that (app/core/internal_identity.py)
-and builds the ctx from its `tenant` and `sub` and from nothing else. `X-Tenant-Id` and `X-Principal-Id` are IGNORED, so a client that sends
-them gets nothing for it, and a request with no valid identity is refused: a 401, or a 503 when the keys that would check it cannot be
-confirmed current (app/api/identity.py). There is no default tenant and no fallback to the headers.
+**`identity` (the default).** The front door (the authlimit service in front of this API) verifies a person's
+access token and adds a short-lived signed identity to the request in `X-Internal-Identity`. This mode
+verifies it (app/core/internal_identity.py) and builds the ctx from its `tenant` and `sub` alone.
+`X-Tenant-Id` and `X-Principal-Id` are IGNORED, so a client sending them gains nothing, and a request with no
+valid identity is refused: a 401, or a 503 when the keys that would check it can't be confirmed current
+(app/api/identity.py). No default tenant, no fallback to the headers.
 
-**`headers`.** The two headers are trusted as sent: `X-Tenant-Id` and `X-Principal-Id`, required, a missing one a 422 before the handler runs.
-That is only safe where nothing a stranger controls can reach this API: the hermetic tests, and running the API alone on a developer's own
-machine. It is announced loudly (a startup warning, the gauge `agent_api_auth_mode`, the alert `ApiHeaderAuthMode`) because the mistake it
-invites is a deployment that forgot to leave it. What this app owes in either mode is the right shape at the boundary: never a client-settable
-body field, never a default identity, never a ctx the caller wrote.
+**`headers`.** `X-Tenant-Id` and `X-Principal-Id` are trusted as sent, both required (a missing one is a 422
+before the handler runs). Safe only where nothing a stranger controls can reach this API: the hermetic tests,
+and the API alone on a developer's machine. It is announced loudly (a startup warning, the gauge
+`agent_api_auth_mode`, the alert `ApiHeaderAuthMode`) because the mistake it invites is a deployment that
+forgot to leave it. In either mode the app owes the right shape at the boundary: never a client-settable body
+field, never a default identity, never a ctx the caller wrote.
 
-`valid_ctx` (app/core/security.py) is still what every consumer fails closed on: an identity mode ctx is always valid by construction (the
-verifier refuses an empty tenant or subject); a header mode ctx may carry an empty string, and the consumers refuse that.
+`valid_ctx` (app/core/security.py) is what every consumer still fails closed on: an identity-mode ctx is valid
+by construction (the verifier refuses an empty tenant or subject); a header-mode ctx may carry an empty
+string, which the consumers refuse.
 """
 from typing import Annotated
 

@@ -1,68 +1,46 @@
-"""Tool-call TRAJECTORY correctness against the real graph, via deepeval —
-`@pytest.mark.deepeval`, `make deepeval`. See GRAPH_PATTERNS.md pattern 48
-for the full writeup.
+"""Tool-call TRAJECTORY correctness against the real graph, via deepeval (`@pytest.mark.deepeval`, `make
+deepeval`; GRAPH_PATTERNS.md pattern 48).
 
-A genuinely different question from every other check in this suite, not a
-smaller copy of one: `scripts/eval.py`'s `GoldenCase.expect_tool` checks
-"was this tool called at all" — a binary presence check, never the
-arguments it was called WITH. `test_rag_quality_deepeval.py` and
-`test_conversation_simulator_deepeval.py` judge the FINAL ANSWER's
-semantic quality, never the tool-call trajectory that produced it. Nothing
-else here asks "did the agent call the right tool, and did it call it
-well" as its own question.
+A different question from every other check here: `scripts/eval.py`'s `GoldenCase.expect_tool` checks only
+"was this tool called at all", never its arguments; `test_rag_quality_deepeval.py` and
+`test_conversation_simulator_deepeval.py` judge the FINAL ANSWER's quality, never the tool-call trajectory
+that produced it. Nothing else asks "did the agent call the right tool, and call it well".
 
-Two metrics, two different reliability profiles — checked directly in
-deepeval's own installed source, not assumed from the class names:
-- `ToolCorrectnessMetric`'s core score (`_calculate_score()` ->
-  `_calculate_non_exact_match_score()`) is a DETERMINISTIC name/type match
-  between `tools_called` and `expected_tools` — no LLM call in that path
-  at all. `model=`/`include_reason=True` only generates the natural-
-  language explanation, never the verdict itself. Same reliability
-  character as `scripts/eval.py`'s own `expect_tool` check, just richer
-  (a real tool-call SET comparison, not just "was X called anywhere").
-- `ArgumentCorrectnessMetric`'s core score genuinely IS LLM-judged
-  (`measure()` -> `self._generate_verdicts(...)`, the same per-claim
-  verdict pattern `FaithfulnessMetric` uses) — does the search QUERY this
-  agent actually generated make sense for the question asked, not just
-  "was search_docs called." This is the metric that needed the stronger-judge
-  fix (tests/deepeval/conftest.py's `deepeval_judge`, now Gemini
-  3.1 Flash-Lite — the same model+key `promptfoo/redteam.yaml`'s
-  `redteam.provider` already uses) to be worth trusting at all; on the small
-  local judge this suite used before that fix, a judgment call like "is this
-  query well-formed" is exactly the kind of question that produced
-  self-contradictory scores elsewhere in this pattern's own disclosed
-  findings.
+Two metrics with different reliability profiles (checked in deepeval's installed source, not assumed from
+class names):
+- `ToolCorrectnessMetric`'s core score (`_calculate_score()` -> `_calculate_non_exact_match_score()`) is a
+  DETERMINISTIC name/type match between `tools_called` and `expected_tools`, no LLM call in that path;
+  `model=`/`include_reason=True` only generates the natural-language explanation, never the verdict. The same
+  reliability as `scripts/eval.py`'s `expect_tool`, but richer (a real tool-call SET comparison).
+- `ArgumentCorrectnessMetric`'s core score genuinely IS LLM-judged (`measure()` ->
+  `self._generate_verdicts(...)`, the per-claim verdict pattern `FaithfulnessMetric` uses): does the search
+  QUERY the agent generated make sense for the question, not just "was search_docs called". It is the metric
+  that needed the stronger judge (tests/deepeval/conftest.py's `deepeval_judge`, Gemini 3.1 Flash-Lite, the
+  model and key `promptfoo/redteam.yaml`'s `redteam.provider` uses) to be worth trusting; on the small local
+  judge used before, "is this query well-formed" is the kind of question that produced self-contradictory
+  scores elsewhere in pattern 48's findings.
 
-Six cases now, not three — two groups:
-- `search_docs`/`calculator`/`query_employees`: one per tool this domain's
-  small-model routing has actually been found confused about (see the
-  word-collision finding below). `search_docs` reuses
-  `test_rag_quality_deepeval.py`'s own "Ecorp support hours" wording
-  deliberately — the same wording `scripts/eval.py`'s own
-  `retrieval_company_topic_filter` golden case used to use, before that
-  case (and `calculator_basic`) were retired 2026-09-16 in favor of this
-  file's own richer tool-call/argument checks (see scripts/eval.py's own
-  comment at the retirement site). `calculator` and `query_employees` are
-  regression checks from the OTHER two directions —
-  did tightening the prompt to fix the search_docs collision accidentally
-  scope calculator or query_employees too narrowly to fire on a genuine
-  question anymore? A prompt fix aimed at one failure mode overcorrecting
-  into a new one is exactly what happened once already during this file's
-  own fix (calculator briefly stopped firing on real math after an early
-  SYSTEM_PROMPT edit — see app/agent/graph/core.py's own history).
-- `skill_search`/`use_skill`, `run_subagent`, `fetch_external_reference`:
-  added 2026-09-16 to close a real, disclosed gap — skills and subagents
-  had ZERO live/semantic coverage anywhere in this repo before this (only
-  hermetic, fake-LLM tests in tests/agent/), and crawl4ai's only live
-  coverage (`test_domain_crawl_tools_live.py`) uses a scripted fake LLM
-  too, proving the crawl MECHANICS work but never whether a REAL model
-  correctly chooses to reach for it. Same two metrics, same judge, three
-  more genuinely different questions this file didn't ask before.
+Six cases, in two groups:
+- `search_docs`/`calculator`/`query_employees`: one per tool this domain's small-model routing has been found
+  confused about (see the word-collision finding below). `search_docs` reuses `test_rag_quality_deepeval.py`'s
+  "Ecorp support hours" wording, the wording `scripts/eval.py`'s `retrieval_company_topic_filter` golden case
+  used before that case (and `calculator_basic`) was retired 2026-09-16 in favor of this file's richer checks
+  (see the comment at the retirement site in scripts/eval.py). `calculator` and `query_employees` are
+  regression checks from the OTHER two directions: did tightening the prompt to fix the search_docs collision
+  scope them too narrowly to fire on a genuine question? A fix for one failure mode overcorrecting into
+  another already happened once (calculator briefly stopped firing on real math after an early SYSTEM_PROMPT
+  edit; see app/agent/graph/core.py's history).
+- `skill_search`/`use_skill`, `run_subagent`, `fetch_external_reference`: added 2026-09-16 to close a real
+  gap. Skills and subagents had ZERO live/semantic coverage (only hermetic fake-LLM tests in tests/agent/),
+  and crawl4ai's only live coverage (`test_domain_crawl_tools_live.py`) uses a scripted fake LLM too, proving
+  the crawl MECHANICS but never whether a REAL model chooses to reach for it.
 
 History worth keeping: this file surfaced a word collision between "support hours" and the
-`Department.support` enum value (the model called `query_employees` instead of `search_docs`),
-and then that three prompt edits meant to fix it had no effect, because the agent was running with
-NO system prompt at all (a directly built graph was never seeded). The system prompt needs no seeding here: the agent node puts the domain's prompt first on every call, so a graph built directly is never an un-guided agent (an earlier version of this suite ran exactly that, for weeks, before it was noticed).
+`Department.support` enum value (the model called `query_employees` instead of `search_docs`), and then that
+three prompt edits meant to fix it had no effect, because the agent ran with NO system prompt at all (a
+directly built graph was never seeded). The agent node now puts the domain's prompt first on every call, so a
+graph built directly is never an un-guided agent (an earlier version of this suite ran exactly that, for
+weeks, before it was noticed).
 """
 import uuid
 
@@ -331,31 +309,23 @@ async def test_subagent_delegation_is_correct_and_well_argued(deepeval_ollama, d
 
 @pytest.fixture
 def _use_crawl4ai_server(monkeypatch, crawl4ai_server):
-    """NOT autouse — only `test_fetch_external_reference_tool_call_is_correct_and_well_argued`
-    below needs it, unlike every other test in this file. `crawl4ai_server`
-    (tests/deepeval/conftest.py, `tests/containers.py::ensure_crawl4ai()`)
-    starts its own ephemeral container and this fixture points
-    `app.ingestion.web_crawler`'s own `CRAWL4AI_SERVER_URL`/
-    `CRAWL4AI_API_TOKEN` module globals at it (see that helper's own
-    docstring for why a monkeypatch, not an env var) — same shape
-    tests/integration/test_web_crawler_live.py's own fixture uses (2026-09-17;
-    previously a plain reachability probe against an already-running
-    `docker compose up -d crawl4ai`, skipped cleanly if not up).
+    """NOT autouse: only `test_fetch_external_reference_tool_call_is_correct_and_well_argued` below needs it.
+    `crawl4ai_server` (tests/deepeval/conftest.py, `tests/containers.py::ensure_crawl4ai()`) starts its own
+    ephemeral container, and this fixture points `app.ingestion.web_crawler`'s
+    `CRAWL4AI_SERVER_URL`/`CRAWL4AI_API_TOKEN` module globals at it (a monkeypatch, not an env var; see that
+    helper's docstring). Same shape as tests/integration/test_web_crawler_live.py's fixture (2026-09-17; this
+    used to be a plain reachability probe against an already-running `docker compose up -d crawl4ai`, skipped
+    if not up).
 
-    Deliberately NOT `@pytest.mark.crawl` on the test below, unlike every
-    other real-crawl4ai test in this repo — a real, disclosed CI ordering
-    bug, not an oversight: this file's module-level `pytestmark =
-    pytest.mark.deepeval` already applies to every test here, so adding
-    `crawl` on top made this ONE test match BOTH `-m deepeval` (this file's
-    real home) AND test-live's own `-m "llm or e2e or crawl"` selection —
-    and test-live's job never installs the `deepeval` package, so
-    `deepeval_judge` fixture setup failed there with a hard
-    `ModuleNotFoundError`, not a graceful skip (caught directly in a real
-    CI run of this exact combination). `.github/workflows/ci.yml`'s
-    `deepeval` job used to run its own crawl4ai `docker run` sidecar for
-    exactly this reason; `ensure_crawl4ai()`'s self-provisioning replaced
-    it (2026-09-17), so this test still gets a REAL run in CI despite
-    dropping the `crawl` mark, with no separate sidecar step needed."""
+    Deliberately NOT `@pytest.mark.crawl` on the test below, unlike every other real-crawl4ai test here,
+    because of a real, disclosed CI ordering bug. This file's module-level `pytestmark = pytest.mark.deepeval`
+    already applies to every test, so adding `crawl` made this ONE test match both `-m deepeval` (its home)
+    AND test-live's `-m "llm or e2e or crawl"`. test-live never installs `deepeval`, so `deepeval_judge`
+    fixture setup failed there with a hard `ModuleNotFoundError`, not a skip (caught in a real CI run).
+    `.github/workflows/ci.yml`'s `deepeval` job used to run its own crawl4ai `docker run` sidecar for this;
+    `ensure_crawl4ai()`'s self-provisioning replaced it (2026-09-17), so the test still gets a REAL run in CI
+    without the `crawl` mark and without a sidecar step.
+    """
     monkeypatch.setattr(web_crawler, "CRAWL4AI_SERVER_URL", crawl4ai_server["crawl4ai_server_url"])
     monkeypatch.setattr(web_crawler, "CRAWL4AI_API_TOKEN", crawl4ai_server["crawl4ai_api_token"])
 

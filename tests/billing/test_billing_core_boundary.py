@@ -1,31 +1,36 @@
 """The agent app's half of the billing boundary (specs/011-billing-module-boundary).
 
-Billing is a package (`packages/billing/`, importable as `credit_billing`) that the agent app uses and that must not know the app
-exists. Two test files enforce that, one on each side of the line:
+Billing is a package (`packages/billing/`, importable as `credit_billing`) that the agent app uses and that must not
+know the app exists. Two test files enforce that, one on each side of the line:
 
-  * `packages/billing/tests/test_boundary.py` is the PACKAGE's half and knows nothing about this repo: the package imports only the
-    standard library, itself and the dependencies its own `pyproject.toml` declares, so it cannot depend on ANY host.
-  * this file is the APP's half. It also keeps the repo-level gate that the package never reaches into `app.*` (a belt to the
-    package's braces, and the thing that fails first in this repo's own run), and everything that is about how the APP reaches
-    the package.
+  * `packages/billing/tests/test_boundary.py` is the PACKAGE's half and knows nothing about this repo: the package
+    imports only the standard library, itself and the dependencies its own `pyproject.toml` declares, so it
+    cannot depend on ANY host.
+  * this file is the APP's half. It also keeps the repo-level gate that the package never reaches into `app.*`
+    (a belt to the package's braces, and what fails first in this repo's own run), and everything about how the
+    APP reaches the package.
 
-Each rule has a test of the scanner itself, because a guard that cannot fail proves nothing (the test that no module serving a tool
-may import the wallet is the model, and its third test is the same idea). Seven things are enforced here:
+Each rule has a test of the scanner itself, because a guard that cannot fail proves nothing (the test that no module
+serving a tool may import the wallet is the model). Seven things are enforced:
 
-  1. no file in the package imports `app` or `app.<anything>` (AST over every import node, nested ones included: the two
-     provider adapters used to import the app's settings inside a constructor, which a scan of top-level imports does not see);
-  2. importing every package module with the app NOT on the import path loads no `app.*` module (runtime; catches what an AST walk
-     cannot, such as an import reached through `importlib`);
-  3. every host module that imports a package module which uses the database also imports `app.billing_integration`, the package
-     whose import wires the package to the app's pool, so no entry point can reach it unwired;
-  4. nothing under `app/` or `scripts/` outside `app/billing_integration/` imports `credit_billing` at all, except
-     `app/core/config.py` and only for its settings module (the app's `Settings` inherits the package's `BillingSettings`);
-  5. no host file outside `app/billing_integration/` holds an SQL string that names a package table, because an import scan cannot
-     see `SELECT ... FROM billing_customers` and that is how the app used to reach into the package;
+  1. no file in the package imports `app` or `app.<anything>` (AST over every import node, nested ones included:
+     the two provider adapters used to import the app's settings inside a constructor, which a scan of
+     top-level imports misses);
+  2. importing every package module with the app NOT on the import path loads no `app.*` module (runtime; catches
+     what an AST walk can't, such as an import reached through `importlib`);
+  3. every host module that imports a package module which uses the database also imports
+     `app.billing_integration`, whose import wires the package to the app's pool, so no entry point can reach it
+     unwired;
+  4. nothing under `app/` or `scripts/` outside `app/billing_integration/` imports `credit_billing`, except
+     `app/core/config.py` and only for its settings module (the app's `Settings` inherits the package's
+     `BillingSettings`);
+  5. no host file outside `app/billing_integration/` holds an SQL string that names a package table, since an
+     import scan can't see `SELECT ... FROM billing_customers`, which is how the app used to reach in;
   6. the old `app/billing/` directory is gone, so nothing can quietly import a stale copy;
-  7. (spec 013) the agent core carries no billing VOCABULARY: no identifier or string outside `app/billing_integration/` names a rate, a
-     markup, the gate's or the export's settings, or any package table. An import scan and an SQL scan cannot see a setting name or a
-     column, which is how the agent's own meter used to carry the rating, the debit and the export.
+  7. (spec 013) the agent core carries no billing VOCABULARY: no identifier or string outside
+     `app/billing_integration/` names a rate, a markup, the gate's or the export's settings, or any package
+     table. Import and SQL scans can't see a setting name or a column, which is how the agent's own meter used
+     to carry the rating, the debit and the export.
 """
 import ast
 import json
