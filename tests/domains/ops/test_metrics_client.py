@@ -7,7 +7,7 @@ Prometheus). Both are `async def` now, so calls run through
 `asyncio.run(...)`.
 """
 
-from app.domains.ops import metrics_client
+from app.domains.ops import metric_checks, metrics_client
 
 
 class _FakeResponse:
@@ -42,35 +42,35 @@ class _FakeAsyncClient:
 
 class TestDetectAnomalies:
     def test_no_anomalies_when_every_reading_is_within_threshold(self):
-        readings = {check.name: 0.0 for check in metrics_client.CHECKS}
-        assert metrics_client.detect_anomalies(readings) == []
+        readings = {check.name: 0.0 for check in metric_checks.CHECKS}
+        assert metric_checks.detect_anomalies(readings) == []
 
     def test_flags_a_reading_past_its_threshold(self):
-        readings = {check.name: 0.0 for check in metrics_client.CHECKS}
+        readings = {check.name: 0.0 for check in metric_checks.CHECKS}
         readings["turn_error_rate"] = 0.5  # threshold is 0.05
-        anomalies = metrics_client.detect_anomalies(readings)
+        anomalies = metric_checks.detect_anomalies(readings)
         assert len(anomalies) == 1
         assert "0.5" in anomalies[0]
 
     def test_a_none_reading_is_never_flagged(self):
-        readings = {check.name: None for check in metrics_client.CHECKS}
-        assert metrics_client.detect_anomalies(readings) == []
+        readings = {check.name: None for check in metric_checks.CHECKS}
+        assert metric_checks.detect_anomalies(readings) == []
 
     def test_a_reading_exactly_at_threshold_is_not_an_anomaly(self):
-        readings = {check.name: 0.0 for check in metrics_client.CHECKS}
+        readings = {check.name: 0.0 for check in metric_checks.CHECKS}
         readings["p95_latency_seconds"] = 30  # threshold is > 30, not >=
-        assert metrics_client.detect_anomalies(readings) == []
+        assert metric_checks.detect_anomalies(readings) == []
 
 
 class TestFormatReadings:
     def test_formats_a_known_value(self):
         readings = {"turn_error_rate": 0.01}
-        text = metrics_client.format_readings(readings)
+        text = metric_checks.format_readings(readings)
         assert "0.01" in text
 
     def test_formats_an_unknown_value(self):
         readings = {"turn_error_rate": None}
-        text = metrics_client.format_readings(readings)
+        text = metric_checks.format_readings(readings)
         assert "unknown" in text
 
 
@@ -103,4 +103,4 @@ class TestQueryOne:
             metrics_client.httpx, "AsyncClient", lambda **kw: _FakeAsyncClient(response)
         )
         readings = await metrics_client.fetch_readings()
-        assert set(readings) == {check.name for check in metrics_client.CHECKS}
+        assert set(readings) == {check.name for check in metric_checks.CHECKS}

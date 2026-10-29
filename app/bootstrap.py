@@ -29,21 +29,30 @@ from app.adapters.postgres.tool_idempotency import PgToolCallLedger
 from app.adapters.postgres.usage_events import PgUsageEventStore
 from app.adapters.web.serper import SerperWebSearch
 from app.core.errors import register_store_error
+from app.domains.ecorp import store as ecorp_store
+from app.domains.ops import metrics_client as ops_metrics_client
+from app.domains.ops import store as ops_store
 from app.domains.registry import RegistryDomainCatalog
+from app.domains.sales import store as sales_store
+from app.domains.support import store as support_store
 from app.ingestion.web_crawler import Crawl4aiPageRenderer
 from app.ports import (
     checkpointing,
     classification,
     cost,
     domains,
+    ecorp,
     idempotency,
     llm,
     models,
     notify,
+    ops,
     retrieval,
+    sales,
     sandbox,
     screening,
     sessions,
+    support,
     web,
 )
 from app.ports.slot import PortNotBound, Slot, unbound
@@ -73,6 +82,13 @@ def adapters() -> dict[Slot, object]:
         web.page_renderer: Crawl4aiPageRenderer(),
         notify.team_channel: LocalAndSlackTeamChannel(),
         sandbox.sandbox_catalog: OpenSandboxCatalog(),
+        # A domain's `store.py` is its adapter: the MODULE is bound (its functions are looked up at call time, which is how the module's tests patch them).
+        support.ticket_store: support_store,
+        sales.lead_store: sales_store,
+        ops.incident_store: ops_store,
+        ops.metrics_reader: ops_metrics_client.PrometheusMetricsReader(),
+        ecorp.knowledge_base: ecorp_store,
+        ecorp.employee_directory: ecorp_store,
     }
 
 

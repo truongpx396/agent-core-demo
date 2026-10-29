@@ -44,6 +44,7 @@ from app.agent.tools.subagent_catalog import SubagentRecord
 from app.core import metrics, sql_store, tool_runtime
 from app.core.config import SKILLS_COLLECTION
 from app.domains.ecorp import store as ecorp_store
+from app.domains.ecorp import usecases as ecorp_usecases
 from app.domains.ecorp.tools import (
     AddNoteArgs,
     RememberArgs,
@@ -114,7 +115,7 @@ class TestAddNoteImpl:
         # this patches the one `.upsert` attribute both names resolve to.
         monkeypatch.setattr(qdrant_store, "upsert", fake_upsert)
 
-        result = await ecorp_store.add_note_impl(
+        result = await ecorp_usecases.add_note_impl(
             "Refunds", "30-day window.", Topic.company, TEST_CTX, "call-1"
         )
 
@@ -152,7 +153,7 @@ class TestAddNoteImpl:
 
         monkeypatch.setattr(qdrant_store, "upsert", fake_upsert)
 
-        await ecorp_store.add_note_impl(
+        await ecorp_usecases.add_note_impl(
             "Refunds", "30-day window.", Topic.company, TEST_CTX, "call-1"
         )
 
@@ -176,8 +177,8 @@ class TestAddNoteImpl:
         monkeypatch.setattr(ecorp_store, "embed_sparse", lambda text: ([1], [1.0]))
         monkeypatch.setattr(qdrant_store, "upsert", fake_upsert)
 
-        await ecorp_store.add_note_impl("A", "one", Topic.qdrant, TEST_CTX, "call-1")
-        await ecorp_store.add_note_impl("B", "two", Topic.qdrant, TEST_CTX, "call-2")
+        await ecorp_usecases.add_note_impl("A", "one", Topic.qdrant, TEST_CTX, "call-1")
+        await ecorp_usecases.add_note_impl("B", "two", Topic.qdrant, TEST_CTX, "call-2")
 
         assert len(seen_ids) == 2
         assert seen_ids[0] != seen_ids[1]
@@ -199,8 +200,8 @@ class TestAddNoteImpl:
         monkeypatch.setattr(ecorp_store, "embed_sparse", lambda text: ([1], [1.0]))
         monkeypatch.setattr(qdrant_store, "upsert", fake_upsert)
 
-        await ecorp_store.add_note_impl("A", "one", Topic.qdrant, TEST_CTX, "call-1")
-        await ecorp_store.add_note_impl("A", "one", Topic.qdrant, TEST_CTX, "call-1")
+        await ecorp_usecases.add_note_impl("A", "one", Topic.qdrant, TEST_CTX, "call-1")
+        await ecorp_usecases.add_note_impl("A", "one", Topic.qdrant, TEST_CTX, "call-1")
 
         assert len(seen_ids) == 2
         assert seen_ids[0] == seen_ids[1]
@@ -390,7 +391,7 @@ class TestRememberImpl:
         monkeypatch.setattr(ecorp_store, "embed_document", fake_embed_text)
         monkeypatch.setattr(qdrant_store, "upsert", fake_upsert)
 
-        result = await ecorp_store.remember_impl("likes dark roast coffee", TEST_CTX, "call-1")
+        result = await ecorp_usecases.remember_impl("likes dark roast coffee", TEST_CTX, "call-1")
 
         point = captured["points"][0]
         assert point.payload["kind"] == "memory"
@@ -510,10 +511,10 @@ class TestQueryEmployees:
 
         await query_employees.ainvoke({}, config=_cfg())
 
-        assert captured["limit"] == ecorp_store.TOOL_RESULT_CAPS["query_employees"] + 1
+        assert captured["limit"] == ecorp_usecases.TOOL_RESULT_CAPS["query_employees"] + 1
 
     async def test_result_beyond_the_cap_is_marked_truncated_not_silently_dropped(self, monkeypatch):
-        cap = ecorp_store.TOOL_RESULT_CAPS["query_employees"]
+        cap = ecorp_usecases.TOOL_RESULT_CAPS["query_employees"]
         rows = [
             {"name": f"Employee {i}", "department": "Engineering", "title": "Engineer", "hired_on": "2021-01-01"}
             for i in range(cap + 1)  # sql_store.query_employees(limit=cap+1) returning cap+1 rows means "more exist"
@@ -529,7 +530,7 @@ class TestQueryEmployees:
         assert result.count("Employee") == cap  # exactly `cap` rows shown, not cap + 1
 
     async def test_result_at_or_under_the_cap_is_not_marked_truncated(self, monkeypatch):
-        cap = ecorp_store.TOOL_RESULT_CAPS["query_employees"]
+        cap = ecorp_usecases.TOOL_RESULT_CAPS["query_employees"]
         rows = [
             {"name": f"Employee {i}", "department": "Engineering", "title": "Engineer", "hired_on": "2021-01-01"}
             for i in range(cap)  # exactly at the cap, not over it

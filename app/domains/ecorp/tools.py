@@ -26,7 +26,7 @@ from app.agent.tools.builtin import ToolCapability, Topic
 from app.core.tool_idempotency import idempotent
 from app.core.tool_runtime import NO_CTX_REFUSAL, arun_with_timeout, ctx_or_refuse
 from app.core.tool_schema import ToolArgs
-from app.domains.ecorp.store import (
+from app.domains.ecorp.usecases import (
     MAX_MEMORY_CONTENT_CHARS,
     MAX_NOTE_CONTENT_CHARS,
     MAX_NOTE_TITLE_CHARS,

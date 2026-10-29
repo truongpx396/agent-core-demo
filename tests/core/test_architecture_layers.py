@@ -58,12 +58,6 @@ ALLOWED_OUTER = frozenset({"app.billing_integration.port"})
 
 # Violations that remain, as (file, imported module). See the module docstring.
 LEDGER: frozenset[tuple[str, str]] = frozenset({
-    # domains: tools reach their own store, the web, Slack, the sandbox and the crawler directly
-    ("app/domains/ecorp/tools.py", "app.domains.ecorp.store"),
-    ("app/domains/ops/tools.py", "app.domains.ops.metrics_client"),
-    ("app/domains/ops/tools.py", "app.domains.ops.store"),
-    ("app/domains/sales/tools.py", "app.domains.sales.store"),
-    ("app/domains/support/tools.py", "app.domains.support.store"),
 })
 
 

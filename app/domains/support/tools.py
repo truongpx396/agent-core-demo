@@ -25,9 +25,9 @@ from app.core.tool_schema import ToolArgs
 from app.core.untrusted import frame_untrusted
 from app.domains import sandbox_session
 from app.domains.policy import ActionAllowlistPolicy
-from app.domains.support import store
 from app.domains.web_search import make_web_search_tool
 from app.ports.notify import team_channel
+from app.ports.support import ticket_store
 from app.ports.web import CRAWL_TOOL_TIMEOUT_SECONDS, page_renderer
 
 NO_CTX_REFUSAL = (
@@ -96,7 +96,7 @@ class CreateTicketArgs(ToolArgs):
 async def _create_ticket_impl(
     subject: str, description: str, priority: TicketPriority, ctx: SecurityCtx, tool_call_id: str
 ) -> str:
-    ticket_id = await store.create_ticket(
+    ticket_id = await ticket_store.get().create_ticket(
         tenant=ctx["tenant"],
         requester=ctx["principal"],
         subject=subject,
@@ -137,7 +137,7 @@ class CheckTicketStatusArgs(BaseModel):
 
 
 async def _check_ticket_status_impl(ticket_id: int, ctx: SecurityCtx) -> str:
-    ticket = await store.get_ticket(ctx["tenant"], ticket_id)
+    ticket = await ticket_store.get().get_ticket(ctx["tenant"], ticket_id)
     if ticket is None:
         return f"No ticket #{ticket_id} found."
     line = f"Ticket #{ticket['id']} — {ticket['status']} ({ticket['priority']} priority): {ticket['subject']}"
@@ -171,7 +171,7 @@ class EscalateToHumanArgs(BaseModel):
 
 
 async def _escalate_to_human_impl(ticket_id: int, reason: str, ctx: SecurityCtx) -> str:
-    updated = await store.escalate_ticket(ctx["tenant"], ticket_id, reason)
+    updated = await ticket_store.get().escalate_ticket(ctx["tenant"], ticket_id, reason)
     if not updated:
         return f"No ticket #{ticket_id} found to escalate."
     await team_channel.get().post(
@@ -207,7 +207,7 @@ class ListMyTicketsArgs(BaseModel):
 
 
 async def _list_my_tickets_impl(ctx: SecurityCtx) -> str:
-    tickets = await store.list_tickets_for_requester(ctx["tenant"], ctx["principal"])
+    tickets = await ticket_store.get().list_tickets_for_requester(ctx["tenant"], ctx["principal"])
     if not tickets:
         return "You have no support tickets on file."
     lines = [
@@ -244,7 +244,7 @@ class AddTicketCommentArgs(BaseModel):
 async def _add_ticket_comment_impl(
     ticket_id: int, comment: str, ctx: SecurityCtx, tool_call_id: str
 ) -> str:
-    updated = await store.add_comment(ctx["tenant"], ticket_id, comment, tool_call_id=tool_call_id)
+    updated = await ticket_store.get().add_comment(ctx["tenant"], ticket_id, comment, tool_call_id=tool_call_id)
     if not updated:
         return f"No ticket #{ticket_id} found to add a comment to."
     return f"Added your follow-up to ticket #{ticket_id}."
