@@ -1,7 +1,7 @@
 """`route_model` (app/agent/graph/model_route.py): the contract in specs/015 contracts/tiered-router.md, step by step, and where it sits in the graph.
 
 The node is decision logic over three collaborators, each replaced here by a recording fake so the tests see exactly what crossed the boundary:
-`classification.choose` (the ML service), `pricing.refuse_unpriced` (is this alias priced) and the metrics counters. The decision itself is
+the `RouteClassifier` port (the ML service), `pricing.refuse_unpriced` (is this alias priced) and the metrics counters. The decision itself is
 `routing_policy.decide`, tested on its own (tests/core/test_routing_policy.py); what is tested here is the node around it: the three modes, what is
 sent, what each failure of the label call becomes, the price step-down, what is counted and logged, and that it never raises.
 The graph tests then prove the placement: after moderation, the cache and compaction; never on a refused input, a cache hit, a resumed turn, or in
@@ -17,10 +17,10 @@ from langgraph.types import Command
 from app.agent.graph import model_route
 from app.agent.graph.build import GraphDeps
 from app.agent.graph.model_route import make_route_model_node
-from app.core import classification
-from app.core.classification import Labelled
+from app.ports.classification import NO_ANSWER, Labelled
 from tests.agent.fakes import call, cfg, queue_llm
 from tests.ecorp import build_graph, build_subagent_graph
+from tests.fakes.ml import use_classifier
 
 MEDIUM, STRONG = "chat-medium", "chat-strong"
 LONG_TEXT = "x" * 1500  # the long_prompt rule fires at the default 1500 characters: a medium tier from the rules alone
@@ -46,7 +46,7 @@ class Recorder:
         monkeypatch.setattr(model_route, "STRONG_CHAT_MODEL", strong)
         monkeypatch.setattr(model_route, "ROUTER_MAX_TIER", ceiling)
         monkeypatch.setattr(model_route, "ROUTER_LABELS", labels)
-        monkeypatch.setattr(classification, "choose", self._choose)
+        use_classifier(monkeypatch, self._choose)
         monkeypatch.setattr(model_route.pricing, "refuse_unpriced", self._refuse_unpriced)
         recorder = self
 
@@ -136,10 +136,10 @@ async def test_the_question_asked_is_the_route_topics_question_with_the_policy_t
 
     async def capture(question, text):
         asked.append(question)
-        return classification.NO_ANSWER
+        return NO_ANSWER
 
     Recorder(monkeypatch)
-    monkeypatch.setattr(classification, "choose", capture)
+    use_classifier(monkeypatch, capture)
 
     await run(state())
 
@@ -163,7 +163,7 @@ async def test_with_labels_switched_off_only_the_rules_decide_and_no_call_is_mad
 
 # ---- the label signal and what each failure of it becomes -----------------------------------------------------------------------------
 @pytest.mark.parametrize(("labelled_answer", "outcome"), [
-    (classification.NO_ANSWER, "label_none"),
+    (NO_ANSWER, "label_none"),
     (Labelled("timeout"), "label_timeout"),
     (Labelled("error"), "label_error"),
 ])

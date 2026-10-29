@@ -43,8 +43,7 @@ INFRASTRUCTURE = frozenset({
 
 # Modules that live in `app/core` but are adapters or process plumbing, not kernel.
 PLATFORM_CORE = frozenset({
-    "sql_store", "serper", "classification", "moderation", "model_resolver", "internal_identity", "telemetry", "logging_config",
-    "job_runtime",
+    "sql_store", "serper", "internal_identity", "telemetry", "logging_config", "job_runtime",
 })
 
 # Application-ring files that are adapters by convention.
@@ -59,13 +58,6 @@ ALLOWED_OUTER = frozenset({"app.billing_integration.port"})
 
 # Violations that remain, as (file, imported module). See the module docstring.
 LEDGER: frozenset[tuple[str, str]] = frozenset({
-    # the model: the graph builds its own OpenAI client and reaches the ML service
-    ("app/agent/graph/core.py", "app.core.moderation"),
-    ("app/agent/graph/model_route.py", "app.core.classification"),
-    ("app/agent/graph/model_route.py", "openai"),
-    ("app/agent/graph/utils.py", "langchain_openai"),
-    ("app/agent/graph/utils.py", "psycopg"),
-    ("app/core/gateway.py", "openai"),
     # domains: tools reach their own store, the web, Slack, the sandbox and the crawler directly
     ("app/domains/ecorp/tools.py", "app.domains.ecorp.store"),
     ("app/domains/ops/tools.py", "app.domains.ops.metrics_client"),

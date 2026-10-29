@@ -1,8 +1,10 @@
 """The fakes in `tests/fakes/` are interchangeable with the adapters: they match the Protocol, and they behave as the contract says."""
 import pytest
 
+from app.ports import classification as classification_ports
 from app.ports import cost as cost_ports
 from app.ports import models as model_ports
+from app.ports import screening as screening_ports
 from app.ports.cost import Override
 from tests.fakes.conformance import mismatches
 from tests.fakes.cost import (
@@ -11,12 +13,15 @@ from tests.fakes.cost import (
     InMemoryUsageEventStore,
     NoGatewayModelCatalog,
 )
+from tests.fakes.ml import ConstantScorer, NoAnswerClassifier
 
 FAKES = [
     (cost_ports.usage_events, InMemoryUsageEventStore),
     (cost_ports.budget_holds, InMemoryBudgetHoldStore),
     (cost_ports.budget_policies, InMemoryBudgetPolicyStore),
     (model_ports.model_catalog, NoGatewayModelCatalog),
+    (classification_ports.route_classifier, NoAnswerClassifier),
+    (screening_ports.injection_scorer, ConstantScorer),
 ]
 
 

@@ -18,22 +18,26 @@ from langchain_core.tools import tool
 from langchain_openai import ChatOpenAI
 from langgraph.types import Command
 
+from app.adapters.litellm.failures import OpenAiFailures
 from app.agent.cost import metering, pricing
 from app.agent.graph import model_route
 from app.agent.graph.build import GraphDeps
 from app.agent.graph.model_route import routed_unreachable
-from app.core import classification, gateway
-from app.core.classification import Labelled
+from app.core import gateway
 from app.domains.ecorp import tools as ecorp_tools
+from app.ports.classification import Labelled
 from tests.agent.fakes import call, cfg, make_agent_node, queue_llm
 from tests.conftest import TEST_CTX
 from tests.ecorp import build_graph
+from tests.fakes.ml import use_classifier
 
 MEDIUM, STRONG, LOCAL = "chat-medium", "chat-strong", "chat"
 ALIAS = {"medium": MEDIUM, "strong": STRONG}
 REAL_IDEMPOTENT = ecorp_tools.idempotent  # taken once: a spy installed per call would otherwise wrap the previous call's spy
 PRICES = {LOCAL: 0.001, MEDIUM: 0.005, STRONG: 0.02}
 ROUTED = ["medium", "strong"]
+
+FAILURES = OpenAiFailures()  # the adapter that knows what the SDK's exceptions mean
 
 
 def _request():
@@ -226,7 +230,7 @@ async def test_an_error_that_is_not_unreachability_is_not_swallowed(priced, rout
 async def test_the_gateways_budget_stop_is_never_papered_over_even_as_a_5xx(priced, routed, tier):
     # a spent budget repeats until it resets and is the operator's signal; a silent fallback would hide it
     budget = status_error(503, {"type": "budget_exceeded", "message": "Budget has been exceeded"})
-    assert gateway.is_budget_exceeded(budget), "test setup: this error must be recognised as the budget stop"
+    assert FAILURES.is_budget_exceeded(budget), "test setup: this error must be recognised as the budget stop"
     llm = ScriptedLLM(budget, answer())
 
     with pytest.raises(openai.APIStatusError):
@@ -371,7 +375,7 @@ async def _mutating_turn(monkeypatch, label: str):
     async def classify(question, text):
         return Labelled("labelled", label, label, 0.9, 0.1, "primary", "v1")
 
-    monkeypatch.setattr(classification, "choose", classify)
+    use_classifier(monkeypatch, classify)
     kwargs_seen: list = []
     llm = queue_llm(call("add_note", {"title": "Refunds", "content": "30 days.", "topic": "company"}, "call_1"),
                     AIMessage(content="I've added a note about the refund policy."), kwargs_seen=kwargs_seen)
@@ -413,7 +417,7 @@ async def test_an_unpriced_alias_under_the_block_policy_steps_the_turn_down_and_
     async def classify(question, text):
         return Labelled("labelled", label, label, 0.9, 0.1, "primary", "v1")
 
-    monkeypatch.setattr(classification, "choose", classify)
+    use_classifier(monkeypatch, classify)
     monkeypatch.setattr(model_route, "ROUTER_MODE", "on")
     monkeypatch.setattr(model_route, "MEDIUM_CHAT_MODEL", MEDIUM)
     monkeypatch.setattr(model_route, "STRONG_CHAT_MODEL", STRONG)
@@ -441,7 +445,7 @@ async def test_a_shadow_router_changes_no_gateway_call_and_no_ledger_row_compare
     async def classify(question, text):
         return Labelled("labelled", "reasoning", "reasoning", 0.9, 0.1, "primary", "v1")
 
-    monkeypatch.setattr(classification, "choose", classify)
+    use_classifier(monkeypatch, classify)
     monkeypatch.setattr(model_route.metrics, "agent_model_route_tier_total", _Tiers())
     monkeypatch.setattr(model_route, "MEDIUM_CHAT_MODEL", MEDIUM)
     monkeypatch.setattr(model_route, "STRONG_CHAT_MODEL", STRONG)

@@ -13,9 +13,8 @@ import logging
 import httpx
 import pytest
 
-from app.core import classification
-from app.core.classification import NO_ANSWER, Choice, Labelled
-from tests.conftest import REAL_CHOOSE
+from app.adapters.mlservice import classification
+from app.ports.classification import NO_ANSWER, Choice, Labelled
 
 REAL_CLIENT = httpx.AsyncClient
 QUESTION = Choice(
@@ -37,9 +36,8 @@ HOSTED = {  # built from the documented fields only
 
 @pytest.fixture
 def serve(monkeypatch):
-    """Install a handler as the service; returns the list of requests it saw. The suite's autouse guard replaced `choose`, so the real one is put back."""
+    """Install a handler as the service; returns the list of requests it saw."""
     seen: list[httpx.Request] = []
-    monkeypatch.setattr(classification, "choose", REAL_CHOOSE)
 
     def install(handler):
         def recording(request: httpx.Request) -> httpx.Response:

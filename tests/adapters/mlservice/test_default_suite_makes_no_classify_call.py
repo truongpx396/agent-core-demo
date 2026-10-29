@@ -1,17 +1,18 @@
 """The hermetic suite never calls the ML service's /v1/decide, even when a test turns the router ON.
 
-`tests/conftest.py::mock_classification` is the guard (Constitution VII: a new live-service call on the turn path gets an autouse mock). A
+`tests/conftest.py::mock_classification` (a fake bound to the `RouteClassifier` port) is the guard (Constitution VII: a new live-service call on the turn path gets an autouse mock). A
 guard nobody tests is a comment, so this proves two things: with it in place a full-graph turn with the router on makes no HTTP request at
-all, and with the real `choose` put back the same turn WOULD make one (so the first claim could have failed).
+all, and with the real adapter bound the same turn WOULD make one (so the first claim could have failed).
 """
 import httpx
 from langchain_core.messages import AIMessage, HumanMessage
 
+from app.adapters.mlservice import classification
+from app.adapters.mlservice.classification import MlServiceClassifier
 from app.agent.graph import model_route
 from app.agent.graph.build import GraphDeps
-from app.core import classification
+from app.ports.classification import route_classifier
 from tests.agent.fakes import cfg, queue_llm
-from tests.conftest import REAL_CHOOSE
 from tests.ecorp import build_graph
 
 
@@ -40,7 +41,7 @@ async def _one_turn():
 async def test_a_full_turn_with_the_router_on_makes_no_classify_request_in_the_default_suite(monkeypatch):
     _router_on(monkeypatch)
     requests = _record_http(monkeypatch)
-    assert classification.choose is not REAL_CHOOSE, "the autouse mock_classification guard is not in place"
+    assert not isinstance(route_classifier.get(), MlServiceClassifier), "the autouse mock_classification guard is not in place"
 
     result = await _one_turn()
 
@@ -50,8 +51,8 @@ async def test_a_full_turn_with_the_router_on_makes_no_classify_request_in_the_d
 async def test_the_same_turn_would_call_classify_if_the_guard_were_removed(monkeypatch):
     _router_on(monkeypatch)
     requests = _record_http(monkeypatch)
-    monkeypatch.setattr(classification, "choose", REAL_CHOOSE)
 
-    await _one_turn()
+    with route_classifier.overriding(MlServiceClassifier()):
+        await _one_turn()
 
     assert [r.url.path for r in requests] == ["/v1/decide"]

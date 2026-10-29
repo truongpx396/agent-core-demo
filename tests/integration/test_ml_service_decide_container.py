@@ -21,9 +21,9 @@ import httpx
 import numpy as np
 import pytest
 
+from app.adapters.mlservice import classification
 from app.agent.graph import model_route
-from app.core import classification, routing_policy
-from tests.conftest import REAL_CHOOSE
+from app.core import routing_policy
 
 pytestmark = pytest.mark.integration
 
@@ -122,7 +122,6 @@ async def test_the_whole_label_call_from_the_app_is_measured_and_answers_nearly_
     MEASURED and recorded here and quoted in the PR, not asserted, because a CI runner's speed says nothing
     about the reference machine.
     """
-    monkeypatch.setattr(classification, "choose", REAL_CHOOSE)  # the suite's autouse guard replaced it with "no answer"
     monkeypatch.setattr(classification, "ML_SERVICE_URL", ml_service_url)
     monkeypatch.setattr(classification, "ROUTER_TIMEOUT_SECONDS", 0.5)
 

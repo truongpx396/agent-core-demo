@@ -12,21 +12,31 @@ Adding a port is three edits, and `tests/core/test_bootstrap.py` fails on the fi
 
 A test that wants a different adapter for one port uses `Slot.overriding` (or binds a fake from `tests/fakes/`) and never edits this file.
 """
+import psycopg
+
+from app.adapters.litellm.chat_model import OpenAiChatModels
+from app.adapters.litellm.failures import OpenAiFailures
 from app.adapters.litellm.model_catalog import LiteLLMModelCatalog
+from app.adapters.mlservice.classification import MlServiceClassifier
+from app.adapters.mlservice.prompt_guard import MlServicePromptGuard
 from app.adapters.postgres.budget_holds import PgBudgetHoldStore
 from app.adapters.postgres.budget_policies import PgBudgetPolicyStore
 from app.adapters.postgres.checkpointing import PgCheckpointing
 from app.adapters.postgres.sessions import PgSessionStore
 from app.adapters.postgres.tool_idempotency import PgToolCallLedger
 from app.adapters.postgres.usage_events import PgUsageEventStore
+from app.core.errors import register_store_error
 from app.domains.registry import RegistryDomainCatalog
 from app.ports import (
     checkpointing,
+    classification,
     cost,
     domains,
     idempotency,
+    llm,
     models,
     retrieval,
+    screening,
     sessions,
 )
 from app.ports.slot import PortNotBound, Slot, unbound
@@ -48,6 +58,10 @@ def adapters() -> dict[Slot, object]:
         domains.domain_catalog: RegistryDomainCatalog(),
         retrieval.document_index: QdrantDocumentIndex(),
         retrieval.answer_cache: RedisAnswerCache(),
+        llm.llm_failures: OpenAiFailures(),
+        llm.chat_models: OpenAiChatModels(),
+        classification.route_classifier: MlServiceClassifier(),
+        screening.injection_scorer: MlServicePromptGuard(),
     }
 
 
@@ -55,6 +69,8 @@ def wire() -> None:
     """Binds every port that has no adapter yet to its production adapter. Safe to call again: it never replaces one that is bound."""
     for slot, adapter in adapters().items():
         slot.provide(adapter)
+    # The kernel asks whether an error came from a data store (its text must never reach a prompt) but names no driver.
+    register_store_error(psycopg.Error)
 
 
 def verify_wired() -> None:

@@ -1,4 +1,4 @@
-"""Ask a typed question about a text and get one of a few predefined answers: the app's client for `POST
+"""The `RouteClassifier` adapter (`app/ports/classification.py`): the app's client for `POST
 /v1/decide` (specs/016, contracts/decide.md).
 
 The interface is not ours, on purpose: `/v1/decide` takes and returns the shape of the TypeSafe "System One" /
@@ -31,45 +31,17 @@ timeouts and a wall-clock bound around the exchange, because a peer that trickle
 import asyncio
 import logging
 import math
-from collections.abc import Mapping
-from dataclasses import dataclass
-from typing import Literal
 
 import httpx
 
 from app.core.config import ML_SERVICE_URL, ROUTER_TIMEOUT_SECONDS
+from app.ports.classification import NO_ANSWER, Choice, Labelled
 
 logger = logging.getLogger(__name__)
 
 MAX_CHARS = 2000
 DECIDE_PATH = "/v1/decide"
-Outcome = Literal["labelled", "no_answer", "timeout", "error"]
 _SERVED_BY = ("primary", "fallback")
-
-
-@dataclass(frozen=True)
-class Choice:
-    """A `choice` question: pick one of `options`. `name` is also the name of the ML service's label set that answers it, and the service refuses
-    a question whose option names are not exactly that set's labels, so a question and its set cannot drift apart unnoticed."""
-
-    name: str
-    instructions: str
-    options: Mapping[str, str]  # option -> what it means; the local implementation ignores the words, a hosted one reads them
-
-
-@dataclass(frozen=True)
-class Labelled:
-    outcome: Outcome  # "labelled": the service answered (the choice may still be None); "no_answer": nothing could; "timeout"; "error"
-    label: str | None = None  # the option chosen, or None when the implementation found the text near none of them
-    nearest: str | None = None  # the nearest option either way (the local implementation reports it; a hosted one does not)
-    similarity: float | None = None
-    margin: float | None = None
-    served_by: str = "none"
-    labelset_version: str | None = None
-    confidence: float | None = None  # a calibrated 0..1 where the implementation has one (a hosted one does; the local one does not)
-
-
-NO_ANSWER = Labelled("no_answer")
 
 
 def _number(value: object, low: float, high: float) -> float | None:
@@ -146,3 +118,10 @@ async def choose(question: Choice, text: str) -> Labelled:
     except Exception as exc:  # noqa: BLE001 - classification is advisory: whatever went wrong, the caller decides without an answer and only the class is logged
         logger.warning("decision request failed", extra={"error_class": type(exc).__name__, "question": question.name})
         return Labelled("error")
+
+
+class MlServiceClassifier:
+    """The adapter: `choose` behind the port, looked up at CALL time so a test that patches the module function is seen."""
+
+    async def choose(self, question: Choice, text: str) -> Labelled:
+        return await choose(question, text)

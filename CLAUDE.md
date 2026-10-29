@@ -74,7 +74,7 @@ they delete volumes or kill running processes.
 - `app/retrieval/` — Qdrant helpers, embeddings, the answer cache. `embeddings.py` has two roles (`embed_query`, `embed_document(s)`); `embedding_identity.py` is what a collection's vectors were made with, and `qdrant_store.py` refuses to mix two (pattern 67). `docker/ml-service/ml_service/` is the ML service as an importable package (rerank, prompt guard, `/v1/embeddings`, per-model health and metrics); `docker/ml-service/models.toml` declares the text models it can serve.
 - `app/core/` — what every package may use and that depends on none of them: config, security (`SecurityCtx`),
   metrics, errors, scrubbing, resilience, `sql_store.py` (pooled appdata connections), `gateway.py` and
-  `model_resolver.py` (the LiteLLM contract), `moderation.py`, and what every tool runs through:
+  `moderation.py`, and what every tool runs through:
   `tool_runtime.py` (timeout, scrub, fail-closed ctx) and `tool_idempotency.py` (the exactly-once guard). A
   module belongs here when it imports nothing from `agent`, `domains` or `api`.
 - `packages/billing/` — the credit wallet, payment webhooks, the billing half of a usage meter (rate, record,
@@ -96,7 +96,7 @@ they delete volumes or kill running processes.
   `docker/ml-service/labelsets/*.json` are the label sets that service serves (specs/015; the README beside them is the format and the rules).
   `app/retrieval/embedding_identity.py` is what makes mixing two embedding models' vectors impossible (a collection records its model,
   dimension, prefixes and revision, and the app refuses to read or write one that disagrees); `app/core/routing_policy.py` (the rules, the label table and
-  `decide`: pure, the evaluation harness runs it too), `app/core/classification.py` (the client for the ML service's label sets) and
+  `decide`: pure, the evaluation harness runs it too), `app/adapters/mlservice/classification.py` (the client for the ML service's label sets) and
   `app/agent/graph/model_route.py` are the router's whole footprint in the app, and it can only write `State.model_route`.
 - `promptfoo/` — the prompt checks, and the only Node in the repo: its `package.json`, lock file and `node_modules`
   live here, so every `npm`/`npx` runs from this directory (`make promptfoo` does that). The root stays Python-only.

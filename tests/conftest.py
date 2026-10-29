@@ -6,7 +6,7 @@ be up.
   `GraphDeps`. A test that cares about a retrieved or cached value injects its own fake
   (`GraphDeps(search_docs=fake)`, `GraphDeps(cache_get=fake, ...)`, or `make_retrieve_context_node(fake)` /
   `make_check_semantic_cache_node(fake)` at node level).
-- `mock_classification`: the model router's one live call (`app/core/classification.py`, a POST to the ML
+- `mock_classification`: the model router's one live call (`app/adapters/mlservice/classification.py`, a POST to the ML
   service's /v1/decide) always sees "no answer". The usage event's model-alias lookup is guarded inside
   `usage_event_sink`, the only caller of `model_resolver.resolve_model`.
 - `mock_ml_moderation`: `moderate_input` runs on every full-graph turn and its ML layer is a real HTTP call to
@@ -44,11 +44,14 @@ from opentelemetry.sdk.metrics import MeterProvider
 from opentelemetry.sdk.metrics.export import InMemoryMetricReader
 
 from app import bootstrap
+from app.adapters.mlservice import classification as ml_classification
 from app.agent.graph import build as graph_build
 from app.api import identity
-from app.core import classification, moderation
 from app.core.config import settings
+from app.ports import classification as classification_ports
+from app.ports import screening as screening_ports
 from app.retrieval.embedding_identity import EmbeddingIdentity
+from tests.fakes.ml import ConstantScorer, NoAnswerClassifier
 
 TEST_CTX = {"tenant": "ecorp", "principal": "test-user", "claims": {}}
 
@@ -112,10 +115,6 @@ TEST_EMBEDDING_IDENTITY = EmbeddingIdentity(
 )
 
 
-async def _benign_ml_score(text: str) -> float:
-    return 0.0
-
-
 @pytest.fixture(autouse=True)
 def no_real_tracing(monkeypatch):
     """The default suite never builds a real Langfuse client (it starts threads, tries the network, and registers
@@ -171,22 +170,21 @@ def no_real_qdrant(request, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def mock_ml_moderation(monkeypatch):
-    monkeypatch.setattr(moderation, "_ml_malicious_score", _benign_ml_score)
+def mock_ml_moderation():
+    """The prompt-injection scorer (the `InjectionScorer` port) scores every text 0.0: nothing is malicious unless a test says so."""
+    with screening_ports.injection_scorer.overriding(ConstantScorer(0.0)):
+        yield
 
 
-# Kept so the one test that proves this guard works (tests/core/test_default_suite_makes_no_classify_call.py) can put the real function back.
-REAL_CHOOSE = classification.choose
-
-
-async def _no_answer(question, text: str):
-    return classification.NO_ANSWER
+# Kept so the tests of the ML-service ADAPTER (tests/adapters/mlservice/) can call the real function the suite's guard keeps off the turn path.
+REAL_CHOOSE = ml_classification.choose
 
 
 @pytest.fixture(autouse=True)
-def mock_classification(monkeypatch):
-    """`route_model` asks the ML service's /v1/decide for a topic (app/core/classification.py)."""
-    monkeypatch.setattr(classification, "choose", _no_answer)
+def mock_classification():
+    """`route_model` asks the ML service's /v1/decide for a topic (the `RouteClassifier` port): the default suite's classifier has no answer."""
+    with classification_ports.route_classifier.overriding(NoAnswerClassifier()):
+        yield
 
 
 @pytest.fixture(autouse=True)

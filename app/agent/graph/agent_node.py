@@ -27,6 +27,7 @@ from app.agent.graph.state import State
 from app.core import gateway, metrics
 from app.core.config import CHAT_MODEL
 from app.core.untrusted import frame_untrusted
+from app.ports.llm import ContentBlock
 
 logger = logging.getLogger(__name__)
 
@@ -57,7 +58,7 @@ def _question_index(messages: list[BaseMessage], anchor: int | None) -> int | No
     return next((i for i in range(len(messages) - 1, -1, -1) if is_user_message(messages[i])), None)
 
 
-def _refusal_update(state: State, block: "gateway.ContentBlock") -> dict:
+def _refusal_update(state: State, block: ContentBlock) -> dict:
     """The turn's answer when the gateway's content guardrail refused the call.
 
     The refusal is flagged (`GATEWAY_REFUSAL_KEY`) so `should_continue` ends the turn on it. If the

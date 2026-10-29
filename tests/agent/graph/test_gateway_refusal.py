@@ -18,11 +18,12 @@ import pytest
 from langchain_core.messages import AIMessage, HumanMessage
 from langchain_openai import ChatOpenAI
 
+from app.adapters.litellm.failures import OpenAiFailures
 from app.agent.graph.build import GraphDeps
 from app.agent.graph.core import AGENT_RETRY_POLICY
 from app.agent.graph.messages import CANNOT_HELP_MESSAGE, GATEWAY_REFUSAL_KEY
 from app.agent.runtime import stream as stream_module
-from app.core import gateway, metrics
+from app.core import metrics
 from tests.agent.fakes import cfg, make_agent_node, scripted_llm
 from tests.conftest import metric_value
 from tests.ecorp import build_graph
@@ -30,6 +31,8 @@ from tests.ecorp import build_graph
 # What LiteLLM really sent in the trace: the guardrail refusal, body verbatim (`type` and `param` are
 # the STRING "None").
 _MESSAGE = "Content blocked: denied_financial_advice conditional match 'stock + should i' detected (severity: high)"
+
+FAILURES = OpenAiFailures()  # the adapter that knows what the SDK's exceptions mean
 
 
 def _guardrail_body(mode: str = "pre_call") -> dict:
@@ -92,19 +95,19 @@ class TestRecognisingAContentBlock:
         with pytest.raises(openai.BadRequestError) as raised:
             await llm.ainvoke([HumanMessage(content="should i invest in testla stock ?")])
 
-        block = gateway.content_block(raised.value)
+        block = FAILURES.content_block(raised.value)
         assert block is not None and block.mode == "pre_call"
 
     @pytest.mark.parametrize("mode", ["pre_call", "post_call", "during_call"])
     def test_the_mode_is_read_from_the_guardrail(self, mode):
-        assert gateway.content_block(_guardrail_error(mode)).mode == mode
+        assert FAILURES.content_block(_guardrail_error(mode)).mode == mode
 
     def test_a_mode_it_does_not_know_is_counted_as_other_so_the_label_stays_bounded(self):
-        assert gateway.content_block(_guardrail_error("some-new-mode")).mode == "other"
+        assert FAILURES.content_block(_guardrail_error("some-new-mode")).mode == "other"
 
     def test_a_block_without_the_structured_fields_is_still_recognised_by_its_message(self):
         error = _status_error(400, {"error": {"message": _MESSAGE, "type": "None"}})
-        assert gateway.content_block(error).mode == "other"
+        assert FAILURES.content_block(error).mode == "other"
 
     @pytest.mark.parametrize(
         "exc",
@@ -122,17 +125,17 @@ class TestRecognisingAContentBlock:
         ],
     )
     def test_nothing_else_is_taken_for_a_content_block(self, exc):
-        assert gateway.content_block(exc) is None
+        assert FAILURES.content_block(exc) is None
 
 
 class TestPermanentClientErrors:
     @pytest.mark.parametrize("status", [400, 401, 404, 422])
     def test_a_rejection_that_repeating_cannot_change_is_permanent(self, status):
-        assert gateway.is_permanent_client_error(_status_error(status, {"error": {"message": "no", "type": "x"}}))
+        assert FAILURES.is_permanent_client_error(_status_error(status, {"error": {"message": "no", "type": "x"}}))
 
     @pytest.mark.parametrize("status", [429, 500, 503])
     def test_a_rate_limit_or_a_server_error_is_not(self, status):
-        assert not gateway.is_permanent_client_error(_status_error(status, {"error": {"message": "slow", "type": "x"}}))
+        assert not FAILURES.is_permanent_client_error(_status_error(status, {"error": {"message": "slow", "type": "x"}}))
 
     @pytest.mark.parametrize("status", [408, 409, 425])
     def test_a_timeout_or_conflict_is_worth_another_go(self, status):
@@ -141,11 +144,11 @@ class TestPermanentClientErrors:
             response=httpx.Response(status, request=httpx.Request("POST", "http://x")),
             body={"message": "later"},
         )
-        assert not gateway.is_permanent_client_error(error)
+        assert not FAILURES.is_permanent_client_error(error)
 
     def test_an_exception_that_is_not_a_status_error_is_not(self):
-        assert not gateway.is_permanent_client_error(ConnectionError("reset"))
-        assert not gateway.is_permanent_client_error(RuntimeError("a bug"))
+        assert not FAILURES.is_permanent_client_error(ConnectionError("reset"))
+        assert not FAILURES.is_permanent_client_error(RuntimeError("a bug"))
 
 
 class _RaisingLLM:
