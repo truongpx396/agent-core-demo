@@ -11,7 +11,7 @@ covers the cross-worker container sharing under `pytest -n auto`. Isolation need
 every test scopes its rows by a unique `uuid.uuid4()` thread_id, and old rows accumulate harmlessly in a
 throwaway container.
 
-`app.agent.runtime.core._graph`/`_checkpointer_pool` are module-level singletons; the `reset_agent_singleton`
+`app.agent.runtime.core._graph` and `_graph_lock` are module-level singletons (and the checkpointer adapter owns its pool); the `reset_agent_singleton`
 fixture resets them before and after every test so state doesn't leak into other tests or modules (which never
 touch app.agent.runtime.core and would be affected by whichever checkpointer won the singleton race). It also
 points `agent_module.CHECKPOINTER_DATABASE_URL` at the ephemeral container: that is core.py's own `from
@@ -27,12 +27,14 @@ from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 
+from app.adapters.postgres import checkpointing as pg_checkpointing
 from app.agent.graph.build import GraphDeps
 from app.agent.graph.hitl import resumability_error_async
 from app.agent.graph.state import STATE_SCHEMA_VERSION
 from app.agent.runtime import core as agent_module
 from app.agent.runtime import stream as stream_module
 from app.core import metrics
+from app.ports import checkpointing as checkpointing_port
 from app.ports.domains import AgentManifest
 from tests.agent.fakes import cfg, scripted_llm
 from tests.conftest import TEST_CTX
@@ -54,11 +56,11 @@ pytestmark = pytest.mark.integration
 
 @pytest.fixture(autouse=True)
 def reset_agent_singleton(monkeypatch):
-    monkeypatch.setattr(
-        agent_module, "CHECKPOINTER_DATABASE_URL", ensure_postgres()["checkpointer_database_url"]
-    )
+    # The checkpointer is the `Checkpointing` port: the Postgres adapter reads the database URL, and owns the pool. A FRESH adapter per test, so a pool
+    # left behind by the last test (bound to a loop that is gone) is never the one this test closes.
+    monkeypatch.setattr(pg_checkpointing, "CHECKPOINTER_DATABASE_URL", ensure_postgres()["checkpointer_database_url"])
+    monkeypatch.setattr(checkpointing_port.checkpointing, "get", lambda adapter=pg_checkpointing.PgCheckpointing(): adapter)
     agent_module._graph = None
-    agent_module._checkpointer_pool = None
     # A FRESH Lock, not just left alone: _graph_lock is a process-lifetime
     # singleton in production (created once at import time, used on the
     # one persistent event loop a real process holds for its whole life —
@@ -69,12 +71,11 @@ def reset_agent_singleton(monkeypatch):
     # cancelled gather branch that doesn't unwind cleanly), every LATER
     # test calling init_graph_async() while _graph is None would hang
     # forever waiting on a lock nothing will ever release. A new Lock per
-    # test closes that window the same way resetting _graph/_checkpointer_pool
+    # test closes that window the same way resetting _graph
     # already does for the state it guards.
     agent_module._graph_lock = asyncio.Lock()
     yield
     agent_module._graph = None
-    agent_module._checkpointer_pool = None
     agent_module._graph_lock = asyncio.Lock()
 
 
@@ -113,19 +114,20 @@ class TestInitGraphAsync:
         start, or several agent_worker.py-style tasks all reaching this
         before anything has primed the singleton) could each pass the None
         check, each open their own AsyncConnectionPool via
-        _open_checkpointer(), and each overwrite _graph/_checkpointer_pool
-        — every loser's pool then leaks. Wraps the real _open_checkpointer
+        the checkpointer's open(), and each overwrite _graph and the adapter's
+        pool — every loser's pool then leaks. Wraps the real adapter's open()
         to count calls (rather than faking it entirely) so this still
         exercises a real checkpointer/pool open underneath, same "real
         Postgres, no LLM" spirit as the rest of this file."""
-        real_open = agent_module._open_checkpointer
+        adapter = checkpointing_port.checkpointing.get()
+        real_open = adapter.open
         calls = []
 
         async def _counting_open():
             calls.append(1)
             return await real_open()
 
-        monkeypatch.setattr(agent_module, "_open_checkpointer", _counting_open)
+        monkeypatch.setattr(adapter, "open", _counting_open)
 
         graphs = await asyncio.gather(*(agent_module.init_graph_async() for _ in range(8)))
 

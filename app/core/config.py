@@ -442,7 +442,7 @@ class Settings(BillingSettings):
     # `-np 1` ceiling vs a genuinely concurrent backend).
     agent_worker_max_concurrency: int = 10
 
-    # app/agent/runtime/core.py::_open_checkpointer's AsyncConnectionPool size.
+    # app/adapters/postgres/checkpointing.py::PgCheckpointing.open's AsyncConnectionPool size.
     # Raising this ALONE won't raise checkpoint throughput past one
     # connection's worth: AsyncPostgresSaver wraps every checkpoint I/O in
     # one `asyncio.Lock()` per saver instance guarding pool.connection()

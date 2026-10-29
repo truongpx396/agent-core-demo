@@ -254,7 +254,7 @@ def ensure_postgres() -> dict[str, str]:
 
 def _setup_checkpointer_schema_once(checkpointer_url: str) -> None:
     """Runs `AsyncPostgresSaver.setup()` exactly ONCE, inside `ensure_postgres`'s cross-worker lock, before any
-    test can call it again concurrently. It is the same call `app/agent/runtime/core.py::_open_checkpointer`
+    test can call it again concurrently. It is the same call `app/adapters/postgres/checkpointing.py::PgCheckpointing.open`
     makes on every real process start ("idempotently, on every process including each independently-scaled
     agent_worker.py instance", per postgres-init/05-checkpointer-db.sql).
     """

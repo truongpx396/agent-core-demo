@@ -26,7 +26,7 @@ index would tax every insert for a job that runs a few times a day; if a pass ge
 daily partition) is the fix and `USAGE_RECONCILE_LOOKBACK_DAYS` the lever.
 
 The gateway read needs the admin key (`LITELLM_MASTER_KEY`, read from the environment by the caller, never stored
-here): the caller builds the adapter and passes it in (`reconcile(gateway=...)`). The events are read through the
+here): the caller builds the adapter and passes it in (`reconcile(spend_log=...)`). The events are read through the
 `UsageEventStore` port.
 """
 import logging
@@ -211,7 +211,7 @@ def usd(amount: Decimal) -> str:
 async def reconcile(
     window: Window | None = None,
     *,
-    gateway: GatewaySpendLog | None = None,
+    spend_log: GatewaySpendLog | None = None,
     tolerance: Tolerance | None = None,
     max_pages: int = USAGE_RECONCILE_GATEWAY_MAX_PAGES,
 ) -> Report:
@@ -229,10 +229,10 @@ async def reconcile(
     tenants = {tenant for tenant, _ in events} | await store.known_tenants()
     report.tenants = len(tenants)
 
-    if gateway is None:
+    if spend_log is None:
         report.skipped.append("gateway: not compared (not requested)")
     else:
-        spend = await gateway.spend(window, max_pages=max_pages)
+        spend = await spend_log.spend(window, max_pages=max_pages)
         report.gateway_rows = spend.rows
         if not spend.complete:
             report.incomplete = True

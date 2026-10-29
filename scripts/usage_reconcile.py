@@ -73,8 +73,8 @@ async def run_pass(client: httpx.AsyncClient | None, *, days: int) -> reconcile.
     """One pass, never raising: a failure is counted (`failed`, alert UsageReconcileNotCompleting) and logged by CLASS
     only, since an HTTP or database error's text can carry an address or a statement."""
     try:
-        gateway = HttpGatewaySpendLog(client) if client is not None else None
-        report = await reconcile.reconcile(reconcile.default_window(lookback_days=days), gateway=gateway)
+        spend_log = HttpGatewaySpendLog(client) if client is not None else None
+        report = await reconcile.reconcile(reconcile.default_window(lookback_days=days), spend_log=spend_log)
     except Exception as exc:  # noqa: BLE001 - a pass that cannot run is the failure to report, not a reason to stop the worker
         reconcile.record_outcome("failed")
         logger.warning("usage_reconcile_failed", extra={"error_class": type(exc).__name__})

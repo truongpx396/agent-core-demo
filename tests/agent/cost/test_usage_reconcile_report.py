@@ -59,7 +59,7 @@ async def run(gateway: FakeGateway | None, **kwargs) -> Report:
     if gateway is None:
         return await reconcile.reconcile(WINDOW, **kwargs)
     async with gateway.client() as client:
-        return await reconcile.reconcile(WINDOW, gateway=HttpGatewaySpendLog(client), **kwargs)
+        return await reconcile.reconcile(WINDOW, spend_log=HttpGatewaySpendLog(client), **kwargs)
 
 
 class TestTheRecordsAgree:
@@ -176,7 +176,7 @@ class TestWhatItCannotCompareIsSaidNotSkippedSilently:
         async with gateway.client() as client:
             client.headers["Authorization"] = "Bearer someone-else"
             with pytest.raises(httpx.HTTPStatusError):
-                await reconcile.reconcile(WINDOW, gateway=HttpGatewaySpendLog(client), tolerance=STRICT)
+                await reconcile.reconcile(WINDOW, spend_log=HttpGatewaySpendLog(client), tolerance=STRICT)
 
 
 class TestWhatItPublishes:

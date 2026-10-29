@@ -45,6 +45,7 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMe
 from langchain_core.outputs import ChatGeneration, ChatResult
 from qdrant_client.models import FieldCondition, Filter, MatchValue
 
+from app.adapters.postgres import checkpointing as pg_checkpointing
 from app.agent.graph.build import GraphDeps
 from app.agent.runtime import core as agent_module
 from app.agent.runtime import stream as stream_module
@@ -53,6 +54,7 @@ from app.agent.tools import run_subagent as subagent_tools
 from app.core import metrics
 from app.domains.ecorp import store as ecorp_store
 from app.job_queue import agent_worker, queue
+from app.ports import checkpointing as checkpointing_port
 from app.retrieval import embeddings as embeddings_module
 from app.retrieval import qdrant_store, semantic_cache
 from app.retrieval.embedding_identity import EmbeddingIdentity
@@ -116,21 +118,20 @@ def _echoing_llm(respond: Callable[[list[BaseMessage]], AIMessage]):
 @pytest.fixture(autouse=True)
 def reset_agent_singleton(monkeypatch):
     """Same fixture as tests/agent/runtime/test_durable_checkpoint.py — see that file's docstring for why
-    `_graph`/`_checkpointer_pool`/`_graph_lock` (module-level singletons) need resetting before and after
+    `_graph`/`_graph_lock` (module-level singletons) and the checkpointer adapter that owns the pool need resetting before and after
     every test here too — this file's own `asyncio.gather`-heavy tests (every class below runs several turns
     concurrently) are exactly the shape most likely to leave `_graph_lock` stuck if a gathered task were ever
     torn down while holding it, so this reset matters here at least as much as in that file.
     """
-    monkeypatch.setattr(
-        agent_module, "CHECKPOINTER_DATABASE_URL", ensure_postgres()["checkpointer_database_url"]
-    )
+    # The checkpointer is the `Checkpointing` port: the Postgres adapter reads the database URL, and owns the pool. A FRESH adapter per test, so a pool
+    # left behind by the last test (bound to a loop that is gone) is never the one this test closes.
+    monkeypatch.setattr(pg_checkpointing, "CHECKPOINTER_DATABASE_URL", ensure_postgres()["checkpointer_database_url"])
+    monkeypatch.setattr(checkpointing_port.checkpointing, "get", lambda adapter=pg_checkpointing.PgCheckpointing(): adapter)
     agent_module._graph = None
-    agent_module._checkpointer_pool = None
     agent_module._graph_lock = asyncio.Lock()
     subagent_tools.reset_subagent_graph_cache()
     yield
     agent_module._graph = None
-    agent_module._checkpointer_pool = None
     agent_module._graph_lock = asyncio.Lock()
     subagent_tools.reset_subagent_graph_cache()
 
@@ -261,7 +262,7 @@ async def real_qdrant(monkeypatch):
 
 
 class TestNoCrossContaminationUnderConcurrency:
-    """The pooled checkpointer (app/agent/runtime/core.py::_open_checkpointer)
+    """The pooled checkpointer (app/adapters/postgres/checkpointing.py::PgCheckpointing.open)
     replaced a single shared AsyncConnection specifically so concurrent
     turns don't all funnel through one connection — this is the most
     direct possible check that the pool genuinely ISOLATES them rather

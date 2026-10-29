@@ -18,6 +18,7 @@ from decimal import Decimal
 import psycopg
 import pytest
 
+from app.adapters.litellm.spend_logs import HttpGatewaySpendLog
 from app.agent.cost import usage_events
 from app.agent.cost import usage_reconcile as reconcile
 from app.agent.cost.pricing import ModelPrice, PricedCall
@@ -100,7 +101,7 @@ async def reconcile_for(gateway: FakeGateway | None, tenant: str, **kwargs) -> l
         report = await reconcile.reconcile(window(), **kwargs)
     else:
         async with gateway.client() as client:
-            report = await reconcile.reconcile(window(), gateway_client=client, **kwargs)
+            report = await reconcile.reconcile(window(), spend_log=HttpGatewaySpendLog(client), **kwargs)
     return [f for f in report.findings if f.tenant == tenant]
 
 
