@@ -14,7 +14,7 @@ import pytest
 REPO = Path(__file__).resolve().parents[2]
 DOCS = [
     "GRAPH_PATTERNS.md", "README.md", "CLAUDE.md", "COST_GOVERNANCE.md", "ENGINEERING_PATTERNS.md",
-    "WORKER_CONCURRENCY.md", "BILLING_INTEGRATION.md",
+    "WORKER_CONCURRENCY.md", "BILLING_INTEGRATION.md", "ARCHITECTURE.md",
     *sorted(str(p.relative_to(REPO)) for p in (REPO / ".claude" / "rules").glob("*.md")),
 ]
 # (document, reference) pairs that are MEANT not to resolve.

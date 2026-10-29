@@ -5,6 +5,7 @@ Redis Streams, Langfuse, FastAPI. Three example domains (support, ops, sales) ru
 unmodified graph. Python 3.13.
 
 Read these before changing behavior; they hold the reasoning this file deliberately omits:
+- `ARCHITECTURE.md` — the hexagonal layout: rings, the ports and their adapters, the dependency rule and the tests that enforce it, how to add a port, and what is not done.
 - `.specify/memory/constitution.md` — the non-negotiable rules. Principles I, II and IV
   (tenant isolation, mandatory approval, exactly-once side effects) are NON-NEGOTIABLE.
 - `GRAPH_PATTERNS.md` — the graph's numbered patterns (1-69 so far; 51 live there), each with the real bug
@@ -60,7 +61,7 @@ they delete volumes or kill running processes.
   streaming turns (`core.py`, `stream.py`) plus the session directory. `tools/` is `builtin.py` (the tools
   several domains share, with `SHARED_TOOL_CAPABILITIES`), `idempotency.py`, the skill and subagent catalogs
   (one shared `frontmatter.py` loader) and `run_subagent`. `cost/` is the spend meter and caps
-  (`COST_GOVERNANCE.md`). `manifest.py` is `AgentManifest`/`DomainPlugin`.
+  (`COST_GOVERNANCE.md`). `AgentManifest`/`DomainPlugin` (the plugin contract) are in `app/ports/domains.py`.
 - `app/domains/{ecorp,support,ops,sales}/` — each is `store.py` + `tools.py` + `domain.py`, and
   `registry.py` looks them up by name. Ecorp is the default but has no standing in the graph: `build_graph`
   requires a manifest and a domain. A new use case follows that shape; it never forks `build_graph()`.
@@ -72,11 +73,19 @@ they delete volumes or kill running processes.
 - `services/authlimit/` — the edge authentication and rate-limit service (specs/018), **the only Go in the repo**: a self-contained module (own tests, Dockerfile, CI job) that Caddy asks about every request before the chat API and the MCP routes. It verifies the Casdoor token offline, charges per-tenant and per-person token buckets in Redis, refuses revoked people, and mints a 30-second signed identity. It imports nothing from `app/` and `app/` imports nothing from it (`tests/core/test_authlimit_boundary.py`); they share only the contract, `testdata/auth-vectors/` and two JSON registries. The API's side of the seam is `app/core/internal_identity.py` (the verifier) and `app/api/identity.py`: `AUTH_MODE=identity` (the default) trusts only the identity the door signs and ignores `X-Tenant-Id`/`X-Principal-Id`; the hermetic tests and `.env.example` choose `headers` explicitly. `make authlimit-test`; `make authlimit-smoke` (needs Docker; `ARGS="--upstream api"` after `make authlimit-up-app` runs it against the real API); `make authlimit-web-check` (the web page in a real browser). Constitution 1.4.0, "Non-Python services"; GRAPH_PATTERNS.md 84, 85, 86; ENGINEERING_PATTERNS.md 86, 88.
 - `app/mcp/` — MCP in both directions (GRAPH_PATTERNS.md 21, 28, 78, 82). The two published servers (`server.py`, `ops_server.py`) are `build_server(identity)` factories: over stdio they act for their **launcher's** identity (`MCP_TENANT`/`MCP_PRINCIPAL`), over HTTP (`gateway.py` + `gateway_auth.py`, the `gateway` compose profile, specs/017) for the verified OAuth 2.1 token of each request, and never for a tool argument; the gateway never reads the launcher's environment, and no write tool or sandbox is behind it (Principle II). `client.py` consumes a remote catalog (pinned by hash, scrubbed then bounded) over `connection.py`'s one long-lived connection per server, which never replays a call that may have run. The app is on `mcp` 2.x (servers on `MCPServer`, client on `ClientSession`); the sandbox bridge, `opensandbox-mcp` 1.1+, is the first release that supports it (`tests/core/test_mcp_sdk_pin.py`).
 - `app/retrieval/` — Qdrant helpers, embeddings, the answer cache. `embeddings.py` has two roles (`embed_query`, `embed_document(s)`); `embedding_identity.py` is what a collection's vectors were made with, and `qdrant_store.py` refuses to mix two (pattern 67). `docker/ml-service/ml_service/` is the ML service as an importable package (rerank, prompt guard, `/v1/embeddings`, per-model health and metrics); `docker/ml-service/models.toml` declares the text models it can serve.
-- `app/core/` — what every package may use and that depends on none of them: config, security (`SecurityCtx`),
-  metrics, errors, scrubbing, resilience, `sql_store.py` (pooled appdata connections), `gateway.py` and
-  `moderation.py`, and what every tool runs through:
-  `tool_runtime.py` (timeout, scrub, fail-closed ctx) and `tool_idempotency.py` (the exactly-once guard). A
-  module belongs here when it imports nothing from `agent`, `domains` or `api`.
+- `app/ports/`, `app/adapters/`, `app/bootstrap.py` — **ports and adapters** (`ARCHITECTURE.md`). `app/ports/` holds the
+  Protocols the application needs (cost, models, llm, sessions, idempotency, checkpointing, retrieval, classification,
+  screening, web, notify, sandbox, domains, and a repository per domain), each with a `Slot` the application reads at call
+  time (`ticket_store.get().get_ticket(...)`; unbound raises `PortNotBound`). `app/adapters/{postgres,litellm,mlservice,web,notify,mcp}`
+  implement them; `app/retrieval`, `app/ingestion/web_crawler.py` and each domain's `store.py` are adapters that stayed where they were.
+  `app/bootstrap.py::adapters()` is the one table of port to adapter; every entrypoint calls `wire()` first. In `app/agent` and
+  `app/domains` import no infrastructure client (psycopg, redis, qdrant_client, openai, httpx, ...) and no adapter:
+  `tests/core/test_architecture_layers.py` fails the build. Tests bind a fake with `Slot.overriding` (`tests/fakes/`).
+- `app/core/` — what every package may use and that depends on none of them: config, security (`SecurityCtx`, `AccessScope`),
+  metrics, errors, scrubbing, resilience, `gateway.py` (the identity the gateway is told) and `moderation.py`, and what every
+  tool runs through: `tool_runtime.py` (timeout, scrub, fail-closed ctx) and `tool_idempotency.py` (the exactly-once guard). A
+  module belongs here when it imports nothing from `agent`, `domains`, `api` or an adapter, and no infrastructure client. The
+  platform modules (`sql_store.py`, `internal_identity.py`, `telemetry.py`, `logging_config.py`, `job_runtime.py`) live here but are adapter-side.
 - `packages/billing/` — the credit wallet, payment webhooks, the billing half of a usage meter (rate, record,
   debit, export), the credit gate and operator CLIs as an independent package (`credit_billing`, src layout,
   own pyproject/tests/schema/alerts/docs/specs). It imports nothing from `app`; the app reaches it only through
@@ -107,6 +116,7 @@ they delete volumes or kill running processes.
   `.claude/rules/side-effect-tools.md` (capability tier, ctx check, `idempotent()`, row-level
   uniqueness, tenant-scoped SQL, tests). Don't add one without it.
 - Tune a limit or flag through `app/core/config.py` `Settings` and add it to `.env.example`.
+- A new external system (a store, a service, a provider) is a port in `app/ports/`, an adapter, and one entry in `app/bootstrap.py::adapters()`; never an import of its client in `app/agent` or `app/domains`. A new entrypoint calls `wire()`. Both are tests, not conventions (`ARCHITECTURE.md`, "Adding something").
 - A broad `except Exception` needs `# noqa: BLE001 - <reason>`; every `# type: ignore[...]` and
   `# noqa` carries a reason. Comments explain *why* (the failure that motivated the code), not
   what; keep them short, point at the bug or pattern number, and leave the long reasoning to the
@@ -165,4 +175,4 @@ story. Amend the constitution only through `/speckit-constitution` and a PR.
 Path-scoped guidance loads automatically from `.claude/rules/`: `side-effect-tools.md`,
 `runtime-reliability.md`, `testing.md`.
 
-The billing package's own specs (010-013) live in `packages/billing/specs/`; `specs/` keeps a one-file pointer for each, so Spec Kit still counts the numbers as taken (the next is 019; 014 is the model-serving and evaluation-harness spec, 015 builds on it with label sets on the ML service and tiered model routing, 016 puts that behind a decision interface shaped like the hosted Jev one, 017 is the MCP gateway, and 018 is the edge authentication and rate-limit service).
+The billing package's own specs (010-013) live in `packages/billing/specs/`; `specs/` keeps a one-file pointer for each, so Spec Kit still counts the numbers as taken (the next is 020; 014 is the model-serving and evaluation-harness spec, 015 builds on it with label sets on the ML service and tiered model routing, 016 puts that behind a decision interface shaped like the hosted Jev one, 017 is the MCP gateway, 018 is the edge authentication and rate-limit service, and 019 is the hexagonal restructuring: ports, adapters and a composition root).

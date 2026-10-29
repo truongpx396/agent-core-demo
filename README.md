@@ -76,6 +76,10 @@ Telegram publish and read back, and `agent-worker` processes run the graph, so e
 runs the graph in its own process, which is why the per-thread lock, crash reclaim and dead-letter archive cover all of them
 (pattern 89).
 
+The code is laid out as **ports and adapters**: the agent and its domains reach Postgres, Qdrant, Redis, the LLM gateway, the ML service, the web and the sandbox
+only through `Protocol`s in `app/ports/`, the adapters implement them, and `app/bootstrap.py` binds the two when a process starts. A test fails the build when an import
+crosses a ring the wrong way or an entrypoint forgets to wire. [ARCHITECTURE.md](ARCHITECTURE.md) has the rings, the port catalogue and how to add one (pattern 90).
+
 ```mermaid
 flowchart TB
     subgraph clients_sg["Client surfaces"]
@@ -780,27 +784,30 @@ casually. The compose files live in `deploy/compose/` but resolve paths and `.en
 
 ```
 app/
-  agent/       graph/ (LangGraph), runtime/ (turns, streaming, sessions), tools/ (built-ins, catalogs, run_subagent), cost/ (meter, caps), manifest.py
+  adapters/    the outbound adapters that have no older home: postgres/, litellm/, mlservice/, web/, notify/, mcp/
+  agent/       graph/ (LangGraph), runtime/ (turns, streaming, sessions), tools/ (built-ins, catalogs, run_subagent), cost/ (meter, caps)
   api/         FastAPI: main.py mounts routers/ (chat, ingest, usage, system); deps.py (caller by AUTH_MODE), identity.py, schemas, health, webhook rate limit, web UI (static/index.html)
   billing_integration/  the app's one seam to the billing package (port.py)
+  bootstrap.py binds every port to its adapter; each entrypoint calls wire() first
   channels/    CLI (chat.py) and Telegram: front doors that publish turns to the queue and never run the graph
-  core/        what every package uses: config, security (SecurityCtx/Policy), metrics, errors, scrubbing, SQL pool, LLM gateway contract, tool timeout and idempotency
-  domains/     support/, ops/, sales/ (store + tools + domain each), registry, shared sandbox tools
+  core/        the kernel: config, security (SecurityCtx/Policy/AccessScope), metrics, errors, scrubbing, the gateway identity, tool timeout and the exactly-once guard (plus the SQL pool and other platform modules)
+  domains/     ecorp/, support/, ops/, sales/ (store = the domain's adapter + tools + domain each), registry, shared sandbox session
   ingestion/   chunking, ingestor, crawler, object store, ingest worker
   job_queue/   Redis Streams queue, agent worker, reclaim, producer (what the CLI and Telegram publish through)
   mcp/         server, ops_server (stdio), gateway (Streamable HTTP + OAuth 2.1), client
+  ports/       the Protocols the application needs (cost, models, llm, sessions, retrieval, web, sandbox, a repository per domain, ...) and Slot, the typed seam
   retrieval/   embeddings, Qdrant store, semantic cache, memory deletion
 scripts/       seed, eval, cron jobs, ops_investigate, defectdojo import; ai_review/ is the PR-review tool
 services/authlimit/       the edge auth and rate-limit service: the only Go in the repo (own tests, Dockerfile, CI job)
 evals/ scripts/model_eval/   the model-evaluation harness and its frozen datasets, candidates, baselines
-specs/ .specify/          Spec Kit specs 001–018 and the constitution
+specs/ .specify/          Spec Kit specs 001–019 and the constitution
 skills/ subagents/        the agent's own catalogs
 docker/ Dockerfile        ml-service, OpenSandbox, sandbox image; the app image (the Dockerfile stays at the root: the build context)
 deploy/                   compose/ (dev, prod, observability, load test), caddy/, litellm/ (configs, patches/)
 infra/terraform/          DigitalOcean droplets; infra/README.md is the runbook
 observability/            Prometheus (+ alerts.yml), Alertmanager, Loki, Promtail, otel-collector, Grafana
 postgres-init/            numbered SQL schema (fresh volumes only)
-tests/                    mirrors app/; integration/, live/, deepeval/ are the marked tiers
+tests/                    mirrors app/; adapters/ (SQL shape, requests), fakes/ (in-memory ports); integration/, live/, deepeval/ are the marked tiers
 packages/billing/         the independent billing package: src, tests, schema, alerts, docs, specs
 promptfoo/ garak/ loadtest/   prompt checks (the repo's only package.json), jailbreak scan, Locust
 .github/workflows/        ci, deploy, ai-review, terraform-validate, redteam, strix, zap

@@ -205,6 +205,40 @@ def test_the_leaf_and_composition_scanners_can_fail():
     assert importers_of("app.bootstrap", files) == {"app/agent/y.py"}
 
 
+# --- the rules that decide stay free of the agent framework -------------------------------------------------------------------
+
+# Accepted in the application ring: LangGraph and LangChain core, because the agent IS a graph over LangChain messages. But the modules that hold the
+# DECISIONS the constitution's principles rest on (who may see what, what a URL may be, what is scrubbed, what a budget allows, what a turn may spend,
+# what a domain's policy permits) do not read a message object or a graph state, so they are testable, and can be read, without the framework. This list
+# is what is true today; a module joins it when it is cleaned of the framework, and a framework import into one of these is a failure.
+# NOT on it, on purpose: the graph's own nodes and guards (`routing.should_continue`, `hitl`, `tool_guards`, `loop_guards`, `output_checks`, `messages`,
+# `state`), which read `AIMessage.tool_calls` and the graph's `State`. Separating them would need a second message model that mirrors LangChain's;
+# ARCHITECTURE.md says why that is not worth its cost.
+FRAMEWORK = ("langgraph", "langchain", "langchain_core", "langchain_openai")
+FRAMEWORK_FREE = (
+    "app/core/security.py", "app/core/errors.py", "app/core/scrubbing.py", "app/core/untrusted.py", "app/core/routing_policy.py",
+    "app/core/url_safety.py", "app/core/output_limits.py", "app/core/resilience.py", "app/core/moderation.py",
+    "app/agent/cost/budgets.py", "app/agent/cost/pricing.py", "app/agent/cost/metering.py", "app/agent/cost/usage_events.py",
+    "app/agent/cost/budget_holds.py", "app/agent/graph/citations.py", "app/agent/graph/links.py", "app/domains/policy.py",
+    "app/agent/runtime/sessions.py",
+)
+
+
+def framework_imports(source: str) -> set[str]:
+    return {name for name in _imports(ast.parse(source)) if any(_is(name, fw) for fw in FRAMEWORK)}
+
+
+@pytest.mark.parametrize("rel", FRAMEWORK_FREE)
+def test_the_modules_that_decide_import_no_agent_framework(rel):
+    assert framework_imports((REPO / rel).read_text()) == set()
+
+
+def test_the_framework_scanner_can_fail():
+    assert framework_imports("from langchain_core.messages import AIMessage") == {"langchain_core.messages", "langchain_core.messages.AIMessage"}
+    assert framework_imports("import langgraph.graph") == {"langgraph.graph"}
+    assert framework_imports("from app.core import metrics\nimport json") == set()
+
+
 # --- the scanner itself: each rule must be able to fail ---------------------------------------------------------------------
 
 @pytest.mark.parametrize(
