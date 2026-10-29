@@ -14,12 +14,14 @@ import asyncio
 import uuid
 
 from app.agent.tools import skill_catalog as skills_module
+from app.bootstrap import wire
 from app.core.config import SKILLS_COLLECTION
 from app.retrieval import qdrant_store
 from app.retrieval.embeddings import embed_document, embed_sparse, embedding_dim
 
 
 async def main() -> None:
+    wire()
     try:
         skills_module.reload_skills()
         catalog = skills_module.get_skills()

@@ -32,6 +32,7 @@ import httpx
 import redis.asyncio as redis
 
 from app.agent.runtime.sessions import TELEGRAM_THREAD_PREFIX
+from app.bootstrap import verify_wired, wire
 from app.core import metrics
 from app.core.config import AGENT_DOMAIN, DEFAULT_TENANT, TELEGRAM_BOT_TOKEN
 from app.core.logging_config import configure_logging
@@ -220,6 +221,8 @@ async def handle_message(
 
 
 async def run() -> None:
+    wire()
+    verify_wired()
     """The long-poll loop: fetch updates since the last offset, handle each sequentially (one chat at a time),
     then advance AND PERSIST `offset` past each. A message is never replayed after a successful reply, and
     since `offset` is durable in Redis, a restart resumes from the last one actually handled instead of

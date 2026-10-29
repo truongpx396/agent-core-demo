@@ -34,6 +34,8 @@ from typing import Any
 import httpx
 import yaml
 
+from app.bootstrap import wire
+
 REPO = Path(__file__).resolve().parents[1]
 DEV_CONFIG = REPO / "deploy/litellm/litellm-config.yaml"
 DEV_COMPOSE = REPO / "deploy/compose/docker-compose.yml"
@@ -97,6 +99,7 @@ class _Stub(BaseHTTPRequestHandler):
 
 
 def main() -> int:
+    wire()
     docker = shutil.which("docker") or "/usr/local/bin/docker"
     if not Path(docker).exists():
         print("error: Docker is needed (one throwaway container of the pinned LiteLLM image)", file=sys.stderr)

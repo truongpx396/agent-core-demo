@@ -37,6 +37,7 @@ from typing import Any
 
 from qdrant_client.models import PointStruct
 
+from app.bootstrap import wire
 from app.core.config import COLLECTION, SKILLS_COLLECTION
 from app.retrieval import embedding_identity, embeddings, qdrant_store
 
@@ -246,6 +247,7 @@ async def _run(args: argparse.Namespace) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    wire()
     return asyncio.run(_run(_parse(sys.argv[1:] if argv is None else argv)))
 
 

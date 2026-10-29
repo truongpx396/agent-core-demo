@@ -21,6 +21,7 @@ from typing import Any
 from mcp.server import MCPServer
 from mcp.types import ToolAnnotations
 
+from app.bootstrap import wire
 from app.core.config import DEFAULT_TENANT
 from app.core.logging_config import configure_logging
 from app.domains.ops.tools import (
@@ -95,6 +96,7 @@ mcp = build_server(launcher_source(tenant=DEFAULT_TENANT))
 
 
 def main() -> None:
+    wire()
     configure_logging()
     try:
         launcher_ctx(tenant=DEFAULT_TENANT)

@@ -151,6 +151,60 @@ def test_the_ledger_only_shrinks():
     )
 
 
+# --- two more shapes of the same rule -----------------------------------------------------------------------------------------
+
+# The driving adapters are leaves: the API and the channels call into the application and nothing calls into them.
+LEAF_PACKAGES = ("app.api", "app.channels")
+
+# The composition root is imported by the code that STARTS a process (an entrypoint, or `scheduled_job` which starts the one-shot jobs), and by nothing else:
+# anything deeper that imported it could bind adapters behind a test's back or make the application depend on its own wiring.
+BOOTSTRAP = "app.bootstrap"
+BOOTSTRAP_IMPORTERS_BESIDES_ENTRYPOINTS = frozenset({"app/core/job_runtime.py"})
+
+
+def importers_of(package: str, files: dict[str, str]) -> set[str]:
+    """Repo-relative paths in `files` that import `package`, excluding the package's own modules."""
+    own = package.replace(".", "/")
+    return {
+        rel for rel, source in files.items()
+        if not rel.startswith(own) and any(_is(name, package) for name in _imports(ast.parse(source)))
+    }
+
+
+def _app_files() -> dict[str, str]:
+    return {p.relative_to(REPO).as_posix(): p.read_text() for p in sorted((REPO / "app").rglob("*.py"))}
+
+
+def _is_entrypoint(source: str) -> bool:
+    return '__name__ == "__main__"' in source or "FastAPI(" in source
+
+
+@pytest.mark.parametrize("package", LEAF_PACKAGES)
+def test_a_driving_adapter_is_a_leaf_nothing_else_in_the_app_imports_it(package):
+    assert importers_of(package, _app_files()) == set()
+
+
+def test_only_process_entrypoints_import_the_composition_root():
+    files = _app_files()
+    importers = importers_of(BOOTSTRAP, files)
+    not_entrypoints = sorted(
+        rel for rel in importers if not _is_entrypoint(files[rel]) and rel not in BOOTSTRAP_IMPORTERS_BESIDES_ENTRYPOINTS
+    )
+    assert not_entrypoints == [], "wire the ports where the process starts, not from inside the application"
+    assert len(importers) >= 8, "a floor against a vacuous pass: the API, the workers, the channels and the MCP servers all start here"
+
+
+def test_the_leaf_and_composition_scanners_can_fail():
+    files = {
+        "app/agent/x.py": "from app.api import deps\n",
+        "app/api/deps.py": "import app.api.schemas\n",
+        "app/agent/y.py": "import app.bootstrap\n",
+        "app/ok.py": "from app.core import config\n",
+    }
+    assert importers_of("app.api", files) == {"app/agent/x.py"}, "a package's own imports of itself do not count"
+    assert importers_of("app.bootstrap", files) == {"app/agent/y.py"}
+
+
 # --- the scanner itself: each rule must be able to fail ---------------------------------------------------------------------
 
 @pytest.mark.parametrize(
