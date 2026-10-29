@@ -4,8 +4,8 @@
 
 Every point carries TWO named vectors: `dense` (semantic, via LiteLLM) and `sparse` (lexical/BM25, local
 fastembed). `hybrid_search` fetches both legs with `Prefetch` and fuses them server-side with Qdrant's RRF
-(`FusionQuery(fusion=Fusion.RRF)`). The tenant/owner pre-filter (`Policy.lower`, app/core/security.py) is
-applied inside EACH `Prefetch`, not only on top: filtering after fusion would let the fused candidates briefly
+(`FusionQuery(fusion=Fusion.RRF)`). The tenant/owner pre-filter (`Policy.lower` gives an `AccessScope`, app/core/security.py; `scope_filter` turns it into
+this store's filter) is applied inside EACH `Prefetch`, not only on top: filtering after fusion would let the fused candidates briefly
 include rows the principal can't see.
 
 Two independent degradation layers (pattern 10), both recorded as `agent_retrieval_degraded_total{stage=...}`:
@@ -46,6 +46,7 @@ from qdrant_client.models import (
     Condition,
     CreateAlias,
     CreateAliasOperation,
+    DatetimeRange,
     DeleteAlias,
     DeleteAliasOperation,
     Distance,
@@ -72,6 +73,8 @@ from app.core.config import (
     QDRANT_URL,
     RERANK_TOP_K,
 )
+from app.core.security import AccessScope
+from app.ports.retrieval import SearchHit
 from app.retrieval.embedding_identity import (
     HASH_LENGTH,
     EmbeddingIdentityMismatch,
@@ -316,14 +319,32 @@ async def upsert(points: list[PointStruct], collection: str | None = None) -> No
         await client.upsert(collection_name=name, points=batch)
 
 
+def scope_filter(scope: AccessScope) -> Filter:
+    """The Qdrant pre-filter for what `scope` may see: its tenant and kind always, and for a memory its owner and the retention cutoff.
+
+    A point with no `created_at` never satisfies a range filter in Qdrant, so a memory written before the field existed is excluded by the
+    cutoff: invisible until re-written, not just a future-only guarantee. This is the translation Principle I rests on, so
+    tests/retrieval/test_qdrant_store.py pins each condition and tests/integration/test_tenant_isolation_real_qdrant.py proves the result
+    against a real Qdrant."""
+    must: list[Condition] = [
+        FieldCondition(key="tenant", match=MatchValue(value=scope.tenant)),
+        FieldCondition(key="kind", match=MatchValue(value=scope.kind)),
+    ]
+    if scope.owner is not None:
+        must.append(FieldCondition(key="owner", match=MatchValue(value=scope.owner)))
+    if scope.created_after is not None:
+        must.append(FieldCondition(key="created_at", range=DatetimeRange(gte=scope.created_after)))
+    return Filter(must=must)
+
+
 def _build_filter(
-    topic: str | None, tenant_filter: Filter | None, doc_ids: list[str] | None = None
+    topic: str | None, scope: AccessScope | None, doc_ids: list[str] | None = None
 ) -> Filter | None:
     must: list[Condition] = []
     if topic:
         must.append(FieldCondition(key="topic", match=MatchValue(value=topic)))
-    if tenant_filter is not None:
-        existing = tenant_filter.must
+    if scope is not None:
+        existing = scope_filter(scope).must
         must.extend(existing if isinstance(existing, list) else [existing] if existing else [])
     if doc_ids:
         # ANDed onto `must` (tenant, topic) — can only NARROW the result
@@ -338,7 +359,7 @@ async def hybrid_search(
     query_text: str,
     topic: str | None = None,
     k: int | None = None,
-    tenant_filter: Filter | None = None,
+    scope: AccessScope | None = None,
     rerank_results: bool = True,
     doc_ids: list[str] | None = None,
     collection: str | None = None,
@@ -365,7 +386,7 @@ async def hybrid_search(
 
     k = k or RERANK_TOP_K
     coll = await check_identity(collection, write=False)
-    query_filter = _build_filter(topic, tenant_filter, doc_ids)
+    query_filter = _build_filter(topic, scope, doc_ids)
     dense_vector = await embeddings.embed_query(query_text)
 
     try:
@@ -459,3 +480,31 @@ async def count_by_filter(count_filter: Filter) -> int:
     function's docstring for the accepted race)."""
     result = await get_client().count(collection_name=await _maintenance_alias(None), count_filter=count_filter)
     return result.count
+
+
+def _hit(point) -> SearchHit:
+    return SearchHit(id=point.id, score=point.score, payload=dict(point.payload or {}))
+
+
+class QdrantDocumentIndex:
+    """The `DocumentIndex` adapter (`app/ports/retrieval.py`): `hybrid_search` behind the port. The module function is looked up at CALL time, so
+    a test that patches `qdrant_store.hybrid_search` is seen."""
+
+    async def search(
+        self,
+        query: str,
+        *,
+        scope: AccessScope,
+        topic: str | None = None,
+        k: int | None = None,
+        rerank: bool = True,
+        doc_ids: list[str] | None = None,
+        min_score: float | None = None,
+    ) -> list[SearchHit]:
+        points = await hybrid_search(
+            query, topic=topic, k=k, scope=scope, rerank_results=rerank, doc_ids=doc_ids, min_score=min_score
+        )
+        return [_hit(point) for point in points]
+
+    async def search_catalog(self, query: str, *, collection: str, k: int | None = None) -> list[SearchHit]:
+        return [_hit(point) for point in await hybrid_search(query, collection=collection, k=k)]

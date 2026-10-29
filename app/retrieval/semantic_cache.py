@@ -196,3 +196,13 @@ async def set(ctx: SecurityCtx | None, query: str, answer: str, citations: list[
     except Exception:  # noqa: BLE001 - see get()'s matching note
         logger.warning("semantic cache write failed; continuing without caching", exc_info=True)
         metrics.agent_semantic_cache_total.labels(outcome="error").inc()
+
+
+class RedisAnswerCache:
+    """The `AnswerCache` adapter (`app/ports/retrieval.py`): this module's `get` and `set` behind the port, looked up at CALL time."""
+
+    async def get(self, ctx: SecurityCtx | None, query: str) -> tuple[str, list[dict]] | None:
+        return await get(ctx, query)
+
+    async def set(self, ctx: SecurityCtx | None, query: str, answer: str, citations: list[dict]) -> None:
+        await set(ctx, query, answer, citations)

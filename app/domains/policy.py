@@ -8,18 +8,16 @@ directly, just against a domain-specific action vocabulary (`create_ticket`,
 `schedule_followup`, ...) that `TenantIsolationPolicy` doesn't know.
 
 Takes its allowed action set as data instead of one class per domain. None
-of these domains hold Qdrant-scoped data (tickets/leads/followups live in
+of these domains hold document-store data (tickets/leads/followups live in
 Postgres, always queried with an explicit `tenant = %s` — see each domain's
-`store.py`), so `lower()` raises rather than fabricating an unused Filter;
+`store.py`), so `lower()` raises rather than fabricating an unused scope;
 `permit()` still fails closed on a missing/malformed ctx via `valid_ctx`.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
 
-from qdrant_client.models import Filter
-
-from app.core.security import SecurityCtx, valid_ctx
+from app.core.security import AccessScope, SecurityCtx, valid_ctx
 
 
 @dataclass(frozen=True)
@@ -29,9 +27,9 @@ class ActionAllowlistPolicy:
     def permit(self, action: str, ctx: SecurityCtx) -> bool:
         return action in self.actions and valid_ctx(ctx)
 
-    def lower(self, ctx: SecurityCtx, target: str) -> Filter:
+    def lower(self, ctx: SecurityCtx, target: str) -> AccessScope:
         raise NotImplementedError(
-            "no Qdrant-scoped data in this domain — its tools query Postgres "
+            "no document-store data in this domain — its tools query Postgres "
             "directly with an explicit tenant predicate (see its store.py), "
             "so nothing ever calls Policy.lower() for it."
         )

@@ -14,11 +14,13 @@ repo's established pattern for exercising async code from a plain
 `def test_...`. `embed_text`/`embed_sparse` mocks stay plain sync lambdas
 (those two legs are unchanged); `rerank` mocks are small `async def`s.
 """
+from datetime import UTC, datetime
 from types import SimpleNamespace
 
 from qdrant_client.models import Modifier
 
 from app.core.config import COLLECTION
+from app.core.security import DEFAULT_POLICY, AccessScope
 from app.retrieval import embeddings, qdrant_store
 from tests.conftest import TEST_EMBEDDING_IDENTITY
 from tests.retrieval.fake_qdrant import FakeQdrant
@@ -259,3 +261,55 @@ class TestHybridSearchRerankScore:
         result = await qdrant_store.hybrid_search("query", min_score=-8.0)
 
         assert len(result) == 2
+
+
+class TestScopeFilter:
+    """`scope_filter` is the translation tenant isolation (constitution Principle I) rests on: an `AccessScope` becomes a Qdrant pre-filter,
+    and a condition dropped here is a cross-tenant read. Each condition is pinned by itself, and the whole is pinned against what
+    `Policy.lower` produces for a real context."""
+
+    CUTOFF = datetime(2026, 1, 1, tzinfo=UTC)
+
+    @staticmethod
+    def _by_key(built):
+        return {c.key: c for c in built.must}
+
+    def test_a_document_scope_is_the_tenant_and_the_kind_and_nothing_else(self):
+        built = qdrant_store.scope_filter(AccessScope(tenant="acme", kind="document"))
+
+        conditions = self._by_key(built)
+        assert set(conditions) == {"tenant", "kind"}
+        assert conditions["tenant"].match.value == "acme" and conditions["kind"].match.value == "document"
+
+    def test_a_memory_scope_adds_the_owner_and_the_retention_cutoff(self):
+        built = qdrant_store.scope_filter(AccessScope(tenant="acme", kind="memory", owner="alice", created_after=self.CUTOFF))
+
+        conditions = self._by_key(built)
+        assert set(conditions) == {"tenant", "kind", "owner", "created_at"}
+        assert conditions["owner"].match.value == "alice"
+        assert conditions["created_at"].range.gte == self.CUTOFF
+
+    def test_the_tenant_is_never_optional(self):
+        for scope in (AccessScope(tenant="acme", kind="document"), AccessScope(tenant="acme", kind="memory", owner="a", created_after=self.CUTOFF)):
+            assert "tenant" in self._by_key(qdrant_store.scope_filter(scope))
+
+    def test_the_real_policy_lowers_to_exactly_the_filter_the_store_used_to_be_handed(self):
+        ctx = {"tenant": "ecorp", "principal": "u1", "claims": {}}
+
+        docs = qdrant_store.scope_filter(DEFAULT_POLICY.lower(ctx, "documents"))
+        memories = qdrant_store.scope_filter(DEFAULT_POLICY.lower(ctx, "memories"))
+
+        assert [(c.key, c.match.value) for c in docs.must] == [("tenant", "ecorp"), ("kind", "document")]
+        assert [c.key for c in memories.must] == ["tenant", "kind", "owner", "created_at"]
+        assert [c.match.value for c in memories.must[:3]] == ["ecorp", "memory", "u1"]
+
+    def test_topic_and_doc_ids_narrow_the_scope_and_never_replace_it(self):
+        built = qdrant_store._build_filter("billing", AccessScope(tenant="acme", kind="document"), doc_ids=["a", "b"])
+
+        keys = [getattr(c, "key", None) for c in built.must]
+        assert "tenant" in keys and "topic" in keys
+        assert any(getattr(c, "has_id", None) == ["a", "b"] for c in built.must)
+
+    def test_no_scope_means_no_tenant_predicate_so_only_a_catalog_may_ask(self):
+        """`scope=None` is for the skills and subagents catalogs, which hold no tenant data (`DocumentIndex.search_catalog`)."""
+        assert qdrant_store._build_filter(None, None) is None

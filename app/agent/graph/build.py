@@ -76,18 +76,18 @@ from app.agent.graph.utils import friendly_tool_error, instrumented, make_llm
 from app.agent.tools import builtin
 from app.core.config import CHAT_MODEL, MAX_COST_USD_PER_TURN
 from app.core.security import SecurityCtx
-from app.retrieval import semantic_cache
+from app.ports.retrieval import answer_cache
 
 if TYPE_CHECKING:
     from app.ports.domains import AgentManifest, DomainPlugin
 
 
 async def default_cache_get(ctx: SecurityCtx | None, query: str) -> tuple[str, list[dict]] | None:
-    return await semantic_cache.get(ctx, query)
+    return await answer_cache.get().get(ctx, query)
 
 
 async def default_cache_set(ctx: SecurityCtx | None, query: str, answer: str, citations: list[dict]) -> None:
-    await semantic_cache.set(ctx, query, answer, citations)
+    await answer_cache.get().set(ctx, query, answer, citations)
 
 
 async def default_search(query: str, ctx: SecurityCtx | None) -> tuple[str, list[dict]]:

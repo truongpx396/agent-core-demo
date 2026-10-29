@@ -59,9 +59,6 @@ ALLOWED_OUTER = frozenset({"app.billing_integration.port"})
 
 # Violations that remain, as (file, imported module). See the module docstring.
 LEDGER: frozenset[tuple[str, str]] = frozenset({
-    # retrieval: the graph and the shared tools reach Qdrant and the Redis cache
-    ("app/agent/graph/build.py", "app.retrieval"),
-    ("app/agent/tools/builtin.py", "app.retrieval"),
     # the model: the graph builds its own OpenAI client and reaches the ML service
     ("app/agent/graph/core.py", "app.core.moderation"),
     ("app/agent/graph/model_route.py", "app.core.classification"),
@@ -69,9 +66,6 @@ LEDGER: frozenset[tuple[str, str]] = frozenset({
     ("app/agent/graph/utils.py", "langchain_openai"),
     ("app/agent/graph/utils.py", "psycopg"),
     ("app/core/gateway.py", "openai"),
-    # the kernel carries a Qdrant type, and the domain policy builds the filter
-    ("app/core/security.py", "qdrant_client"),
-    ("app/domains/policy.py", "qdrant_client"),
     # domains: tools reach their own store, the web, Slack, the sandbox and the crawler directly
     ("app/domains/ecorp/tools.py", "app.domains.ecorp.store"),
     ("app/domains/ops/tools.py", "app.domains.ops.metrics_client"),

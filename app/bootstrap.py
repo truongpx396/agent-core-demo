@@ -20,8 +20,18 @@ from app.adapters.postgres.sessions import PgSessionStore
 from app.adapters.postgres.tool_idempotency import PgToolCallLedger
 from app.adapters.postgres.usage_events import PgUsageEventStore
 from app.domains.registry import RegistryDomainCatalog
-from app.ports import checkpointing, cost, domains, idempotency, models, sessions
+from app.ports import (
+    checkpointing,
+    cost,
+    domains,
+    idempotency,
+    models,
+    retrieval,
+    sessions,
+)
 from app.ports.slot import PortNotBound, Slot, unbound
+from app.retrieval.qdrant_store import QdrantDocumentIndex
+from app.retrieval.semantic_cache import RedisAnswerCache
 
 
 def adapters() -> dict[Slot, object]:
@@ -36,6 +46,8 @@ def adapters() -> dict[Slot, object]:
         idempotency.tool_call_ledger: PgToolCallLedger(),
         checkpointing.checkpointing: PgCheckpointing(),
         domains.domain_catalog: RegistryDomainCatalog(),
+        retrieval.document_index: QdrantDocumentIndex(),
+        retrieval.answer_cache: RedisAnswerCache(),
     }
 
 

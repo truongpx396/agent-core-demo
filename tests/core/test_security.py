@@ -6,7 +6,17 @@ search_docs/add_note/remember; these test the Policy itself in isolation,
 the way GRAPH_PATTERNS.md's "Multi-Tenant Isolation" pattern describes:
 pure, fail-closed, and exhaustively testable without any I/O.
 """
-from app.core.security import DEFAULT_POLICY, TenantIsolationPolicy, valid_ctx
+from datetime import UTC, datetime, timedelta
+
+import pytest
+
+from app.core.config import MEMORY_RETENTION_DAYS
+from app.core.security import (
+    DEFAULT_POLICY,
+    AccessScope,
+    TenantIsolationPolicy,
+    valid_ctx,
+)
 
 FULL_CTX = {"tenant": "ecorp", "principal": "u1", "claims": {}}
 
@@ -67,68 +77,51 @@ class TestTenantIsolationPolicyPermit:
 
 
 class TestTenantIsolationPolicyLower:
+    """`lower` gives a store-neutral `AccessScope`; that the Qdrant adapter turns it into the right pre-filter is
+    tests/retrieval/test_qdrant_store.py::TestScopeFilter."""
+
     def test_documents_target_scopes_to_tenant_and_kind_document(self):
-        policy = TenantIsolationPolicy()
-        f = policy.lower(FULL_CTX, "documents")
-        values = {c.key: c.match.value for c in f.must}
-        assert values == {"tenant": "ecorp", "kind": "document"}
+        scope = TenantIsolationPolicy().lower(FULL_CTX, "documents")
+        assert scope == AccessScope(tenant="ecorp", kind="document")
 
     def test_memories_target_additionally_scopes_to_owner(self):
         """The second, finer isolation axis nested inside the first — see
         TenantIsolationPolicy's docstring."""
-        policy = TenantIsolationPolicy()
-        f = policy.lower(FULL_CTX, "memories")
-        values = {c.key: c.match.value for c in f.must if c.match is not None}
-        assert values == {"tenant": "ecorp", "kind": "memory", "owner": "u1"}
+        scope = TenantIsolationPolicy().lower(FULL_CTX, "memories")
+        assert (scope.tenant, scope.kind, scope.owner) == ("ecorp", "memory", "u1")
 
-    def test_memories_target_also_includes_a_retention_horizon_range(self):
-        """The retention-at-recall condition (GRAPH_PATTERNS.md pattern
-        33) — a separate condition from the match-based ones above, so
-        it's asserted on its own rather than folded into the match-value
-        dict comprehension."""
-        policy = TenantIsolationPolicy()
-        f = policy.lower(FULL_CTX, "memories")
-        range_conditions = [c for c in f.must if c.key == "created_at"]
-        assert len(range_conditions) == 1
-        assert range_conditions[0].range.gte is not None
+    def test_memories_target_also_includes_a_retention_horizon(self):
+        """The retention-at-recall condition (GRAPH_PATTERNS.md pattern 33): a memory older than MEMORY_RETENTION_DAYS is invisible."""
+        scope = TenantIsolationPolicy().lower(FULL_CTX, "memories")
+        assert scope.created_after is not None
+        expected = datetime.now(UTC) - timedelta(days=MEMORY_RETENTION_DAYS)
+        assert abs((scope.created_after - expected).total_seconds()) < 5
 
-    def test_documents_target_has_no_retention_range(self):
-        """Retention is a memory-specific concern — pattern 33's condition
-        must never leak onto the documents lowering."""
-        policy = TenantIsolationPolicy()
-        f = policy.lower(FULL_CTX, "documents")
-        assert not any(c.key == "created_at" for c in f.must)
+    def test_documents_target_has_no_owner_and_no_retention(self):
+        """Retention and ownership are memory concerns — pattern 33's cutoff must never leak onto the documents lowering."""
+        scope = TenantIsolationPolicy().lower(FULL_CTX, "documents")
+        assert scope.owner is None and scope.created_after is None
 
-    def test_documents_and_memories_filters_never_overlap(self):
-        """A document can never satisfy a memory-scoped filter or vice
-        versa — the `kind` discriminator is what keeps app/agent/tools/builtin.py's
-        shared Qdrant collection from leaking one kind into the other's
-        results."""
+    def test_documents_and_memories_scopes_never_overlap(self):
+        """A document can never satisfy a memory scope or vice versa — the `kind` discriminator is what keeps
+        app/agent/tools/builtin.py's shared collection from leaking one kind into the other's results."""
         policy = TenantIsolationPolicy()
-        doc_kind = next(
-            c.match.value for c in policy.lower(FULL_CTX, "documents").must if c.key == "kind"
-        )
-        mem_kind = next(
-            c.match.value for c in policy.lower(FULL_CTX, "memories").must if c.key == "kind"
-        )
-        assert doc_kind != mem_kind
+        assert policy.lower(FULL_CTX, "documents").kind != policy.lower(FULL_CTX, "memories").kind
 
     def test_unknown_target_raises(self):
-        policy = TenantIsolationPolicy()
-        try:
-            policy.lower(FULL_CTX, "something_else")
-        except ValueError:
-            pass
-        else:
-            raise AssertionError("expected ValueError for an unknown lowering target")
+        with pytest.raises(ValueError):
+            TenantIsolationPolicy().lower(FULL_CTX, "something_else")
 
-    def test_different_tenants_produce_different_filters(self):
+    def test_different_tenants_produce_different_scopes(self):
         policy = TenantIsolationPolicy()
-        f1 = policy.lower({"tenant": "ecorp", "principal": "u1"}, "documents")
-        f2 = policy.lower({"tenant": "other-co", "principal": "u1"}, "documents")
-        t1 = next(c.match.value for c in f1.must if c.key == "tenant")
-        t2 = next(c.match.value for c in f2.must if c.key == "tenant")
-        assert t1 != t2
+        s1 = policy.lower({"tenant": "ecorp", "principal": "u1"}, "documents")
+        s2 = policy.lower({"tenant": "other-co", "principal": "u1"}, "documents")
+        assert s1.tenant != s2.tenant
+
+    def test_a_scope_cannot_be_edited_after_it_is_made(self):
+        scope = TenantIsolationPolicy().lower(FULL_CTX, "documents")
+        with pytest.raises(AttributeError):
+            scope.tenant = "someone-else"  # type: ignore[misc] - the point of the test
 
 
 class TestDefaultPolicy:

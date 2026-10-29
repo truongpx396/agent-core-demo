@@ -52,7 +52,7 @@ from app.core.config import (
 from app.core.security import DEFAULT_POLICY, SecurityCtx, valid_ctx
 from app.core.tool_runtime import NO_CTX_REFUSAL, arun_with_timeout, ctx_or_refuse
 from app.core.tool_schema import ToolArgs
-from app.retrieval import qdrant_store
+from app.ports.retrieval import SearchHit, document_index
 
 logger = logging.getLogger(__name__)
 
@@ -190,30 +190,28 @@ async def _document_hits(
     query: str,
     topic: Topic | str | None = None,
     doc_ids: list[str] | None = None,
-):
+) -> list[SearchHit]:
     topic_value = topic.value if isinstance(topic, Topic) else topic
-    # doc_ids narrows the tenant filter, never substitutes for it — the
-    # tenant predicate is ANDed on regardless (qdrant_store.py::_build_filter),
+    # doc_ids narrows the scope, never substitutes for it — the tenant predicate is ANDed on
+    # regardless (the index applies the AccessScope as a pre-filter; qdrant_store.py::_build_filter),
     # so a caller can't use doc_ids to reach another tenant's point.
-    tenant_filter = DEFAULT_POLICY.lower(ctx, "documents")
-    hits = await qdrant_store.hybrid_search(
+    scope = DEFAULT_POLICY.lower(ctx, "documents")
+    hits = await document_index.get().search(
         query,
+        scope=scope,
         topic=topic_value,
-        tenant_filter=tenant_filter,
         doc_ids=doc_ids,
         min_score=MIN_RERANK_SCORE,
     )
     return _dedupe_by_parent(hits)
 
 
-async def _memory_hits(ctx: SecurityCtx, query: str):
+async def _memory_hits(ctx: SecurityCtx, query: str) -> list[SearchHit]:
     # Reranking skipped for memories: a principal's own memory set is small
     # and doesn't need cross-encoder precision — and recall runs
     # automatically every turn, unlike a one-off search_docs call.
-    tenant_filter = DEFAULT_POLICY.lower(ctx, "memories")
-    return await qdrant_store.hybrid_search(
-        query, tenant_filter=tenant_filter, rerank_results=False
-    )
+    scope = DEFAULT_POLICY.lower(ctx, "memories")
+    return await document_index.get().search(query, scope=scope, rerank=False)
 
 
 async def _search_docs_impl(
@@ -406,7 +404,7 @@ def make_skill_tools(domain: str) -> tuple[BaseTool, BaseTool]:
 
     async def _skill_search_impl(query: str) -> str:
         try:
-            hits = await qdrant_store.hybrid_search(
+            hits = await document_index.get().search_catalog(
                 query, collection=SKILLS_COLLECTION, k=_SKILL_SEARCH_FETCH_K
             )
         except Exception as exc:  # noqa: BLE001 - skills collection may not exist yet

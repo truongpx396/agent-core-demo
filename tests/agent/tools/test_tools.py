@@ -294,31 +294,29 @@ class TestSearchDocsCtx:
     async def test_applies_tenant_prefilter(self, monkeypatch):
         captured = {}
 
-        async def fake_hybrid_search(query_text, topic=None, k=None, tenant_filter=None, rerank_results=True, doc_ids=None, min_score=None):
-            captured["tenant_filter"] = tenant_filter
+        async def fake_hybrid_search(query_text, topic=None, k=None, scope=None, rerank_results=True, doc_ids=None, min_score=None):
+            captured["scope"] = scope
             return []
 
         monkeypatch.setattr(qdrant_store, "hybrid_search", fake_hybrid_search)
 
         await search_docs.ainvoke({"query": "hello"}, config=_cfg())
 
-        # Every FieldCondition in the lowered filter came from THIS ctx's
-        # tenant, and the filter scopes to documents (never memories).
-        must = captured["tenant_filter"].must
-        values = {c.key: c.match.value for c in must}
-        assert values["tenant"] == TEST_CTX["tenant"]
-        assert values["kind"] == "document"
+        # The scope handed to the index came from THIS ctx's tenant, and it scopes to documents (never memories).
+        scope = captured["scope"]
+        assert scope.tenant == TEST_CTX["tenant"]
+        assert scope.kind == "document" and scope.owner is None
 
-    async def test_two_different_tenants_get_different_filters(self, monkeypatch):
+    async def test_two_different_tenants_get_different_scopes(self, monkeypatch):
         """The concrete manifestation of tenant isolation at the query
-        layer: two tenants never produce the same server-side predicate,
+        layer: two tenants never produce the same scope (and so the same server-side predicate),
         so one tenant's search can't be satisfied by another's data —
         this is what "pre-filter, not post-filter" (app/retrieval/qdrant_store.py)
         actually buys."""
         seen_filters = []
 
-        async def fake_hybrid_search(query_text, topic=None, k=None, tenant_filter=None, rerank_results=True, doc_ids=None, min_score=None):
-            seen_filters.append(tenant_filter)
+        async def fake_hybrid_search(query_text, topic=None, k=None, scope=None, rerank_results=True, doc_ids=None, min_score=None):
+            seen_filters.append(scope)
             return []
 
         monkeypatch.setattr(qdrant_store, "hybrid_search", fake_hybrid_search)
@@ -326,9 +324,7 @@ class TestSearchDocsCtx:
         await search_docs.ainvoke({"query": "hello"}, config=_cfg(TEST_CTX))
         await search_docs.ainvoke({"query": "hello"}, config=_cfg(_OTHER_TENANT_CTX))
 
-        tenants = [
-            next(c.match.value for c in f.must if c.key == "tenant") for f in seen_filters
-        ]
+        tenants = [scope.tenant for scope in seen_filters]
         assert tenants[0] != tenants[1]
 
     async def test_doc_ids_is_anded_onto_the_tenant_filter_not_a_replacement(self, monkeypatch):
@@ -339,10 +335,10 @@ class TestSearchDocsCtx:
         captured = {}
 
         async def fake_hybrid_search(
-            query_text, topic=None, k=None, tenant_filter=None, rerank_results=True, doc_ids=None,
+            query_text, topic=None, k=None, scope=None, rerank_results=True, doc_ids=None,
             min_score=None,
         ):
-            captured["tenant_filter"] = tenant_filter
+            captured["scope"] = scope
             captured["doc_ids"] = doc_ids
             return []
 
@@ -351,12 +347,10 @@ class TestSearchDocsCtx:
         await search_docs.ainvoke({"query": "hello", "doc_ids": ["abc", "def"]}, config=_cfg())
 
         assert captured["doc_ids"] == ["abc", "def"]
-        # The tenant filter is passed through UNCHANGED alongside doc_ids
+        # The scope is passed through UNCHANGED alongside doc_ids
         # — _build_filter (app/retrieval/qdrant_store.py) is what ANDs them
         # together server-side, not search_docs replacing one with the other.
-        must = captured["tenant_filter"].must
-        values = {c.key: c.match.value for c in must}
-        assert values["tenant"] == TEST_CTX["tenant"]
+        assert captured["scope"].tenant == TEST_CTX["tenant"]
 
     def test_doc_ids_actually_narrows_the_qdrant_filter(self):
         """Unmocked, at the real qdrant_store._build_filter boundary:
@@ -364,8 +358,8 @@ class TestSearchDocsCtx:
         predicate — not a filter that could stand in for it."""
         from app.core.security import DEFAULT_POLICY
 
-        tenant_filter = DEFAULT_POLICY.lower(TEST_CTX, "documents")
-        built = qdrant_store._build_filter(None, tenant_filter, doc_ids=["abc", "def"])
+        scope = DEFAULT_POLICY.lower(TEST_CTX, "documents")
+        built = qdrant_store._build_filter(None, scope, doc_ids=["abc", "def"])
 
         assert any(getattr(c, "has_id", None) == ["abc", "def"] for c in built.must)
         assert any(
@@ -431,8 +425,8 @@ class TestMemoryRecallIsScopedToTheOwner:
     `recall_memories` wrapper nothing in production called; the scoping they pin is the same."""
 
     @staticmethod
-    def _memory_filters(seen):
-        return [f for f in seen if any(c.key == "kind" and c.match.value == "memory" for c in f.must)]
+    def _memory_scopes(seen):
+        return [scope for scope in seen if scope is not None and scope.kind == "memory"]
 
     async def test_returns_nothing_without_ctx(self):
         assert await gather_context(None, "coffee") == ("", [])
@@ -440,33 +434,33 @@ class TestMemoryRecallIsScopedToTheOwner:
     async def test_scopes_to_tenant_and_owner(self, monkeypatch):
         captured = []
 
-        async def fake_hybrid_search(query_text, topic=None, k=None, tenant_filter=None, rerank_results=True, doc_ids=None, min_score=None):
-            captured.append((tenant_filter, rerank_results))
+        async def fake_hybrid_search(query_text, topic=None, k=None, scope=None, rerank_results=True, doc_ids=None, min_score=None):
+            captured.append((scope, rerank_results))
             return []
 
         monkeypatch.setattr(qdrant_store, "hybrid_search", fake_hybrid_search)
 
         await gather_context(TEST_CTX, "coffee")
 
-        memory_calls = [(f, r) for f, r in captured if self._memory_filters([f])]
+        memory_calls = [(scope, r) for scope, r in captured if self._memory_scopes([scope])]
         assert len(memory_calls) == 1
-        memory_filter, rerank = memory_calls[0]
-        values = {c.key: c.match.value for c in memory_filter.must if c.match is not None}
-        assert values["tenant"] == TEST_CTX["tenant"]
-        assert values["kind"] == "memory"
-        assert values["owner"] == TEST_CTX["principal"]
+        memory_scope, rerank = memory_calls[0]
+        assert memory_scope.tenant == TEST_CTX["tenant"]
+        assert memory_scope.kind == "memory"
+        assert memory_scope.owner == TEST_CTX["principal"]
+        assert memory_scope.created_after is not None, "the retention cutoff travels with the scope"
         # Reranking is deliberately skipped for memory recall — see
         # _memory_hits's docstring.
         assert rerank is False
 
-    async def test_two_different_principals_get_different_filters(self, monkeypatch):
+    async def test_two_different_principals_get_different_scopes(self, monkeypatch):
         """The concrete manifestation of "a memory belongs to whoever wrote
         it, not the tenant at large" — two principals in the SAME tenant
         must produce filters that scope to different owners."""
         seen_filters = []
 
-        async def fake_hybrid_search(query_text, topic=None, k=None, tenant_filter=None, rerank_results=True, doc_ids=None, min_score=None):
-            seen_filters.append(tenant_filter)
+        async def fake_hybrid_search(query_text, topic=None, k=None, scope=None, rerank_results=True, doc_ids=None, min_score=None):
+            seen_filters.append(scope)
             return []
 
         monkeypatch.setattr(qdrant_store, "hybrid_search", fake_hybrid_search)
@@ -475,10 +469,7 @@ class TestMemoryRecallIsScopedToTheOwner:
         await gather_context(TEST_CTX, "coffee")
         await gather_context(other_principal_same_tenant, "coffee")
 
-        owners = [
-            next(c.match.value for c in f.must if c.key == "owner")
-            for f in self._memory_filters(seen_filters)
-        ]
+        owners = [scope.owner for scope in self._memory_scopes(seen_filters)]
         assert len(owners) == 2 and owners[0] != owners[1]
 
 
@@ -644,7 +635,11 @@ class TestToolCapabilities:
 
 
 class _FakeHit:
-    def __init__(self, payload):
+    """A point as Qdrant returns it: an id, a score and a payload."""
+
+    def __init__(self, payload, id="point-1", score=1.0):
+        self.id = id
+        self.score = score
         self.payload = payload
 
 
