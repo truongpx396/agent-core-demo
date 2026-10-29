@@ -74,10 +74,9 @@ BACKUP_PROVIDERS = (PLUGSKY, OPENROUTER)
 
 
 def backup_chain_spec(environ: Mapping[str, str] | None = None) -> list[tuple[BackupProvider, str]]:
-    """The enabled `(provider, model)` links in try-order: every provider whose key is set (a blank key, as
-    CI passes an unset secret, is not set), each expanded to its model list. `[]` when no key is set.
-    Pure: it reads only `environ` and builds no client, so the fast suite can pin the order and the
-    overrides without deepeval or a network."""
+    """The enabled `(provider, model)` links in try-order: every provider whose key is set (a blank key, as CI
+    passes an unset secret, is not set), each expanded to its model list.
+    """
     env = os.environ if environ is None else environ
     return [
         (provider, model)

@@ -86,10 +86,9 @@ def served_vectors(url: str, texts=TEXTS, model=PRIMARY) -> np.ndarray:
 
 
 def test_the_shipped_route_topics_set_is_served_by_the_real_container_and_matches_an_independent_computation(ml_service_url):
-    """`POST /v1/decide` against the image as built: the label set baked into it, both real models, the real tokenisers. The expected similarity is
-    computed here from the vectors `/v1/embeddings` serves (examples and sentences), the set's file and numpy, so the service's index is checked
-    against the arithmetic and not against itself (specs/015 FR-004). The three sentences are ones the primary was measured to place well clear of
-    the cutoff (0.773, 0.839 and 0.682 against 0.709), so this does not depend on a close call."""
+    """`POST /v1/decide` against the image as built: the label set baked into it, both real models, the real
+    tokenisers.
+    """
     raw = json.loads((Path(__file__).resolve().parents[2] / "docker" / "ml-service" / "labelsets" / "route-topics.json").read_text())
     sentences = [CODE_SENTENCE, "We received a subpoena for customer records, what do we do?", "qwerty qwerty qwerty"]
     answers: list[dict] = []
@@ -119,9 +118,10 @@ def test_the_shipped_route_topics_set_is_served_by_the_real_container_and_matche
 
 
 async def test_the_whole_label_call_from_the_app_is_measured_and_answers_nearly_every_call(ml_service_url, monkeypatch, record_property):
-    """The budget is 50 ms at p95 on the reference machine (specs/014 SC-009, specs/015 SC-003); that figure is MEASURED and recorded here and quoted
-    in the PR, not asserted, because a CI runner's speed says nothing about the reference machine. What is asserted is the part that must hold
-    anywhere: no call is an error, and nearly all of them (nine in ten) are answered with a label."""
+    """The budget is 50 ms at p95 on the reference machine (specs/014 SC-009, specs/015 SC-003); that figure is
+    MEASURED and recorded here and quoted in the PR, not asserted, because a CI runner's speed says nothing
+    about the reference machine.
+    """
     monkeypatch.setattr(classification, "choose", REAL_CHOOSE)  # the suite's autouse guard replaced it with "no answer"
     monkeypatch.setattr(classification, "ML_SERVICE_URL", ml_service_url)
     monkeypatch.setattr(classification, "ROUTER_TIMEOUT_SECONDS", 0.5)

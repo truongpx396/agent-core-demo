@@ -374,15 +374,10 @@ class TestShouldContinueMandatoryGate:
         assert should_continue(state) == "human_approval"
 
     def test_undeclared_tool_gates_even_without_require_approval(self):
-        """A tool that's genuinely registered (in valid_tool_names — i.e. it
-        was actually bound to the LLM and is dispatchable) but missing from
-        TOOL_CAPABILITIES — the "a developer added a new tool and forgot to
-        declare its capability" scenario — still fails closed to
-        human_approval. Contrast with TestShouldContinueInvalidToolCall
-        below: a name that ISN'T registered anywhere is a different, more
-        severe case (the model hallucinated a call to something that
-        doesn't exist at all) and is intercepted earlier, before this gate,
-        so it never reaches a human with nothing meaningful to approve."""
+        """A tool that's genuinely registered (in valid_tool_names — i.e. it was actually bound to the LLM and is
+        dispatchable) but missing from TOOL_CAPABILITIES — the "a developer added a new tool and forgot to
+        declare its capability" scenario — still fails closed to human_approval.
+        """
         state = {
             "iterations": 1,
             "require_approval": False,
@@ -424,13 +419,10 @@ class TestShouldContinueMandatoryGate:
 
 
 class TestShouldContinueInvalidToolCall:
-    """A tool_call whose name isn't in valid_tool_names at all (unlike
-    TestShouldContinueMandatoryGate's "registered but undeclared capability"
-    case above) is a more severe condition — the model itself emitted a
-    malformed/hallucinated call, not a real dispatchable tool with unknown
-    risk. Routes to the tool-batch guard (as `invalid_tool_call`), checked BEFORE the mandatory
-    capability gate, so it never reaches human_approval with a name nobody
-    could meaningfully approve."""
+    """A tool_call whose name isn't in valid_tool_names at all (unlike TestShouldContinueMandatoryGate's
+    "registered but undeclared capability" case above) is a more severe condition — the model itself emitted a
+    malformed/hallucinated call, not a real dispatchable tool with unknown risk.
+    """
 
     def test_name_absent_from_valid_tool_names_routes_to_the_batch_guard_as_invalid(self):
         state = {
@@ -637,11 +629,9 @@ class TestRouteAfterCheck:
         assert route_after_check(state) == "retry_output"
 
     def test_reason_repeated_at_threshold_gives_up(self):
-        """Real bug, found live: a stuck deferral loop burned 6 full retry
-        rounds before should_continue's own, much blunter
-        MAX_TOKENS_PER_TURN cap finally ended it. This is the fix — give
-        up after the SAME reason repeats, rather than trusting the model
-        to eventually converge."""
+        """Real bug, found live: a stuck deferral loop burned 6 full retry rounds before should_continue's own,
+        much blunter MAX_TOKENS_PER_TURN cap finally ended it.
+        """
         state = {
             "last_retry_reason": "deferred",
             "retry_reason_repeat_count": MAX_CONSECUTIVE_SAME_RETRY_REASON,

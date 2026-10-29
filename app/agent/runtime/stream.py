@@ -242,19 +242,16 @@ class _TurnTrace:
 
 @contextmanager
 def _turn_trace(name: str, session_id: str, input_text: str) -> Iterator[tuple[_TurnTrace, list]]:
-    """Opens a turn's trace (`_open_trace`) and guarantees it leaves with an output.
+    """Opens a turn's trace (`_open_trace`) and guarantees it leaves with an output. `_run_graph_stream` finishes
+    the trace on every exit it can see; this is the net under it, for a failure between opening the trace and
+    starting the stream (building the input, say) or any exit it didn't handle, which would leave a trace with
+    an input and nothing else, indistinguishable in Langfuse from a turn in flight. Where the stream already
+    recorded an output (the usual case) it does nothing.
 
-    `_run_graph_stream` finishes the trace on every exit it can see. This is the net under it: a
-    failure between opening the trace and starting the stream (building the input, say), or any
-    exit that `_run_graph_stream` did not handle, would otherwise leave a trace with an input and
-    nothing else, indistinguishable in Langfuse from a turn still in flight. Where the stream
-    already recorded an output (the usual case, including a close mid-stream) this does nothing.
-
-    A plain `contextmanager`, not an async one, on purpose: there is nothing to await on the way
-    out (the update is a queued call, and this module deliberately does not flush per turn: a
-    flush blocks until the queue drains, which would stall the event loop), and cleanup that
-    awaits while an async generator is being closed or cancelled is the fragile part of this
-    code. It wraps `_open_trace` rather than replacing it: that function is the seam tests patch.
+    A plain `contextmanager`, not an async one, on purpose: nothing awaits on the way out (the update is a
+    queued call; this module doesn't flush per turn, since a flush blocks until the queue drains and would
+    stall the event loop), and cleanup that awaits while an async generator is closed or cancelled is the
+    fragile part. It wraps `_open_trace` rather than replacing it, since that is the seam tests patch.
     """
     raw_trace, callbacks = _open_trace(name, session_id, input_text)
     trace = _TurnTrace(raw_trace)

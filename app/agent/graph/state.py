@@ -35,23 +35,16 @@ HISTORY_TOKEN_CEILING = 24000  # bounds the only unbounded input in State
 # (see _trim_history) — trips compact_history once raw (non-system)
 # history exceeds this estimated token count.
 HISTORY_TOKEN_FLOOR = 4000  # once tripped, trim front-to-back until the
-# kept tail is at/under this — deliberately LOWER than the ceiling
-# (hysteresis, not a sliding window of 1). A prior fixed-turn-count design
-# re-triggered compact_history's own summarization call every turn past
-# the threshold, and reshifted the kept history's position each time (bad
-# for prefix-cache reuse). A lower floor buys several turns of stable,
+# kept tail is at/under this, deliberately LOWER than the ceiling (hysteresis, not a sliding window of 1). A
+# fixed-turn-count design re-triggered compact_history's summarization every turn past the threshold and
+# shifted the kept history each time (bad for prefix-cache reuse); a lower floor buys several turns of stable,
 # cache-friendly growth before the ceiling trips again.
 #
-# Not scaled 1:1 with litellm-config.yaml's num_ctx (32000): num_ctx
-# answers "what fits without truncation" (needs margin for ~2500 tokens of
-# system prompt/tool schemas plus a retry round's ~2x spend); this pair
-# answers "how much raw history is worth carrying" — a cost/latency
-# tradeoff num_ctx headroom doesn't resolve. qwen2.5:3b has been caught
-# dropping the "mandatory" citation instruction in prompts of only
-# ~2300-2800 tokens, so a wide ceiling trades cheaper/rarer compactions
-# against more context for a small model to attend to — not sized up just
-# because num_ctx has room. 24000/4000 leaves margin below num_ctx for a
-# retry round plus retrieved context/tool results.
+# Not scaled 1:1 with litellm-config.yaml's num_ctx (32000): that answers "what fits without truncation"
+# (margin for ~2500 tokens of system prompt/tool schemas plus a retry round's ~2x spend); this pair answers
+# "how much raw history is worth carrying", a cost/latency tradeoff. qwen2.5:3b has dropped the "mandatory"
+# citation instruction in prompts of only ~2300-2800 tokens, so a wide ceiling is not sized up just because
+# num_ctx has room. 24000/4000 leaves margin for a retry round plus retrieved context.
 MAX_HISTORY_SUMMARY_CHARS = 4000  # (AR-015a) the CUMULATIVE history_summary
 # must stay bounded too, or the "compacted" summary becomes the next
 # unbounded input. Exceeding it is a named terminal state

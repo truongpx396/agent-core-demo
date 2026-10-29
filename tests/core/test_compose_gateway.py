@@ -94,8 +94,9 @@ def test_no_secret_is_written_into_the_file():
 
 
 def test_casdoors_origin_is_exactly_the_issuer_the_gateway_expects():
-    """Measured: with `origin` unset Casdoor derived the issuer from the request's Host header, so a token's `iss` depended on how the
-    caller reached it. The gateway compares `iss` for equality, so the two settings must be the same value, default included."""
+    """Measured: with `origin` unset Casdoor derived the issuer from the request's Host header, so a token's
+    `iss` depended on how the caller reached it.
+    """
     casdoor_origin = _services()["casdoor"]["environment"]["origin"]
     gateway_issuer = _services()["mcp-gateway"]["environment"]["MCP_GATEWAY_ISSUER"]
 

@@ -68,16 +68,7 @@ def _send(page: Page, text: str) -> None:
 
 
 def _answer_of_the_finished_turn(page: Page, timeout_ms: int = RESPONSE_TIMEOUT_MS):
-    """The assistant's answer locator, returned the moment the turn has ENDED, not after a fixed wait.
-
-    Asserting `to_contain_text(..., timeout=<the whole turn budget>)` on a live locator keeps polling for
-    that whole budget even after the agent has stopped for good, so a turn that goes wrong costs the full
-    timeout and says nothing about why. Real instance (a CI run of this suite, 2026-10-04): the model hit
-    `human_approval` and paused at 13:41:40, nobody could answer, and `test_a_skill_is_found_and_followed`
-    went on waiting for "17" until its 600 s limit expired at 13:52:49 (~11 minutes, about half of the
-    whole `test-live` job). Waiting for the turn to END first makes that fail in the time the turn took,
-    and a pause is reported as what it is, with the tool the agent was waiting to run.
-    """
+    """The assistant's answer locator, returned the moment the turn has ENDED, not after a fixed wait."""
     page.wait_for_function(_TURN_IS_OVER, timeout=timeout_ms, polling=500)
     paused = page.locator(".approval .approval-question")
     if paused.count():
@@ -98,25 +89,8 @@ def test_sending_a_message_streams_a_real_answer_via_the_calculator_tool(page: P
 def test_a_mutating_tool_call_pauses_for_approval_and_resumes_on_approve(
     page: Page, real_stack_with_retrieval: str
 ):
-    """Drives the REAL approve/reject round trip
-    (`renderApprovalButtons`/`resume()` → `POST /chat/resume`) — the flow
-    README.md's own "Built-in web UI" section still (incorrectly, as of
-    this test) describes as unbuilt. Uses `remember`, not `add_note`: both
-    are mutating tools gated by the same mandatory human_approval pause
-    (GRAPH_PATTERNS.md pattern 15), but `remember` needs no `topic` value
-    the small model might get wrong, keeping this test's real, imperfect
-    tool-argument generation as low-risk as this scenario allows.
-
-    Needs `real_stack_with_retrieval`, not `real_stack`: `remember` embeds the
-    text it stores (`app/domains/ecorp/store.py::remember_impl`), and `real_stack`
-    runs with no real embedding model. Reproduced locally and read off the CI
-    logs: the approved `remember` call failed immediately with the embedding
-    model's 404, the 3B model reacted by asking for `remember` again, that
-    second call paused for approval again, and the test then waited the full
-    timeout for an Approve button that never went away — passing only on the
-    runs where the model happened not to retry. With a real embedder the
-    approved write succeeds and the turn ends after the one pause this test is
-    about.
+    """Drives the REAL approve/reject round trip (`renderApprovalButtons`/`resume()` → `POST /chat/resume`) — the
+    flow README.md's own "Built-in web UI" section still (incorrectly, as of this test) describes as unbuilt.
     """
     page.goto(real_stack_with_retrieval)
 
@@ -169,13 +143,9 @@ def test_a_read_only_tool_call_returns_real_data(page: Page, real_stack: str):
 
 
 def test_a_grounded_answer_shows_a_real_citation(page: Page, real_stack_with_retrieval: str):
-    """search_docs against a REAL embedding + a REAL seeded Qdrant
-    (real_stack_with_retrieval, backed by scripts/seed.py's sample docs) —
-    proves retrieval and the citations UI (`renderCitations`,
-    app/api/static/index.html) work end to end, not just that search_docs
-    returns SOMETHING. "Ecorp: Support Hours" (scripts/sample_docs.py) is
-    the source doc; its own text is asserted, not just marker presence, so
-    a citation box rendering with the WRONG source still fails this test.
+    """search_docs against a REAL embedding + a REAL seeded Qdrant (real_stack_with_retrieval, backed by
+    scripts/seed.py's sample docs) — proves retrieval and the citations UI (`renderCitations`,
+    app/api/static/index.html) work end to end, not just that search_docs returns SOMETHING.
     """
     page.goto(real_stack_with_retrieval)
 
@@ -228,18 +198,10 @@ def test_a_skill_is_found_and_followed(page: Page, real_stack_with_retrieval: st
 # model that stops halfway is a visible signal instead of a red gate, like deepeval.
 @pytest.mark.advisory
 def test_a_subagent_delegates_and_returns_a_real_answer(page: Page, real_stack_with_retrieval: str):
-    """run_subagent (GRAPH_PATTERNS.md pattern 46) — delegates to the
-    bundled `researcher` subagent (subagents/researcher/AGENT.md, visible
-    on the default Ecorp domain this test already runs against), which
-    itself calls query_employees in a NESTED graph run this conversation
-    never sees directly. Asserting the real employee name in the PARENT
-    turn's own final answer is what actually proves delegation completed
-    and its result was folded back in, not just that run_subagent was
-    invoked. real_stack_with_retrieval is used for its real embedding
-    model, not because this specific task needs search_docs — `researcher`
-    also offers search_docs, and keeping ONE fixture for every agentic
-    test here (rather than a THIRD variant with an embedding model but no
-    seeded data) is the simpler, still-correct choice."""
+    """run_subagent (GRAPH_PATTERNS.md pattern 46) — delegates to the bundled `researcher` subagent
+    (subagents/researcher/AGENT.md, visible on the default Ecorp domain this test already runs against), which
+    itself calls query_employees in a NESTED graph run this conversation never sees directly.
+    """
     page.goto(real_stack_with_retrieval)
 
     # The delegated task names the tool and the filter on purpose, the same way the sibling

@@ -259,9 +259,9 @@ class TestTheGuardCoversTheWholeTier:
 
 
 class TestAPolarRateLimitIsNamedNotDecoded:
-    """Polar's sandbox allows 100 requests a minute per token and answers an excess with an EMPTY 429; one token that ran sixteen paid checkouts in
-    about 80 minutes was locked out for 3570 s. The helper's failure used to read `HTTP 429 None field=None`, and a fixture error that no summary line
-    counted looked like a mutant that survived."""
+    """Polar's sandbox allows 100 requests a minute per token and answers an excess with an EMPTY 429; one token
+    that ran sixteen paid checkouts in about 80 minutes was locked out for 3570 s.
+    """
 
     def refused(self, **headers) -> str:
         with pytest.raises(AssertionError) as caught:

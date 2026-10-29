@@ -70,14 +70,9 @@ def _no_postgres_in_tests():
 
 
 def metric_value(counter, **labels):
-    """Current cumulative value of a app/core/metrics.py Counter for a given
-    label set — 0 if nothing's been recorded for that name/label combo yet.
-    OTel instruments are write-only; "current value" only exists via a
-    MetricReader's collected snapshot, unlike prometheus_client's Counter,
-    which exposed `._value.get()` directly (what every caller of this
-    function used before the metrics library swap). Assertions on this
-    should always be before/after deltas, never absolute values — these are
-    global, process-wide counters shared across the whole test session."""
+    """Current cumulative value of a app/core/metrics.py Counter for a given label set — 0 if nothing's been
+    recorded for that name/label combo yet.
+    """
     data = _METRIC_READER.get_metrics_data()
     if data is None:
         return 0
@@ -116,9 +111,9 @@ async def _benign_ml_score(text: str) -> float:
 
 @pytest.fixture(autouse=True)
 def no_real_tracing(monkeypatch):
-    """The default suite never builds a real Langfuse client (it starts threads, tries the network, and registers an
-    atexit flush that took ~90 s to give up when Langfuse was down). `get_langfuse()` answers None, so a trace is simply
-    absent; a test of the tracing code itself resets this and brings its own fake SDK (tests/core/test_tracing_client.py)."""
+    """The default suite never builds a real Langfuse client (it starts threads, tries the network, and registers
+    an atexit flush that took ~90 s to give up when Langfuse was down).
+    """
     from app.core import tracing
 
     monkeypatch.setattr(tracing, "_client", None)
@@ -127,11 +122,9 @@ def no_real_tracing(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def no_real_web_search(monkeypatch):
-    """`web_search` (app/core/serper.py) is a billed call to a third party, and a developer's `.env` can hold a real `SERPER_API_KEY`
-    (it is meant to). Without this, a test that happened to reach the tool would spend a credit and depend on the network, and a
-    suite that is green on a laptop with a key and on CI without one is two different suites. So every hermetic test sees an empty
-    key: the client answers "not set up" and makes no request. A test of the client or the tool sets its own key and hands the client
-    an `httpx.MockTransport` (tests/core/test_serper.py); the one real call is `make web-search-check`, by hand."""
+    """`web_search` (app/core/serper.py) is a billed call to a third party, and a developer's `.env` can hold a
+    real `SERPER_API_KEY` (it is meant to).
+    """
     from app.core import serper
 
     monkeypatch.setattr(serper, "SERPER_API_KEY", "")
@@ -157,14 +150,7 @@ def fixed_embedding_identity(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def no_real_qdrant(request, monkeypatch):
-    """A hermetic test never opens a connection to a real Qdrant.
-
-    `qdrant_store.hybrid_search` and `upsert` now consult Qdrant's aliases BEFORE they embed the query (the embedding-identity check,
-    specs/014), so a test that reaches them without a fake used to fail fast at the embedding call and now reaches the network first:
-    the client's constructor even probes the server, and a developer with Qdrant running locally would have a unit test talk to it
-    (Constitution VII: a test's outcome must not depend on which containers happen to be up). A test that wants Qdrant injects a fake with
-    `monkeypatch.setattr(qdrant_store, "get_client", ...)`; the tiers that really need it (integration, live) are exempt by marker.
-    """
+    """A hermetic test never opens a connection to a real Qdrant."""
     if any(request.node.get_closest_marker(m) for m in ("integration", "llm", "e2e", "deepeval", "crawl", "sandbox")):
         return
     from app.retrieval import qdrant_store
@@ -192,10 +178,7 @@ async def _no_answer(question, text: str):
 
 @pytest.fixture(autouse=True)
 def mock_classification(monkeypatch):
-    """`route_model` asks the ML service's /v1/decide for a topic (app/core/classification.py). The router is OFF by default, so an ordinary
-    test never reaches it; but a test that turns it on, or one that builds the whole graph with a setting leaking in from a developer's
-    own environment, must not make a real HTTP call to whatever happens to be listening on :8083 (Constitution VII). Every hermetic test
-    therefore sees "no answer". A test of the router supplies its own `choose` (or its own transport), which simply replaces this."""
+    """`route_model` asks the ML service's /v1/decide for a topic (app/core/classification.py)."""
     monkeypatch.setattr(classification, "choose", _no_answer)
 
 
@@ -246,16 +229,9 @@ def mock_appdata_postgres(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def usage_event_sink(monkeypatch):
-    """Every model call now writes one usage event (`usage_events.record_call`, via
-    `metering.metered_invoke`), which means a real INSERT into `appdata` Postgres and a real
-    `resolve_model` HTTP call on the turn path. Left alone, an ordinary agent-node test would pay a
-    connection timeout and an HTTP request per call and its result would depend on what is running
-    on the machine (the leak `mock_appdata_postgres` closes for its
-    modules). The default world records nothing real and CAPTURES each event row in a list the test
-    can read, so "this call was metered" is assertable without a database. The real `_insert`
-    statement is proven by tests/agent/cost/test_usage_events.py (fake connection) and
-    tests/integration/test_usage_events_real_postgres.py (a real one); both restore it from the
-    reference saved at import time, which is before this fixture patches anything."""
+    """Every model call now writes one usage event (`usage_events.record_call`, via `metering.metered_invoke`),
+    which means a real INSERT into `appdata` Postgres and a real `resolve_model` HTTP call on the turn path.
+    """
     from app.agent.cost import usage_events
 
     async def _no_model_resolution(alias):
@@ -279,12 +255,9 @@ def usage_event_sink(monkeypatch):
 @pytest.fixture(autouse=True)
 def mock_budget_policies(monkeypatch):
     """`budgets.check` reads the operator's per-tenant/per-person limit overrides
-    (`budget_policies.overrides_for`) before every turn. Without this, an ordinary turn test
-    would hit the `budget_policies` table, so its result would depend on whether one exists.
-    The default world has no overrides, so every test sees exactly the Settings defaults;
-    a test that needs one patches `overrides_for` itself, and
-    tests/agent/cost/test_budget_policies.py restores the real function to exercise it. The
-    module's per-process cache is cleared on both sides."""
+    (`budget_policies.overrides_for`) before every turn. Without this, an ordinary turn test would hit the
+    `budget_policies` table, so its result would depend on whether one exists.
+    """
     from app.agent.cost import budget_policies
 
     async def _no_overrides(tenant, principal):
@@ -298,10 +271,9 @@ def mock_budget_policies(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def fresh_budget_crossing_log():
-    """`budgets` remembers which threshold crossings it has already logged, per process, so a
-    tenant sitting at 90% logs once a day instead of on every turn. That memory is process-wide,
-    so one test's crossing would silence the same tenant's log line in the next test (and in
-    whichever test an xdist worker happens to run after it): cleared on both sides."""
+    """`budgets` remembers which threshold crossings it has already logged, per process, so a tenant sitting at
+    90% logs once a day instead of on every turn.
+    """
     from app.agent.cost import budgets
 
     budgets.reset_logged_crossings()
@@ -340,12 +312,7 @@ def mock_model_pricing(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def header_auth_mode(monkeypatch):
-    """The hermetic suite runs the API in HEADER mode, chosen explicitly (specs/018, task T059).
-
-    Identity mode is the product default: the API trusts only the signed identity the authlimit front door adds, and refuses a request without
-    one. Every API test written before that existed sends `X-Tenant-Id` / `X-Principal-Id`, so each one must say that it means header mode;
-    this says it once, for all of them, and nothing else about those tests changes. A test of identity mode asks for `identity_mode` below.
-    `settings` is a plain object read per request (app/api/deps.py::get_ctx), so there is no cache to clear."""
+    """The hermetic suite runs the API in HEADER mode, chosen explicitly (specs/018, task T059)."""
     monkeypatch.setattr(settings, "auth_mode", "headers")
 
 

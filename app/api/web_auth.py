@@ -1,12 +1,13 @@
-"""The built-in web page's sign-in, server side (specs/018): what the page is told about the mode it runs in, and the script that signs in.
+"""The built-in web page's sign-in, server side (specs/018): what the page is told about the mode it runs in, and
+the script that signs in. The page (`app/api/static/index.html`) is one file; its sign-in is
+`/static/auth.js`, which needs to know whether the API is in `identity` mode (a token is needed, the Tenant
+and Principal pickers are meaningless) or `headers` mode (unchanged), and in identity mode where the
+authorization server is. The smallest way to tell it is a <meta> tag the server writes into the page it
+already renders: no extra request before the first, no route to classify, no cache.
 
-The page (`app/api/static/index.html`) is served as one file; its sign-in is `/static/auth.js`. The script needs to know two things the page cannot
-work out for itself: whether this API is in `identity` mode (a token is needed, the Tenant and Principal pickers are meaningless) or `headers` mode
-(today's behaviour, untouched), and, in identity mode, where the authorization server is. The smallest way to tell it is a <meta> tag the server
-writes into the page it already renders: no second request the page would have to wait for before its first one, no route to classify, no cache.
-
-The tag carries no secret: the authorization server's address, the audience the token must be for, the scope, and the prefix of a tenant's client
-id. The value is HTML-escaped, so a setting with a quote in it cannot break out of the attribute.
+The tag carries no secret: the authorization server's address, the audience, the scope and the prefix of a
+tenant's client id. The value is HTML-escaped, so a setting containing a quote can't break out of the
+attribute.
 """
 import html
 import json

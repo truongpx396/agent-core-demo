@@ -134,20 +134,9 @@ class TestInitGraphAsync:
 
 
 class TestDurabilityAcrossRestart:
-    """The whole point of swapping MemorySaver for AsyncPostgresSaver: state
-    written by one checkpointer instance must be readable by a completely
-    separate instance pointed at the same database — simulating a process
+    """The whole point of swapping MemorySaver for AsyncPostgresSaver: state written by one checkpointer instance
+    must be readable by a completely separate instance pointed at the same database — simulating a process
     restart without actually restarting a process.
-
-    Deliberately bypasses app.agent.runtime.core's singleton machinery (that's
-    what TestInitGraphAsync above already proves works) and
-    talks to build_graph()+AsyncPostgresSaver directly with a fake LLM, each
-    "instance" on its own short-lived asyncio.run() loop with its own fresh
-    connection — the cleanest way to actually simulate two separate
-    processes sharing one database (exactly the API-process-plus-workers
-    shape this migration exists for). Isolated from every other test in
-    this file by a unique thread_id, not a unique database — see this
-    module's docstring for why that's sufficient here.
     """
 
     async def test_checkpoint_survives_a_fresh_instance_at_the_same_database(self):
@@ -248,22 +237,7 @@ class TestAsyncEntryPoints:
     ):
         """Same bug class, different call site: `astream_events_resume` used the SYNC `resumability_error`
         (app/agent/graph/core.py), which also raises InvalidStateError from the checkpointer's own loop. Fixed
-        by `resumability_error_async` (aget_state). This is the real production resume path (`make
-        chat-hitl`'s HITL round trip), so it gets its own regression test.
-
-        The pause is driven by a plain `graph.ainvoke(...)`, not `astream_events_turn`, for the reason given
-        in `test_cancel_run_ends_a_paused_run_against_a_real_checkpointer` below: `graph.astream_events()`
-        raises "No generations found in stream" for a `.bind_tools()`-wrapped `GenericFakeChatModel`'s
-        tool-calling response (a pre-existing fake-LLM/streaming fixture limitation, unrelated to what's under
-        test).
-
-        Confirmed while adding the stricter check in TestResumabilityErrorRejectsAnActivelyRunningThread:
-        using `astream_events_turn` here left the checkpoint with `state.next=('agent',)` and a task-level
-        `.error` (the agent node had failed, not paused) and an empty `state.tasks[i].interrupts`. Before that
-        check, `resumability_error_async` missed the difference and let the resume proceed into an already
-        broken checkpoint; the stricter check rightly rejects it. So this test's OWN premise (a genuine pause)
-        needed fixing, not the check. `ainvoke` reaches the same paused-at-human_approval checkpoint without
-        tripping the fake-LLM/streaming issue.
+        by `resumability_error_async` (aget_state).
         """
         from langchain_core.messages import AIMessage
 
@@ -327,19 +301,9 @@ class TestAsyncEntryPoints:
         assert events[-1]["type"] == "done"
 
     async def test_cancel_run_ends_a_paused_run_against_a_real_checkpointer(self, monkeypatch):
-        """cancel_run (GRAPH_PATTERNS.md pattern 36) is a third resume path
-        alongside astream_events_resume — same aget_state/ainvoke
-        constraint applies, so it gets the same real-AsyncPostgresSaver,
+        """cancel_run (GRAPH_PATTERNS.md pattern 36) is a third resume path alongside astream_events_resume —
+        same aget_state/ainvoke constraint applies, so it gets the same real-AsyncPostgresSaver,
         single-shared-event-loop regression coverage as the other two.
-
-        Drives the pause via a plain `graph.ainvoke(...)`, not
-        `astream_events_turn` — verified empirically that
-        `graph.astream_events()` raises "No generations found in stream"
-        for a `.bind_tools()`-wrapped `GenericFakeChatModel` specifically
-        (LangChain's fake model doesn't implement true token streaming for
-        tool-calling responses), a pre-existing test-fixture limitation
-        unrelated to cancel_run itself — `ainvoke` reaches the exact same
-        paused-at-human_approval checkpoint without tripping it.
         """
         from langchain_core.messages import AIMessage, HumanMessage
 
@@ -707,15 +671,10 @@ class TestResumabilityErrorRejectsAnActivelyRunningThread:
         assert "checkpoint_lost" in error
 
     async def test_racing_cancel_run_against_a_mid_run_thread_does_not_hijack_it(self, monkeypatch):
-        """End-to-end through the real public functions a racing
-        POST /chat/cancel (worker's "cancel" job) and the ORIGINAL
-        POST /chat/stream/queued turn (worker's "turn" job) would each
-        actually call — not just the lower-level resumability check
-        above. Reproduced directly against a real live stack before this
-        fix: `POST /chat/cancel` fired while a turn was actively
-        streaming (not paused) reported success AND the original SSE
-        connection went silent (zero further tokens) — this is that
-        exact scenario, hermetically."""
+        """End-to-end through the real public functions a racing POST /chat/cancel (worker's "cancel" job) and
+        the ORIGINAL POST /chat/stream/queued turn (worker's "turn" job) would each actually call — not just
+        the lower-level resumability check above.
+        """
         self._install_slow_fake_graph(monkeypatch)
         thread_id = str(uuid.uuid4())
 

@@ -108,12 +108,10 @@ async def test_a_turn_request_round_trips_from_producer_through_a_real_consumer_
 
 
 async def test_a_second_worker_in_the_same_group_never_gets_a_message_already_delivered():
-    """The whole reason this queue uses a Redis Streams CONSUMER GROUP (not
-    a plain stream every worker reads independently) — "Redis's own group
-    semantics guarantee each request is delivered to exactly one worker, so
-    running N worker processes is the entire scaling story" per this
-    module's own docstring. Worth a real-server assertion, not just trusting
-    the docs: a second consumer in the SAME group must see nothing new."""
+    """The whole reason this queue uses a Redis Streams CONSUMER GROUP (not a plain stream every worker reads
+    independently) — "Redis's own group semantics guarantee each request is delivered to exactly one worker,
+    so running N worker processes is the entire scaling story" per this module's own docstring.
+    """
 
     async def _run():
         client = queue.get_client()

@@ -229,6 +229,7 @@ class TestMakeLlmSwitch:
         assert "strict" not in self._sent(make_llm(self.TOOLS))[0]["function"]
 
     def test_it_is_off_unless_asked_for(self):
-        """Measured, not assumed (pattern 74): on the local Ollama path it buys nothing and the smallest CI model lost 3 of 19
-        probe prompts. Turning it on is part of pointing the chat alias at a provider that enforces it."""
+        """Measured, not assumed (pattern 74): on the local Ollama path it buys nothing and the smallest CI model
+        lost 3 of 19 probe prompts.
+        """
         assert Settings.model_fields["tool_calls_strict"].default is False

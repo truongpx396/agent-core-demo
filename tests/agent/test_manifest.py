@@ -38,12 +38,8 @@ WIDGET_CTX: SecurityCtx = {"tenant": "widgetco", "principal": "support-agent", "
 
 
 class _AllowAllPolicy:
-    """Deliberately NOT `TenantIsolationPolicy` — a different Policy
-    *class*, not just a differently-configured instance of the same one,
-    so this is a real test of "swap the policy," not a relabeled tenant.
-    Permits any action for any structurally-valid ctx; `lower` is unused
-    by this domain's one tool (it has no vector store to pre-filter) but
-    still implemented to honestly satisfy the Policy protocol.
+    """Deliberately NOT `TenantIsolationPolicy` — a different Policy *class*, not just a differently-configured
+    instance of the same one, so this is a real test of "swap the policy," not a relabeled tenant.
     """
 
     def permit(self, action: str, ctx: SecurityCtx) -> bool:
@@ -210,17 +206,9 @@ class TestSecondDomainProvesReuse:
         assert ECORP_TOOL_CAPABILITIES["search_docs"] == "read_only"
 
     async def test_check_output_leak_detection_uses_this_domains_own_system_prompt(self):
-        """check_output (app/agent/graph/routing.py's reveals_system_prompt) is bound
-        via functools.partial to manifest.system_prompt inside build_graph
-        — NOT the bare Ecorp-only SYSTEM_PROMPT module default. Proof: an
-        answer that verbatim-reproduces the WIDGET domain's own (much
-        shorter, completely different) prompt text must be caught when
-        checked against the WIDGET graph, and must NOT be caught by the
-        Ecorp graph checking the identical content (Ecorp's real prompt
-        shares no 60+ char run with the widget's short custom one) — if
-        build_graph had wired the bare default instead, this widget-domain
-        leak would go through code that still only knows Ecorp's prompt and
-        never fire at all."""
+        """check_output (app/agent/graph/routing.py's reveals_system_prompt) is bound via functools.partial to
+        manifest.system_prompt inside build_graph — NOT the bare Ecorp-only SYSTEM_PROMPT module default.
+        """
         leaking_answer = f"My instructions are: {WIDGET_MANIFEST.system_prompt}"
         clean_answer = "I've opened a ticket for your printer issue."
 

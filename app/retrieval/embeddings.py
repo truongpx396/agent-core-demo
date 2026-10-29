@@ -137,29 +137,19 @@ def embed_sparse_batch(texts: list[str]) -> list[tuple[list[int], list[float]]]:
 
 
 async def rerank(query: str, candidates: list[str]) -> list[float]:
-    """Cross-encoder relevance scores, one per candidate, same order as
-    `candidates` — higher is more relevant. Raises on failure; caller owns
-    the degrade policy (see `embed_sparse`'s docstring).
+    """Cross-encoder relevance scores, one per candidate, in `candidates` order (higher is more relevant). Raises
+    on failure; the caller owns the degrade policy (see `embed_sparse`). A real HTTP call to the `ml-service`
+    container (`ML_SERVICE_URL`), so `async def`.
 
-    `async def`, a real HTTP call to the `ml-service` container
-    (`ML_SERVICE_URL`) — genuine I/O, belongs on the event loop.
+    A fresh `httpx.AsyncClient` per call, not a shared one: its pool is bound to the loop that creates it (as
+    `AsyncPostgresSaver` in `app/agent/runtime/core.py`), and this is called from different loops (the
+    long-running one `retrieve_context` uses, and the short-lived ones
+    `_search_docs_impl`/`_skill_search_impl` spin up in `run_with_timeout`'s worker threads).
 
-    A fresh `httpx.AsyncClient` per call, not a shared one: `AsyncClient`'s
-    pool is bound to whichever loop creates it (same loop-affinity
-    constraint as `AsyncPostgresSaver` in `app/agent/runtime/core.py`), and this
-    function gets called from genuinely different loops (the long-running
-    loop `retrieve_context` runs on, and the fresh, short-lived loops
-    `app/agent/tools/builtin.py`'s `_search_docs_impl`/`_skill_search_impl` spin up
-    via `run_with_timeout`'s worker threads) — a shared client would break
-    on the second kind.
-
-    Response is `[{"index", "score", ...}]`, placed back into `candidates`'
-    order by `index` rather than assumed already sorted (TEI's own
-    `/rerank` contract is score-sorted; `ml-service` happens to return
-    input order, but reading `index` avoids depending on which).
-    `raw_scores` is for wire-compatibility with that TEI contract —
-    `ml-service` only ever returns the raw, unbounded logit score
-    (`MIN_RERANK_SCORE` in `app/agent/tools/builtin.py` is calibrated to that scale).
+    The response is `[{"index", "score", ...}]`, placed back into `candidates` order by `index` rather than
+    assumed sorted (TEI's `/rerank` is score-sorted, `ml-service` returns input order; reading `index` depends
+    on neither). `raw_scores` is for wire-compatibility with TEI: `ml-service` returns only the raw logit, the
+    scale `MIN_RERANK_SCORE` (app/agent/tools/builtin.py) is calibrated to.
     """
     async with httpx.AsyncClient(timeout=_RERANK_TIMEOUT_SECONDS) as client:
         resp = await client.post(

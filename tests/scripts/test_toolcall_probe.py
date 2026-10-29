@@ -253,8 +253,9 @@ class TestStrictTools:
         assert not any(sent["strict"])
 
     def test_leaving_a_nullable_argument_out_is_fine_and_leaving_a_plain_one_out_is_not(self):
-        """The tools list every argument as required, but accept a call that leaves a nullable one out (`ToolArgs` fills it
-        with None): qwen2.5:7b does exactly that. A required argument with no null, or a value outside an enum, is still bad."""
+        """The tools list every argument as required, but accept a call that leaves a nullable one out
+        (`ToolArgs` fills it with None): qwen2.5:7b does exactly that.
+        """
         employees = tp.Probe("who works in engineering?", "query_employees")
         assert tp.classify(employees, _call("query_employees", {"department": "Engineering"}), 21, SCHEMAS) == tp.OK
         assert tp.classify(employees, _call("query_employees", {"department": "Engineering", "name_contains": None}), 21, SCHEMAS) == tp.OK

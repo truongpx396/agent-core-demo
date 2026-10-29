@@ -284,15 +284,10 @@ class TestUi:
 
 
 class TestGetDomain:
-    """app/api/deps.py::get_domain's own runtime branch: an unknown domain
-    name must fail loud, the same discipline
-    app/domains/registry.py::resolve_domain already applies at process
-    start, just surfaced as a 422 here since this is a per-request value
-    rather than a per-process one. `Header("ecorp")`'s default-when-absent
-    behavior is FastAPI's own wiring, not this function's logic, so — like
-    get_ctx's required-header behavior above — it's out of scope for this
-    suite's "call the handler directly" style (see this module's own
-    docstring)."""
+    """app/api/deps.py::get_domain's own runtime branch: an unknown domain name must fail loud, the same
+    discipline app/domains/registry.py::resolve_domain already applies at process start, just surfaced as a
+    422 here since this is a per-request value rather than a per-process one.
+    """
 
     async def test_passes_through_a_known_domain(self):
         assert await deps.get_domain(x_domain="support") == "support"
@@ -305,12 +300,9 @@ class TestGetDomain:
 
 
 class TestChatStreamQueued:
-    """POST /chat/stream/queued (GRAPH_PATTERNS.md pattern 43) — the
-    producer half of the Redis Streams SSE-service/agent-worker split.
-    FakeRedis (tests/job_queue/test_queue.py) stands in for a real Redis Stream, and
-    since nothing here ever calls astream_events_turn or touches a real
-    graph, results have to be published "by hand" to simulate what a
-    separate app/job_queue/agent_worker.py process would otherwise do."""
+    """POST /chat/stream/queued (GRAPH_PATTERNS.md pattern 43) — the producer half of the Redis Streams
+    SSE-service/agent-worker split.
+    """
 
     async def test_publishes_a_request_then_streams_back_whatever_a_worker_publishes(
         self, monkeypatch
@@ -736,10 +728,9 @@ class TestConversationOwnership:
         assert self._nothing_was_published(redis)
 
     async def test_cancelling_someone_elses_turn_sets_no_flag_and_enqueues_nothing(self, redis, ownership):
-        """The cancel flag is written by the API itself, straight to Redis,
-        keyed by thread id alone — it bypasses anything the worker checks,
-        so a foreign caller could stop the owner's streaming turn. The check
-        has to sit in front of the flag."""
+        """The cancel flag is written by the API itself, straight to Redis, keyed by thread id alone — it
+        bypasses anything the worker checks, so a foreign caller could stop the owner's streaming turn.
+        """
         await ownership.claim(TEST_CTX, "owned")
 
         with pytest.raises(HTTPException) as exc:
@@ -1098,12 +1089,10 @@ class TestIngestUpload:
         assert uploaded == []  # never reached MinIO, not even the first two
 
     async def test_a_file_over_the_size_cap_is_reported_per_file_not_raised(self, monkeypatch):
-        """_read_bounded (app/api/routers/ingest.py) checks the running total WHILE
-        reading, not after — this only has to prove the outcome (never
-        reaches MinIO, reported as this file's own error), not the
-        memory-bounding mechanism itself. Same changed-behavior reasoning
-        as the bad-extension test above: a per-file problem, not a
-        whole-request abort."""
+        """_read_bounded (app/api/routers/ingest.py) checks the running total WHILE reading, not after — this
+        only has to prove the outcome (never reaches MinIO, reported as this file's own error), not the
+        memory-bounding mechanism itself.
+        """
         monkeypatch.setattr(ingest_router, "_MAX_UPLOAD_BYTES", 10)  # tiny, so the test payload need not be huge
         monkeypatch.setattr(ingest_router, "_UPLOAD_READ_CHUNK_BYTES", 4)
         uploaded = []

@@ -507,13 +507,7 @@ class TestARefund:
 
 
 class TestTheWalletsSecondLayerJudgesAKeyOnWhatItNames:
-    """Spec 012: the wallet refuses a reused idempotency key whose request differs. The webhook handler reaches the wallet only after two earlier
-    layers (the inbox claim, which serialises one event, and the payment's lot check, which ignores a payment already granted), so a replayed key
-    is rare here; these tests REACH the second layer on purpose, by making those two layers miss, and pin what each call site compares.
-
-    A webhook grant leaves out `expires_at` (it is `now + days` at processing time, so any replay computes a later instant). A webhook clawback
-    compares nothing but its kind (the key names the PAYMENT; the amount it reads depends on when it read the lot, and a debit can land between
-    two events' reads). With the strict default either would turn a harmless replay into a failure."""
+    """Spec 012: the wallet refuses a reused idempotency key whose request differs."""
 
     @staticmethod
     def purchase(world) -> BillingEvent:

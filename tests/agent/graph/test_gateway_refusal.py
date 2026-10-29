@@ -288,9 +288,9 @@ class TestARefusalIsTheAnswer:
 
 
 class TestAnEmptyCompletionThatBilledTokens:
-    """Ollama (qwen2.5:3b) generated 18-23 tokens for "remember this" and returned `content: ""` with no
-    tool call: it had dropped a tool call it could not parse. To the graph that looked exactly like
-    an empty reply, so nothing said the gateway had been billed for something we never saw."""
+    """Ollama (qwen2.5:3b) generated 18-23 tokens for "remember this" and returned `content: ""` with no tool
+    call: it had dropped a tool call it could not parse.
+    """
 
     @staticmethod
     async def _call(reply: AIMessage) -> None:

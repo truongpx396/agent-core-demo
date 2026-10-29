@@ -198,14 +198,9 @@ class TestSessionBelongsTo:
 
     async def test_domain_is_always_passed_as_a_query_param_not_checked_after_the_fact(self, monkeypatch):
         """Same "prove the query is ALWAYS parameterized" spirit as
-        test_a_different_tenant_or_principal_cannot_claim_ownership below —
-        a live-DB integration concern, not provable against this fake
-        (which returns its canned `one` regardless of params). The real
-        enforcement is Postgres actually filtering `AND domain = %s`; what
-        this proves is that a caller can't get a "sales" thread checked
-        against "support" by any means this function's interface allows —
-        exactly the same gap this pattern closed for tenant/principal
-        already."""
+        test_a_different_tenant_or_principal_cannot_claim_ownership below — a live-DB integration concern, not
+        provable against this fake (which returns its canned `one` regardless of params).
+        """
         fake = _FakeConnection(one=(1,))
         monkeypatch.setattr(sessions, "get_connection", _fake_get_connection(fake))
 
@@ -256,10 +251,7 @@ class _RecordingConnection:
 
 
 class TestClaimSession:
-    """The ownership gate for `POST /chat/stream/queued` (conversation
-    ownership, constitution Principle I). `upsert_session` — what ran before —
-    is `ON CONFLICT (thread_id) DO UPDATE SET last_active_at`, i.e. it never
-    asked WHO owned the row, so anyone naming a thread id continued it."""
+    """The ownership gate for `POST /chat/stream/queued` (conversation ownership, constitution Principle I)."""
 
     async def test_inserts_only_if_absent_then_checks_the_caller_owns_the_row(self, monkeypatch):
         fake = _RecordingConnection(owned=True)

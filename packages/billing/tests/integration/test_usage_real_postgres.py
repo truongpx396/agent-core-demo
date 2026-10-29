@@ -239,8 +239,9 @@ class TestTheEventAndItsDebitAreOneTransaction:
 class TestAWalletFaultNeverLosesTheEvent:
     @pytest.fixture
     def wallet_fault(self, monkeypatch):
-        """A switch for a wallet that fails AFTER its debit has inserted its transaction row: the case a savepoint exists for, since it must undo
-        that row and still leave the event. Off until a test has funded the wallet (a grant uses the same write)."""
+        """A switch for a wallet that fails AFTER its debit has inserted its transaction row: the case a
+        savepoint exists for, since it must undo that row and still leave the event.
+        """
         real_move = credits._move
 
         async def move_then_fail(conn, tenant, transaction_id, lot_id, amount):
@@ -276,8 +277,9 @@ class TestAWalletFaultNeverLosesTheEvent:
         assert metric_value(usage.metrics.agent_cost_governance_degraded_total, path="billing_event_write") == write_before
 
     async def test_the_missed_charge_can_be_replayed_from_the_event_alone(self, appdata_url, wallet_fault):
-        """The claim the design rests on: an uncharged event is repairable because the debit key IS the event id and the row holds every figure the
-        debit needs. (`credit-billing-reconcile` is what names the gap; this proves the repair works, not that it is scheduled.)"""
+        """The claim the design rests on: an uncharged event is repairable because the debit key IS the event id
+        and the row holds every figure the debit needs.
+        """
         tenant = tenant_name()
         await fund(tenant, "1000")
         wallet_fault.break_()

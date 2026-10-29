@@ -120,13 +120,9 @@ class TestProcessRequestTurn:
         assert events == [{"type": "done"}]
 
     async def test_clears_any_stale_cancel_flag_before_starting(self, monkeypatch):
-        """A flag left over from a PRIOR turn on this thread_id (e.g.
-        /chat/cancel raced with that turn already finishing on its own)
-        must not spuriously cancel this brand-new one. Captures the
-        cancel_check RESULT into a plain list rather than asserting inside
-        the fake generator — an assertion failure in there would just be
-        caught by process_request's own try/except and published as an
-        ordinary error event instead of failing this test."""
+        """A flag left over from a PRIOR turn on this thread_id (e.g. /chat/cancel raced with that turn already
+        finishing on its own) must not spuriously cancel this brand-new one.
+        """
         from app.job_queue.queue import is_cancelled, set_cancel_flag
 
         seen_cancelled = []
@@ -270,12 +266,10 @@ class TestProcessRequestTurn:
 
 
 class TestProcessRequestTurnContinue:
-    """`"turn_continue"` is never produced by a real producer — only by
-    `_handle_reclaimed_job` flipping a reclaimed `"turn"`'s own kind before
-    republishing (see that function's and `_classify_reclaimed_turn`'s own
-    docstrings). Dispatch here just needs to prove `process_request` wires
-    it to `astream_events_continue_turn` with the right args, same shape as
-    `TestProcessRequestTurn`/`TestProcessRequestResume`'s own coverage."""
+    """`"turn_continue"` is never produced by a real producer — only by `_handle_reclaimed_job` flipping a
+    reclaimed `"turn"`'s own kind before republishing (see that function's and `_classify_reclaimed_turn`'s
+    own docstrings).
+    """
 
     async def test_dispatches_to_astream_events_continue_turn_with_the_right_args(self, monkeypatch):
         captured = {}
@@ -316,11 +310,9 @@ class TestProcessRequestTurnContinue:
 
 
 class TestUnattendedJobs:
-    """A job published with `unattended=True` (the Telegram channel: nobody to show an approval
-    to) must run through the decline loop wherever the worker runs it. The plain entry points
-    would end such a job at an `approval_required` its channel cannot answer and leave the
-    conversation paused (pattern 8), so each test makes the plain one fail the test if it is
-    reached."""
+    """A job published with `unattended=True` (the Telegram channel: nobody to show an approval to) must run
+    through the decline loop wherever the worker runs it.
+    """
 
     @staticmethod
     def _refuse(name):
@@ -489,12 +481,10 @@ class TestProcessRequestResume:
         assert await captured["cancel_check"]() is True
 
     async def test_clears_a_stale_cancel_flag_before_starting(self, monkeypatch):
-        """A flag left from the *streaming* phase that led to this pause (a
-        /chat/cancel that raced the turn pausing on its own) must not cancel
-        the approval the user has since given — the later action is the
-        user's intent. Same reasoning as `_process_turn`'s own clear; the
-        result is captured into a list rather than asserted inside the fake,
-        which `process_request`'s catch-all would swallow."""
+        """A flag left from the *streaming* phase that led to this pause (a /chat/cancel that raced the turn
+        pausing on its own) must not cancel the approval the user has since given — the later action is the
+        user's intent.
+        """
         from app.job_queue.queue import set_cancel_flag
 
         seen_cancelled = []
@@ -678,13 +668,10 @@ class TestRunLoop:
 
 
 class TestConcurrentDispatch:
-    """run() no longer awaits process_request one job at a time — it
-    acquires a semaphore slot, then asyncio.create_tasks _process_with_limit
-    per entry (see run()'s own comments for why the semaphore is acquired
-    BEFORE task creation, not inside it). This replicates that exact
-    acquire-then-dispatch pattern against several jobs at once — same
-    "thin proof of the real wiring" spirit as TestRunLoop above, extended to
-    the concurrency behavior specifically."""
+    """run() no longer awaits process_request one job at a time — it acquires a semaphore slot, then
+    asyncio.create_tasks _process_with_limit per entry (see run()'s own comments for why the semaphore is
+    acquired BEFORE task creation, not inside it).
+    """
 
     async def test_bounds_concurrency_and_actually_overlaps(self, monkeypatch):
         max_concurrency = 2
@@ -904,15 +891,9 @@ class TestSameThreadJobsAreSerialized:
 
 
 class FakeGraph:
-    """Stands in for the real compiled graph's `aget_state` — just enough
-    to drive `_classify_reclaimed_turn` without a real checkpointer/Postgres.
-    `states` maps thread_id -> the message list that thread's checkpoint
-    would report; a thread with no entry behaves like one that was never
-    checkpointed at all (empty `.values`). `paused` marks a thread_id as
-    checkpointed mid a REAL `human_approval` interrupt (`state.next`
-    truthy AND `state.tasks[i].interrupts` non-empty — see
-    `graph/hitl.py::_resumability_error_from_state`'s own docstring on why
-    both are checked, not `state.next` alone)."""
+    """Stands in for the real compiled graph's `aget_state` — just enough to drive `_classify_reclaimed_turn`
+    without a real checkpointer/Postgres.
+    """
 
     def __init__(self, states: dict | None = None, paused: set | None = None, drained: set | None = None):
         self._states = states or {}
@@ -1059,14 +1040,11 @@ class TestClassifyReclaimedTurn:
         assert await agent_worker._classify_reclaimed_turn(graph, "t1") == "retry_continue"
 
     async def test_a_turn_paused_at_a_real_interrupt_is_dead_lettered(self):
-        """A "turn" job only ever reaches this function if it was
-        reclaimed (its worker died before process_request's own ack), and
-        a healthy worker acks a job that reaches a pause the same as one
-        that finishes — so finding a real human_approval interrupt here
-        means the crash landed in the narrow sliver strictly AFTER it
-        fired. `astream_events_continue_turn` has no resume value to give
-        it (that's `astream_events_resume`'s job), so this is dead-lettered
-        rather than blindly continued."""
+        """A "turn" job only ever reaches this function if it was reclaimed (its worker died before
+        process_request's own ack), and a healthy worker acks a job that reaches a pause the same as one that
+        finishes — so finding a real human_approval interrupt here means the crash landed in the narrow sliver
+        strictly AFTER it fired.
+        """
         graph = FakeGraph(
             {"t1": [HumanMessage(content="do the risky thing")]}, paused={"t1"}
         )
@@ -1074,11 +1052,9 @@ class TestClassifyReclaimedTurn:
 
 
 class TestHandleReclaimedJob:
-    """`_handle_reclaimed_job` is what `_reclaim_loop` calls for every entry
-    `queue.py::reclaim_stale_entries` finds abandoned by a dead worker — see
-    this module's own docstring for the full per-kind policy. `graph`
-    below defaults to an empty `FakeGraph()` (i.e. "nothing ran yet")
-    except where a test needs otherwise."""
+    """`_handle_reclaimed_job` is what `_reclaim_loop` calls for every entry `queue.py::reclaim_stale_entries`
+    finds abandoned by a dead worker — see this module's own docstring for the full per-kind policy.
+    """
 
     async def test_a_turn_that_never_ran_a_tool_is_retried_fresh(self):
         client = FakeRedis()
@@ -1166,13 +1142,11 @@ class TestHandleReclaimedJob:
         assert len(client.streams[dead_letter_stream_key(agent_worker.REQUESTS_STREAM)]) == 1
 
     async def test_a_resume_is_always_auto_retried_now_that_tools_are_idempotent(self):
-        """Unlike "turn", "resume" needs no checkpoint inspection at all —
-        it continues an EXISTING checkpoint's already-pending tool_calls
-        under their own original tool_call_ids, and every mutating/outward
-        tool now dedupes on that id (app/core/tool_idempotency.py), so
-        re-invoking one that already completed just returns its cached
-        result instead of running again. The graph is irrelevant here on
-        purpose — nothing about this decision reads it."""
+        """Unlike "turn", "resume" needs no checkpoint inspection at all — it continues an EXISTING checkpoint's
+        already-pending tool_calls under their own original tool_call_ids, and every mutating/outward tool now
+        dedupes on that id (app/core/tool_idempotency.py), so re-invoking one that already completed just
+        returns its cached result instead of running again.
+        """
         client = FakeRedis()
         entry_id, fields = _entry(kind="resume", request_id="r4", thread_id="t4")
 

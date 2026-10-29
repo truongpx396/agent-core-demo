@@ -73,12 +73,9 @@ class TestPrefixIdenticalAcrossPrincipals:
             assert msg_a.content == msg_b.content
 
     def test_system_prompt_constant_itself_has_no_ctx_placeholders(self):
-        """SYSTEM_PROMPT is a plain string constant, not an f-string
-        assembled per-request — this is what makes the property above
-        true by construction rather than by coincidence. A regression
-        here (someone changing it to `f"...for {ctx['principal']}..."`)
-        would break this trivial check before it ever reached a live
-        prompt-cache economics problem."""
+        """SYSTEM_PROMPT is a plain string constant, not an f-string assembled per-request — this is what makes
+        the property above true by construction rather than by coincidence.
+        """
         assert isinstance(SYSTEM_PROMPT, str)
         for token in ("{tenant", "{principal", "{ctx", "%(tenant", "%(principal"):
             assert token not in SYSTEM_PROMPT

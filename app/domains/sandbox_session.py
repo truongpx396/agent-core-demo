@@ -80,26 +80,17 @@ _raw_sandbox_tools_cache: dict[str, BaseTool] = {}
 
 
 async def load_raw_sandbox_tools() -> dict[str, BaseTool]:
-    """OpenSandbox's raw MCP tool catalog as a {name: tool} lookup, empty
-    if opensandbox-mcp isn't installed/reachable. Called per-call by each
-    domain's tools.py wrapper, NOT at module import time.
+    """OpenSandbox's raw MCP tool catalog as a {name: tool} lookup, empty if opensandbox-mcp isn't installed or
+    reachable. Called per call by each domain's tools.py wrapper, NOT at import.
 
-    Self-healing: a successful (non-empty) result is cached for the
-    process's life; an empty result is never cached, so calls made while
-    opensandbox-mcp is unreachable keep retrying instead of latching onto
-    a permanent empty cache. Fixes a real bug: this used to cache a `None`
-    sentinel at import time, so a dev server that booted before
-    opensandbox-server finished starting made every sandbox tool invisible
-    for that process's whole life, with the model hallucinating a
-    nonexistent tool name to route around the gap (Langfuse trace
-    806125c9). Every caller shares the same dict; nothing mutates it.
-
-    `load_sandbox_tools` itself (app/domains/sandbox_tools.py) now also
-    retries a bare connection failure once and circuit-breaks after
-    repeated ones, so a still-booting opensandbox-server is more often
-    resolved WITHIN one of these calls, not just eventually across many —
-    this cache's own "never latch onto empty" behavior remains the
-    fallback for whatever that retry doesn't catch."""
+    Self-healing: a non-empty result is cached for the process life; an empty result never is, so calls made
+    while opensandbox-mcp is unreachable keep retrying. This used to cache a `None` sentinel at import time,
+    so a dev server that booted before opensandbox-server finished starting lost every sandbox tool for its
+    whole life, and the model invented a tool name to route around the gap (Langfuse trace 806125c9). All
+    callers share one dict; nothing mutates it. `load_sandbox_tools` also retries a bare connection failure
+    once and circuit-breaks after repeated ones, so a booting server is usually resolved within one call; the
+    never-cache-empty rule remains the fallback.
+    """
     global _raw_sandbox_tools_cache
     if not _raw_sandbox_tools_cache:
         raw_tools, _capabilities = await load_sandbox_tools()

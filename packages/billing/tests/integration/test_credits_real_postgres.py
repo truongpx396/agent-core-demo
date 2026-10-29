@@ -319,10 +319,9 @@ class TestConcurrency:
 
 class TestTheCanonicalState:
     async def test_a_tenant_never_shows_debt_while_still_holding_live_credit(self, appdata_url):
-        """What the per-tenant lock buys beyond row locks: grants and debits racing leave the wallet in
-        the state a serial run would. A debit becomes debt only when no live credit remains, and a
-        grant repays debt before it is spendable, so the books never show both at once (`available`
-        would net out either way, but a debt next to credit is a wallet nobody can explain)."""
+        """What the per-tenant lock buys beyond row locks: grants and debits racing leave the wallet in the state
+        a serial run would.
+        """
         for round_ in range(15):
             tenant = tenant_name()
             await grant(tenant, 1)  # opens the account
@@ -474,8 +473,8 @@ class TestTheBooksCannotBeRewritten:
 class TestAgainstAnIndependentModel:
     async def test_a_long_random_run_matches_a_model_that_shares_no_code_with_the_database(self, appdata_url):
         """200 seeded grants and debits, with and without expiry and including debits far larger than the
-        balance, compared after every step with a plain-Python model of the same rules. The model uses
-        the pure planner for the arithmetic only; ordering, debt and repayment are written out again."""
+        balance, compared after every step with a plain-Python model of the same rules.
+        """
         rng = random.Random(20261007)
         tenant = tenant_name()
         model_lots: list[dict] = []  # {"expires": datetime | None, "seq": int, "remaining": Decimal}

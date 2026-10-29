@@ -115,11 +115,10 @@ async def test_an_abandoned_hold_is_not_resurrected_by_the_next_reserve(tenant, 
 
 
 async def test_an_abandoned_hold_ages_out_even_while_the_tenant_keeps_working(tenant, real_appdata):
-    """The case a one-statement "reset a stale row on reserve" fix would still
-    miss: with one timestamp per tenant, every healthy turn's reserve/release
-    refreshes it, so a tenant that is never idle for five minutes carries a
-    leak forever. Here a healthy turn runs every four (simulated) minutes for
-    forty, and the leak must stop counting on its own clock."""
+    """The case a one-statement "reset a stale row on reserve" fix would still miss: with one timestamp per
+    tenant, every healthy turn's reserve/release refreshes it, so a tenant that is never idle for five minutes
+    carries a leak forever.
+    """
     await budget_holds.reserve_budget(_ctx(tenant), 0.5)  # leaked
     for _ in range(10):
         await _age(real_appdata, tenant, minutes=4)

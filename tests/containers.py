@@ -70,14 +70,9 @@ _CACHE_PREFIX = "live-containers"
 
 
 def _shared_root() -> Path:
-    """A fixed directory, shared by every worker of an xdist run AND by the
-    xdist controller's own later `pytest_sessionfinish` — see module
-    docstring for why this deliberately isn't pytest's own rotating
-    `tmp_path_factory` basetemp. Namespaced by a hash of this repo's own root
-    path so two independent clones of this repo on one machine (or CI
-    runner) don't share containers — a real but unlikely-enough edge case
-    that a cheap namespace, rather than solving cross-clone coordination
-    properly, is the right amount of effort for a demo project's test infra.
+    """A fixed directory, shared by every worker of an xdist run AND by the xdist controller's own later
+    `pytest_sessionfinish` — see module docstring for why this deliberately isn't pytest's own rotating
+    `tmp_path_factory` basetemp.
     """
     digest = hashlib.sha1(str(_REPO_ROOT).encode()).hexdigest()[:12]
     root = Path(tempfile.gettempdir()) / f"agent-core-demo-live-containers-{digest}"
@@ -166,12 +161,9 @@ def _acquire(key: str, start: Callable[[], dict[str, Any]]) -> dict[str, Any]:
 
 
 def used_shared_cache() -> bool:
-    """True when THIS invocation (this process, or — under xdist — one of
-    its own worker children) called `_acquire` at least once this session.
-    Only meaningful called from the controller/non-distributed process —
-    see `pytest_sessionfinish`'s own use of this. Consumes (deletes) its
-    own marker file so it never accumulates under `_shared_root()` across
-    many invocations."""
+    """True when THIS invocation (this process, or — under xdist — one of its own worker children) called
+    `_acquire` at least once this session.
+    """
     marker = _used_marker(_controller_pid())
     used = marker.exists()
     marker.unlink(missing_ok=True)
@@ -179,16 +171,10 @@ def used_shared_cache() -> bool:
 
 
 def teardown_all() -> None:
-    """Removes every container an `ensure_*()` call started this run, by the
-    container id each cached alongside its connection info, and clears the
-    cache files themselves (so a later, unrelated invocation never mistakes
-    them for a still-live container — see `_acquire`'s own defense in depth
-    for when it does anyway). Safe to call even when nothing was ever started
-    (no cache files — the common case for a plain `pytest -q` run) or when
-    Docker itself is gone by the time this runs. See tests/conftest.py's
-    `pytest_sessionfinish` for the one place this is actually called from,
-    and the module docstring for why teardown lives here instead of each
-    container's own `.stop()`/Ryuk."""
+    """Removes every container an `ensure_*()` call started this run, by the container id each cached alongside
+    its connection info, and clears the cache files themselves (so a later, unrelated invocation never
+    mistakes them for a still-live container — see `_acquire`'s own defense in depth for when it does anyway).
+    """
     root = _shared_root()
     cache_files = list(root.glob(f"{_CACHE_PREFIX}-*.json"))
     if not cache_files:
@@ -213,15 +199,10 @@ def teardown_all() -> None:
 
 
 def ensure_postgres() -> dict[str, str]:
-    """Real Postgres 16 (same image docker-compose.yml's own `postgres`
-    service uses), pre-seeded via the EXACT same `postgres-init/*.sql` files
-    docker-compose feeds `/docker-entrypoint-initdb.d` — mounted read-only
-    into that same path so the official postgres image's own entrypoint runs
-    them, unmodified, in filename order. No hand-maintained duplicate schema:
-    if a new postgres-init/*.sql file is added for docker-compose, this picks
-    it up automatically. Returns `checkpointer_database_url`/
-    `appdata_database_url` — the two databases those scripts create — ready
-    to assign straight to `CHECKPOINTER_DATABASE_URL`/`APPDATA_DATABASE_URL`.
+    """Real Postgres 16 (same image docker-compose.yml's own `postgres` service uses), pre-seeded via the EXACT
+    same `postgres-init/*.sql` files docker-compose feeds `/docker-entrypoint-initdb.d` — mounted read-only
+    into that same path so the official postgres image's own entrypoint runs them, unmodified, in filename
+    order.
     """
     _require_docker("a real checkpointer/appdata Postgres")
 
@@ -276,19 +257,6 @@ def _setup_checkpointer_schema_once(checkpointer_url: str) -> None:
     test can call it again concurrently. It is the same call `app/agent/runtime/core.py::_open_checkpointer`
     makes on every real process start ("idempotently, on every process including each independently-scaled
     agent_worker.py instance", per postgres-init/05-checkpointer-db.sql).
-
-    Found empirically: under real `-n auto` parallelism (several xdist worker PROCESSES each calling
-    `init_graph_async()` against this ONE shared container), tests reliably hit
-    `psycopg.errors.UniqueViolation: duplicate key value violates unique constraint
-    "checkpoint_migrations_pkey"`. `.setup()`'s check-then-insert migration bookkeeping isn't safe against a
-    genuine race between two FIRST-EVER callers. That is a real concurrency gap in
-    `langgraph-checkpoint-postgres` itself (arguably latent in production too, if the api and several
-    agent_worker.py processes ever started at the same instant against a brand-new database; this app just
-    never hit that window), and not fixable here.
-
-    Sidestepped, not patched: pre-running `.setup()` once while every worker is still serialized behind
-    `ensure_postgres`'s FileLock means each real test's later `.setup()` lands on an already-migrated schema,
-    a no-op read rather than a racing write, however many workers call it.
     """
     import asyncio
 
@@ -335,15 +303,7 @@ def ensure_redis() -> dict[str, str]:
 
 
 def ensure_qdrant() -> dict[str, str]:
-    """Real Qdrant (same image docker-compose.yml's `qdrant` service uses).
-    No dedicated testcontainers-python module for Qdrant as of this writing,
-    so this drives it via the generic `DockerContainer` API — still part of
-    the base `testcontainers` package, and testcontainers' own documented
-    approach for an image without a first-party module. Readiness is a real
-    `qdrant_client` call in a retry loop (mirrors this app's own
-    `app/api/health.py::_check_qdrant`), not a log-line match, since exact
-    startup log text is the more fragile of the two across image versions.
-    Returns `qdrant_url`."""
+    """Real Qdrant (same image docker-compose.yml's `qdrant` service uses)."""
     _require_docker("a real Qdrant")
 
     def _start() -> dict[str, Any]:

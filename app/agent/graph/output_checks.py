@@ -46,17 +46,16 @@ from app.core import metrics
 @dataclass(frozen=True)
 class CheckContext:
     """What a check may look at: the answer, the turn's messages, and the per-domain inputs bound by
-    `build_graph`.
-
-    The answer is given three times, on purpose. `content` is what the MODEL wrote (after the
-    fabricated reference footer is stripped, before any other repair): leak, fabrication and the
-    skipped tool are judged on it, so a mechanical correction can never hide one of them (a marker
-    spliced into a verbatim prompt recitation would break the run the leak check looks for; a leak
-    placed inside a closing offer would be cut with it). `body` is `content` without a closing offer
-    (`strip_closing_offer`), and only when what is left is a real answer: deferral and misattribution
-    are judged on it, because a polite closing question is not a reason to reject a complete answer,
-    while a reply that is only an offer has `body == content` and is still a deferral. `shown` is what
-    the user will see, including a repaired marker: length and "still uncited" are judged on that."""
+    `build_graph`. The answer is given three times, on purpose:
+    - `content`: what the MODEL wrote (after the fabricated reference footer is stripped, before any other
+      repair). Leak, fabrication and the skipped tool are judged on it, so a mechanical repair can never hide
+      one of them.
+    - `body`: `content` without a closing offer (`strip_closing_offer`), only when what is left is a real
+      answer. Deferral and misattribution are judged on it, since a polite closing question isn't a reason to
+      reject a complete answer; a reply that is only an offer has `body == content` and is still a deferral.
+    - `shown`: what the user will see, including a repaired marker; length and "still uncited" are judged on
+      it.
+    """
 
     content: str
     body: str
@@ -119,19 +118,16 @@ def _tool_failed_this_turn(messages: list) -> bool:
 
 
 def _deferred(ctx: CheckContext) -> Any:
-    # The answer narrates intent ("I will use the X tool...") or asks permission ("would you like me
-    # to?") instead of acting. Real bug found live: a 3B model repeating this across turns, each
-    # "yes" reply just restarting the same cycle. Judged on `body`: a closing offer after a complete
-    # answer has already been cut (check_output), so what is left here is a reply that IS the offer
-    # or the narration.
+    # The answer narrates intent ("I will use the X tool...") or asks permission ("would you like me to?")
+    # instead of acting. A 3B model repeated this across turns, each "yes" restarting the cycle. Judged on
+    # `body`: a closing offer after a complete answer was already cut (check_output), so what is left IS the
+    # offer or the narration.
     #
-    # Not when a tool already ran and FAILED this turn: the model acted, and what it says now is an
-    # account of the failure or a workaround, not a promise it has not kept. Langfuse trace `de85f4e8`:
-    # the sandbox was unreachable, the model counted by hand ("Let's manually count ... appears 2
-    # times"), the narration pattern matched "let's ... manually", two retries later the correct count
-    # was replaced by "I described what I'd do instead of actually doing it" (which also told the
-    # person nothing about the outage), and the retry feedback told the model to call a tool it had
-    # just called.
+    # Not when a tool already ran and FAILED this turn: what the model says then is an account of the failure
+    # or a workaround, not an unkept promise. Langfuse trace `de85f4e8`: the sandbox was unreachable, the
+    # model counted by hand ("Let's manually count ..."), the pattern matched "let's ... manually", and two
+    # retries later the correct count was replaced by "I described what I'd do instead of actually doing it",
+    # telling the person nothing about the outage.
     if _tool_failed_this_turn(ctx.messages):
         return None
     return True if defers_instead_of_acting(ctx.body) else None

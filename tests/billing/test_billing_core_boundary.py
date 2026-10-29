@@ -51,9 +51,9 @@ def _package_of(path: Path) -> str:
 
 
 def _imported(source: str, package: str) -> list[tuple[int, str]]:
-    """(line, absolute dotted name) for every thing any import statement in `source` names, wherever the statement is
-    (module level, inside a function, inside a class). `from app import core` yields `app.core`; `from app.core import
-    metrics` yields `app.core.metrics`; a relative import is resolved against `package` first."""
+    """(line, absolute dotted name) for every thing any import statement in `source` names, wherever the
+    statement is (module level, inside a function, inside a class).
+    """
     found: list[tuple[int, str]] = []
     for node in ast.walk(ast.parse(source)):
         if isinstance(node, ast.Import):
@@ -156,9 +156,7 @@ def test_the_scanner_accepts_what_the_package_may_import(source):
 
 
 def test_importing_every_package_module_with_the_app_off_the_path_loads_no_host_module(tmp_path):
-    """The runtime half. A clean interpreter in an empty directory (no `.env` to read, no ambient project config) whose import path is
-    the package's `src` directory and nothing of this repo, imports every module and reports any `app.*` module that got loaded. If
-    a module reached for the host it would not import at all: the host is not on the path."""
+    """The runtime half."""
     modules = sorted(
         ".".join(path.relative_to(SRC).with_suffix("").parts) for path in CORE_FILES if path.name != "__init__.py"
     )

@@ -72,17 +72,12 @@ def ollama_endpoint() -> dict[str, str]:
 
 @pytest.fixture(scope="session")
 def crawl4ai_server() -> dict[str, str]:
-    """`tests/containers.py::ensure_crawl4ai()` (2026-09-17) — used by
-    test_domain_crawl_tools_live.py, which monkeypatches this fixture's
-    `crawl4ai_server_url`/`crawl4ai_api_token` into
-    `app.ingestion.web_crawler`'s own module globals itself (see that
-    helper's own docstring for why this fixture only returns connection
-    info rather than doing the monkeypatching itself — same division of
-    labor `ollama_endpoint` above and the deepeval files'
-    `real_ollama_chat_model` fixtures already use). `test_web_crawler_live.py`
-    used to share this fixture too but moved to `tests/integration/`
-    (own copy there) the same day this fixture was added — see this
-    module's own docstring for why."""
+    """`tests/containers.py::ensure_crawl4ai()` (2026-09-17) — used by test_domain_crawl_tools_live.py, which
+    monkeypatches this fixture's `crawl4ai_server_url`/`crawl4ai_api_token` into `app.ingestion.web_crawler`'s
+    own module globals itself (see that helper's own docstring for why this fixture only returns connection
+    info rather than doing the monkeypatching itself — same division of labor `ollama_endpoint` above and the
+    deepeval files' `real_ollama_chat_model` fixtures already use).
+    """
     return ensure_crawl4ai()
 
 
@@ -95,11 +90,9 @@ def _build_app_env(
     *,
     embed_model: str | None = None,
 ) -> dict[str, str]:
-    """Shared env both `real_stack` and `real_stack_with_retrieval` build
-    the api/agent-worker subprocesses from — same dependency wiring, only
-    `embed_model` differs between them. Split out so the two fixtures can't
-    silently drift apart on everything BUT the one thing that's actually
-    supposed to differ."""
+    """Shared env both `real_stack` and `real_stack_with_retrieval` build the api/agent-worker subprocesses from
+    — same dependency wiring, only `embed_model` differs between them.
+    """
     env = {
         **os.environ,
         "CHECKPOINTER_DATABASE_URL": postgres["checkpointer_database_url"],
@@ -241,16 +234,12 @@ def real_stack() -> Iterator[str]:
 
 
 def _seed_retrieval_data(env: dict[str, str]) -> None:
-    """Populates Qdrant's docs + skills collections the same way a real
-    deployment does (`make ingest`/`make index-skills`) — run as
-    subprocesses against `env` (pointed at THIS fixture's own Qdrant/Ollama
-    containers), not called in-process, so this never needs to monkeypatch
-    this test process's own already-imported `app.retrieval.embeddings`/
-    `qdrant_store` module state (tests/live/test_qdrant_real.py's own
-    fixture does that instead, for a different, in-process use case).
-    `check=True`: a seeding failure must fail fast here, not surface later
-    as a confusing "why did search_docs/skill_search return nothing" in
-    whatever test actually runs."""
+    """Populates Qdrant's docs + skills collections the same way a real deployment does (`make ingest`/`make
+    index-skills`) — run as subprocesses against `env` (pointed at THIS fixture's own Qdrant/Ollama
+    containers), not called in-process, so this never needs to monkeypatch this test process's own
+    already-imported `app.retrieval.embeddings`/ `qdrant_store` module state (tests/live/test_qdrant_real.py's
+    own fixture does that instead, for a different, in-process use case).
+    """
     for module in ("scripts.seed", "scripts.index_skills"):
         subprocess.run(
             [sys.executable, "-m", module],
@@ -296,21 +285,15 @@ def _private_redis() -> Iterator[dict[str, str]]:
 
 @pytest.fixture(scope="session")
 def real_stack_with_retrieval() -> Iterator[str]:
-    """Same shape as `real_stack`, but with a REAL embedding model
-    (`EMBED_MODEL=nomic-embed-text`, already pulled into the shared Ollama
-    container by `ensure_ollama` regardless of which fixture asks for it —
-    see that helper's own docstring), Qdrant actually seeded
-    (`_seed_retrieval_data`), and its own PRIVATE Redis (`_private_redis`,
-    see its own docstring for why sharing `real_stack`'s is a real bug, not
-    just untidy) — for tests that need `search_docs` (real citations),
-    `skill_search`/`use_skill` (both Qdrant-backed, same as search_docs),
-    or `run_subagent` (the bundled `researcher` subagent calls
-    search_docs/query_employees itself) to return real, non-empty results
-    rather than the degraded-empty-context path `real_stack` deliberately
-    accepts for its own simpler calculator/remember prompts. A separate,
-    session-scoped fixture rather than changing `real_stack` itself — the
-    seeding step and the real embedding calls both cost real time neither
-    of `real_stack`'s two existing tests need to pay."""
+    """Same shape as `real_stack`, but with a REAL embedding model (`EMBED_MODEL=nomic-embed-text`, already
+    pulled into the shared Ollama container by `ensure_ollama` regardless of which fixture asks for it — see
+    that helper's own docstring), Qdrant actually seeded (`_seed_retrieval_data`), and its own PRIVATE Redis
+    (`_private_redis`, see its own docstring for why sharing `real_stack`'s is a real bug, not just untidy) —
+    for tests that need `search_docs` (real citations), `skill_search`/`use_skill` (both Qdrant-backed, same
+    as search_docs), or `run_subagent` (the bundled `researcher` subagent calls search_docs/query_employees
+    itself) to return real, non-empty results rather than the degraded-empty-context path `real_stack`
+    deliberately accepts for its own simpler calculator/remember prompts.
+    """
     postgres = ensure_postgres()
     qdrant = ensure_qdrant()
     ollama = ensure_ollama(TEST_LLM_MODEL)
@@ -341,13 +324,7 @@ def pytest_runtest_makereport(item: pytest.Item, call: pytest.CallInfo) -> Itera
 
 @pytest.fixture(autouse=True)
 def _a_test_leaves_no_memories_behind(request: pytest.FixtureRequest) -> Iterator[None]:
-    """After every test that uses the retrieval stack, remove the memories it wrote.
-
-    The stack is session-scoped, so what one test `remember`s is still in Qdrant, and still pre-fetched into
-    the prompt, when the next test runs. See tests/live/memories.py for the failure this caused. Autouse and
-    keyed on the stack rather than on one test, so a test added later that also calls `remember` cannot
-    quietly poison the ones after it. Tests that do not use the stack pay nothing.
-    """
+    """After every test that uses the retrieval stack, remove the memories it wrote."""
     if "real_stack_with_retrieval" not in request.fixturenames:
         yield
         return

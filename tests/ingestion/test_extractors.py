@@ -22,11 +22,7 @@ from app.ingestion.extractors import (
 
 
 def _minimal_pdf_bytes(text: str) -> bytes:
-    """The smallest valid PDF pypdf can extract real text from — one
-    page, one Helvetica text-showing operator. Not a spec-perfect PDF
-    (its xref table is deliberately left at a dummy offset), but pypdf's
-    lenient recovery parser handles that the same way it would a
-    slightly-malformed real-world PDF."""
+    """The smallest valid PDF pypdf can extract real text from — one page, one Helvetica text-showing operator."""
     content = f"BT /F1 24 Tf 100 700 Td ({text}) Tj ET".encode()
     pdf = f"""%PDF-1.4
 1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj

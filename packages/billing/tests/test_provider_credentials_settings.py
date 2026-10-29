@@ -102,6 +102,5 @@ def test_an_unknown_polar_environment_is_refused(monkeypatch):
 
 
 def test_there_is_no_usage_event_name_setting_because_the_model_is_prepaid_packs():
-    """Spec D16: nothing is sent to a provider as usage, so nothing needs a Stripe Meter or a Polar event name. A setting
-    that nothing reads is a promise the code does not keep; it returns with the adapter that exports usage."""
+    """Spec D16: nothing is sent to a provider as usage, so nothing needs a Stripe Meter or a Polar event name."""
     assert not {name for name in BillingSettings.model_fields if "event_name" in name}

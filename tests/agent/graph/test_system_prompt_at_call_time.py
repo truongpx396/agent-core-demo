@@ -76,9 +76,9 @@ async def test_editing_the_prompt_reaches_an_existing_thread_with_nothing_to_mig
 
 
 async def test_a_thread_that_still_holds_prompts_from_an_older_build_is_sent_exactly_one():
-    """Threads created before this change hold the seeded prompt as their first message, and
-    after a prompt edit under the old seeding, a second one mid-thread. Both are ignored, never
-    shown to the model, and the current prompt is the only one it sees."""
+    """Threads created before this change hold the seeded prompt as their first message, and after a prompt edit
+    under the old seeding, a second one mid-thread.
+    """
     saver, thread = MemorySaver(), str(uuid.uuid4())
     seen = []
     g = _graph("You are the CURRENT prompt.", scripted_llm(lambda _m: LONG_ANSWER, seen), saver)

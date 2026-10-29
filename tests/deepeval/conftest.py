@@ -76,11 +76,7 @@ def deepeval_ollama() -> dict[str, str]:
 def _with_fallbacks(primary, fallbacks):
     """`primary` answered through the failover chain (tests/deepeval/fallback.py): then `fallbacks` (other models
     on the same provider), then the optional backup providers' models (tests/deepeval/backup_providers.py:
-    Plugsky, then OpenRouter, each only if its key is set). Returns `primary` unchanged when there is nothing
-    to fall back to, so a bare checkout behaves exactly as it always did.
-
-    Engages only on a TRANSIENT failure (rate limit, overload, timeout), judged by looking inside deepeval's own
-    tenacity `RetryError` wrapper: see fallback.py for the bug that made the previous version miss exactly that.
+    Plugsky, then OpenRouter, each only if its key is set).
     """
     backups = build_backup_models()  # [] (and no deepeval import) when no backup key is set
     if not fallbacks and not backups:
@@ -90,17 +86,9 @@ def _with_fallbacks(primary, fallbacks):
 
 @pytest.fixture(scope="session")
 def deepeval_judge():
-    """The GRADER, pointed at Gemini — see DEEPEVAL_JUDGE_MODEL's own module
-    comment for why this is separate from `deepeval_ollama` (the TARGET),
-    and for why Gemini specifically (the same model+key
-    `promptfoo/redteam.yaml`'s `redteam.provider` already uses). deepeval's
-    own native `GeminiModel` (`deepeval.models`), not the generic
-    OpenAI-SDK `LocalModel` this fixture used for Groq before — Gemini
-    isn't OpenAI-compatible, so the real Google GenAI SDK is required
-    (`pip install google-genai`). Fails fast with a clear message if
-    GOOGLE_API_KEY isn't set, rather than an opaque 401 mid-test. Wrapped
-    through `_with_fallbacks` — see this module's own docstring for the
-    failover chain.
+    """The GRADER, pointed at Gemini — see DEEPEVAL_JUDGE_MODEL's own module comment for why this is separate
+    from `deepeval_ollama` (the TARGET), and for why Gemini specifically (the same model+key
+    `promptfoo/redteam.yaml`'s `redteam.provider` already uses).
     """
     from deepeval.models import GeminiModel
 
@@ -118,17 +106,9 @@ def deepeval_judge():
 
 @pytest.fixture(scope="session")
 def deepeval_conversation_judge():
-    """The GRADER (and simulated-persona model) for
-    test_conversation_simulator_deepeval.py ONLY — see this module's own
-    docstring, `deepeval_conversation_judge` paragraph, for the real 400
-    INVALID_ARGUMENT finding that put this fixture back on Groq rather than
-    `deepeval_judge`'s Gemini. Same `LocalModel` shape `deepeval_judge` used
-    for Groq before it moved to Gemini (`deepeval.models.LocalModel` is a
-    plain OpenAI-SDK client under a generic name — any OpenAI-compatible
-    `base_url` works). Fails fast with a clear message if GROQ_API_KEY
-    isn't set, rather than an opaque 401 mid-test. Answers through
-    `_with_fallbacks` — see this module's own docstring for the failover
-    chain.
+    """The GRADER (and simulated-persona model) for test_conversation_simulator_deepeval.py ONLY — see this
+    module's own docstring, `deepeval_conversation_judge` paragraph, for the real 400 INVALID_ARGUMENT finding
+    that put this fixture back on Groq rather than `deepeval_judge`'s Gemini.
     """
     from deepeval.models import LocalModel
 
@@ -153,16 +133,8 @@ def deepeval_conversation_judge():
 
 @pytest.fixture(scope="session")
 def crawl4ai_server() -> dict[str, str]:
-    """`tests/containers.py::ensure_crawl4ai()` (2026-09-17) — used only by
-    `test_tool_correctness_deepeval.py`'s own
-    `test_fetch_external_reference_tool_call_is_correct_and_well_argued`,
-    via that file's non-autouse `_use_crawl4ai_server` fixture. Own copy
-    rather than reusing `tests/live/conftest.py`'s or
-    `tests/integration/conftest.py`'s fixture of the same name — same
-    "each package wraps the shared `ensure_*()` helper itself" split
-    `deepeval_ollama` above already takes relative to
-    `tests/live/conftest.py`'s `ollama_endpoint` (both call `ensure_ollama`,
-    just with different models) — `ensure_crawl4ai()`'s own cross-worker
-    `_acquire` cache means calling it from any number of packages' conftests
-    within the same pytest run still only starts one real container."""
+    """`tests/containers.py::ensure_crawl4ai()` (2026-09-17) — used only by `test_tool_correctness_deepeval.py`'s
+    own `test_fetch_external_reference_tool_call_is_correct_and_well_argued`, via that file's non-autouse
+    `_use_crawl4ai_server` fixture.
+    """
     return ensure_crawl4ai()

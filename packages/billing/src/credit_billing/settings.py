@@ -58,17 +58,17 @@ class BillingSettings(BaseSettings):
     billing_providers: str = ""
     # {"provider": "signing secret"} as JSON. SecretStr so the values never show in a repr or a log line.
     billing_webhook_secrets: dict[str, SecretStr] = Field(default_factory=dict)
-    # Credentials for the payment-provider adapters (specs/010 T029). The Stripe adapter reads `stripe_api_key` and the Polar
-    # adapter `polar_access_token` / `polar_environment` (to create a Checkout); both are secret-wrapped (never in a repr or a
-    # log line) and checked for the obvious mistake at startup. Use SANDBOX credentials. A webhook signing secret is not here: it
-    # goes in `billing_webhook_secrets` above, per provider.
-    # There is no "usage event name" setting on purpose: the billing model is prepaid packs (spec D16), so no adapter sends
-    # usage to a provider and none needs the name of a Stripe Meter or a Polar event. If that ever changes it comes back
-    # with the `USAGE_EXPORT` adapter that needs it, not before.
+    # Credentials for the payment-provider adapters (specs/010 T029). The Stripe adapter reads
+    # `stripe_api_key`, the Polar adapter `polar_access_token`/`polar_environment` (to create a Checkout).
+    # Both are secret-wrapped (never in a repr or log) and checked for the obvious mistake at startup. Use
+    # SANDBOX credentials. A webhook signing secret goes in `billing_webhook_secrets` above, per provider.
+    # There is no "usage event name" setting on purpose: the model is prepaid packs (spec D16), so no adapter
+    # sends usage to a provider; it would return with the `USAGE_EXPORT` adapter that needs it.
     #
-    # Stripe: a server-side key from the sandbox's API keys page. Stripe recommends a restricted key (`rk_`) over a secret
-    # key (`sk_`); a publishable key (`pk_`) cannot do anything on a server and is refused. A webhook-only deployment may leave
-    # it unset: the adapter then verifies deliveries but refuses to create a checkout.
+    # Stripe: a server-side key from the sandbox's API keys page. Stripe recommends a restricted key (`rk_`)
+    # over a secret key (`sk_`); a publishable key (`pk_`) can do nothing on a server and is refused. A
+    # webhook-only deployment may leave it unset: the adapter then verifies deliveries but refuses to create a
+    # checkout.
     stripe_api_key: SecretStr | None = None
     # Polar: an Organization Access Token. Sandbox and production are separate accounts with separate tokens.
     polar_access_token: SecretStr | None = None

@@ -308,15 +308,11 @@ def scaled_stack(qdrant_collection: str) -> Iterator[str]:
 
 @pytest.fixture(scope="module")
 def qdrant_url(scaled_stack) -> str:
-    """The same Qdrant container `scaled_stack` already provisioned for
-    `GET /health/ready` — `ensure_qdrant()` is idempotent/cached (see
-    tests/containers.py), so calling it again here just exposes that same
-    container's URL to THIS test process too, letting a test verify a
-    real write (e.g. a HITL-approved `remember` call) actually landed,
-    without needing `scaled_stack` itself to change its own return shape.
-    Depends on `scaled_stack` only to document the ordering intent, not
-    because it's strictly required — `ensure_qdrant()` would work fine
-    called first too."""
+    """The same Qdrant container `scaled_stack` already provisioned for `GET /health/ready` — `ensure_qdrant()`
+    is idempotent/cached (see tests/containers.py), so calling it again here just exposes that same
+    container's URL to THIS test process too, letting a test verify a real write (e.g. a HITL-approved
+    `remember` call) actually landed, without needing `scaled_stack` itself to change its own return shape.
+    """
     return ensure_qdrant()["qdrant_url"]
 
 
@@ -336,11 +332,7 @@ def _parse_final_answer(sse_text: str) -> str:
 
 
 def _parse_error_messages(sse_text: str) -> list[str]:
-    """Every `"error"` event's content from the same SSE body. A failed turn is
-    still HTTP 200 with no answer text, so without surfacing these an assertion on
-    `_parse_final_answer` alone reports only "(expected, '')" and the real reason
-    (a deadline, a worker error, ...) has to be inferred from worker log counts —
-    which is how the first-response-deadline failure had to be diagnosed."""
+    """Every `"error"` event's content from the same SSE body."""
     errors = []
     for line in sse_text.splitlines():
         if not line.startswith("data: "):

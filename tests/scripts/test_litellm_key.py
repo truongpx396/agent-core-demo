@@ -178,9 +178,7 @@ class TestInfo:
 
 
 class TestPersonBudget:
-    """The default per-person cap (pattern 74). Only what is ASKED of LiteLLM is pinned here. The three endpoints' real shapes were exercised by
-    hand against a live 1.94.1 proxy when this was written (missing -> exit 1, create, update, read back, delete); that LiteLLM then ENFORCES
-    the budget was read from its source (`get_default_end_user_budget`, `_check_end_user_budget`) and is not something a mock can show."""
+    """The default per-person cap (pattern 74). Only what is ASKED of LiteLLM is pinned here."""
 
     EXISTING = {"budget_id": litellm_key.PERSON_BUDGET_ID, "max_budget": 100.0, "budget_duration": "30d", "budget_reset_at": "2026-11-20T00:00:00Z"}
 

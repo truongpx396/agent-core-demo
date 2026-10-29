@@ -80,12 +80,10 @@ class FakeRedis:
         return result
 
     async def xautoclaim(self, stream, group, consumer, min_idle_time, start_id="0-0", count=None):
-        """Just enough of real XAUTOCLAIM for queue.py::reclaim_stale_entries:
-        claims (and returns) every pending, unacked entry whose simulated
-        idle time (see `_delivered`'s own docstring) is at least
-        `min_idle_time` ms. Always drains in one pass (returns cursor
-        "0-0"), unlike real Redis's paginated form — reclaim_stale_entries's
-        own loop still works correctly against that, it just never repeats."""
+        """Just enough of real XAUTOCLAIM for queue.py::reclaim_stale_entries: claims (and returns) every
+        pending, unacked entry whose simulated idle time (see `_delivered`'s own docstring) is at least
+        `min_idle_time` ms.
+        """
         claimed = [
             (eid, f)
             for eid, f in self.streams.get(stream, [])
@@ -132,15 +130,12 @@ class FakeRedis:
 
 class TestGetClient:
     def test_disables_the_socket_timeout_so_a_blocking_read_cannot_race_it(self, monkeypatch):
-        """Regression guard: redis-py defaults socket_timeout to 5 seconds
-        — verified empirically (a real `make agent-worker` smoke test
-        against this app's own docker-compose Redis) that this races
-        directly against XREAD/XREADGROUP's server-side BLOCK (5000ms
-        here), so the client-side socket timed out and raised
-        redis.exceptions.TimeoutError before Redis's own block window
-        ever elapsed, on every real blocking read. socket_timeout=None
-        is what fixes it; this test exists so a future "cleanup" can't
-        silently drop that kwarg and reintroduce the race."""
+        """Regression guard: redis-py defaults socket_timeout to 5 seconds — verified empirically (a real `make
+        agent-worker` smoke test against this app's own docker-compose Redis) that this races directly against
+        XREAD/XREADGROUP's server-side BLOCK (5000ms here), so the client-side socket timed out and raised
+        redis.exceptions.TimeoutError before Redis's own block window ever elapsed, on every real blocking
+        read.
+        """
         monkeypatch.setattr(queue, "_client", None)
         captured = {}
 

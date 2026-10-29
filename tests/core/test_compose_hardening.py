@@ -52,8 +52,9 @@ def test_the_flags_do_not_spread_to_services_nobody_has_checked_the_write_paths_
 
 
 def test_the_go_edge_service_and_its_stand_in_keep_their_hardening():
-    """They are listed apart from the Python roles (no $HOME, a distroless image), so nothing else would notice one losing a flag. Each runs
-    as a numeric non-root user, which a distroless image needs spelled out, and writes nothing to its root filesystem."""
+    """They are listed apart from the Python roles (no $HOME, a distroless image), so nothing else would notice
+    one losing a flag.
+    """
     for path, names in GO_HARDENED.items():
         services = _services(path)
         for name in names:
@@ -80,9 +81,9 @@ def test_what_the_app_writes_at_runtime_goes_to_size_capped_ram_not_to_the_image
 
 
 def test_the_app_roles_get_the_whole_home_directory_as_tmpfs_owned_by_the_app_user():
-    """Found by running the image read-only: crawl4ai creates ~/.crawl4ai when it is IMPORTED, so a tmpfs for ~/.cache alone left the api
-    crashing at start. The whole home directory covers that and the next library's dot-directory; the uid/gid make it writable by the user the
-    app runs as (a tmpfs is root-owned by default)."""
+    """Found by running the image read-only: crawl4ai creates ~/.crawl4ai when it is IMPORTED, so a tmpfs for
+    ~/.cache alone left the api crashing at start.
+    """
     for path, names in HARDENED.items():
         services = _services(path)
         for name in names:

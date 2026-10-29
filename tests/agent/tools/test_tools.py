@@ -864,15 +864,9 @@ class TestMakeSkillTools:
 
 
 class _RecordingFakeLLM:
-    """A fake chat model that records every `messages` list it's invoked
-    with, so a test can assert on what the NESTED agent's own system prompt
-    actually contained. Composition over subclassing GenericFakeChatModel:
-    that class is a pydantic BaseModel, and a subclass adding a plain `calls`
-    attribute would be misread as a new pydantic field.
-
-    Defines `ainvoke`, not `invoke` — the (sub)agent/compact_history/
-    suggest_followups nodes this drives all call `llm.ainvoke(...)` now
-    (see app/agent/graph/core.py)."""
+    """A fake chat model that records every `messages` list it's invoked with, so a test can assert on what the
+    NESTED agent's own system prompt actually contained.
+    """
 
     def __init__(self, *responses):
         self._inner = GenericFakeChatModel(messages=iter(responses))
@@ -978,12 +972,10 @@ class TestResolveSubagentTools:
 
 
 class TestBuildSubagentGraphTopology:
-    """build_subagent_graph() (app/agent/graph/build.py) reuses
-    build_graph()'s own node functions/factories but drops 5 nodes that
-    are pure overhead (or worse) for a nested one-shot run — see that
-    function's own docstring for the full per-node reasoning. Verified
-    here directly at the graph level, not just indirectly via
-    run_subagent_impl's own behavior tests below."""
+    """build_subagent_graph() (app/agent/graph/build.py) reuses build_graph()'s own node functions/factories but
+    drops 5 nodes that are pure overhead (or worse) for a nested one-shot run — see that function's own
+    docstring for the full per-node reasoning.
+    """
 
     def test_drops_exactly_the_five_overhead_nodes(self):
         from app.agent.graph import build as graph_module
@@ -1111,10 +1103,9 @@ class TestRunSubagentImpl:
         assert len(fake_llm.calls) <= MAX_SUBAGENT_ITERATIONS
 
     async def test_a_safety_net_that_trips_on_a_round_with_narration_beside_the_tool_call_is_still_budget_exceeded(self):
-        """A model often writes a sentence beside its tool request ("Let me check that."). That text is
-        narration of what it is about to do, not an answer. `no_answer_fallback` leaves a subagent's last
-        AIMessage alone (the tool-calling one), so reading that message's content as the answer reported
-        the run as completed, with the narration as the subagent's answer."""
+        """A model often writes a sentence beside its tool request ("Let me check that."). That text is narration
+        of what it is about to do, not an answer.
+        """
         from app.agent.graph.state import MAX_SUBAGENT_ITERATIONS
 
         responses = [
@@ -1207,15 +1198,9 @@ class TestRunSubagentImpl:
     async def test_an_uncited_subagent_answer_is_returned_as_is_with_no_marker_inserted(
         self, monkeypatch
     ):
-        """A subagent's answer is NOT judged or repaired by `[n]` markers. Its retrieval cites
-        ITS sources, which mean nothing to the parent (its `[1]` is a different document), and
-        its prompt says to use none. This used to assert the opposite: the nested `check_output`
-        mechanically inserted `[1]` into the text handed back to the parent (pattern 46).
-
-        The answer is still correct, non-empty content, so the run is "completed", not a
-        budget_exceeded apology. Only ONE fake LLM response queued: if this still needed a second
-        round, _RecordingFakeLLM's inner GenericFakeChatModel would raise on its exhausted
-        iterator, failing this test loudly rather than silently passing."""
+        """A subagent's answer is NOT judged or repaired by `[n]` markers. Its retrieval cites ITS sources, which
+        mean nothing to the parent (its `[1]` is a different document), and its prompt says to use none.
+        """
         from app.agent.graph import build as graph_module
 
         source_text = "The sky is blue due to Rayleigh scattering."
@@ -1411,14 +1396,11 @@ class TestASubagentOnAnUnpricedModelIsRefusedUnderTheBlockPolicy:
 
 
 class TestSubagentGraphCache:
-    """`use_cache=True` reuses a compiled nested graph across calls instead
-    of rebuilding one from scratch every time (a whole StateGraph compile +
-    a fresh ChatOpenAI().bind_tools() call, wasted on every single
-    delegation) — same "compile once, invoke many" idiom the top-level
-    `_graph` singleton (app/agent/runtime/core.py) already follows. Opt-in via
-    `use_cache`, not inferred from `llm`/`registry`/`tools_by_name`, so
-    every OTHER test in this file (which never sets it) is automatically
-    excluded from the cache with no change to its own call shape."""
+    """`use_cache=True` reuses a compiled nested graph across calls instead of rebuilding one from scratch every
+    time (a whole StateGraph compile + a fresh ChatOpenAI().bind_tools() call, wasted on every single
+    delegation) — same "compile once, invoke many" idiom the top-level `_graph` singleton
+    (app/agent/runtime/core.py) already follows.
+    """
 
     def setup_method(self):
         subagent_tools.reset_subagent_graph_cache()

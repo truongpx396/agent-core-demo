@@ -1,14 +1,13 @@
-"""The evaluation metrics, each a few lines of numpy and each pinned by a hand-computed example in tests/scripts/model_eval.
+"""The evaluation metrics, each a few lines of numpy and pinned by a hand-computed example in
+tests/scripts/model_eval. In-repo because `mteb` drags in torch (which the ML service images avoid at 2 GB+)
+and runs models through its own wrappers, not the app's path, and `pytrec_eval` is a C extension for about
+thirty lines of arithmetic. The risk of writing them here is a WRONG implementation, which the hand-computed
+expectations and the control candidates (controls.py) catch.
 
-Why in-repo and not `mteb` / `pytrec_eval`: `mteb` drags in torch (the thing the ML service's images avoid at 2 GB+) and runs models
-through its own wrappers, not through the app's path; `pytrec_eval` is a C extension for about thirty lines of arithmetic. The real
-risk of writing them here is a WRONG implementation, which hand-computed expectations and the control candidates (controls.py) catch.
-
-Conventions, stated once:
-  * Retrieval metrics take a ranked list of item ids and a mapping of relevant id -> integer gain (>= 1). They return None for a
-    query with no relevant item, so the aggregate is over queries that can be scored at all.
-  * NDCG uses LINEAR gains (the gain is the relevance value itself), as `trec_eval`/`pytrec_eval` and therefore BEIR and MTEB do.
-  * "Positive" means attack / needs-stronger-model (label 1); a higher score means more positive.
+Conventions: retrieval metrics take a ranked list of item ids and a map of relevant id -> integer gain (>= 1),
+and return None for a query with no relevant item (the aggregate is over scorable queries). NDCG uses LINEAR
+gains, as `trec_eval`/`pytrec_eval`, BEIR and MTEB do. "Positive" means attack / needs-stronger-model (label
+1); a higher score means more positive.
 """
 import math
 from collections.abc import Mapping, Sequence

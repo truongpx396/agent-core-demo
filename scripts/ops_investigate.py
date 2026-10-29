@@ -1,24 +1,15 @@
-"""Ad-hoc ops investigation: ask the ops domain's own agent a one-off
-question ("why is latency high right now?") using its full toolset
-(app/domains/ops/tools.py). Most investigations stay read-only and never
-pause — but a mutating tool call (log_incident, resolve_incident,
-post_to_team_channel) WILL hit should_continue's mandatory human_approval
-gate like any caller, and this one-shot invocation has no resume loop:
-`investigate()` just returns whatever's in the last AIMessage (typically
-empty). Disclosed, not papered over — an empty answer on a mutating call
-is the honest signal a human needs to be in the loop instead.
+"""Ad-hoc ops investigation: ask the ops domain's agent a one-off question ("why is latency high right now?")
+with its full toolset (app/domains/ops/tools.py). Most investigations are read-only and never pause, but a
+mutating call (log_incident, resolve_incident, post_to_team_channel) WILL hit the mandatory human_approval
+gate, and this one-shot invocation has no resume loop: `investigate()` returns the last AIMessage, typically
+empty. Disclosed: an empty answer on a mutating call is the signal a human needs to be in the loop.
 
-A one-shot `build_graph(manifest=OPS_MANIFEST, domain=OPS_DOMAIN_PLUGIN)`
-call, not `run_subagent` — the ops domain's own `run_subagent` delegates
-to `metrics-researcher`, restricted to `fetch_metrics_summary`/
-`list_recent_incidents`, narrower than the full toolset this script's
-open-ended questions need.
+A one-shot `build_graph(manifest=OPS_MANIFEST, domain=OPS_DOMAIN_PLUGIN)`, not `run_subagent`: the ops
+`run_subagent` delegates to `metrics-researcher`, restricted to
+`fetch_metrics_summary`/`list_recent_incidents`, narrower than open-ended questions need. No durable
+checkpointer (the default in-memory MemorySaver): one question, one answer, no memory across runs.
 
-No durable checkpointer — a bare build_graph() defaults to an in-memory
-MemorySaver, matching a "let me ask something" CLI: one question, one
-answer, no memory expected across runs.
-
-Run with: `python -m scripts.ops_investigate "why is latency high right now?"`
+Run with `python -m scripts.ops_investigate "why is latency high right now?"`.
 """
 import asyncio
 import getpass

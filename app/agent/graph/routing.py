@@ -140,22 +140,20 @@ def check_output(
     enforce_citations: bool = True,
     skill_required_tools: tuple[str, ...] = (),
 ) -> dict:
-    """Judge the final answer: strip a fabricated reference footer, cut a closing offer off a
-    complete answer, repair a missing citation marker, then run every check in
-    `graph/output_checks.py`'s registry.
-
-    Returns `used_citations`/`ungrounded_claims_count` for the answer as it will be shown,
-    `output_findings` (every check that fired, `{code: detail}`), `last_retry_reason` (the first by
-    priority, or None) and `retry_reason_repeat_count`; plus a corrected `messages` entry when the
-    footer or a closing offer was stripped or a marker inserted.
+    """Judge the final answer: strip a fabricated reference footer, cut a closing offer off a complete answer,
+    repair a missing citation marker, then run every check in `graph/output_checks.py`'s registry. Returns
+    `used_citations`/`ungrounded_claims_count` for the answer as shown, `output_findings` (`{code: detail}` of
+    every check that fired), `last_retry_reason` (the first by priority, or None),
+    `retry_reason_repeat_count`, and a corrected `messages` entry when a footer or offer was stripped or a
+    marker inserted.
 
     `system_prompt`, `enforce_citations` and `skill_required_tools` are the calling domain's, bound by
-    `build_graph` via `functools.partial`. `enforce_citations=False` (a nested subagent run) turns the
-    two citation checks off: no uncited or misattributed finding, and no `[n]` marker is ever
-    inserted. A subagent is told NOT to use bracket markers (they would name its own sources, which
-    mean nothing to the parent), so judging or "repairing" its answer by them contradicted its own
+    `build_graph` via `functools.partial`. `enforce_citations=False` (a nested subagent run) turns both
+    citation checks off and inserts no `[n]` marker: a subagent is told NOT to use bracket markers (they'd
+    name its own sources, meaningless to the parent), so judging or "repairing" by them contradicted its
     prompt and put a stray `[1]` in the text handed back. Every other check still applies.
-    `skill_required_tools` is the subset of `SKILL_REQUIRED_TOOL_MARKERS` this domain actually has."""
+    `skill_required_tools` is the subset of `SKILL_REQUIRED_TOOL_MARKERS` this domain has.
+    """
     last = state["messages"][-1]
     content = getattr(last, "content", "") or ""
     citations = state.get("citations") or []

@@ -380,9 +380,9 @@ class TestTheAgentNodeAttributesItsCalls:
         assert llm.kwargs == [{}]
 
     async def test_a_real_graph_run_hands_the_node_its_ctx(self):
-        """Through `build_graph`, not around it: LangGraph decides whether a node receives `config`
-        from its signature, and the `instrumented` wrapper sits between the two. If the ctx did not
-        arrive, every production call would silently be anonymous and no test above would notice."""
+        """Through `build_graph`, not around it: LangGraph decides whether a node receives `config` from its
+        signature, and the `instrumented` wrapper sits between the two.
+        """
         llm = _RecordingLLM(AIMessage(content="This is a sufficiently long final answer."))
         graph = build_graph(GraphDeps(llm=llm))
 
@@ -489,11 +489,7 @@ class TestASwallowedBudgetStopIsStillCounted:
 
 
 class TestABudgetStopIsNotRetried:
-    """A budget stop repeats until the budget resets, so retrying it cannot succeed. LangGraph's
-    default `retry_on` retries anything that is not a programming error, which includes the SDK's
-    status errors, so the agent node retried the refusal 3 times — each attempt (and the SDK's own
-    2 retries inside it, measured against a real LiteLLM: 3 requests per `ainvoke`) another refused
-    call in the gateway's log, and seconds of backoff before the caller learned anything."""
+    """A budget stop repeats until the budget resets, so retrying it cannot succeed."""
 
     async def test_the_agent_node_gives_up_on_the_first_refusal(self):
         llm = _RaisingLLM(_budget_error())

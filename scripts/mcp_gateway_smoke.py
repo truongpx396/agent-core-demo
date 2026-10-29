@@ -1,13 +1,13 @@
-"""Does the MCP gateway stack work, end to end, the way a client uses it? `make mcp-gateway-smoke` (specs/017).
+"""Does the MCP gateway stack work end to end, as a client uses it? `make mcp-gateway-smoke` (specs/017). It acts
+like Claude Code: an OAuth authorization-code + PKCE login as a PUBLIC client with the RFC 8707 `resource`
+parameter, through Caddy over TLS signed by Caddy's local CA, then the real MCP client with the token it got.
+Unit tests replace the authorization server; what this repo depends on from Casdoor (audience, claim set,
+public clients, issuer) is measured behaviour of one version, so run this after changing the Casdoor digest in
+docker-compose.yml.
 
-It acts like Claude Code does: an OAuth authorization-code + PKCE login as a PUBLIC client, with the RFC 8707 `resource` parameter, through
-Caddy over TLS signed by Caddy's local CA; then the real MCP client with the token it got. It is the check the unit tests cannot be: they
-replace the authorization server, and what this repo depends on from Casdoor (the audience, the claim set, public clients, the issuer) is
-measured behaviour of one version, so it is also what to run after changing the Casdoor digest in docker-compose.yml.
-
-It needs the stack up and bootstrapped (`make mcp-gateway-up`, `make mcp-gateway-bootstrap`, `make mcp-gateway-ca`). It creates a throwaway
-user in each organization (a demo user's password is never touched) and deletes them, however the run ends. A manual tier, like
-`make test-sandbox`: it needs Docker services and is not part of CI. Exit status 0 only if every check passed.
+Needs the stack up and bootstrapped (`make mcp-gateway-up`, `mcp-gateway-bootstrap`, `mcp-gateway-ca`). It
+creates a throwaway user in each organization (a demo user's password is never touched) and deletes them
+however the run ends. A manual tier like `make test-sandbox`, not CI; exit 0 only if every check passed.
 """
 import argparse
 import asyncio

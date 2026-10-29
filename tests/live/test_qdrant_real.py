@@ -79,18 +79,10 @@ async def test_hybrid_search_round_trips_through_a_real_server():
 
 
 async def test_a_point_with_no_sparse_vector_is_still_found_via_the_dense_leg():
-    """`build_point(sparse_vector=None)` is real and supported — "a caller
-    whose sparse embedding failed can still write a point" per its own
-    docstring — so a point stored that way has NO entry in Qdrant's sparse
-    index at all. That's not `hybrid_search`'s `except`-branch degrade (which
-    fires when computing the QUERY's own sparse embedding fails, not when a
-    STORED point lacks one); it's the ordinary two-leg RRF fusion, with this
-    particular point contributed by only one leg. Still worth a real-server
-    test: whether RRF fusion actually surfaces a point present in only ONE
-    of its two `Prefetch` legs is real Qdrant server behavior, not something
-    tests/retrieval/test_qdrant_store.py's mocked client (which stubs
-    `query_points` to just return `[]` and asserts on the call args) can
-    exercise."""
+    """`build_point(sparse_vector=None)` is real and supported — "a caller whose sparse embedding failed can
+    still write a point" per its own docstring — so a point stored that way has NO entry in Qdrant's sparse
+    index at all.
+    """
     collection = "integration-test-docs-dense-only"
     dense_vector = await embeddings.embed_document("Ecorp support hours are 9am to 5pm weekdays")
     await qdrant_store.ensure_collection(dim=len(dense_vector), collection=collection)

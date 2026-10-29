@@ -162,8 +162,7 @@ async def test_the_export_outbox_cannot_be_applied_before_the_usage_events_it_re
 # --- a database from before the package owned the meter (spec 013) ---------------------------------------------------------
 
 async def test_a_database_that_has_only_the_wallet_and_the_inbox_is_brought_current_without_touching_a_row(database):
-    """The upgrade an existing deployment makes: its volume was initialised with 20 and 22 only. `credit-billing-migrate` adds the usage event store and
-    its outbox, leaves every wallet row exactly as it was, and the new code can then record usage against the old wallet."""
+    """The upgrade an existing deployment makes: its volume was initialised with 20 and 22 only."""
     for name in ("20-credit-wallet.sql", "22-billing.sql"):
         async with database.connection() as conn:
             await conn.execute(schema.executable(name))

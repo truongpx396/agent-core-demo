@@ -142,10 +142,9 @@ def test_a_worker_pool_that_answers_nothing_has_an_alert():
 
 
 def test_a_turn_whose_consumer_vanished_has_an_alert():
-    """An abandoned turn is acked and not retried (process_request always acks), so the person gets
-    a generic error at best and nothing at worst while any write the turn made stays committed. The
-    outcome is recorded by `_run_graph_stream`'s GeneratorExit branch; without a rule it is a series
-    on a dashboard nobody is watching."""
+    """An abandoned turn is acked and not retried (process_request always acks), so the person gets a generic
+    error at best and nothing at worst while any write the turn made stays committed.
+    """
     rules = {rule["alert"]: rule for rule in _rules()}
 
     assert "TurnsAbandoned" in rules, "turns that die with their consumer page nobody"

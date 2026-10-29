@@ -236,9 +236,9 @@ async def test_with_no_real_event_at_all_the_cutoff_is_now(real_appdata):
 
 
 async def test_a_carried_row_does_not_move_the_cutoff(tenant, real_appdata):
-    """The cutoff is the first REAL event. If a carried row (which is older than it) counted, the second run's cutoff would
-    slide back to the oldest history and the run would stop carrying the rest. (Asserted as "not in the history", not as
-    "unchanged": other workers seed events too, and a global minimum may legitimately move between two reads.)"""
+    """The cutoff is the first REAL event. If a carried row (which is older than it) counted, the second run's
+    cutoff would slide back to the oldest history and the run would stop carrying the rest.
+    """
     async with real_appdata() as conn:
         await _ledger(conn, tenant, recorded_at=YEARS_AGO, cost=1.0)
         await seed_event(conn, tenant, occurred_at=NOW - timedelta(days=1))

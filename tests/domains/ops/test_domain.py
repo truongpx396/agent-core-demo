@@ -67,20 +67,14 @@ def test_tool_node_knows_at_least_the_core_ops_domains_tools():
 
 
 def test_sandbox_tools_are_always_present_as_a_fixed_set():
-    """Unlike the old raw ~19-tool OpenSandbox catalog this domain used to
-    merge in directly, the exposed sandbox surface is exactly these four
-    names, always — app/domains/ops/tools.py builds all four (run_command_in_sandbox,
-    run_python_in_sandbox, read_sandbox_file, write_sandbox_file) from the
-    SAME load_raw_sandbox_tools() call and adds them unconditionally, no
-    longer gated on opensandbox-mcp's reachability at import time (that
-    gate caused a real, live bug — a process that booted before
-    opensandbox-server was ready stayed permanently blind to all of them;
-    see sandbox_session.load_raw_sandbox_tools's own docstring).
-    Reachability is now a per-call concern (each impl calls
-    load_raw_sandbox_tools() fresh and raises a plain error if it's still
-    unreachable), not a presence concern — covered by
-    tests/domains/test_sandbox_session.py (hermetic) and
-    tests/live/test_sandbox_session_live.py (real bridge)."""
+    """Unlike the old raw ~19-tool OpenSandbox catalog this domain used to merge in directly, the exposed sandbox
+    surface is exactly these four names, always — app/domains/ops/tools.py builds all four
+    (run_command_in_sandbox, run_python_in_sandbox, read_sandbox_file, write_sandbox_file) from the SAME
+    load_raw_sandbox_tools() call and adds them unconditionally, no longer gated on opensandbox-mcp's
+    reachability at import time (that gate caused a real, live bug — a process that booted before
+    opensandbox-server was ready stayed permanently blind to all of them; see
+    sandbox_session.load_raw_sandbox_tools's own docstring).
+    """
     g = _build()
     assert _SANDBOX_TOOLS <= set(g.tools_by_name)
 

@@ -270,12 +270,9 @@ class TestHandleMessage:
         assert "Sources:" in sent
 
     async def test_a_turn_that_produces_no_text_still_gets_an_explicit_reply_not_silence(self, monkeypatch):
-        """Real bug (reproduced): `_send_message` loops over `range(0, len(text), ...)`,
-        so an EMPTY reply sends nothing at all. A turn whose only output was a
-        swallowed approval pause therefore left the user staring at no reply
-        to their message — contradicting this channel's documented promise
-        that a declined action "gets a real reply explaining it wasn't
-        approved, never a silent write"."""
+        """Real bug (reproduced): `_send_message` loops over `range(0, len(text), ...)`, so an EMPTY reply sends
+        nothing at all.
+        """
         fake, _ = _fake_stream_turn([{"type": "done"}])
         monkeypatch.setattr(telegram_channel, "stream_turn", fake)
         client = _FakeAsyncClient()
@@ -323,16 +320,10 @@ class TestRun:
             await telegram_channel.run()
 
     async def test_validates_agent_domain_before_polling_and_never_builds_a_graph(self, monkeypatch):
-        """AGENT_DOMAIN (app/core/config.py) must be resolved BEFORE the poll
-        loop starts, so a typo'd domain fails at startup instead of publishing
-        to a stream no worker pool reads — this generalized gateway is what
-        app/domains/support|sales/ run behind (see README.md's "Example
-        domains" section). The graph itself is the worker's: this process opens
-        no checkpointer, which `test_channels_use_the_queue.py` pins for the
-        module as a whole. Stops the run() coroutine right after that point (a
-        fake httpx.AsyncClient whose __aenter__ raises a marker exception)
-        rather than actually driving the long-poll loop, which is out of scope
-        for this test."""
+        """AGENT_DOMAIN (app/core/config.py) must be resolved BEFORE the poll loop starts, so a typo'd domain
+        fails at startup instead of publishing to a stream no worker pool reads — this generalized gateway is
+        what app/domains/support|sales/ run behind (see README.md's "Example domains" section).
+        """
 
         class _StopHere(Exception):
             pass

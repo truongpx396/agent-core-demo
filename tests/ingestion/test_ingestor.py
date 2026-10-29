@@ -233,12 +233,9 @@ class TestIngestFile:
 
 
 class TestAssertSafeUrl:
-    """`ingestor._assert_safe_url` is the async wrapper around
-    `url_safety.assert_safe_url_async` that turns a refusal into
-    `IngestRefused` + the refusal metric. The address classification itself is
-    exhaustively covered in tests/core/test_url_safety.py; this class covers the
-    translation and that the wrapper is wired to a resolver that does not block
-    the event loop."""
+    """`ingestor._assert_safe_url` is the async wrapper around `url_safety.assert_safe_url_async` that turns a
+    refusal into `IngestRefused` + the refusal metric.
+    """
 
     async def test_rejects_non_https_scheme(self):
         with pytest.raises(ingestor.IngestRefused):

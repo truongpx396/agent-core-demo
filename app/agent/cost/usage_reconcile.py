@@ -203,17 +203,15 @@ def compare(
 def attribute_gateway(
     raw: Mapping[tuple[str, date], Decimal], tenants: Iterable[str]
 ) -> tuple[dict[Key, Decimal], Decimal]:
-    """Gateway spend keyed by tenant, plus the spend that belongs to no tenant of this app.
-
-    The gateway's end user names the PERSON (`tenant:<tenant>/user:<principal>`), and the reconciliation is per tenant, so
-    each person's spend is summed into their tenant's day; the tenant is read off the id, not looked up. A tenant the gateway
-    spent for and this database has no events for needs no special case: `compare` already reports a day present on one
-    side only as a difference from zero, which is the worst shape a lost meter can take.
-
-    Rows written before the end user named the person carry the older one-way id (`tenant_<hash>`, `gateway.legacy_end_user_id`),
-    which is still in the spend logs for as long as the gateway keeps them: those tenants are found by hashing the ones this
-    database knows, and one that matches none is still a finding, named by that id. Anything else (no identity, or another
-    application's end users) is `unattributed`: reported, never drift."""
+    """Gateway spend keyed by tenant, plus the spend that belongs to no tenant of this app. The gateway's end
+    user names the PERSON (`tenant:<tenant>/user:<principal>`), so each person's spend is summed into their
+    tenant's day, with the tenant read off the id. A tenant the gateway spent for and this database has no
+    events for needs no special case: `compare` already reports a day present on one side only as a difference
+    from zero. Rows from before the end user named the person carry the older id (`tenant_<hash>`,
+    `gateway.legacy_end_user_id`): those tenants are found by hashing the ones this database knows, and one
+    matching none is still a finding, named by that id. Anything else (no identity, another application's end
+    users) is `unattributed`: reported, never drift.
+    """
     legacy = {gateway.legacy_end_user_id(tenant): tenant for tenant in tenants}
     attributed: dict[Key, Decimal] = {}
     unattributed = ZERO

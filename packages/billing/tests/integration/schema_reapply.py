@@ -36,9 +36,9 @@ def script_sql(name: str) -> str:
 
 
 async def reapply(url: str, name: str, *, attempts: int = ATTEMPTS) -> int:
-    """Applies the shipped `<name>` to the database at `url` and returns how many tries it took (1 = no contention).
-
-    Each try is a fresh connection and one implicit transaction: a try that times out on a lock is rolled back whole."""
+    """Applies the shipped `<name>` to the database at `url` and returns how many tries it took (1 = no
+    contention).
+    """
     sql = script_sql(name)
     for attempt in range(1, attempts + 1):
         try:

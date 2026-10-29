@@ -76,22 +76,17 @@ _MAX_CONCURRENCY = int(os.environ.get("FAKE_LLM_MAX_CONCURRENCY", "0"))  # 0 = u
 _semaphore = asyncio.Semaphore(_MAX_CONCURRENCY) if _MAX_CONCURRENCY > 0 else None
 
 
-# --- Tool-call simulation registry ------------------------------------------
+# --- Tool-call simulation registry ---
 #
-# To make a NEW tool call get simulated, add a new `@tool_simulator`-decorated
-# function below (anywhere above `# --- OpenAI wire format ---`) — nothing
-# else in this file needs to change. Each simulator inspects the turn's last
-# USER message text plus the tool names the request actually offered
-# (`tools`), and returns the ToolCall to emit instead of a plain-text answer,
-# or None to decline (the next registered simulator gets a turn; if none
-# claim it, the turn gets a plain-text final answer). A turn that's already
-# past its tool call — the follow-up request carrying the tool's real result
-# as a `role: "tool"` message — never reaches these; see `_pick_tool_call`.
+# To simulate a NEW tool call, add a `@tool_simulator` function below (anywhere above `# --- OpenAI wire
+# format ---`); nothing else changes. Each simulator inspects the last USER message and the tool names the
+# request offered (`tools`) and returns the ToolCall to emit, or None to decline (the next simulator gets a
+# turn; if none claims it, the turn gets a plain-text answer). The follow-up request carrying the tool's real
+# result as a `role: "tool"` message never reaches these (see `_pick_tool_call`).
 #
-# The tool NAME returned must match a real tool this app's graph can execute
-# (app/agent/tools/builtin.py) — ToolNode actually runs it for real against the
-# arguments given here, exactly as production would; this file only fakes
-# the LLM's decision to call it, never the tool execution itself.
+# The returned tool NAME must be a real tool the graph can execute (app/agent/tools/builtin.py): ToolNode
+# really runs it with these arguments. This file fakes only the LLM's decision to call it, never the
+# execution.
 
 
 @dataclass

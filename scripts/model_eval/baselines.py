@@ -1,15 +1,13 @@
-"""Recorded baselines (specs/014 FR-006, data-model.md section 4).
-
-A baseline is the stored result of the model in use today on a specific dataset version. Rules that exist because each is a way a
-comparison can quietly lie:
-  * IMMUTABLE. Writing over an existing baseline is refused (unless forced): re-recording is a new decision, and the old file stays in
-    git history.
-  * Quality is hardware-independent; EFFICIENCY is an object keyed by hardware id, so a second machine adds a key instead of replacing
-    the first, and a comparison uses a latency number only from the same machine profile.
-  * The per-item values are stored beside the headline numbers, so a comparison re-runs the candidate only, never the baseline, and the
-    paired bootstrap has what it needs.
-  * A baseline from a different dataset (name or version) is REFUSED, not warned about: the numbers would not mean the same thing.
-  * `provisional` is true while any evaluation item is unreviewed by a person.
+"""Recorded baselines (specs/014 FR-006, data-model.md section 4): the stored result of the model in use today on
+a specific dataset version. Each rule exists because it is a way a comparison quietly lies:
+- IMMUTABLE: writing over an existing baseline is refused (unless forced); re-recording is a new decision, and
+  the old file stays in git history.
+- Quality is hardware-independent; EFFICIENCY is keyed by hardware id, so a second machine adds a key, and a
+  comparison uses a latency number only from the same machine profile.
+- Per-item values are stored beside the headline numbers, so a comparison re-runs only the candidate and the
+  paired bootstrap has what it needs.
+- A baseline from a different dataset (name or version) is REFUSED, not warned about.
+- `provisional` is true while any evaluation item is unreviewed by a person.
 """
 import hashlib
 import json

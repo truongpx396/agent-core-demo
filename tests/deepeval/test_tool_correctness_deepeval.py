@@ -63,27 +63,8 @@ async def _real_search(query: str, ctx=None) -> tuple[str, list[dict]]:
 
 
 async def _run_and_get_tool_calls(endpoint: dict, question: str, manifest=None, domain=None, auto_approve: bool = False):
-    """Shared by every test below: build a fresh graph/thread, run one
-    turn, and extract (answer, tools_called) in the shape `ToolCall` needs.
-    Same extraction shape scripts/eval.py's own `tool_calls` field already
-    uses (`tc["name"] for m in result["messages"] if isinstance(m,
-    AIMessage) for tc in (m.tool_calls or [])`), plus `tc["args"]`, which
-    that file's own binary presence check never needed.
-
-    `manifest`/`domain` default to the unscoped Ecorp domain, matching
-    every test in this file except the crawl4ai one below — support's
-    `fetch_external_reference` (and ops's `check_vendor_status_page`)
-    don't exist on the default domain's toolset at all (confirmed against
-    app/domains/support/tools.py's own TOOLS list), so that test needs a
-    real `manifest`/`domain` override.
-
-    `auto_approve` handles the SAME human_approval interrupt
-    `test_conversation_simulator_deepeval.py`'s `model_callback` and
-    `test_domain_crawl_tools_live.py` already handle — every "outward"
-    tool (fetch_external_reference included) always pauses for approval
-    first; a case that never calls one of those tools just never hits the
-    pause, so leaving this off by default costs nothing for the other
-    tests here.
+    """Shared by every test below: build a fresh graph/thread, run one turn, and extract (answer, tools_called)
+    in the shape `ToolCall` needs.
     """
     from deepeval.test_case import ToolCall
     from langgraph.types import Command
@@ -175,14 +156,10 @@ async def test_calculator_tool_call_is_correct_and_well_argued(deepeval_ollama, 
 
 
 async def test_query_employees_tool_call_is_correct_and_well_argued(deepeval_ollama, deepeval_judge):
-    """Regression coverage from the THIRD direction: a genuine staff-
-    lookup question should still reach `query_employees`, now that
-    search_docs/tools.py's own docstring explicitly claims "support hours"-
-    style company-facts questions away from it. Deliberately asks about
-    the Sales department, not Support — this checks the tool still works
-    at all post-fix, not a re-run of the original word-collision case
-    (that's `test_search_docs_tool_call_is_correct_and_well_argued`
-    above)."""
+    """Regression coverage from the THIRD direction: a genuine staff- lookup question should still reach
+    `query_employees`, now that search_docs/tools.py's own docstring explicitly claims "support hours"- style
+    company-facts questions away from it.
+    """
     from deepeval import assert_test
     from deepeval.metrics import ArgumentCorrectnessMetric, ToolCorrectnessMetric
     from deepeval.test_case import LLMTestCase, ToolCall
@@ -251,14 +228,6 @@ async def test_skill_tool_calls_are_correct_and_well_argued(deepeval_ollama, dee
 async def test_subagent_delegation_is_correct_and_well_argued(deepeval_ollama, deepeval_judge):
     """Does the model delegate a self-contained lookup to `run_subagent` when a bundled subagent's description
     fits, and, since ArgumentCorrectnessMetric applies here too, hand it a CLEAR, COMPLETE task description?
-    That matters most here: SYSTEM_PROMPT warns a subagent "has no access to this conversation", so a vague
-    task is a real failure a presence check would never catch.
-
-    `researcher` (subagents/researcher/AGENT.md) is the fixture, as `onboarding-brief` was above: no
-    `domains:` restriction, and its tools (`search_docs`, `calculator`, `query_employees`) match this file's
-    fixtures. The question leans into the subagent's stated purpose ("a self-contained lookup whose reasoning
-    doesn't need to appear in the main thread"), because SYSTEM_PROMPT says the model "may" delegate, never
-    must, and an ambiguous prompt would test its optional judgment, not this mechanism.
     """
     from deepeval import assert_test
     from deepeval.metrics import ArgumentCorrectnessMetric, ToolCorrectnessMetric
@@ -293,18 +262,7 @@ def _use_crawl4ai_server(monkeypatch, crawl4ai_server):
     `crawl4ai_server` (tests/deepeval/conftest.py, `tests/containers.py::ensure_crawl4ai()`) starts its own
     ephemeral container, and this fixture points `app.ingestion.web_crawler`'s
     `CRAWL4AI_SERVER_URL`/`CRAWL4AI_API_TOKEN` module globals at it (a monkeypatch, not an env var; see that
-    helper's docstring). Same shape as tests/integration/test_web_crawler_live.py's fixture (2026-09-17; this
-    used to be a plain reachability probe against an already-running `docker compose up -d crawl4ai`, skipped
-    if not up).
-
-    Deliberately NOT `@pytest.mark.crawl` on the test below, unlike every other real-crawl4ai test here,
-    because of a real, disclosed CI ordering bug. This file's module-level `pytestmark = pytest.mark.deepeval`
-    already applies to every test, so adding `crawl` made this ONE test match both `-m deepeval` (its home)
-    AND test-live's `-m "llm or e2e or crawl"`. test-live never installs `deepeval`, so `deepeval_judge`
-    fixture setup failed there with a hard `ModuleNotFoundError`, not a skip (caught in a real CI run).
-    `.github/workflows/ci.yml`'s `deepeval` job used to run its own crawl4ai `docker run` sidecar for this;
-    `ensure_crawl4ai()`'s self-provisioning replaced it (2026-09-17), so the test still gets a REAL run in CI
-    without the `crawl` mark and without a sidecar step.
+    helper's docstring).
     """
     monkeypatch.setattr(web_crawler, "CRAWL4AI_SERVER_URL", crawl4ai_server["crawl4ai_server_url"])
     monkeypatch.setattr(web_crawler, "CRAWL4AI_API_TOKEN", crawl4ai_server["crawl4ai_api_token"])
@@ -313,22 +271,10 @@ def _use_crawl4ai_server(monkeypatch, crawl4ai_server):
 async def test_fetch_external_reference_tool_call_is_correct_and_well_argued(
     deepeval_ollama, deepeval_judge, _use_crawl4ai_server
 ):
-    """The fourth tool-mechanism gap this file closes: a REAL crawl4ai
-    round trip through a REAL model's tool-selection judgment, not the
-    fake-scripted `GenericFakeChatModel` `test_domain_crawl_tools_live.py`
-    already uses to prove the crawl MECHANICS work. That file answers "does
-    approved crawling actually render a page"; this one answers "does the
-    model correctly recognize a customer-linked URL as a job for
-    fetch_external_reference and call it with the right URL" — a genuine
-    tool-selection/argument-quality question neither that file nor
-    anything else in this suite asks with a real model.
-
-    Needs `manifest=SUPPORT_MANIFEST, domain=SUPPORT_DOMAIN_PLUGIN` — this
-    tool doesn't exist on the default Ecorp domain every OTHER test in this
-    file uses (confirmed directly against app/domains/support/tools.py's
-    own TOOLS list) — and `auto_approve=True`, since fetch_external_reference
-    is an "outward" capability tool and always pauses for human_approval
-    first, same as every other outward tool in this app."""
+    """The fourth tool-mechanism gap this file closes: a REAL crawl4ai round trip through a REAL model's
+    tool-selection judgment, not the fake-scripted `GenericFakeChatModel` `test_domain_crawl_tools_live.py`
+    already uses to prove the crawl MECHANICS work.
+    """
     from deepeval import assert_test
     from deepeval.metrics import ArgumentCorrectnessMetric, ToolCorrectnessMetric
     from deepeval.test_case import LLMTestCase, ToolCall

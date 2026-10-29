@@ -1,24 +1,13 @@
-"""Cron-callable ops digest: fetch this app's own operational metrics, flag
-anomalies, summarize in plain language, post to the team channel.
+"""Cron-callable ops digest: fetch this app's operational metrics, flag anomalies, summarize in plain language
+and post to the team channel. It bypasses the ops domain's agent loop (app/domains/ops/domain.py): fetch and
+post are fixed, deterministic operations, and through build_graph() they would hit should_continue's mandatory
+human_approval gate (GRAPH_PATTERNS.md pattern 15), which an unattended cron run can't satisfy, and
+auto-declining (as app/channels/telegram.py does) would silently make "post the digest" never happen. So it
+calls the ops `_impl` functions directly, reserving the LLM for turning numbers into prose. Contrast
+scripts/ops_investigate.py, where a human asks an ad-hoc question and the agent loop is right.
 
-Bypasses the ops domain's own agent loop (app/domains/ops/domain.py) for
-the fetch+post: those are fixed, deterministic operations with no need for
-an LLM to decide whether to call them, and running them through
-build_graph() would hit should_continue's mandatory, UNCONDITIONAL
-human_approval gate (GRAPH_PATTERNS.md pattern 15) — there's no human to
-approve an unattended cron run, and auto-declining (as
-app/channels/telegram.py does for single-shot callers) would silently make
-"post the digest" never happen. So this calls the ops domain's `_impl`
-functions directly (never through a ToolNode), reserving the LLM only for
-turning numbers into prose. Contrast scripts/ops_investigate.py: a human
-asking an ad-hoc question, where the full agent loop is the right tool.
-
-Meant to be wired to real cron/systemd-timer/a Kubernetes CronJob, e.g.:
-
-    0 8 * * * cd /path/to/agent-core-demo && python -m scripts.ops_digest
-
-Idempotent, one team-channel post per run — safe to re-run by hand or
-after a missed cron tick.
+Wire it to cron, a systemd timer or a Kubernetes CronJob, e.g. `0 8 * * * cd /path/to/agent-core-demo &&
+python -m scripts.ops_digest`. One team-channel post per run, safe to re-run by hand or after a missed tick.
 """
 import asyncio
 from datetime import UTC, datetime

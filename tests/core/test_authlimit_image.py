@@ -46,8 +46,9 @@ def test_the_image_is_built_in_two_pinned_stages_and_runs_as_non_root_with_no_sh
 
 
 def test_the_image_says_how_to_check_it_without_a_shell():
-    """Trivy's DS-0026 (and the bot's comment on the PR) asks for a HEALTHCHECK in the image itself, so a container run without compose is
-    still checked. The distroless runtime has no shell, so only the exec form can work; the compose file overrides it with `--ready`."""
+    """Trivy's DS-0026 (and the bot's comment on the PR) asks for a HEALTHCHECK in the image itself, so a
+    container run without compose is still checked.
+    """
     runtime = (SERVICE / "Dockerfile").read_text().split("AS runtime")[1]
     healthcheck = re.search(r"(?m)^HEALTHCHECK .*CMD (\[.*\])\s*$", runtime)
 

@@ -45,9 +45,7 @@ def test_the_lock_pins_the_fixed_certifi():
 
 
 def test_the_shipped_image_has_no_pip():
-    """pip vendors its own certifi, which the lock cannot change. The image used to upgrade pip to get a fresh copy; the
-    runtime stage now removes pip altogether (the virtualenv uv builds has none), so there is no vendored certifi, and no
-    future pip finding, to carry. The stage that ships is the LAST one, and it must not reinstall an installer."""
+    """pip vendors its own certifi, which the lock cannot change."""
     dockerfile = (REPO / "Dockerfile").read_text()
     runtime = dockerfile.split("AS runtime", 1)[1]
     instructions = "\n".join(line for line in runtime.splitlines() if not line.lstrip().startswith("#"))

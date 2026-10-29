@@ -462,25 +462,16 @@ class Settings(BillingSettings):
     # lower it (and add replicas) if extraction, not I/O, dominates.
     ingest_worker_max_concurrency: int = 10
 
-    # How often agent_worker.py/ingest_worker.py each poll XAUTOCLAIM for
-    # entries abandoned by a worker that died mid-job (app/job_queue/queue.py::
-    # reclaim_stale_entries) — a worker crash otherwise leaves that entry
-    # permanently PENDING, unacked and never redelivered, silently losing
-    # the request (see GRAPH_PATTERNS.md's "Extending Further" list).
-    # Reclaimed "cancel" and "resume" jobs, ingest jobs (idempotent by
-    # construction) and "turn" jobs the checkpoint says are unfinished
-    # (agent_worker.py::_classify_reclaimed_turn — a turn whose own
-    # HumanMessage is checkpointed is CONTINUED, not restarted, so a
-    # completed mutating/outward call is never re-asked of the LLM under a
-    # new tool_call_id) are silently republished, up to
-    # MAX_AUTO_RECLAIM_RETRIES times. Everything else (a "turn" that already
-    # finished or is paused at an approval, an unreadable checkpoint or
-    # payload, or any job out of retries) is instead surfaced as an error on
-    # its own results stream and archived to a dead-letter stream — re-running
-    # one of THOSE could duplicate an already-applied side effect (a sent
-    # email, an upserted chunk) or double-record a finished turn's cost, the
-    # same reason process_request/process_job always ack instead of ever
-    # blindly redelivering.
+    # How often agent_worker.py/ingest_worker.py each poll XAUTOCLAIM for entries abandoned by a worker that
+    # died mid-job (queue.py::reclaim_stale_entries); a crash otherwise leaves the entry PENDING, unacked and
+    # never redelivered, silently losing the request. Silently republished, up to MAX_AUTO_RECLAIM_RETRIES
+    # times: reclaimed "cancel" and "resume" jobs, ingest jobs (idempotent by construction), and "turn" jobs
+    # the checkpoint says are unfinished (`_classify_reclaimed_turn`: a turn whose own HumanMessage is
+    # checkpointed is CONTINUED, not restarted, so a completed mutating call is never re-asked of the LLM
+    # under a new tool_call_id). Everything else (a finished turn, one paused at an approval, an unreadable
+    # checkpoint or payload, a job out of retries) is surfaced as an error on its results stream and archived
+    # to a dead-letter stream, because re-running it could duplicate a side effect or double-record a cost:
+    # the reason process_request/process_job always ack instead of blindly redelivering.
     worker_reclaim_interval_seconds: int = 60
 
     # How long an entry must sit claimed-but-unacked before its original
