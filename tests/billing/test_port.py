@@ -21,7 +21,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.agent.cost import budget_holds, budgets, spend, usage_events
+from app.adapters.postgres import usage_events as pg_usage_events
+from app.agent.cost import budget_holds, budgets, spend
 from app.api.routers import usage as usage_router
 from app.billing_integration import port as billing_port
 from app.core import metrics
@@ -33,7 +34,7 @@ from tests.conftest import TEST_CTX, metric_value
 D = Decimal
 NOW = datetime(2026, 10, 15, 12, 0, tzinfo=UTC)
 OPERATIONS = ("record_usage_in", "account_balance", "admit", "credit_summary")
-_REAL_INSERT = usage_events._insert  # imported before any autouse fixture patches it
+_REAL_INSERT = pg_usage_events._insert
 
 
 def _shape(function) -> tuple:
@@ -139,7 +140,7 @@ def connection(monkeypatch):
         handed_out.append(conn)
         yield conn
 
-    monkeypatch.setattr(usage_events, "get_connection", get_connection)
+    monkeypatch.setattr(pg_usage_events, "get_connection", get_connection)
     return SimpleNamespace(handed_out=handed_out, config=config)
 
 

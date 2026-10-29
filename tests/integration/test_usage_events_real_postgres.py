@@ -26,12 +26,14 @@ from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, HumanMessage
 from psycopg import errors as pg_errors
 
+from app.adapters.postgres import usage_events as pg_usage_events
 from app.agent.cost import metering, usage_events
 from tests.containers import ensure_postgres
+from tests.integration.postgres_adapters import use_real_postgres
 
 pytestmark = pytest.mark.integration
 
-_REAL_INSERT = usage_events._insert
+_REAL_INSERT = pg_usage_events._insert
 
 
 @pytest.fixture(scope="module")
@@ -46,8 +48,7 @@ def real_appdata(appdata_url, monkeypatch):
         async with await psycopg.AsyncConnection.connect(appdata_url) as conn:
             yield conn
 
-    monkeypatch.setattr(usage_events, "get_connection", get_connection)
-    monkeypatch.setattr(usage_events, "_insert", _REAL_INSERT)  # the autouse sink replaced it
+    use_real_postgres(monkeypatch, get_connection)
 
 
 def _row(tenant: str, **overrides) -> dict:

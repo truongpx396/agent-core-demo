@@ -1,4 +1,4 @@
-"""Tests for app/core/model_resolver.py.
+"""Tests for app/adapters/litellm/model_catalog.py.
 
 Two kinds of test, on purpose:
 
@@ -21,18 +21,18 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import httpx
 import pytest
 
-from app.core import model_resolver
+from app.adapters.litellm import model_catalog
 
 _MODEL_INFO = {"data": [{"model_name": "chat", "litellm_params": {"model": "ollama_chat/qwen2.5:3b"}}]}
 
 
 @pytest.fixture(autouse=True)
 def _fresh_resolver_state():
-    model_resolver._cache.clear()
-    model_resolver._failed_at.clear()
+    model_catalog._cache.clear()
+    model_catalog._failed_at.clear()
     yield
-    model_resolver._cache.clear()
-    model_resolver._failed_at.clear()
+    model_catalog._cache.clear()
+    model_catalog._failed_at.clear()
 
 
 def _serve(monkeypatch, handler):
@@ -46,7 +46,7 @@ def _serve(monkeypatch, handler):
 
     real = httpx.AsyncClient
     monkeypatch.setattr(
-        model_resolver.httpx,
+        model_catalog.httpx,
         "AsyncClient",
         lambda **kwargs: real(transport=httpx.MockTransport(respond), **kwargs),
     )
@@ -61,14 +61,14 @@ class TestResolveModel:
     async def test_resolves_a_known_alias(self, monkeypatch):
         _serve(monkeypatch, _ok)
 
-        assert await model_resolver.resolve_model("chat") == "ollama_chat/qwen2.5:3b"
+        assert await model_catalog.resolve_model("chat") == "ollama_chat/qwen2.5:3b"
 
     async def test_asks_the_proxy_admin_endpoint_with_the_api_key(self, monkeypatch):
-        monkeypatch.setattr(model_resolver, "OPENAI_API_BASE", "http://litellm.test:4000/v1")
-        monkeypatch.setattr(model_resolver, "OPENAI_API_KEY", "sk-test")
+        monkeypatch.setattr(model_catalog, "OPENAI_API_BASE", "http://litellm.test:4000/v1")
+        monkeypatch.setattr(model_catalog, "OPENAI_API_KEY", "sk-test")
         seen = _serve(monkeypatch, _ok)
 
-        await model_resolver.resolve_model("chat")
+        await model_catalog.resolve_model("chat")
 
         (request,) = seen
         assert str(request.url) == "http://litellm.test:4000/model/info"
@@ -77,13 +77,13 @@ class TestResolveModel:
     async def test_unknown_alias_returns_none(self, monkeypatch):
         _serve(monkeypatch, lambda request: httpx.Response(200, json={"data": []}))
 
-        assert await model_resolver.resolve_model("nonexistent") is None
+        assert await model_catalog.resolve_model("nonexistent") is None
 
     async def test_caches_after_first_successful_lookup(self, monkeypatch):
         seen = _serve(monkeypatch, _ok)
 
         for _ in range(3):
-            await model_resolver.resolve_model("chat")
+            await model_catalog.resolve_model("chat")
 
         assert len(seen) == 1
 
@@ -93,21 +93,21 @@ class TestResolveModel:
 
         _serve(monkeypatch, refuse)
 
-        assert await model_resolver.resolve_model("chat") is None
+        assert await model_catalog.resolve_model("chat") is None
 
     async def test_degrades_to_none_on_http_error_status(self, monkeypatch):
         _serve(monkeypatch, lambda request: httpx.Response(500))
 
-        assert await model_resolver.resolve_model("chat") is None
+        assert await model_catalog.resolve_model("chat") is None
 
     async def test_degrades_to_none_on_a_malformed_body(self, monkeypatch):
         _serve(monkeypatch, lambda request: httpx.Response(200, content=b"<html>not json</html>"))
 
-        assert await model_resolver.resolve_model("chat") is None
+        assert await model_catalog.resolve_model("chat") is None
 
     def test_admin_base_url_strips_the_v1_suffix(self, monkeypatch):
-        monkeypatch.setattr(model_resolver, "OPENAI_API_BASE", "http://localhost:4000/v1")
-        assert model_resolver.admin_base_url() == "http://localhost:4000"
+        monkeypatch.setattr(model_catalog, "OPENAI_API_BASE", "http://localhost:4000/v1")
+        assert model_catalog.admin_base_url() == "http://localhost:4000"
 
 
 class TestAFailedLookupIsNotRepeatedOnEveryCall:
@@ -121,7 +121,7 @@ class TestAFailedLookupIsNotRepeatedOnEveryCall:
         seen = _serve(monkeypatch, refuse)
 
         for _ in range(5):
-            assert await model_resolver.resolve_model("chat") is None
+            assert await model_catalog.resolve_model("chat") is None
 
         assert len(seen) == 1
 
@@ -129,7 +129,7 @@ class TestAFailedLookupIsNotRepeatedOnEveryCall:
         seen = _serve(monkeypatch, lambda request: httpx.Response(200, json={"data": []}))
 
         for _ in range(3):
-            await model_resolver.resolve_model("nonexistent")
+            await model_catalog.resolve_model("nonexistent")
 
         assert len(seen) == 1
 
@@ -143,16 +143,16 @@ class TestAFailedLookupIsNotRepeatedOnEveryCall:
 
         seen = _serve(monkeypatch, flaky)
         now = {"t": 1_000.0}
-        monkeypatch.setattr(model_resolver.time, "monotonic", lambda: now["t"])
+        monkeypatch.setattr(model_catalog.time, "monotonic", lambda: now["t"])
 
-        assert await model_resolver.resolve_model("chat") is None
+        assert await model_catalog.resolve_model("chat") is None
         outage["on"] = False
-        now["t"] += model_resolver.FAILED_LOOKUP_RETRY_SECONDS - 1
-        assert await model_resolver.resolve_model("chat") is None  # still inside the window
+        now["t"] += model_catalog.FAILED_LOOKUP_RETRY_SECONDS - 1
+        assert await model_catalog.resolve_model("chat") is None  # still inside the window
         assert len(seen) == 1
 
         now["t"] += 2
-        assert await model_resolver.resolve_model("chat") == "ollama_chat/qwen2.5:3b"
+        assert await model_catalog.resolve_model("chat") == "ollama_chat/qwen2.5:3b"
         assert len(seen) == 2
 
     async def test_one_aliass_failure_does_not_suppress_another(self, monkeypatch):
@@ -161,8 +161,8 @@ class TestAFailedLookupIsNotRepeatedOnEveryCall:
 
         _serve(monkeypatch, only_chat)
 
-        assert await model_resolver.resolve_model("missing") is None
-        assert await model_resolver.resolve_model("chat") == "ollama_chat/qwen2.5:3b"
+        assert await model_catalog.resolve_model("missing") is None
+        assert await model_catalog.resolve_model("chat") == "ollama_chat/qwen2.5:3b"
 
 
 class _SlowModelInfo(BaseHTTPRequestHandler):
@@ -186,7 +186,7 @@ def slow_litellm(monkeypatch):
     server = ThreadingHTTPServer(("127.0.0.1", 0), _SlowModelInfo)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
-    monkeypatch.setattr(model_resolver, "OPENAI_API_BASE", f"http://127.0.0.1:{server.server_port}/v1")
+    monkeypatch.setattr(model_catalog, "OPENAI_API_BASE", f"http://127.0.0.1:{server.server_port}/v1")
     yield _SlowModelInfo.delay_seconds
     server.shutdown()
     server.server_close()
@@ -209,7 +209,7 @@ async def test_resolving_a_model_does_not_stall_the_event_loop(slow_litellm):
 
     task = asyncio.create_task(heartbeat())
     await asyncio.sleep(0.05)
-    resolved = await model_resolver.resolve_model("chat")
+    resolved = await model_catalog.resolve_model("chat")
     stop.set()
     await task
 

@@ -30,6 +30,7 @@ import argparse
 import asyncio
 import sys
 
+from app import bootstrap
 from app.agent.cost import budget_policies, budgets
 from app.core.config import (
     MAX_COST_USD_PER_PRINCIPAL_PER_DAY,
@@ -38,6 +39,7 @@ from app.core.config import (
     MAX_COST_USD_PER_TENANT_PER_MONTH,
 )
 from app.core.sql_store import close_pool
+from app.ports.cost import ALL_PRINCIPALS, PERIODS, RESERVED_SUBJECTS, TENANT_SUBJECT
 
 
 def _parse_limit(text: str) -> float | None:
@@ -68,22 +70,22 @@ def _build_parser() -> argparse.ArgumentParser:
 
     set_ = sub.add_parser("set", help="set or replace one override")
     subject_args(set_)
-    set_.add_argument("--period", required=True, choices=budget_policies.PERIODS)
+    set_.add_argument("--period", required=True, choices=PERIODS)
     set_.add_argument("--limit", required=True, type=_parse_limit, help="dollars, 0 to suspend, or 'none' for no cap")
     set_.add_argument("--by", required=True, help="who is making the change (recorded)")
 
     clear = sub.add_parser("clear", help="remove one override, restoring the Settings default")
     subject_args(clear)
-    clear.add_argument("--period", required=True, choices=budget_policies.PERIODS)
+    clear.add_argument("--period", required=True, choices=PERIODS)
     return parser
 
 
 def _subject(args: argparse.Namespace) -> str:
     if args.all_principals:
-        return budget_policies.ALL_PRINCIPALS
+        return ALL_PRINCIPALS
     if args.principal is None:
-        return budget_policies.TENANT_SUBJECT
-    if args.principal in budget_policies.RESERVED_SUBJECTS:
+        return TENANT_SUBJECT
+    if args.principal in RESERVED_SUBJECTS:
         raise SystemExit(f"error: {args.principal!r} is reserved and cannot be a principal id")
     return args.principal
 
@@ -146,6 +148,7 @@ async def run(argv: list[str] | None = None) -> int:
 
 
 def main() -> None:
+    bootstrap.wire()
     sys.exit(asyncio.run(run()))
 
 

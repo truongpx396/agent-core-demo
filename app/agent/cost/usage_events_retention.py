@@ -26,7 +26,7 @@ import logging
 from dataclasses import dataclass
 
 from app.core.config import USAGE_EVENT_MIN_RETENTION_DAYS
-from app.core.sql_store import get_connection
+from app.ports import cost as ports
 
 logger = logging.getLogger(__name__)
 
@@ -35,22 +35,6 @@ SWEEP_BATCH_SIZE = 5000
 # 1,000 batches is 5 million rows at the default size. The app never writes an event older than the cutoff, so a sweep ends at the
 # first short batch; the ceiling is for the day something does (a restore, a backfill), so one run still has a bounded duration.
 SWEEP_MAX_BATCHES = 1000
-
-_ALLOW_DELETE = "SELECT set_config('usage_events.allow_delete', 'on', true)"
-
-# No ORDER BY, on purpose: events are inserted in time order, so the oldest sit first in the heap and the scan finds a full batch
-# quickly, whereas sorting a year of rows to delete the oldest few thousand would cost more than the delete.
-_BATCH = """
-WITH doomed AS (
-    SELECT e.event_id FROM usage_events e
-    WHERE e.occurred_at < now() - make_interval(days => %(days)s)
-    LIMIT %(n)s
-), gone AS (
-    DELETE FROM usage_events e USING doomed d WHERE e.event_id = d.event_id RETURNING 1
-)
-SELECT count(*) FROM gone
-"""
-
 
 @dataclass(frozen=True)
 class SweepResult:
@@ -82,8 +66,4 @@ async def sweep_old_events(
 
 
 async def _batch(days: int, n: int) -> int:
-    async with get_connection() as conn:
-        await conn.execute(_ALLOW_DELETE)
-        cur = await conn.execute(_BATCH, {"days": days, "n": n})
-        (gone,) = await cur.fetchone()
-    return int(gone)
+    return await ports.usage_events.get().delete_older_than(days=days, limit=n)

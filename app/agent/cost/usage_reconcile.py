@@ -18,27 +18,22 @@ Known noise: a call that STARTS before midnight UTC and is recorded after it lan
 gateway (start time) and the event (insert time). A busy tenant's tolerance absorbs it; a quiet tenant with an
 expensive call shows opposite drifts on adjacent days, the straddle signature, not a loss.
 
-The gateway read is `GET /spend/logs/v2` with `start_date`/`end_date`, paginated (checked against LiteLLM
-1.104: UTC window on `startTime`, both ends inclusive, `page_size` at most 1000, `total` capped at 10 000 so
-the page count never comes from it). The sort has no tie-breaker, so rows are de-duplicated by `request_id`,
-and a `total` below the cap must equal the rows collected or the read is INCOMPLETE. An incomplete read is
-never compared, since a truncated sum would page someone for every tenant. Ceiling:
-`USAGE_RECONCILE_GATEWAY_MAX_PAGES`.
+The gateway read (`GET /spend/logs/v2`, paginated, de-duplicated, never trusted when incomplete) is the adapter's:
+`app/adapters/litellm/spend_logs.py`. An incomplete read is never compared, since a truncated sum would page someone for every tenant.
 
 Cost: events are read by time but the index leads with the tenant, so a pass is a sequential scan. A time-only
 index would tax every insert for a job that runs a few times a day; if a pass gets slow, that index (or a
 daily partition) is the fix and `USAGE_RECONCILE_LOOKBACK_DAYS` the lever.
 
-Needs the gateway admin key (`LITELLM_MASTER_KEY`, read from the environment by the caller, never stored
-here), since spend logs are an admin view.
+The gateway read needs the admin key (`LITELLM_MASTER_KEY`, read from the environment by the caller, never stored
+here): the caller builds the adapter and passes it in (`reconcile(gateway=...)`). The events are read through the
+`UsageEventStore` port.
 """
 import logging
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
-
-import httpx
 
 from app.core import gateway, metrics
 from app.core.config import (
@@ -48,17 +43,13 @@ from app.core.config import (
     USAGE_RECONCILE_TOLERANCE_PCT,
     USAGE_RECONCILE_TOLERANCE_USD,
 )
-from app.core.sql_store import get_connection
+from app.ports import cost as ports
+from app.ports.cost import GatewaySpendLog, Key, Window
 
 logger = logging.getLogger(__name__)
 
 ZERO = Decimal(0)
 _MILLIONTH = Decimal("0.000001")
-GATEWAY_PAGE_SIZE = 1000  # the most `/spend/logs/v2` accepts (`le=1000`)
-GATEWAY_PATH = "/spend/logs/v2"
-_GATEWAY_TOTAL_CAP = 10_000  # `SPEND_LOGS_PAGINATION_COUNT_CAP` in LiteLLM: a `total` at or above it is a floor, not a count
-
-Key = tuple[str, date]
 
 
 def printable(value: object) -> str:
@@ -79,18 +70,6 @@ class Tolerance:
 
     def allows(self, a: Decimal, b: Decimal) -> bool:
         return abs(a - b) <= max(self.usd, max(abs(a), abs(b)) * self.pct / 100)
-
-
-@dataclass(frozen=True)
-class Window:
-    """`[start, end]` in UTC, both inclusive (the gateway's own convention, so both sides read the same instants)."""
-
-    start: datetime
-    end: datetime
-
-    @property
-    def empty(self) -> bool:
-        return self.end < self.start
 
 
 def default_window(
@@ -130,14 +109,6 @@ class Finding:
             if above
             else "the events record more than the gateway spent: events with no call behind them, or spend the gateway lost"
         )
-
-
-@dataclass(frozen=True)
-class GatewaySpend:
-    by_end_user_day: Mapping[tuple[str, date], Decimal]  # an empty end_user is the key "" (no identity was sent)
-    rows: int
-    complete: bool
-    reason: str = ""
 
 
 @dataclass
@@ -230,16 +201,6 @@ def attribute_gateway(
     return attributed, unattributed
 
 
-def _row_day_and_spend(row: Mapping) -> tuple[str, date, Decimal, str]:
-    try:
-        start = datetime.fromisoformat(str(row["startTime"]).replace("Z", "+00:00"))
-        if start.tzinfo is None:
-            start = start.replace(tzinfo=UTC)
-        return str(row.get("end_user") or ""), start.astimezone(UTC).date(), Decimal(str(row.get("spend") or 0)), str(row["request_id"])
-    except (KeyError, ValueError, ArithmeticError, AttributeError, TypeError) as exc:
-        raise ValueError(f"a spend-log row the reconciliation cannot read ({type(exc).__name__}): the gateway's format may have changed") from None
-
-
 def usd(amount: Decimal) -> str:
     """Money for a person: six places, unless the amount is real and smaller than that (a call can cost a fraction of a
     millionth of a dollar), in which case every place it has, so a finding never reads as $0.000000."""
@@ -247,76 +208,10 @@ def usd(amount: Decimal) -> str:
     return f"{rounded:f}" if rounded != 0 or amount == 0 else f"{amount:f}"
 
 
-def _gateway_date(moment: datetime) -> str:
-    return moment.astimezone(UTC).strftime("%Y-%m-%d %H:%M:%S")
-
-
-async def fetch_gateway_spend(client: httpx.AsyncClient, window: Window, *, max_pages: int = USAGE_RECONCILE_GATEWAY_MAX_PAGES) -> GatewaySpend:
-    """Every spend-log row in the window, summed by end user and UTC day (see the module doc for the endpoint's verified
-    behaviour). Raises on an HTTP error or a response that is not the documented shape; returns `complete=False`, with
-    the reason, when the read cannot be trusted to be whole."""
-    sums: dict[tuple[str, date], Decimal] = {}
-    seen: set[str] = set()
-    total: int | None = None
-    for page in range(1, max_pages + 1):
-        response = await client.get(
-            GATEWAY_PATH,
-            params={
-                "start_date": _gateway_date(window.start), "end_date": _gateway_date(window.end), "page": page,
-                "page_size": GATEWAY_PAGE_SIZE, "sort_by": "startTime", "sort_order": "asc",
-            },
-        )
-        response.raise_for_status()
-        body = response.json()
-        data = body.get("data") if isinstance(body, dict) else None
-        if not isinstance(data, list):
-            raise ValueError(f"the gateway's {GATEWAY_PATH} answered with an unexpected shape: its API may have changed")
-        if total is None:
-            total = body.get("total") if isinstance(body.get("total"), int) else None
-        for row in data:
-            end_user, day, amount, request_id = _row_day_and_spend(row)
-            if request_id in seen:
-                continue
-            seen.add(request_id)
-            sums[(end_user, day)] = sums.get((end_user, day), ZERO) + amount
-        if len(data) < GATEWAY_PAGE_SIZE:
-            if total is not None and total < _GATEWAY_TOTAL_CAP and total != len(seen):
-                return GatewaySpend(sums, len(seen), False, f"it reported {total} rows and {len(seen)} were read: the log changed while it was being read")
-            return GatewaySpend(sums, len(seen), True)
-    return GatewaySpend(sums, len(seen), False, f"more than {max_pages * GATEWAY_PAGE_SIZE} rows (USAGE_RECONCILE_GATEWAY_MAX_PAGES)")
-
-
-async def events_by_tenant_day(window: Window) -> tuple[dict[Key, Decimal], dict[Key, int], int]:
-    """(USD per tenant-day, unpriced events per tenant-day, events in all). An unpriced event adds nothing to the USD
-    figure (its cost is unknown, never zero), so it is counted: when the gateway is above the events, an unpriced call is
-    the first thing to rule out."""
-    async with get_connection() as conn:
-        cur = await conn.execute(
-            "SELECT tenant, (occurred_at AT TIME ZONE 'UTC')::date, COALESCE(SUM(cost_usd), 0), COUNT(*), COUNT(*) FILTER (WHERE cost_usd IS NULL) "
-            "FROM usage_events WHERE occurred_at >= %s AND occurred_at <= %s GROUP BY 1, 2",
-            (window.start, window.end),
-        )
-        rows = await cur.fetchall()
-    return (
-        {(t, d): Decimal(usd) for t, d, usd, _, _ in rows},
-        {(t, d): unpriced for t, d, _, _, unpriced in rows if unpriced},
-        sum(count for _, _, _, count, _ in rows),
-    )
-
-
-async def known_tenants() -> set[str]:
-    """Every tenant that has ever had a usage event. With the tenants that have events in the window it is the set of names the gateway's
-    one-way ids are mapped back to: a tenant with no event in the window but gateway spend in it is the shape a lost meter takes. The
-    table's index leads with the tenant, so this is an index-only scan; a few passes a day cost nothing next to the window scan."""
-    async with get_connection() as conn:
-        cur = await conn.execute("SELECT DISTINCT tenant FROM usage_events")
-        return {row[0] for row in await cur.fetchall()}
-
-
 async def reconcile(
     window: Window | None = None,
     *,
-    gateway_client: httpx.AsyncClient | None = None,
+    gateway: GatewaySpendLog | None = None,
     tolerance: Tolerance | None = None,
     max_pages: int = USAGE_RECONCILE_GATEWAY_MAX_PAGES,
 ) -> Report:
@@ -328,14 +223,16 @@ async def reconcile(
     if window.empty:
         report.skipped.append("window: it is empty (the settle period reaches back past the start of the day)")
         return report
-    events, unpriced, report.events = await events_by_tenant_day(window)
-    tenants = {tenant for tenant, _ in events} | await known_tenants()
+    store = ports.usage_events.get()
+    found = await store.by_tenant_day(window)
+    events, unpriced, report.events = found.usd, found.unpriced, found.events
+    tenants = {tenant for tenant, _ in events} | await store.known_tenants()
     report.tenants = len(tenants)
 
-    if gateway_client is None:
+    if gateway is None:
         report.skipped.append("gateway: not compared (not requested)")
     else:
-        spend = await fetch_gateway_spend(gateway_client, window, max_pages=max_pages)
+        spend = await gateway.spend(window, max_pages=max_pages)
         report.gateway_rows = spend.rows
         if not spend.complete:
             report.incomplete = True

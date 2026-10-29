@@ -31,6 +31,9 @@ import signal
 
 import httpx
 
+from app import bootstrap
+from app.adapters.litellm.model_catalog import admin_base_url
+from app.adapters.litellm.spend_logs import HttpGatewaySpendLog
 from app.agent.cost import usage_reconcile as reconcile
 from app.core import sql_store
 from app.core.config import (
@@ -38,7 +41,6 @@ from app.core.config import (
     USAGE_RECONCILE_LOOKBACK_DAYS,
 )
 from app.core.logging_config import configure_logging
-from app.core.model_resolver import admin_base_url
 from app.core.telemetry import configure_telemetry, shutdown_telemetry
 
 logger = logging.getLogger(__name__)
@@ -71,7 +73,8 @@ async def run_pass(client: httpx.AsyncClient | None, *, days: int) -> reconcile.
     """One pass, never raising: a failure is counted (`failed`, alert UsageReconcileNotCompleting) and logged by CLASS
     only, since an HTTP or database error's text can carry an address or a statement."""
     try:
-        report = await reconcile.reconcile(reconcile.default_window(lookback_days=days), gateway_client=client)
+        gateway = HttpGatewaySpendLog(client) if client is not None else None
+        report = await reconcile.reconcile(reconcile.default_window(lookback_days=days), gateway=gateway)
     except Exception as exc:  # noqa: BLE001 - a pass that cannot run is the failure to report, not a reason to stop the worker
         reconcile.record_outcome("failed")
         logger.warning("usage_reconcile_failed", extra={"error_class": type(exc).__name__})
@@ -82,6 +85,7 @@ async def run_pass(client: httpx.AsyncClient | None, *, days: int) -> reconcile.
 
 
 async def run(*, loop: bool, days: int, as_json: bool, no_gateway: bool) -> int:
+    bootstrap.wire()
     client = gateway_client(no_gateway=no_gateway)
     reconcile.prime_outcomes()
     stop = asyncio.Event()

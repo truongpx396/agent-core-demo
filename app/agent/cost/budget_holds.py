@@ -19,7 +19,7 @@ import uuid
 
 from app.core import metrics
 from app.core.security import SecurityCtx, valid_ctx
-from app.core.sql_store import get_connection
+from app.ports import cost as ports
 
 logger = logging.getLogger(__name__)
 
@@ -47,23 +47,16 @@ async def reserve_budget(ctx: SecurityCtx | None, amount_usd: float) -> str | No
     Best-effort and fail-open like every write here: a failure just leaves this turn unprotected against a
     concurrent sibling.
 
-    The sweep of this tenant's abandoned holds shares the insert's transaction (`get_connection` is one, see
-    core/sql_store.py). It is housekeeping, not correctness: the read already ignores stale holds.
+    The sweep of this tenant's abandoned holds shares the insert's transaction (the adapter's, see
+    `app/adapters/postgres/budget_holds.py`). It is housekeeping, not correctness: the read already ignores stale holds.
     """
     if not valid_ctx(ctx) or amount_usd <= 0:
         return None
     hold_id = str(uuid.uuid4())
     try:
-        async with get_connection() as conn:
-            await conn.execute(
-                "DELETE FROM tenant_budget_holds "
-                "WHERE tenant = %s AND created_at <= now() - make_interval(mins => %s)",
-                (ctx["tenant"], RESERVATION_STALE_AFTER_MINUTES),
-            )
-            await conn.execute(
-                "INSERT INTO tenant_budget_holds (hold_id, tenant, reserved_usd) VALUES (%s, %s, %s)",
-                (hold_id, ctx["tenant"], amount_usd),
-            )
+        await ports.budget_holds.get().reserve(
+            ctx["tenant"], hold_id, amount_usd, stale_after_minutes=RESERVATION_STALE_AFTER_MINUTES
+        )
         return hold_id
     except Exception as exc:  # noqa: BLE001 - fail open: a reservation failure must not block a turn; counted instead
         metrics.agent_cost_governance_degraded_total.labels(path="reservation").inc()
@@ -83,11 +76,7 @@ async def release_budget_reservation(ctx: SecurityCtx | None, hold_id: str | Non
     if not valid_ctx(ctx) or not hold_id:
         return
     try:
-        async with get_connection() as conn:
-            await conn.execute(
-                "DELETE FROM tenant_budget_holds WHERE hold_id = %s AND tenant = %s",
-                (hold_id, ctx["tenant"]),
-            )
+        await ports.budget_holds.get().release(ctx["tenant"], hold_id)
     except Exception as exc:  # noqa: BLE001 - a failed release only leaves a hold that ages out on its own; counted instead
         metrics.agent_cost_governance_degraded_total.labels(path="reservation").inc()
         logger.warning("tenant_budget_release_failed", extra={"error_class": type(exc).__name__})
@@ -106,14 +95,7 @@ async def in_flight_reservation(tenant: str) -> float:
     already has: a reservation-table outage must not ALSO take down the ledger
     check that's still healthy."""
     try:
-        async with get_connection() as conn:
-            cur = await conn.execute(
-                "SELECT COALESCE(SUM(reserved_usd), 0) FROM tenant_budget_holds "
-                "WHERE tenant = %s AND created_at > now() - make_interval(mins => %s)",
-                (tenant, RESERVATION_STALE_AFTER_MINUTES),
-            )
-            row = await cur.fetchone()
-        return float(row[0]) if row and row[0] is not None else 0.0
+        return await ports.budget_holds.get().in_flight(tenant, stale_after_minutes=RESERVATION_STALE_AFTER_MINUTES)
     except Exception as exc:  # noqa: BLE001 - fail open to 0.0 (ledger-only check); counted instead
         metrics.agent_cost_governance_degraded_total.labels(path="reservation").inc()
         logger.warning(

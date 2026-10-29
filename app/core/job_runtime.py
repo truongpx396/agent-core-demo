@@ -12,6 +12,7 @@ digest's own failed post).
 from collections.abc import Iterator
 from contextlib import contextmanager
 
+from app.bootstrap import wire
 from app.core.logging_config import configure_logging
 from app.core.telemetry import configure_telemetry, shutdown_telemetry
 
@@ -20,7 +21,10 @@ from app.core.telemetry import configure_telemetry, shutdown_telemetry
 def scheduled_job(service_name: str) -> Iterator[None]:
     """Logging and telemetry up for the job's body, telemetry flushed after it
     whether it returned or raised. `service_name` is the OTel `service.name`, so
-    each job's series is distinguishable on the dashboards."""
+    each job's series is distinguishable on the dashboards. The ports are bound to
+    their production adapters first (`app/bootstrap.py`): a job is a process
+    entrypoint like any other."""
+    wire()
     configure_logging()
     configure_telemetry(service_name)
     try:

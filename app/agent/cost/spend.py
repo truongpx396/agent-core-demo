@@ -35,7 +35,7 @@ is a cap that is off.
 """
 from datetime import datetime
 
-from app.core.sql_store import get_connection
+from app.ports import cost as ports
 
 
 async def usage_summary(tenant: str, principal: str | None = None, since: datetime | None = None) -> dict:
@@ -43,21 +43,7 @@ async def usage_summary(tenant: str, principal: str | None = None, since: dateti
 
     `since` is what the budgets use for a ROLLING 24h window (`now - 24h`, not a calendar day, so a tenant's
     near-limit status never resets mid-day) and for the calendar month; `since=None` (all-time) is `GET /usage`'s
-    "total ever spent", bounded by however long events are kept. Tenant is a parameter of every statement."""
-    where = ["tenant = %s"]
-    params: list = [tenant]
-    if principal:
-        where.append("principal = %s")
-        params.append(principal)
-    if since is not None:
-        where.append("occurred_at >= %s")
-        params.append(since)
-
-    sql = (
-        "SELECT COALESCE(SUM(total_tokens), 0), COALESCE(SUM(cost_usd), 0) "
-        f"FROM usage_events WHERE {' AND '.join(where)}"
-    )
-    async with get_connection() as conn:
-        cur = await conn.execute(sql, params)
-        total_tokens, total_cost = await cur.fetchone()
-    return {"total_tokens": int(total_tokens), "total_cost_usd": float(total_cost)}
+    "total ever spent", bounded by however long events are kept. Tenant is a parameter of every statement (the
+    adapter's: `app/adapters/postgres/usage_events.py`)."""
+    totals = await ports.usage_events.get().totals(tenant, principal, since)
+    return {"total_tokens": totals.total_tokens, "total_cost_usd": totals.total_cost_usd}

@@ -1,6 +1,7 @@
 """The embedding identity: what makes two vector spaces the same, or different (app/retrieval/embedding_identity.py)."""
 import pytest
 
+from app.ports import models as model_ports
 from app.retrieval import embedding_identity as ident
 from app.retrieval.embedding_identity import (
     EmbeddingIdentity,
@@ -70,19 +71,20 @@ def test_the_mismatch_message_names_the_way_out():
 
 
 async def test_the_current_identity_is_assembled_from_the_alias_the_probe_and_the_settings(monkeypatch):
-    async def resolved(alias):
-        return f"resolved/{alias}"
+    class Catalog:
+        async def resolve(self, alias):
+            return f"resolved/{alias}"
 
     async def dim():
         return 384
 
-    monkeypatch.setattr(ident, "resolve_model", resolved)
     monkeypatch.setattr(ident.embeddings, "embedding_dim", dim)
     monkeypatch.setattr(ident, "EMBED_QUERY_PREFIX", "q: ")
     monkeypatch.setattr(ident, "EMBED_DOCUMENT_PREFIX", "d: ")
     monkeypatch.setattr(ident, "EMBED_MODEL_REVISION", "r1")
 
-    got = await real_current_identity()
+    with model_ports.model_catalog.overriding(Catalog()):  # type: ignore[arg-type] - only `resolve` is asked of it here
+        got = await real_current_identity()
 
     assert got == EmbeddingIdentity("embed", "resolved/embed", 384, "q: ", "d: ", "r1")
 

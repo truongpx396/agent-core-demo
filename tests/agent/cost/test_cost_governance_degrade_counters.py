@@ -2,7 +2,7 @@
 
 Each of these already had a test that the failure does NOT reach the turn (see
 test_usage_events.py, test_budget_holds.py, test_tenant_budget.py,
-test_model_resolver.py). What none of them asserted is that the failure leaves a
+tests/adapters/litellm/test_model_catalog.py). What none of them asserted is that the failure leaves a
 trace anywhere but a log line — and a lost usage event is committed spend that a
 human will not learn about from a log (the usage-event write's own counter is pinned in test_usage_events.py). Constitution Principle V: a
 degrade-and-continue path MUST increment a metric.
@@ -13,9 +13,11 @@ only pins "and it is counted, under the right `path`".
 import httpx
 import pytest
 
+from app.adapters.litellm import model_catalog
+from app.adapters.postgres import budget_holds as pg_budget_holds
 from app.agent.cost import budget_holds, spend
 from app.agent.runtime import core as runtime_module
-from app.core import metrics, model_resolver
+from app.core import metrics
 from tests.conftest import TEST_CTX, metric_value
 
 
@@ -42,7 +44,7 @@ async def test_a_failed_spend_read_in_the_allowance_check_is_counted_as_ledger_r
 
 
 async def test_a_failed_reservation_write_release_and_read_are_each_counted(monkeypatch):
-    monkeypatch.setattr(budget_holds, "get_connection", _broken)
+    monkeypatch.setattr(pg_budget_holds, "get_connection", _broken)
     before = _count("reservation")
 
     assert await budget_holds.reserve_budget(TEST_CTX, 0.5) is None
@@ -54,23 +56,23 @@ async def test_a_failed_reservation_write_release_and_read_are_each_counted(monk
 
 @pytest.fixture
 def _fresh_resolver():
-    model_resolver._cache.clear()
-    model_resolver._failed_at.clear()
+    model_catalog._cache.clear()
+    model_catalog._failed_at.clear()
     yield
-    model_resolver._cache.clear()
-    model_resolver._failed_at.clear()
+    model_catalog._cache.clear()
+    model_catalog._failed_at.clear()
 
 
 async def test_a_failed_model_resolution_is_counted_as_model_resolve(monkeypatch, _fresh_resolver):
     real = httpx.AsyncClient
     monkeypatch.setattr(
-        model_resolver.httpx,
+        model_catalog.httpx,
         "AsyncClient",
         lambda **kwargs: real(transport=httpx.MockTransport(lambda request: httpx.Response(500)), **kwargs),
     )
     before = _count("model_resolve")
 
-    assert await model_resolver.resolve_model("chat") is None
+    assert await model_catalog.resolve_model("chat") is None
 
     assert _count("model_resolve") == before + 1
 
@@ -80,7 +82,7 @@ async def test_an_alias_the_proxy_does_not_list_is_not_counted_as_a_degradation(
     counter fire on a healthy proxy."""
     real = httpx.AsyncClient
     monkeypatch.setattr(
-        model_resolver.httpx,
+        model_catalog.httpx,
         "AsyncClient",
         lambda **kwargs: real(
             transport=httpx.MockTransport(lambda request: httpx.Response(200, json={"data": []})), **kwargs
@@ -88,6 +90,6 @@ async def test_an_alias_the_proxy_does_not_list_is_not_counted_as_a_degradation(
     )
     before = _count("model_resolve")
 
-    assert await model_resolver.resolve_model("nonexistent") is None
+    assert await model_catalog.resolve_model("nonexistent") is None
 
     assert _count("model_resolve") == before

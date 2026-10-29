@@ -25,14 +25,12 @@ here.
 import logging
 import uuid
 
-from psycopg import errors as pg_errors
-
 from app.agent.cost.pricing import PricedCall
-from app.billing_integration import port as billing_port
 from app.core import metrics
-from app.core.model_resolver import resolve_model
 from app.core.security import SecurityCtx, valid_ctx
-from app.core.sql_store import get_connection
+from app.ports import cost as ports
+from app.ports import models as model_ports
+from app.ports.cost import UsageEventRow, UsageTableMissing
 
 logger = logging.getLogger(__name__)
 
@@ -80,14 +78,14 @@ async def record_call(
     if not message_id:
         _degraded("usage_event_identity")
         message_id = uuid.uuid4().hex
-    row = {
+    row: UsageEventRow = {
         "event_id": event_id_for(ctx["tenant"], message_id),
         "tenant": ctx["tenant"],
         "principal": ctx["principal"],
         "thread_id": thread_id,
         "kind": kind,
         "model_alias": model_alias,
-        "resolved_model": await resolve_model(model_alias),
+        "resolved_model": await model_ports.model_catalog.get().resolve(model_alias),
         "input_tokens": priced.input_tokens,
         "output_tokens": priced.output_tokens,
         "cached_input_tokens": priced.cached_input_tokens,
@@ -98,8 +96,8 @@ async def record_call(
     }
     global _warned_missing_table
     try:
-        await _insert(row)
-    except (pg_errors.UndefinedTable, pg_errors.UndefinedColumn):
+        await ports.usage_events.get().insert(row)
+    except UsageTableMissing:
         # The table (19) is not applied.
         _degraded("usage_event_table_missing")
         if not _warned_missing_table:
@@ -110,40 +108,6 @@ async def record_call(
     except Exception as exc:  # noqa: BLE001 - a failing write must not fail the turn it records; counted and alerted instead
         _degraded("usage_event_write")
         logger.warning("usage_event_write_failed", extra={"error_class": type(exc).__name__})
-
-
-_COLUMNS = (
-    "event_id, tenant, principal, thread_id, kind, model_alias, resolved_model, "
-    "input_tokens, output_tokens, cached_input_tokens, total_tokens, cost_usd, "
-    "price_input_per_token, price_output_per_token"
-)
-_VALUES = (
-    "%(event_id)s, %(tenant)s, %(principal)s, %(thread_id)s, %(kind)s, "
-    "%(model_alias)s, %(resolved_model)s, %(input_tokens)s, %(output_tokens)s, "
-    "%(cached_input_tokens)s, %(total_tokens)s, %(cost_usd)s, "
-    "%(price_input_per_token)s, %(price_output_per_token)s"
-)
-_INSERT = f"INSERT INTO usage_events ({_COLUMNS}) VALUES ({_VALUES}) ON CONFLICT (event_id) DO NOTHING"
-
-
-async def _insert(row: dict) -> bool:
-    """True if a row was written, False if `event_id` was already there. The statement relies on
-    the table's PRIMARY KEY for `ON CONFLICT`, which a fake cursor cannot prove: the real-Postgres
-    test (tests/integration/test_usage_events_real_postgres.py) does.
-
-    A newly written row is handed to billing in the same transaction ("Billing is one call" in the module docstring); a duplicate is not."""
-    async with get_connection() as conn:
-        cur = await conn.execute(_INSERT, row)
-        inserted = cur.rowcount == 1
-        if inserted:
-            await billing_port.record_usage_in(
-                conn,
-                billing_port.Usage(
-                    tenant=row["tenant"], event_id=row["event_id"], kind=row["kind"], cost_usd=row["cost_usd"],
-                    model=row["resolved_model"] or row["model_alias"], tokens=row["total_tokens"],
-                ),
-            )
-        return inserted
 
 
 def reset_state() -> None:

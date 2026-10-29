@@ -4,10 +4,10 @@ Three layers, none needing a live proxy:
 
   * `parse_model_info` and `cost_usd` are pure — a LiteLLM `/model/info` payload
     in, a price or a dollar figure out;
-  * `get_price` runs the module's REAL fetch over `httpx.MockTransport` (the
-    autouse `mock_model_pricing` fixture replaces it, so this file restores it),
-    which exercises the request-building, the cache, the refresh and the
-    keep-the-last-good-prices-on-failure rules;
+  * `get_price` runs the module's REAL fetch, through the real `ModelCatalog` adapter, over
+    `httpx.MockTransport` (the autouse `mock_model_pricing` fixture replaces the fetch, so this
+    file restores it and binds the adapter), which exercises the request-building, the cache, the
+    refresh and the keep-the-last-good-prices-on-failure rules;
   * the agent node and the turn entry point are driven with a patched fetch, to
     show the price actually reaches the running cost and the refusal.
 
@@ -21,10 +21,12 @@ import pytest
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, HumanMessage
 
+from app.adapters.litellm import model_catalog
 from app.agent.cost import pricing
 from app.agent.runtime import core as runtime_module
 from app.agent.runtime import stream as stream_module
 from app.core import errors, metrics
+from app.ports import models as model_ports
 from tests.agent.fakes import make_agent_node
 from tests.conftest import TEST_CTX, metric_value
 
@@ -131,7 +133,7 @@ class TestCostUsd:
 
 @pytest.fixture
 def served(monkeypatch):
-    """Route the REAL `_fetch_model_info` through a MockTransport. Returns the
+    """Route the REAL `_fetch_model_info`, through the real catalog adapter, over a MockTransport. Yields the
     requests seen and a mutable `body` the handler answers with."""
     monkeypatch.setattr(pricing, "_fetch_model_info", _REAL_FETCH)
     state = SimpleNamespace(seen=[], body={"data": [_entry("chat", GPT_4O)]}, status=200)
@@ -142,9 +144,10 @@ def served(monkeypatch):
 
     real = httpx.AsyncClient
     monkeypatch.setattr(
-        pricing.httpx, "AsyncClient", lambda **kwargs: real(transport=httpx.MockTransport(respond), **kwargs)
+        model_catalog.httpx, "AsyncClient", lambda **kwargs: real(transport=httpx.MockTransport(respond), **kwargs)
     )
-    return state
+    with model_ports.model_catalog.overriding(model_catalog.LiteLLMModelCatalog()):
+        yield state
 
 
 @pytest.fixture
@@ -157,8 +160,8 @@ def clock(monkeypatch):
 
 class TestGetPrice:
     async def test_asks_the_proxy_admin_endpoint_with_the_api_key(self, monkeypatch, served):
-        monkeypatch.setattr(pricing, "admin_base_url", lambda: "http://litellm.test:4000")
-        monkeypatch.setattr(pricing, "OPENAI_API_KEY", "sk-test")
+        monkeypatch.setattr(model_catalog, "admin_base_url", lambda: "http://litellm.test:4000")
+        monkeypatch.setattr(model_catalog, "OPENAI_API_KEY", "sk-test")
 
         assert await pricing.get_price("chat") == pricing.ModelPrice(2.5e-06, 1e-05, 1.25e-06)
 

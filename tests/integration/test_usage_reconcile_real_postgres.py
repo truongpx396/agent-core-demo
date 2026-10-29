@@ -21,16 +21,17 @@ import pytest
 from app.agent.cost import usage_events
 from app.agent.cost import usage_reconcile as reconcile
 from app.agent.cost.pricing import ModelPrice, PricedCall
-from app.agent.cost.usage_reconcile import Tolerance, Window
+from app.agent.cost.usage_reconcile import Tolerance
 from app.core.gateway import end_user_id, legacy_end_user_id
+from app.ports.cost import Window
 from tests.agent.fake_gateway import FakeGateway, spend_row
 from tests.containers import ensure_postgres
+from tests.integration.postgres_adapters import use_real_postgres
 from tests.integration.usage_seed import seed_event
 
 pytestmark = pytest.mark.integration
 
 D = Decimal
-_REAL_INSERT = usage_events._insert
 STRICT = Tolerance(usd=D("0.0001"), pct=D("0"))
 
 
@@ -46,9 +47,7 @@ def real_appdata(appdata_url, monkeypatch):
         async with await psycopg.AsyncConnection.connect(appdata_url) as conn:  # commits on a normal exit
             yield conn
 
-    for module in (usage_events, reconcile):
-        monkeypatch.setattr(module, "get_connection", get_connection)
-    monkeypatch.setattr(usage_events, "_insert", _REAL_INSERT)  # the autouse sink replaced it
+    use_real_postgres(monkeypatch, get_connection)
 
 
 def tenant_name() -> str:

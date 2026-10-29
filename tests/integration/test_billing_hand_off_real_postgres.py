@@ -27,11 +27,11 @@ from credit_billing import admission, credits, usage
 from credit_billing import metrics as billing_metrics
 from tests.conftest import metric_value
 from tests.containers import ensure_postgres
+from tests.integration.postgres_adapters import use_real_postgres
 
 pytestmark = pytest.mark.integration
 
 D = Decimal
-_REAL_INSERT = usage_events._insert
 
 
 @pytest.fixture(scope="module")
@@ -46,9 +46,8 @@ def real_appdata(appdata_url, monkeypatch):
         async with await psycopg.AsyncConnection.connect(appdata_url) as conn:  # commits on a normal exit
             yield conn
 
-    for module in (usage_events, credits, budget_holds):
-        monkeypatch.setattr(module, "get_connection", get_connection)
-    monkeypatch.setattr(usage_events, "_insert", _REAL_INSERT)  # the autouse sink replaced it
+    use_real_postgres(monkeypatch, get_connection)
+    monkeypatch.setattr(credits, "get_connection", get_connection)
     monkeypatch.setattr(billing_port, "billing", billing_port.InProcessBilling())  # a test above may have installed a stub
     monkeypatch.setattr(usage, "CREDITS_PER_USD", D("1000"))
     monkeypatch.setattr(usage, "MARKUP", D("1"))

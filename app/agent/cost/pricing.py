@@ -29,23 +29,15 @@ import time
 from collections.abc import Mapping
 from dataclasses import dataclass
 
-import httpx
-
 from app.core import metrics
 from app.core.config import (
-    OPENAI_API_KEY,
     PRICING_REFRESH_SECONDS,
     UNPRICED_MODEL_POLICY,
 )
-from app.core.model_resolver import admin_base_url
+from app.ports import models as ports
+from app.ports.models import FAILED_LOOKUP_RETRY_SECONDS
 
 logger = logging.getLogger(__name__)
-
-# After a failed read of /model/info the proxy is not asked again for this long
-# (the last good prices keep serving meanwhile) — same reason as
-# model_resolver.FAILED_LOOKUP_RETRY_SECONDS: an outage costs one timeout per
-# interval, not one per LLM call.
-FAILED_LOOKUP_RETRY_SECONDS = 60.0
 
 
 @dataclass(frozen=True)
@@ -140,13 +132,7 @@ def parse_model_info(entries: list[Mapping]) -> dict[str, ModelPrice | None]:
 
 
 async def _fetch_model_info() -> list[Mapping]:
-    async with httpx.AsyncClient(timeout=5) as client:
-        response = await client.get(
-            f"{admin_base_url()}/model/info",
-            headers={"Authorization": f"Bearer {OPENAI_API_KEY}"},
-        )
-    response.raise_for_status()
-    return response.json().get("data", [])
+    return await ports.model_catalog.get().model_info()
 
 
 async def get_price(alias: str) -> ModelPrice | None:

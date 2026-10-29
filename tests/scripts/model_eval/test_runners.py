@@ -85,7 +85,7 @@ def test_the_random_control_is_deterministic_and_close_to_chance():
 
 
 def test_the_gateway_backend_applies_the_candidates_own_prefixes_to_the_text_it_sends(monkeypatch):
-    from app.core import model_resolver
+    from app.ports import models as model_ports
     from app.retrieval import embeddings as app_embeddings
 
     sent = {"queries": [], "documents": []}
@@ -99,15 +99,16 @@ def test_the_gateway_backend_applies_the_candidates_own_prefixes_to_the_text_it_
             sent["documents"].extend(texts)
             return [[0.0, 1.0] for _ in texts]
 
-    async def fake_resolve(alias):
-        return "ollama/nomic-embed-text"
+    class Catalog:
+        async def resolve(self, alias):
+            return "ollama/nomic-embed-text"
 
     monkeypatch.setattr(app_embeddings, "embeddings", FakeClient())
-    monkeypatch.setattr(model_resolver, "resolve_model", fake_resolve)
-    backend = embedding.GatewayEmbedding(_candidate(query_prefix="search_query: ", document_prefix="search_document: "))
+    with model_ports.model_catalog.overriding(Catalog()):  # type: ignore[arg-type] - only `resolve` is asked of it here
+        backend = embedding.GatewayEmbedding(_candidate(query_prefix="search_query: ", document_prefix="search_document: "))
 
-    backend.embed_queries(["reset password"])
-    backend.embed_documents(["a passage"])
+        backend.embed_queries(["reset password"])
+        backend.embed_documents(["a passage"])
 
     assert backend.identity == "ollama/nomic-embed-text"
     assert sent["queries"] == ["probe", "search_query: reset password"]

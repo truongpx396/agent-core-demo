@@ -20,6 +20,7 @@ from psycopg import errors as pg_errors
 
 from app.agent.cost import usage_events_retention as retention
 from tests.containers import ensure_postgres
+from tests.integration.postgres_adapters import use_real_postgres
 from tests.integration.usage_seed import purge_events, seed_event
 
 pytestmark = [pytest.mark.integration, pytest.mark.xdist_group("usage_events_old_rows")]
@@ -41,7 +42,7 @@ def real_appdata(appdata_url, monkeypatch):
         async with await psycopg.AsyncConnection.connect(appdata_url) as conn:
             yield conn
 
-    monkeypatch.setattr(retention, "get_connection", get_connection)
+    use_real_postgres(monkeypatch, get_connection)
     return get_connection
 
 

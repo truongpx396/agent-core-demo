@@ -14,30 +14,14 @@ deliberately spans tenants; nothing on a request path can reach them.
 """
 import logging
 import time
-from dataclasses import dataclass
-
-from psycopg import errors as pg_errors
 
 from app.core.config import BUDGET_POLICY_REFRESH_SECONDS
-from app.core.sql_store import get_connection
+from app.ports import cost as ports
+from app.ports.cost import PERIODS, Override, PolicyTableMissing
 
 logger = logging.getLogger(__name__)
 
-TENANT_SUBJECT = ""  # the tenant's own limit
-ALL_PRINCIPALS = "*"  # the personal limit of every person in the tenant
-RESERVED_SUBJECTS = frozenset({TENANT_SUBJECT, ALL_PRINCIPALS})
-PERIODS = ("day", "month")
-
 _CACHE_MAX = 10_000
-
-
-@dataclass(frozen=True)
-class Override:
-    """One row. `limit_usd` None means explicitly NO cap; 0 means refuse everything."""
-
-    subject: str
-    period: str
-    limit_usd: float | None
 
 
 # (tenant, principal) -> (fetched_at, rows). A person's rows are the tenant's own, the tenant's
@@ -66,14 +50,8 @@ async def overrides_for(tenant: str, principal: str) -> list[Override]:
     if cached is not None and now - cached[0] < BUDGET_POLICY_REFRESH_SECONDS:
         return cached[1]
     try:
-        async with get_connection() as conn:
-            cur = await conn.execute(
-                "SELECT subject, period, limit_usd FROM budget_policies "
-                "WHERE tenant = %s AND subject IN (%s, %s, %s)",
-                (tenant, TENANT_SUBJECT, ALL_PRINCIPALS, principal),
-            )
-            rows = await cur.fetchall()
-    except pg_errors.UndefinedTable:
+        overrides = await ports.budget_policies.get().for_person(tenant, principal)
+    except PolicyTableMissing:
         if not _warned_missing_table:
             _warned_missing_table = True
             logger.warning(
@@ -81,9 +59,6 @@ async def overrides_for(tenant: str, principal: str) -> list[Override]:
                 "ignored until postgres-init/18-budget-policies.sql is applied"
             )
         return []
-    overrides = [
-        Override(subject, period, None if limit is None else float(limit)) for subject, period, limit in rows
-    ]
     if len(_cache) >= _CACHE_MAX:
         _cache.clear()
     _cache[(tenant, principal)] = (now, overrides)
@@ -92,13 +67,7 @@ async def overrides_for(tenant: str, principal: str) -> list[Override]:
 
 async def list_overrides(tenant: str) -> list[Override]:
     """Every override of `tenant`, for the operator CLI (uncached)."""
-    async with get_connection() as conn:
-        cur = await conn.execute(
-            "SELECT subject, period, limit_usd FROM budget_policies WHERE tenant = %s ORDER BY subject, period",
-            (tenant,),
-        )
-        rows = await cur.fetchall()
-    return [Override(subject, period, None if limit is None else float(limit)) for subject, period, limit in rows]
+    return await ports.budget_policies.get().for_tenant(tenant)
 
 
 async def set_override(
@@ -111,24 +80,12 @@ async def set_override(
         raise ValueError("limit_usd must be >= 0, or None for no cap")
     if not tenant or not updated_by:
         raise ValueError("tenant and updated_by are required")
-    async with get_connection() as conn:
-        await conn.execute(
-            "INSERT INTO budget_policies (tenant, subject, period, limit_usd, updated_by) "
-            "VALUES (%s, %s, %s, %s, %s) "
-            "ON CONFLICT (tenant, subject, period) DO UPDATE "
-            "SET limit_usd = EXCLUDED.limit_usd, updated_by = EXCLUDED.updated_by, updated_at = now()",
-            (tenant, subject, period, limit_usd, updated_by),
-        )
+    await ports.budget_policies.get().upsert(tenant, subject, period, limit_usd, updated_by)
     reset_cache()
 
 
 async def clear_override(tenant: str, subject: str, period: str) -> bool:
     """Deletes one override, restoring the Settings default for it. True if a row existed."""
-    async with get_connection() as conn:
-        cur = await conn.execute(
-            "DELETE FROM budget_policies WHERE tenant = %s AND subject = %s AND period = %s",
-            (tenant, subject, period),
-        )
-        deleted = cur.rowcount > 0
+    deleted = await ports.budget_policies.get().delete(tenant, subject, period)
     reset_cache()
     return deleted

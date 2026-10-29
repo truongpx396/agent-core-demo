@@ -61,6 +61,7 @@ from app.billing_integration import port as billing_port
 from app.core import metrics
 from app.core.errors import ErrorCode, ErrorEnvelope
 from app.core.security import SecurityCtx, valid_ctx
+from app.ports.cost import ALL_PRINCIPALS, TENANT_SUBJECT, Override
 
 logger = logging.getLogger(__name__)
 
@@ -155,7 +156,7 @@ class Defaults:
 
 
 def resolve_limits(
-    defaults: Defaults, overrides: Sequence[budget_policies.Override], principal: str
+    defaults: Defaults, overrides: Sequence[Override], principal: str
 ) -> list[BudgetLimit]:
     """The limits that apply to `principal`, tenant before person.
 
@@ -166,10 +167,10 @@ def resolve_limits(
     by_key = {(o.subject, o.period): o for o in overrides}
     limits: list[BudgetLimit] = []
     for scope, window, subjects, default, always in (
-        ("tenant", "day", (budget_policies.TENANT_SUBJECT,), defaults.tenant_day, True),
-        ("tenant", "month", (budget_policies.TENANT_SUBJECT,), defaults.tenant_month, False),
-        ("principal", "day", (principal, budget_policies.ALL_PRINCIPALS), defaults.principal_day, False),
-        ("principal", "month", (principal, budget_policies.ALL_PRINCIPALS), defaults.principal_month, False),
+        ("tenant", "day", (TENANT_SUBJECT,), defaults.tenant_day, True),
+        ("tenant", "month", (TENANT_SUBJECT,), defaults.tenant_month, False),
+        ("principal", "day", (principal, ALL_PRINCIPALS), defaults.principal_day, False),
+        ("principal", "month", (principal, ALL_PRINCIPALS), defaults.principal_month, False),
     ):
         value: float | None = default if (always or default > 0) else None
         for subject in subjects:

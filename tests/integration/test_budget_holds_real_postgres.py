@@ -29,6 +29,7 @@ import pytest
 
 from app.agent.cost import budget_holds
 from tests.containers import ensure_postgres
+from tests.integration.postgres_adapters import use_real_postgres
 
 pytestmark = pytest.mark.integration
 
@@ -53,7 +54,7 @@ def real_appdata(appdata_url, monkeypatch):
         async with await psycopg.AsyncConnection.connect(appdata_url) as conn:
             yield conn
 
-    monkeypatch.setattr(budget_holds, "get_connection", get_connection)
+    use_real_postgres(monkeypatch, get_connection)
     return get_connection
 
 

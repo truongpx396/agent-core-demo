@@ -23,9 +23,10 @@ import pytest
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, HumanMessage
 
-from app.agent.cost import budget_holds, budgets, metering, spend, usage_events
+from app.agent.cost import budgets, metering, spend
 from scripts import usage_events_carry_over as carry
 from tests.containers import ensure_postgres
+from tests.integration.postgres_adapters import use_real_postgres
 from tests.integration.usage_seed import purge_events, seed_event, seed_ledger_row
 
 # One test here copies three-year-old history into `usage_events` (a carry-over), and the usage-event retention sweep tests
@@ -33,7 +34,6 @@ from tests.integration.usage_seed import purge_events, seed_event, seed_ledger_r
 # remove the history mid-test. Same xdist group, so they never overlap. The ledger rows these tests write are removed afterwards.
 pytestmark = [pytest.mark.integration, pytest.mark.xdist_group("usage_events_old_rows")]
 
-_REAL_INSERT = usage_events._insert
 
 
 @pytest.fixture(scope="module")
@@ -51,9 +51,8 @@ def real_appdata(appdata_url, monkeypatch):
         async with await psycopg.AsyncConnection.connect(appdata_url) as conn:
             yield conn
 
-    for module in (spend, budget_holds, usage_events, carry):
-        monkeypatch.setattr(module, "get_connection", get_connection)
-    monkeypatch.setattr(usage_events, "_insert", _REAL_INSERT)  # the autouse sink replaced it
+    use_real_postgres(monkeypatch, get_connection)
+    monkeypatch.setattr(carry, "get_connection", get_connection)
     return get_connection
 
 

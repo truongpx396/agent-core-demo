@@ -29,7 +29,7 @@ from app.core.config import (
     EMBED_QUERY_PREFIX,
 )
 from app.core.errors import ErrorCode
-from app.core.model_resolver import resolve_model
+from app.ports import models as ports
 from app.retrieval import embeddings
 
 HASH_LENGTH = 8
@@ -95,7 +95,7 @@ async def current_identity() -> EmbeddingIdentity:
     the dimension is probed once."""
     return EmbeddingIdentity(
         alias=EMBED_MODEL,
-        resolved_model=await resolve_model(EMBED_MODEL),
+        resolved_model=await ports.model_catalog.get().resolve(EMBED_MODEL),
         dim=await embeddings.embedding_dim(),
         query_prefix=EMBED_QUERY_PREFIX,
         document_prefix=EMBED_DOCUMENT_PREFIX,

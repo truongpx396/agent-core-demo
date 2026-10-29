@@ -1,4 +1,8 @@
-"""Resolve a chat model ALIAS (`config.CHAT_MODEL`, e.g. "chat") to the concrete model LiteLLM routes it to (e.g.
+"""The `ModelCatalog` adapter (`app/ports/models.py`): what LiteLLM's `GET /model/info` admin endpoint says about the models behind the
+gateway's aliases. It answers two questions for the application, the price list (`model_info`, read by `app/agent/cost/pricing.py`)
+and the model an alias resolves to (`resolve`, read by the usage-event writer).
+
+Resolve a chat model ALIAS (`config.CHAT_MODEL`, e.g. "chat") to the concrete model LiteLLM routes it to (e.g.
 "ollama_chat/qwen2.5:3b") via LiteLLM's `GET /model/info` admin endpoint (pattern 38). The OpenAI-compatible
 response body and LangChain's `response_metadata` echo only the alias; `x-litellm-model-name` carries the
 resolved value per call, but `ChatOpenAI.invoke()` doesn't surface response headers, so this queries the
@@ -17,22 +21,18 @@ LiteLLM was down EVERY recorded turn paid a fresh 5 s timeout for an answer that
 """
 import logging
 import time
+from collections.abc import Mapping
 
 import httpx
 
 from app.core import metrics
 from app.core.config import OPENAI_API_BASE, OPENAI_API_KEY
+from app.ports.models import FAILED_LOOKUP_RETRY_SECONDS
 
 logger = logging.getLogger(__name__)
 
 _cache: dict[str, str] = {}
 
-# How long a lookup that failed (proxy unreachable, bad response) or found no
-# such alias is remembered, per alias. Long enough that an outage costs one
-# timeout per interval instead of one per turn; short enough that a proxy that
-# comes back is noticed within a minute. Successes are cached for the process's
-# life, as before.
-FAILED_LOOKUP_RETRY_SECONDS = 60.0
 _failed_at: dict[str, float] = {}
 
 
@@ -78,3 +78,26 @@ async def resolve_model(alias: str) -> str | None:
             extra={"alias": alias, "error_class": type(exc).__name__},
         )
         return None
+
+
+async def model_info() -> list[Mapping]:
+    """The gateway's `/model/info` entries. Raises on a transport or HTTP error: the caller (`pricing.get_price`) keeps serving the last good
+    prices and counts the failure."""
+    async with httpx.AsyncClient(timeout=5) as client:
+        response = await client.get(
+            f"{admin_base_url()}/model/info",
+            headers={"Authorization": f"Bearer {OPENAI_API_KEY}"},
+        )
+    response.raise_for_status()
+    return response.json().get("data", [])
+
+
+class LiteLLMModelCatalog:
+    """The adapter: the module's functions behind the `ModelCatalog` port. Each call looks the function up at CALL time, so a test that
+    patches `model_catalog.resolve_model` or `model_catalog.model_info` is seen."""
+
+    async def model_info(self) -> list[Mapping]:
+        return await model_info()
+
+    async def resolve(self, alias: str) -> str | None:
+        return await resolve_model(alias)
