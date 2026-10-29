@@ -26,7 +26,6 @@ from app.agent.cost import pricing
 from app.agent.graph.build import GraphDeps, build_subagent_graph
 from app.agent.graph.state import MAX_SUBAGENT_ITERATIONS, MAX_SUBAGENT_TOKENS_PER_RUN
 from app.agent.graph.utils import make_llm
-from app.agent.manifest import AgentManifest
 from app.agent.tools import subagent_catalog as subagents_module
 from app.agent.tools.builtin import logger
 from app.core import metrics
@@ -38,6 +37,7 @@ from app.core.config import (
 from app.core.scrubbing import scrub
 from app.core.security import DEFAULT_POLICY, valid_ctx
 from app.core.tool_runtime import NO_CTX_REFUSAL, arun_with_timeout, ctx_from_config
+from app.ports.domains import AgentManifest
 
 # --- Subagents (app/agent/tools/subagent_catalog.py, GRAPH_PATTERNS.md pattern 46) -------
 # run_subagent delegates to a fresh, ISOLATED nested agent run (a genuinely
@@ -179,7 +179,7 @@ class _SubagentDomainPlugin:
     (read_only-only) tool subset.
 
     Used instead of `AgentManifest.allowed_tools` because an empty tuple there means "no filter: expose
-    everything" (app/agent/manifest.py). A subagent legitimately left with zero usable tools must run with
+    everything" (app/ports/domains.py). A subagent legitimately left with zero usable tools must run with
     zero tools, not fall back to the full Ecorp set (including add_note/remember): the
     privilege-escalation-by-omission that pattern 17's fail-closed discipline rules out. Passing the
     already-narrowed list as `tools()` sidesteps the ambiguity.

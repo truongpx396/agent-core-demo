@@ -15,8 +15,12 @@ A test that wants a different adapter for one port uses `Slot.overriding` (or bi
 from app.adapters.litellm.model_catalog import LiteLLMModelCatalog
 from app.adapters.postgres.budget_holds import PgBudgetHoldStore
 from app.adapters.postgres.budget_policies import PgBudgetPolicyStore
+from app.adapters.postgres.checkpointing import PgCheckpointing
+from app.adapters.postgres.sessions import PgSessionStore
+from app.adapters.postgres.tool_idempotency import PgToolCallLedger
 from app.adapters.postgres.usage_events import PgUsageEventStore
-from app.ports import cost, models
+from app.domains.registry import RegistryDomainCatalog
+from app.ports import checkpointing, cost, domains, idempotency, models, sessions
 from app.ports.slot import PortNotBound, Slot, unbound
 
 
@@ -28,6 +32,10 @@ def adapters() -> dict[Slot, object]:
         cost.budget_holds: PgBudgetHoldStore(),
         cost.budget_policies: PgBudgetPolicyStore(),
         models.model_catalog: LiteLLMModelCatalog(),
+        sessions.session_store: PgSessionStore(),
+        idempotency.tool_call_ledger: PgToolCallLedger(),
+        checkpointing.checkpointing: PgCheckpointing(),
+        domains.domain_catalog: RegistryDomainCatalog(),
     }
 
 

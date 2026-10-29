@@ -8,8 +8,8 @@ mocked out, the same "test the function, not the graph" scope
 tests/agent/graph/test_multimodal.py and friends already keep for this module.
 """
 
-from app.agent.manifest import AgentManifest
 from app.agent.runtime import core as runtime
+from app.ports.domains import AgentManifest
 from tests.conftest import TEST_CTX
 
 

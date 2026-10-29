@@ -15,7 +15,6 @@ adversarial paraphrase is the known ceiling of prompt-only defense, not a wordin
 """
 from dataclasses import dataclass
 
-from app.agent.manifest import AgentManifest, DomainPlugin
 from app.agent.tools.builtin import (
     SHARED_TOOL_CAPABILITIES,
     ask_clarification,
@@ -28,6 +27,7 @@ from app.core.security import Policy
 from app.domains.sales.tools import SALES_POLICY
 from app.domains.sales.tools import TOOL_CAPABILITIES as _SALES_TOOL_CAPABILITIES
 from app.domains.sales.tools import TOOLS as _SALES_TOOLS
+from app.ports.domains import AgentManifest, DomainPlugin
 
 _SKILL_SEARCH, _USE_SKILL = make_skill_tools("sales")
 

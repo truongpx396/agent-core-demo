@@ -7,17 +7,18 @@ memory and tracing behave the same whichever front door a turn came through: the
 
 ## Durable checkpointing (init_graph_async)
 
-`AsyncPostgresSaver`, not `build_graph()`'s default `MemorySaver`: a paused `human_approval` gate is only a
-real safety control if it survives a redeploy, and Postgres (unlike a single SQLite file) is safe under
-concurrent access from several processes sharing the same `thread_id`s (FastAPI + `agent_worker.py` replicas).
+A durable saver (the `Checkpointing` port, `app/ports/checkpointing.py`; Postgres in production), not `build_graph()`'s
+default `MemorySaver`: a paused `human_approval` gate is only a real safety control if it survives a redeploy, and it
+must be safe under concurrent access from several processes sharing the same `thread_id`s (FastAPI + `agent_worker.py`
+replicas).
 
-`AsyncPostgresSaver` binds its async lock to the event loop it was *created* on; calling it from another loop
+The Postgres saver binds its async lock to the event loop it was *created* on; calling it from another loop
 raises "bound to a different event loop" (verified). So `init_graph_async()` opens the checkpointer on the
 CALLING loop, and every process driving the graph must await it on that loop before any graph call, never from
 a background thread or a different loop.
 
 This file owns the checkpointer/graph singleton lifecycle
-(`init_graph_async`/`close_checkpointer_pool`/`_open_checkpointer`/`_resolve_domain_name`), the
+(`init_graph_async`/`close_checkpointer_pool`/`_resolve_domain_name`), the
 session-directory upsert (`upsert_session`) and the tenant daily-budget bindings
 (`_check_allowance`/`allowance_refusal`; the rule is `app/agent/cost/budgets.py`). They are kept together
 because each reads or reassigns a module global (`_graph`/`_domain_name`, or config names several tests
@@ -29,10 +30,6 @@ import asyncio
 import logging
 from typing import TYPE_CHECKING
 
-from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
-from psycopg.rows import dict_row
-from psycopg_pool import AsyncConnectionPool
-
 from app.agent.cost import budget_holds, budgets, pricing
 from app.agent.graph.build import build_graph
 from app.agent.graph.state import MAX_ITERATIONS
@@ -40,8 +37,6 @@ from app.agent.runtime import sessions
 from app.core.config import (
     BUDGET_CHECK_FAILURE_POLICY,
     CHAT_MODEL,
-    CHECKPOINTER_DATABASE_URL,
-    CHECKPOINTER_POOL_MAX_SIZE,
     MAX_COST_USD_PER_PRINCIPAL_PER_DAY,
     MAX_COST_USD_PER_PRINCIPAL_PER_MONTH,
     MAX_COST_USD_PER_TENANT_PER_DAY,
@@ -50,16 +45,17 @@ from app.core.config import (
 )
 from app.core.errors import ErrorCode, ErrorEnvelope
 from app.core.security import SecurityCtx
-from app.domains.registry import resolve_domain
+from app.ports.checkpointing import checkpointing
+from app.ports.domains import domain_catalog
 
 if TYPE_CHECKING:
-    from app.agent.manifest import AgentManifest, DomainPlugin
+    from app.ports.domains import AgentManifest, DomainPlugin
 
 logger = logging.getLogger(__name__)
 
 _graph = None
 _graph_lock = asyncio.Lock()  # guards _graph's construction, not its use — see
-# init_graph_async's own docstring: _open_checkpointer()/build_graph() run
+# init_graph_async's own docstring: the checkpointer's open()/build_graph() run
 # between the `if _graph is None` check and the `_graph = ...` write, so
 # without this lock several concurrent first-callers could each pass the
 # None check, each open their own checkpointer pool, and each overwrite
@@ -74,9 +70,6 @@ _graph_lock = asyncio.Lock()  # guards _graph's construction, not its use — se
 _domain_name = "ecorp"  # this process's domain (app/domains/registry.py); stamps
 # app/agent/runtime/sessions.py's chat_sessions.domain column — the graph itself only needs
 # the manifest/tools, already baked into _graph by build_graph().
-_checkpointer_pool = None  # keeps AsyncConnectionPool alive for the process
-# lifetime (GC'ing it closes every pooled connection under the saver); also lets
-# close_checkpointer_pool() shut it down explicitly on graceful shutdown.
 DEFAULT_DOMAIN = "ecorp"  # the domain a process serves when its caller names none
 
 # LangGraph's own graph-step cap — coarser than MAX_ITERATIONS (an agent-node
@@ -168,60 +161,20 @@ async def upsert_session(ctx: SecurityCtx | None, thread_id: str, text: str) -> 
     await sessions.upsert_session(ctx, thread_id, text, domain=_domain_name)
 
 
-async def _open_checkpointer():
-    """Open the AsyncPostgresSaver on the calling loop (see the module docstring). The pool is stashed in a
-    module global so it isn't garbage-collected under the connection and `close_checkpointer_pool()` can shut
-    it down.
-
-    It uses an `AsyncConnectionPool`, not a single `AsyncConnection`, so concurrent turns get independent
-    connections (psycopg serializes all operations on one connection).
-
-    Workaround: `AsyncPostgresSaver` still wraps every checkpoint read/write in one `asyncio.Lock` per saver
-    regardless of `conn` type, hard-serializing checkpoint I/O even with a pool (~5x latency growth from N=1
-    to N=50 concurrent turns; open upstream defect langchain-ai/langgraph#7259, fix #7269 unmerged). Swapping
-    `saver.lock` for an `asyncio.Semaphore` (same `async with` protocol) is the community-verified fix,
-    capping concurrency at the pool size instead of 1. Remove once #7269 ships, and re-check before any
-    langgraph-checkpoint-postgres bump: this pokes a private attribute of a third-party class.
-
-    `saver.setup()` is idempotent (creates tables on first run only), so it is safe on every process start,
-    including each agent_worker.py replica.
-    """
-    global _checkpointer_pool
-    pool = AsyncConnectionPool(
-        CHECKPOINTER_DATABASE_URL,
-        min_size=1,
-        max_size=CHECKPOINTER_POOL_MAX_SIZE,
-        kwargs={"autocommit": True, "prepare_threshold": 0, "row_factory": dict_row},
-        open=False,
-    )
-    await pool.open(wait=True)
-    saver = AsyncPostgresSaver(conn=pool)
-    if isinstance(saver.conn, AsyncConnectionPool):
-        # Workaround for langchain-ai/langgraph#7259 — see this function's docstring.
-        saver.lock = asyncio.Semaphore(CHECKPOINTER_POOL_MAX_SIZE)
-    await saver.setup()
-    _checkpointer_pool = pool
-    return saver
-
-
 def _resolve_domain_name(manifest: "AgentManifest | None") -> str:
     """`manifest.name` if given, else the process default's ("ecorp") — mirrors
     init_graph_async's substitution exactly so `_domain_name` always names whichever
     manifest the graph was actually built with."""
     if manifest is not None:
         return manifest.name
-    return resolve_domain(DEFAULT_DOMAIN)[0].name
+    return domain_catalog.get().resolve(DEFAULT_DOMAIN)[0].name
 
 
 async def close_checkpointer_pool() -> None:
-    """Closes the checkpointer's connection pool cleanly (skipping this leaves
-    background worker tasks/connections open at process exit). Called from
-    graceful-shutdown paths only (app/api/main.py's lifespan,
+    """Closes what the checkpointer holds open cleanly (skipping this leaves background worker tasks/connections
+    open at process exit). Called from graceful-shutdown paths only (app/api/main.py's lifespan,
     agent_worker.py::run); a no-op if the checkpointer was never opened."""
-    global _checkpointer_pool
-    if _checkpointer_pool is not None:
-        await _checkpointer_pool.close()
-        _checkpointer_pool = None
+    await checkpointing.get().close()
 
 
 async def init_graph_async(manifest: "AgentManifest | None" = None, domain: "DomainPlugin | None" = None):
@@ -233,7 +186,7 @@ async def init_graph_async(manifest: "AgentManifest | None" = None, domain: "Dom
     startup forgot to prime it via lifespan (`manifest`/`domain` are then
     ignored — the singleton doesn't change domain mid-process).
 
-    `manifest`/`domain` (app/agent/manifest.py) thread straight into
+    `manifest`/`domain` (app/ports/domains.py) thread straight into
     `build_graph()` and default to `None`, meaning the process default domain
     (`DEFAULT_DOMAIN`, "ecorp", resolved through `app/domains/registry.py` like
     any other), so existing callers are unaffected. This is what lets a new
@@ -248,8 +201,8 @@ async def init_graph_async(manifest: "AgentManifest | None" = None, domain: "Dom
     async with _graph_lock:
         if _graph is None:  # re-check: another caller may have finished while this one waited for the lock
             _domain_name = _resolve_domain_name(manifest)
-            default_manifest, default_domain = resolve_domain(DEFAULT_DOMAIN)
-            saver = await _open_checkpointer()
+            default_manifest, default_domain = domain_catalog.get().resolve(DEFAULT_DOMAIN)
+            saver = await checkpointing.get().open()
             _graph = build_graph(
                 manifest or default_manifest, domain or default_domain, checkpointer=saver
             )

@@ -12,6 +12,7 @@ async code from a plain `def test_...`.
 """
 from contextlib import asynccontextmanager
 
+from app.adapters.postgres import sessions as pg_sessions
 from app.agent.runtime import sessions
 
 TEST_CTX = {"tenant": "ecorp", "principal": "p1", "claims": {}}
@@ -58,7 +59,7 @@ def _fake_get_connection(fake):
 class TestUpsertSession:
     async def test_writes_thread_tenant_principal_and_title(self, monkeypatch):
         fake = _FakeConnection()
-        monkeypatch.setattr(sessions, "get_connection", _fake_get_connection(fake))
+        monkeypatch.setattr(pg_sessions, "get_connection", _fake_get_connection(fake))
 
         await sessions.upsert_session(TEST_CTX, "t1", "What is the refund policy?")
 
@@ -68,7 +69,7 @@ class TestUpsertSession:
 
     async def test_writes_a_non_default_domain_too(self, monkeypatch):
         fake = _FakeConnection()
-        monkeypatch.setattr(sessions, "get_connection", _fake_get_connection(fake))
+        monkeypatch.setattr(pg_sessions, "get_connection", _fake_get_connection(fake))
 
         await sessions.upsert_session(TEST_CTX, "t1", "where is my order?", domain="support")
 
@@ -80,7 +81,7 @@ class TestUpsertSession:
         last_active_at (see this module's own docstring on why a domain
         can't be silently reassigned by a later turn)."""
         fake = _FakeConnection()
-        monkeypatch.setattr(sessions, "get_connection", _fake_get_connection(fake))
+        monkeypatch.setattr(pg_sessions, "get_connection", _fake_get_connection(fake))
 
         await sessions.upsert_session(TEST_CTX, "t1", "second turn's text")
 
@@ -92,7 +93,7 @@ class TestUpsertSession:
 
     async def test_long_title_is_truncated_with_an_ellipsis(self, monkeypatch):
         fake = _FakeConnection()
-        monkeypatch.setattr(sessions, "get_connection", _fake_get_connection(fake))
+        monkeypatch.setattr(pg_sessions, "get_connection", _fake_get_connection(fake))
         long_text = "x" * 200
 
         await sessions.upsert_session(TEST_CTX, "t1", long_text)
@@ -103,7 +104,7 @@ class TestUpsertSession:
 
     async def test_blank_title_falls_back_to_a_default(self, monkeypatch):
         fake = _FakeConnection()
-        monkeypatch.setattr(sessions, "get_connection", _fake_get_connection(fake))
+        monkeypatch.setattr(pg_sessions, "get_connection", _fake_get_connection(fake))
 
         await sessions.upsert_session(TEST_CTX, "t1", "   ")
 
@@ -111,7 +112,7 @@ class TestUpsertSession:
 
     async def test_invalid_ctx_never_queries(self, monkeypatch):
         fake = _FakeConnection()
-        monkeypatch.setattr(sessions, "get_connection", _fake_get_connection(fake))
+        monkeypatch.setattr(pg_sessions, "get_connection", _fake_get_connection(fake))
 
         await sessions.upsert_session(None, "t1", "hello")
         await sessions.upsert_session({"tenant": "", "principal": "", "claims": {}}, "t1", "hello")
@@ -120,7 +121,7 @@ class TestUpsertSession:
 
     async def test_missing_thread_id_never_queries(self, monkeypatch):
         fake = _FakeConnection()
-        monkeypatch.setattr(sessions, "get_connection", _fake_get_connection(fake))
+        monkeypatch.setattr(pg_sessions, "get_connection", _fake_get_connection(fake))
 
         await sessions.upsert_session(TEST_CTX, "", "hello")
 
@@ -132,7 +133,7 @@ class TestUpsertSession:
             raise RuntimeError("connection refused")
             yield  # pragma: no cover - unreachable, makes this a generator
 
-        monkeypatch.setattr(sessions, "get_connection", _raising_get_connection)
+        monkeypatch.setattr(pg_sessions, "get_connection", _raising_get_connection)
 
         await sessions.upsert_session(TEST_CTX, "t1", "hello")  # must not raise
 
@@ -140,7 +141,7 @@ class TestUpsertSession:
 class TestListSessions:
     async def test_scopes_to_tenant_principal_and_domain(self, monkeypatch):
         fake = _FakeConnection(rows=[])
-        monkeypatch.setattr(sessions, "get_connection", _fake_get_connection(fake))
+        monkeypatch.setattr(pg_sessions, "get_connection", _fake_get_connection(fake))
 
         await sessions.list_sessions(TEST_CTX)
 
@@ -149,7 +150,7 @@ class TestListSessions:
 
     async def test_a_different_domain_is_a_different_scope(self, monkeypatch):
         fake = _FakeConnection(rows=[])
-        monkeypatch.setattr(sessions, "get_connection", _fake_get_connection(fake))
+        monkeypatch.setattr(pg_sessions, "get_connection", _fake_get_connection(fake))
 
         await sessions.list_sessions(TEST_CTX, domain="support")
 
@@ -157,7 +158,7 @@ class TestListSessions:
 
     async def test_orders_most_recently_active_first(self, monkeypatch):
         fake = _FakeConnection(rows=[])
-        monkeypatch.setattr(sessions, "get_connection", _fake_get_connection(fake))
+        monkeypatch.setattr(pg_sessions, "get_connection", _fake_get_connection(fake))
 
         await sessions.list_sessions(TEST_CTX)
 
@@ -167,7 +168,7 @@ class TestListSessions:
         fake = _FakeConnection(
             rows=[("t1", "Refund question", "2026-01-01", "2026-01-02")],
         )
-        monkeypatch.setattr(sessions, "get_connection", _fake_get_connection(fake))
+        monkeypatch.setattr(pg_sessions, "get_connection", _fake_get_connection(fake))
 
         result = await sessions.list_sessions(TEST_CTX)
 
@@ -182,7 +183,7 @@ class TestListSessions:
 
     async def test_invalid_ctx_returns_empty_without_querying(self, monkeypatch):
         fake = _FakeConnection(rows=[("t1", "x", "y", "z")])
-        monkeypatch.setattr(sessions, "get_connection", _fake_get_connection(fake))
+        monkeypatch.setattr(pg_sessions, "get_connection", _fake_get_connection(fake))
 
         assert await sessions.list_sessions(None) == []
         assert fake.captured == {}
@@ -191,7 +192,7 @@ class TestListSessions:
 class TestSessionBelongsTo:
     async def test_true_when_a_matching_row_exists(self, monkeypatch):
         fake = _FakeConnection(one=(1,))
-        monkeypatch.setattr(sessions, "get_connection", _fake_get_connection(fake))
+        monkeypatch.setattr(pg_sessions, "get_connection", _fake_get_connection(fake))
 
         assert await sessions.session_belongs_to(TEST_CTX, "t1") is True
         assert fake.captured["params"] == ["t1", "ecorp", "p1", "ecorp"]
@@ -202,7 +203,7 @@ class TestSessionBelongsTo:
         provable against this fake (which returns its canned `one` regardless of params).
         """
         fake = _FakeConnection(one=(1,))
-        monkeypatch.setattr(sessions, "get_connection", _fake_get_connection(fake))
+        monkeypatch.setattr(pg_sessions, "get_connection", _fake_get_connection(fake))
 
         await sessions.session_belongs_to(TEST_CTX, "t1", domain="sales")
 
@@ -210,13 +211,13 @@ class TestSessionBelongsTo:
 
     async def test_false_when_no_matching_row(self, monkeypatch):
         fake = _FakeConnection(one=None)
-        monkeypatch.setattr(sessions, "get_connection", _fake_get_connection(fake))
+        monkeypatch.setattr(pg_sessions, "get_connection", _fake_get_connection(fake))
 
         assert await sessions.session_belongs_to(TEST_CTX, "t1") is False
 
     async def test_false_for_invalid_ctx_without_querying(self, monkeypatch):
         fake = _FakeConnection(one=(1,))
-        monkeypatch.setattr(sessions, "get_connection", _fake_get_connection(fake))
+        monkeypatch.setattr(pg_sessions, "get_connection", _fake_get_connection(fake))
 
         assert await sessions.session_belongs_to(None, "t1") is False
         assert fake.captured == {}
@@ -228,7 +229,7 @@ class TestSessionBelongsTo:
         else, so a caller can't widen the check by any means available
         through this function's own interface."""
         fake = _FakeConnection(one=None)
-        monkeypatch.setattr(sessions, "get_connection", _fake_get_connection(fake))
+        monkeypatch.setattr(pg_sessions, "get_connection", _fake_get_connection(fake))
 
         other_ctx = {"tenant": "other-co", "principal": "p9", "claims": {}}
         await sessions.session_belongs_to(other_ctx, "t1")
@@ -255,7 +256,7 @@ class TestClaimSession:
 
     async def test_inserts_only_if_absent_then_checks_the_caller_owns_the_row(self, monkeypatch):
         fake = _RecordingConnection(owned=True)
-        monkeypatch.setattr(sessions, "get_connection", _fake_get_connection(fake))
+        monkeypatch.setattr(pg_sessions, "get_connection", _fake_get_connection(fake))
 
         assert await sessions.claim_session(TEST_CTX, "t1", "hello there", domain="sales") is True
 
@@ -269,13 +270,13 @@ class TestClaimSession:
 
     async def test_false_when_the_row_belongs_to_someone_else(self, monkeypatch):
         fake = _RecordingConnection(owned=False)
-        monkeypatch.setattr(sessions, "get_connection", _fake_get_connection(fake))
+        monkeypatch.setattr(pg_sessions, "get_connection", _fake_get_connection(fake))
 
         assert await sessions.claim_session(TEST_CTX, "t1", "hello") is False
 
     async def test_title_is_trimmed_and_defaulted_like_upsert_session(self, monkeypatch):
         fake = _RecordingConnection()
-        monkeypatch.setattr(sessions, "get_connection", _fake_get_connection(fake))
+        monkeypatch.setattr(pg_sessions, "get_connection", _fake_get_connection(fake))
 
         await sessions.claim_session(TEST_CTX, "t1", "x" * 200)
         await sessions.claim_session(TEST_CTX, "t2", "   ")
@@ -285,7 +286,7 @@ class TestClaimSession:
 
     async def test_false_for_an_invalid_ctx_or_empty_thread_without_querying(self, monkeypatch):
         fake = _RecordingConnection()
-        monkeypatch.setattr(sessions, "get_connection", _fake_get_connection(fake))
+        monkeypatch.setattr(pg_sessions, "get_connection", _fake_get_connection(fake))
 
         assert await sessions.claim_session(None, "t1", "hi") is False
         assert await sessions.claim_session({"tenant": "", "principal": "", "claims": {}}, "t1", "hi") is False
@@ -303,7 +304,7 @@ class TestClaimSession:
             raise ConnectionError("appdata is down")
             yield  # pragma: no cover
 
-        monkeypatch.setattr(sessions, "get_connection", broken_connection)
+        monkeypatch.setattr(pg_sessions, "get_connection", broken_connection)
 
         with pytest.raises(ConnectionError):
             await sessions.claim_session(TEST_CTX, "t1", "hi")

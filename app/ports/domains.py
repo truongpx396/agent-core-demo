@@ -11,10 +11,12 @@ branching on a domain name.
   calls `.policy()` itself — enforcement lives at the tool-implementation boundary (pattern 17);
   it exists so a plugin can assert/expose its own Policy.
 
-This module is a leaf: it defines the two types and nothing else. The concrete domains are in
-`app/domains/<name>/domain.py` and are looked up by name in `app/domains/registry.py`; Ecorp is
-one of them, with no special standing in the graph. See `tests/agent/test_manifest.py` for a second
-domain proving the same graph runs with different tools/prompt/Policy.
+These two types are the agent's plugin port: what the graph asks of a domain, stated so the agent never names a concrete one. The
+concrete domains are in `app/domains/<name>/domain.py`; Ecorp is one of them, with no special standing in the graph. See
+`tests/agent/test_manifest.py` for a second domain proving the same graph runs with different tools/prompt/Policy.
+
+`DomainCatalog` is the other half: how the runtime gets a domain BY NAME when its caller named none. The adapter is
+`app/domains/registry.py`, the one module that names every concrete domain, bound at the composition root.
 """
 from __future__ import annotations
 
@@ -22,6 +24,7 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from app.core.security import Policy
+from app.ports.slot import Slot
 
 
 class DomainPlugin(Protocol):
@@ -62,3 +65,17 @@ class AgentManifest:
     # offers" — a plugin author doesn't have to enumerate every tool name
     # twice just to expose all of them.
     allowed_tools: tuple[str, ...] = ()
+
+
+class DomainCatalog(Protocol):
+    def resolve(self, name: str) -> tuple[AgentManifest, DomainPlugin]:
+        """The manifest and plugin for `name`. Raises `ValueError`, listing the known names, for an unknown one: a typo'd domain fails loud
+        instead of silently falling back to another."""
+        ...
+
+    def names(self) -> list[str]:
+        """Every domain this process can serve, sorted."""
+        ...
+
+
+domain_catalog: Slot[DomainCatalog] = Slot("domain_catalog", DomainCatalog)

@@ -11,7 +11,7 @@ The rings, inside out:
 - ports       `app/ports/**`. Protocols and plain data. Imports the standard library, `pydantic`, the kernel and other ports.
 - kernel      `app/core/*.py` except the platform modules below. Security context, errors, scrubbing, the tool wrapper, metrics, settings.
               Imports no infrastructure client and nothing outside the kernel and the ports.
-- application `app/agent/**` and `app/domains/**` except the adapter files below. The graph, the runtime, the cost policy, the tools.
+- application `app/agent/**` and `app/domains/**` except the adapter files below (a domain's `store.py`, and the registry that names every domain). The graph, the runtime, the cost policy, the tools.
               Imports no infrastructure client, no adapter and no inbound adapter; `app/agent` never imports `app/domains` (a domain plugs
               into the agent, not the other way round).
 - adapters    everything else: `app/retrieval`, `app/ingestion`, `app/mcp`, `app/job_queue`, `app/api`, `app/channels`, `app/adapters`,
@@ -48,7 +48,7 @@ PLATFORM_CORE = frozenset({
 })
 
 # Application-ring files that are adapters by convention.
-ADAPTER_FILE_GLOBS = ("app/domains/*/store.py", "app/domains/ops/metrics_client.py")
+ADAPTER_FILE_GLOBS = ("app/domains/*/store.py", "app/domains/ops/metrics_client.py", "app/domains/registry.py")
 
 OUTER_PACKAGES = (
     "app.retrieval", "app.ingestion", "app.mcp", "app.job_queue", "app.api", "app.channels", "app.adapters", "app.bootstrap",
@@ -59,12 +59,6 @@ ALLOWED_OUTER = frozenset({"app.billing_integration.port"})
 
 # Violations that remain, as (file, imported module). See the module docstring.
 LEDGER: frozenset[tuple[str, str]] = frozenset({
-    # sessions, the exactly-once guard and the checkpointer reach Postgres
-    ("app/agent/runtime/sessions.py", "app.core.sql_store"),
-    ("app/core/tool_idempotency.py", "app.core.sql_store"),
-    ("app/agent/runtime/core.py", "langgraph.checkpoint.postgres"),
-    ("app/agent/runtime/core.py", "psycopg"),
-    ("app/agent/runtime/core.py", "psycopg_pool"),
     # retrieval: the graph and the shared tools reach Qdrant and the Redis cache
     ("app/agent/graph/build.py", "app.retrieval"),
     ("app/agent/tools/builtin.py", "app.retrieval"),
@@ -75,8 +69,6 @@ LEDGER: frozenset[tuple[str, str]] = frozenset({
     ("app/agent/graph/utils.py", "langchain_openai"),
     ("app/agent/graph/utils.py", "psycopg"),
     ("app/core/gateway.py", "openai"),
-    # the agent knows the concrete domains
-    ("app/agent/runtime/core.py", "app.domains"),
     # the kernel carries a Qdrant type, and the domain policy builds the filter
     ("app/core/security.py", "qdrant_client"),
     ("app/domains/policy.py", "qdrant_client"),
@@ -205,7 +197,7 @@ def test_the_ledger_only_shrinks():
         ("app/agent/cost/x.py", "from app.billing_integration import port as billing_port", set()),
         ("app/agent/graph/x.py", "from langgraph.graph import StateGraph\nfrom langchain_core.messages import AIMessage", set()),
         ("app/agent/graph/x.py", "from app.core import metrics\nfrom app.core.security import SecurityCtx", set()),
-        ("app/domains/support/tools.py", "from app.agent.manifest import AgentManifest", set()),
+        ("app/domains/support/tools.py", "from app.ports.domains import AgentManifest", set()),
         # kernel and ports: inward only
         ("app/core/security.py", "from qdrant_client.models import Filter", {"qdrant_client"}),
         ("app/core/tool_idempotency.py", "from app.core.sql_store import get_connection", {"app.core.sql_store"}),

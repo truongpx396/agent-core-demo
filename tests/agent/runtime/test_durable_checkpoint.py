@@ -30,10 +30,10 @@ from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from app.agent.graph.build import GraphDeps
 from app.agent.graph.hitl import resumability_error_async
 from app.agent.graph.state import STATE_SCHEMA_VERSION
-from app.agent.manifest import AgentManifest
 from app.agent.runtime import core as agent_module
 from app.agent.runtime import stream as stream_module
 from app.core import metrics
+from app.ports.domains import AgentManifest
 from tests.agent.fakes import cfg, scripted_llm
 from tests.conftest import TEST_CTX
 from tests.conftest import metric_value as _count

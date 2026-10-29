@@ -20,7 +20,7 @@ be up.
   TCP attempt with no Postgres listening (CI runs none for this job), so every turn paid a real psycopg pool
   timeout, stacked past `REQUEST_TIMEOUT_SECONDS` and took the suite from ~10 s to ~20+ minutes (see
   GRAPH_PATTERNS.md 46). It patches `get_connection` in the Postgres adapters (`app/adapters/postgres/`
-  `budget_holds` and `usage_events`), `sessions` and `tool_idempotency` (each module's OWN binding; patching
+  `budget_holds`, `usage_events`, `sessions` and `tool_idempotency`; each module's OWN binding; patching
   the origin wouldn't reach it) and NOT the higher-level functions, because tests/agent/cost/test_tenant_budget.py, tests/agent/runtime/test_sessions.py
   and tests/core/test_tool_idempotency.py test those AS the function under test and patch `get_connection`
   locally, which overrides this one. It raises at once rather than faking query-shaped rows, so it exercises
@@ -213,9 +213,12 @@ def mock_semantic_cache(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def mock_appdata_postgres(monkeypatch):
-    from app.adapters.postgres import budget_holds, usage_events
-    from app.agent.runtime import sessions
-    from app.core import tool_idempotency as tool_idempotency
+    from app.adapters.postgres import (
+        budget_holds,
+        sessions,
+        tool_idempotency,
+        usage_events,
+    )
     from credit_billing import credits
 
     monkeypatch.setattr(budget_holds, "get_connection", _no_postgres_in_tests)

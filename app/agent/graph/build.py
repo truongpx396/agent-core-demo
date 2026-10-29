@@ -79,7 +79,7 @@ from app.core.security import SecurityCtx
 from app.retrieval import semantic_cache
 
 if TYPE_CHECKING:
-    from app.agent.manifest import AgentManifest, DomainPlugin
+    from app.ports.domains import AgentManifest, DomainPlugin
 
 
 async def default_cache_get(ctx: SecurityCtx | None, query: str) -> tuple[str, list[dict]] | None:

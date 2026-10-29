@@ -543,7 +543,7 @@ requester + subject", since what counts as the same ticket is a product decision
 
 ## 🏢 Example domains
 
-`AgentManifest` + `DomainPlugin` (`app/agent/manifest.py`) mean a new use case is a manifest and a plugin, never a fork of
+`AgentManifest` + `DomainPlugin` (`app/ports/domains.py`) mean a new use case is a manifest and a plugin, never a fork of
 `build_graph()`. Four domains run on the one unmodified graph, the default included:
 
 | Domain | What it does | Run |
