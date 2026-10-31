@@ -113,7 +113,6 @@ flowchart TB
     Caddy -. response .-> ExtMCP
     CLI -- straight to Redis, outside the front door --> TurnQueue
     Telegram -- straight to Redis, outside the front door --> TurnQueue
-    ExtMCP -. stdio, a child process of the launcher .-> MCPServer["app/mcp/server.py<br/>and ops_server.py"]
 
     Queued --> TurnQueue[("Redis Stream: turn requests<br/>one per domain, consumer group,<br/>crash reclaim + dead-letter")]
     TurnQueue --> AgentWorker["agent-worker pool"]
@@ -159,11 +158,12 @@ flowchart TB
     Output -- answer stands --> Finish
     Finish -. write back .-> SemCache
 
-    MCPServer --> SQL["app/core/sql_store.py"]
-    MCPGateway --> SQL
+    MCPGateway --> SQL["app/core/sql_store.py"]
     ToolsNode --> SQL
     SQL --> Postgres[("Postgres: appdata")]
     Retrieve --> Qdrant[("Qdrant<br/>hybrid search")]
+    ToolsNode -. MCP stdio, one long-lived child process .-> SandboxBridge["opensandbox-mcp bridge<br/>(opt-in: make sandbox-up)"]
+    SandboxBridge -. HTTP + API key .-> OpenSandbox["OpenSandbox server<br/>isolated code execution"]
     Retrieve -. rerank .-> MLService["ml-service<br/>(reranker, Prompt Guard)"]
     Moderate -. classify .-> MLService
     Route -. label .-> MLService
