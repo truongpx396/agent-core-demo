@@ -164,6 +164,7 @@ flowchart TB
     Retrieve --> Qdrant[("Qdrant<br/>hybrid search")]
     ToolsNode -. MCP stdio, one long-lived child process .-> SandboxBridge["opensandbox-mcp bridge<br/>(opt-in: make sandbox-up)"]
     SandboxBridge -. HTTP + API key .-> OpenSandbox["OpenSandbox server<br/>isolated code execution"]
+    ToolsNode -. SSRF-checked page render .-> Crawl4ai["crawl4ai container<br/>(JS rendering; not in prod)"]
     Retrieve -. rerank .-> MLService["ml-service<br/>(reranker, Prompt Guard)"]
     Moderate -. classify .-> MLService
     Route -. label .-> MLService
