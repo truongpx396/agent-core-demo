@@ -1,16 +1,16 @@
 # 🤖 agent-core-demo — Production-Shaped RAG Agent
 
-### A multi-tenant LangGraph agent with human-approved writes. Runs fully local, deploys against any OpenAI-compatible LLM
+### A multi-tenant LangGraph agent with human-approved writes. Runs on Ollama or any OpenAI-compatible LLM
 
 **Hybrid RAG, mandatory approval for every write, exactly-once side effects and full observability**, served through a
-Redis Streams queue behind a Go edge-auth front door. Develop on a laptop against a local model; deploy to a DigitalOcean
-droplet against any OpenAI-compatible endpoint. The app talks only to LiteLLM aliases (`chat`, `embed`), so changing
+Redis Streams queue behind a Go edge-auth front door. Run it against Ollama or any OpenAI-compatible endpoint; the shipped Terraform
+deploys it to a DigitalOcean droplet. The app talks only to LiteLLM aliases (`chat`, `embed`), so changing
 provider is a LiteLLM config change, not a code change.
 
 [![CI](https://github.com/truongpx396/agent-core-demo/actions/workflows/ci.yml/badge.svg)](https://github.com/truongpx396/agent-core-demo/actions/workflows/ci.yml)
 [![Python](https://img.shields.io/badge/python-3.13-3776AB?logo=python&logoColor=white)](#-quickstart)
 [![Stack](https://img.shields.io/badge/Stack-LangGraph%20%C2%B7%20LiteLLM%20%C2%B7%20Qdrant%20%C2%B7%20Postgres%20%C2%B7%20Redis-1f6feb)](#-architecture)
-[![Local](https://img.shields.io/badge/Runs-fully%20local%20with%20Ollama-2ea44f)](#-quickstart)
+[![LLM](https://img.shields.io/badge/LLM-Ollama%20%C2%B7%20any%20OpenAI--compatible-2ea44f)](#-quickstart)
 [![Isolation](https://img.shields.io/badge/Isolation-tenant%20%2B%20principal-8250df)](#-safety-model)
 [![Writes](https://img.shields.io/badge/Writes-human--approved%20%2B%20exactly--once-d1242f)](#-safety-model)
 [![Spec Kit](https://img.shields.io/badge/Spec%20Kit-18%20specs-0969da)](specs/)
@@ -101,7 +101,7 @@ flowchart TB
     end
 
     WebUI --> Caddy
-    ExtMCP -. MCP over HTTPS .-> Caddy
+    ExtMCP -. Streamable HTTP + OAuth 2.1 token .-> Caddy
     WebUI -. sign in .-> Casdoor
     ExtMCP -. get a token .-> Casdoor
     Caddy -- asks about every request --> Authlimit
@@ -109,15 +109,18 @@ flowchart TB
     Authlimit --> LimitState
     Caddy -- signed identity --> Queued
     Caddy -- bearer token --> MCPGateway["MCP gateway<br/>(app/mcp/gateway.py)"]
-    CLI --> TurnQueue
-    Telegram --> TurnQueue
-    ExtMCP -. MCP stdio .-> MCPServer["app/mcp/server.py"]
+    MCPGateway -. response .-> Caddy
+    Caddy -. response .-> ExtMCP
+    CLI -- straight to Redis, outside the front door --> TurnQueue
+    Telegram -- straight to Redis, outside the front door --> TurnQueue
 
     Queued --> TurnQueue[("Redis Stream: turn requests<br/>one per domain, consumer group,<br/>crash reclaim + dead-letter")]
     TurnQueue --> AgentWorker["agent-worker pool"]
     AgentWorker --> Runtime["Shared runtime<br/>(app/agent/runtime/core.py)"]
     Runtime -- stream events --> Results[("Redis Stream: results<br/>one per request, 5 min TTL")]
     Results -- answer + citations as SSE --> Queued
+    Queued -- SSE, not buffered --> Caddy
+    Caddy -- SSE --> WebUI
     Results -- read back --> CLI
     Results -- read back --> Telegram
 
@@ -155,11 +158,13 @@ flowchart TB
     Output -- answer stands --> Finish
     Finish -. write back .-> SemCache
 
-    MCPServer --> SQL["app/core/sql_store.py"]
-    MCPGateway --> SQL
+    MCPGateway --> SQL["app/core/sql_store.py"]
     ToolsNode --> SQL
     SQL --> Postgres[("Postgres: appdata")]
     Retrieve --> Qdrant[("Qdrant<br/>hybrid search")]
+    ToolsNode -. MCP stdio, one long-lived child process .-> SandboxBridge["opensandbox-mcp bridge<br/>(opt-in: make sandbox-up)"]
+    SandboxBridge -. HTTP + API key .-> OpenSandbox["OpenSandbox server<br/>isolated code execution"]
+    ToolsNode -. SSRF-checked page render .-> Crawl4ai["crawl4ai container<br/>(JS rendering; not in prod)"]
     Retrieve -. rerank .-> MLService["ml-service<br/>(reranker, Prompt Guard)"]
     Moderate -. classify .-> MLService
     Route -. label .-> MLService
@@ -172,14 +177,17 @@ flowchart TB
         UploadEP["POST /ingest/upload"] --> ObjectStore[("MinIO / Spaces")]
         ObjectStore --> IngestQueue[("Redis Stream: ingest jobs<br/>consumer group")]
         IngestQueue --> IngestWorker["ingest-worker pool"]
-        IngestWorker -. progress .-> IngestResults[("Redis Stream: job progress<br/>GET /ingest/stream/{job_id}")]
+        IngestWorker -. progress .-> IngestResults[("Redis Stream: job progress")]
+        IngestResults --> ProgressEP["GET /ingest/stream/{job_id}<br/>(relays the progress)"]
     end
     Caddy -- signed identity --> UploadEP
+    Caddy -- signed identity --> ProgressEP
+    ProgressEP -- SSE progress --> Caddy
     IngestWorker --> Qdrant
     IngestWorker -. OTLP push .-> OtelCollector
 ```
 
-- 🚪 **Front door**: `services/authlimit/` ([details](#front-door-authlimit)) turns a Casdoor login into the signed identity the API trusts, for the chat routes and the upload alike. The production Caddyfile and compose are not wired to it yet ([Deploying](#-deploying-to-production)); with `make serve` (`AUTH_MODE=headers`) the web UI calls the API directly.
+- 🚪 **Front door**: `services/authlimit/` ([details](#front-door-authlimit)) turns a Casdoor login into the signed identity the API trusts, for the chat routes and the upload alike (the CLI and Telegram publish to Redis directly and skip it). The production Caddyfile and compose are not wired to it yet ([Deploying](#-deploying-to-production)); with `make serve` (`AUTH_MODE=headers`) the web UI calls the API directly.
 - 🟥 **Redis** is one Redis Stack used three ways: **Streams** (turn requests, one results stream per request, dead letters, ingest jobs and progress), a **RediSearch vector index** (the semantic cache, pattern 22) and **plain keys** (per-thread lock, cancel flags, submit-dedup claims, Telegram's poll offset, the front door's token buckets).
 - 📡 **OTLP edge** stands for every process that pushes metrics: the API and each worker replica (pattern 43).
 - 🔀 **Graph flow**, including the refusal and dead-end exits (`reject_*`, `context_window_exceeded`, `retry_exhausted`): [GRAPH_PATTERNS.md](GRAPH_PATTERNS.md#graph-flow).
@@ -329,7 +337,7 @@ curl -s -N -X POST http://localhost:8000/chat/stream/queued \
 - ✋ **Approvals:** `POST /chat/resume` approves or rejects an `approval_required` event; `POST /chat/cancel` stops the run.
 - 🧵 **Threads:** reuse a `thread_id` to continue a conversation (Langfuse groups traces by it). It belongs to whoever sends on it first (tenant + principal + domain); anyone else gets the same 404 an unknown id gets, so switching identity needs a new one. `telegram:<chat id>` ids are reserved. The check lives at the API; the worker doesn't repeat it (pattern 17).
 - 🔁 **Resubmits:** an identical `(thread_id, message, images)` within `CHAT_SUBMIT_DEDUP_TTL_SECONDS` (10) streams the first attempt's turn.
-- 🚦 **Limits:** the API doesn't limit turns or uploads; the [front door](#front-door-authlimit) does, as a token bucket per tenant and per person on `POST /chat/stream/queued`, `/chat/resume` and `/ingest/upload` (defaults in `services/authlimit/routes.json`: 30 a minute per tenant, 10 per person). ⚠️ **The production Caddyfile doesn't route through it yet** (spec 018), so production currently has no limit on turns or uploads. The API's own limit is per source address on the payment webhook (`BILLING_WEBHOOK_RATE_LIMIT_PER_MINUTE`). CORS: `CORS_ALLOWED_ORIGINS`.
+- 🚦 **Limits:** the API doesn't limit turns or uploads; the [front door](#front-door-authlimit) does, as a token bucket per tenant and per person on `POST /chat/stream/queued`, `/chat/resume` and `/ingest/upload` (defaults in `services/authlimit/routes.json`: 30 a minute per tenant, 10 per person). ⚠️ **The production Caddyfile doesn't route through it yet** (spec 018), so production currently has no limit on turns or uploads. **The CLI and the Telegram channel never pass through the front door either**: they publish to Redis from their own process (pattern 89), so these buckets don't apply to them and the identity they carry is the one they build themselves. The API's own limit is per source address on the payment webhook (`BILLING_WEBHOOK_RATE_LIMIT_PER_MINUTE`). CORS: `CORS_ALLOWED_ORIGINS`.
 - 📈 **Metrics** are pushed over OTLP; the API has no `/metrics` route.
 - 🖥️ **Web UI:** `make serve`, then http://localhost:8000/. It drives the full approve/reject flow and has a real-browser test (`tests/live/test_chat_ui.py`, pattern 48). Behind the front door (`make authlimit-up-app`) it signs in through Casdoor; `make authlimit-web-check` drives that in a browser.
 
