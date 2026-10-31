@@ -70,17 +70,18 @@ change, not a code change.
 - 🛡️ **Guardrails**: input moderation (patterns + ML classifier), secret scrubbing, nine independent safety budgets, a golden-set eval gate.
 - 🧭 **Model routing** (off by default): per-turn choice of `chat` / `chat-medium` / `chat-strong`, plus a reusable label-set decision API.
 - 🔐 **Edge authentication**: a Go front door turns a Casdoor login into a signed identity the API trusts; MCP is served over OAuth 2.1.
-- 📱 **Interfaces**: CLI, HTTP API, web UI and Telegram, all publishing to one queue, one worker pool, one streaming core.
+- 📱 **Interfaces**: CLI, HTTP API, web UI and Telegram, all reaching one API through the same front door, one queue, one worker pool, one streaming core.
 - 🚦 **Scalable, stateless workers**: a turn keeps no in-process state (it lives in Postgres checkpoints), so any replica can take any job, and a dead worker's turn is reclaimed. Also dependency health checks, cost caps, optional prepaid credit billing, Terraform + automated deploys.
 
 * * *
 
 ## 🧭 Architecture
 
-Every turn goes through a Redis Streams queue, whichever front door it came in through: the API serves SSE, the CLI and
-Telegram publish and read back, and `agent-worker` processes run the graph, so each tier scales on its own. No front door
-runs the graph in its own process, which is why the per-thread lock, crash reclaim and dead-letter archive cover all of them
-(pattern 89).
+Every turn goes through the front door and a Redis Streams queue, whichever client it came from: the web UI, the CLI and
+Telegram all call the same chat API as signed-in people, the API serves SSE, and `agent-worker` processes run the graph, so
+each tier scales on its own. Nothing runs the graph in a client's process and nothing but the API writes to the queue, which
+is why the limits, the signed identity, the per-thread lock, crash reclaim and the dead-letter archive cover all of them
+(patterns 89, 91).
 
 The code is laid out as **ports and adapters**: the agent and its domains reach Postgres, Qdrant, Redis, the LLM gateway, the ML service, the web and the sandbox
 only through `Protocol`s in `app/ports/`, the adapters implement them, and `app/bootstrap.py` binds the two when a process starts. A test fails the build when an import
@@ -117,8 +118,10 @@ flowchart TB
     Caddy -- bearer token --> MCPGateway["MCP gateway<br/>(app/mcp/gateway.py)"]
     MCPGateway -. response .-> Caddy
     Caddy -. response .-> ExtMCP
-    CLI -->|"straight to Redis, outside the front door"| TurnQueue
-    Telegram -->|"straight to Redis, outside the front door"| TurnQueue
+    CLI -->|"HTTPS, signed in as the person"| Caddy
+    Telegram -->|"HTTPS, one person per Telegram user"| Caddy
+    CLI -.->|"sign in (browser)"| Casdoor
+    Telegram -.->|"sign in as the person"| Casdoor
 
     Queued --> TurnQueue[("Redis Stream: turn requests<br/>one per domain, consumer group,<br/>crash reclaim + dead-letter")]
     TurnQueue --> AgentWorker["agent-worker pool"]
@@ -127,8 +130,8 @@ flowchart TB
     Results -- answer + citations as SSE --> Queued
     Queued -->|"SSE, not buffered"| Caddy
     Caddy -- SSE --> WebUI
-    Results -- read back --> CLI
-    Results -- read back --> Telegram
+    Caddy -->|"SSE"| CLI
+    Caddy -->|"SSE"| Telegram
 
     Runtime --> Validate
 
@@ -193,7 +196,7 @@ flowchart TB
     IngestWorker -. OTLP push .-> OtelCollector
 ```
 
-- 🚪 **Front door**: `services/authlimit/` ([details](#front-door-authlimit)) turns a Casdoor login into the signed identity the API trusts, for the chat routes and the upload alike (the CLI and Telegram publish to Redis directly and skip it). The production Caddyfile and compose are not wired to it yet ([Deploying](#-deploying-to-production)); with `make serve` (`AUTH_MODE=headers`) the web UI calls the API directly.
+- 🚪 **Front door**: `services/authlimit/` ([details](#front-door-authlimit)) turns a Casdoor login into the signed identity the API trusts, for the chat routes and the upload alike, whoever the client is: the web UI, the CLI (it signs in with a browser) and Telegram (one person per Telegram user). The production Caddyfile and compose are not wired to it yet ([Deploying](#-deploying-to-production)); with `make serve` (`AUTH_MODE=headers`) the web UI calls the API directly.
 - 🟥 **Redis** is one Redis Stack used three ways: **Streams** (turn requests, one results stream per request, dead letters, ingest jobs and progress), a **RediSearch vector index** (the semantic cache, pattern 22) and **plain keys** (per-thread lock, cancel flags, submit-dedup claims, Telegram's poll offset, the front door's token buckets).
 - 📡 **OTLP edge** stands for every process that pushes metrics: the API and each worker replica (pattern 43).
 - 🔀 **Graph flow**, including the refusal and dead-end exits (`reject_*`, `context_window_exceeded`, `retry_exhausted`): [GRAPH_PATTERNS.md](GRAPH_PATTERNS.md#graph-flow).
@@ -239,7 +242,7 @@ docker compose up -d litellm
 
 make ingest          # sample docs -> Qdrant
 make index-skills    # skill catalog -> its own Qdrant collection
-make agent-worker    # keeps running, so use a second terminal: every front door (CLI, web UI, Telegram) publishes its turns to it
+make agent-worker    # keeps running, so use a second terminal: every client (CLI, web UI, Telegram) reaches it through the API
 make chat            # CLI agent; `make chat-hitl` adds approval prompts
 ```
 
@@ -343,7 +346,7 @@ curl -s -N -X POST http://localhost:8000/chat/stream/queued \
 - ✋ **Approvals:** `POST /chat/resume` approves or rejects an `approval_required` event; `POST /chat/cancel` stops the run.
 - 🧵 **Threads:** reuse a `thread_id` to continue a conversation (Langfuse groups traces by it). It belongs to whoever sends on it first (tenant + principal + domain); anyone else gets the same 404 an unknown id gets, so switching identity needs a new one. `telegram:<chat id>` ids are reserved. The check lives at the API; the worker doesn't repeat it (pattern 17).
 - 🔁 **Resubmits:** an identical `(thread_id, message, images)` within `CHAT_SUBMIT_DEDUP_TTL_SECONDS` (10) streams the first attempt's turn.
-- 🚦 **Limits:** the API doesn't limit turns or uploads; the [front door](#front-door-authlimit) does, as a token bucket per tenant and per person on `POST /chat/stream/queued`, `/chat/resume` and `/ingest/upload` (defaults in `services/authlimit/routes.json`: 30 a minute per tenant, 10 per person). ⚠️ **The production Caddyfile doesn't route through it yet** (spec 018), so production currently has no limit on turns or uploads. **The CLI and the Telegram channel never pass through the front door either**: they publish to Redis from their own process (pattern 89), so these buckets don't apply to them and the identity they carry is the one they build themselves. The API's own limit is per source address on the payment webhook (`BILLING_WEBHOOK_RATE_LIMIT_PER_MINUTE`). CORS: `CORS_ALLOWED_ORIGINS`.
+- 🚦 **Limits:** the API doesn't limit turns or uploads; the [front door](#front-door-authlimit) does, as a token bucket per tenant and per person on `POST /chat/stream/queued`, `/chat/resume` and `/ingest/upload` (defaults in `services/authlimit/routes.json`: 30 a minute per tenant, 10 per person). ⚠️ **The production Caddyfile doesn't route through it yet** (spec 018), so production currently has no limit on turns or uploads. The CLI and the Telegram channel are counted like the web UI: each person has their own bucket, and a refusal reaches them as a message with the wait time. The API's own limit is per source address on the payment webhook (`BILLING_WEBHOOK_RATE_LIMIT_PER_MINUTE`). CORS: `CORS_ALLOWED_ORIGINS`.
 - 📈 **Metrics** are pushed over OTLP; the API has no `/metrics` route.
 - 🖥️ **Web UI:** `make serve`, then http://localhost:8000/. It drives the full approve/reject flow and has a real-browser test (`tests/live/test_chat_ui.py`, pattern 48). Behind the front door (`make authlimit-up-app`) it signs in through Casdoor; `make authlimit-web-check` drives that in a browser.
 
@@ -526,6 +529,15 @@ the chat API or the MCP routes.
 `make mcp-gateway-bootstrap` also creates an API application per tenant (client id `api-<tenant>`; tokens last 7 days,
 `--token-hours`). `make authlimit-latency` measures the added latency; `make authlimit-mutants` runs 26 deliberate defects, each of which must fail a test.
 
+### The CLI and Telegram go through the front door
+
+Both are clients of the chat API, signed in as a person, so they get the same limits, signed identity and revocation as the web UI (spec 020, patterns 89 and 91).
+
+- 💻 **CLI:** `make chat` opens your browser at the authorization server the first time (the address is also printed), catches the redirect on a fixed loopback port (`CHANNEL_CLI_CALLBACK_PORT`, registered by `make mcp-gateway-bootstrap`), and keeps the session in a file only you can read (`~/.config/agent-core-demo/channel-session.json`), renewed before it expires. Point it at the door with `CHANNEL_API_URL` (and `CHANNEL_CA_FILE` for Caddy's local CA, `make mcp-gateway-ca`); `python -m app.channels.chat --sign-out` forgets the session. With `AUTH_MODE=headers` (development, announced loudly by the API) nothing is signed in and the API is reached directly.
+- 📱 **Telegram:** each Telegram user is a person `telegram-<id>` of one tenant (`TELEGRAM_TENANT`, default `DEFAULT_TENANT`); the bot signs in as them with a password it **derives** from `TELEGRAM_PERSON_SECRET` (`openssl rand -hex 32`), so it stores nothing per person. By default an operator adds a person (`make telegram-person ACTION=add TELEGRAM_ID=<id>`) and an unregistered user is told to ask an administrator. `make telegram-person ACTION=disable` ends their sign-in at once (the command prints the `make authlimit-revoke` line that voids a token already issued). Each person has their own conversation per chat, named `telegram:<person>:<chat>`; in a group chat that means one per person.
+- ⚠️ **`TELEGRAM_AUTO_PROVISION=true` lets the bot create the person on a first message, and puts a tenant-wide credential in its environment.** Measured on Casdoor 4.24.0: an application's client id and secret are an administrator's of the whole organization (they reset any person's password). Leave it off, or give the bot a tenant of its own. A leak of `TELEGRAM_PERSON_SECRET` exposes the Telegram people and nobody else, but a Telegram person's password also signs in at the web page.
+- 🔒 **Not changed:** an unattended Telegram turn declines an approval pause and never approves it; a redelivered update is one turn; the worker's lock, reclaim and dead letters cover all three clients. Until the production Caddyfile is wired to the door (spec 018, T069), production has no limits for any client.
+
 ### MCP client, crawling, search and the sandbox
 
 - 🔗 **MCP client** (`app/mcp/client.py::load_remote_tools`) binds an external server's tools into the graph. A remote tool not named in `capability_overrides` defaults to `outward`; the remote's own annotations are never trusted. What the remote says is input: a catalog can be pinned by a hash of what the model is shown (the sandbox bridge is: 5 of its 19 tools), and replies are scrubbed and cut to `MCP_TOOL_OUTPUT_MAX_CHARS` (head and tail kept). One long-lived connection per server (`app/mcp/connection.py`) replaces a process per call, and a call that may have reached the server is never sent twice (pattern 78).
@@ -551,7 +563,7 @@ approval and exactly-once side effects.
 | 🏁 The dedup claim races | Row-level backstop: `tool_call_id UNIQUE` + `ON CONFLICT DO NOTHING`, and Qdrant point ids derived from `tool_call_id` or content |
 | 💥 A worker dies mid-turn | `XAUTOCLAIM` reclaim **continues** the checkpointed turn rather than restarting it (a restart re-asks the LLM and mints new ids). Finished, approval-paused or unreadable turns, and anything past `MAX_AUTO_RECLAIM_RETRIES`, are dead-lettered |
 | ⏱️ A tool times out but its write lands | `MutatingToolTimedOut` steers the agent to verify with a read-only tool before retrying, since a retry would be a fresh id |
-| 🖱️ A client resubmits | Submission dedup on `(thread_id, message, images)` |
+| 🖱️ A client resubmits | Submission dedup on `(thread_id, message, images)`, or on the caller's `replay_key` (Telegram sends its update number) for as long as the results stream lives |
 
 `tests/domains/test_write_tools_contract.py` enumerates every domain's non-read-only tool, so a new write tool that skips
 `idempotent()` or its ctx check fails by name. Deliberately not built: a business-key rule such as "one open ticket per
@@ -764,9 +776,9 @@ until configured**.
 | `make up` · `make down` | Start / stop the dev stack (keeps data) |
 | `make up-app` | `make up` plus the containerized `api`, `agent-worker`s and `ingest-worker` |
 | `make serve` | API + web UI on :8000 |
-| `make chat` · `make chat-hitl` | CLI agent · with approval prompts (both need that domain's worker: `AGENT_DOMAIN` picks it) |
+| `make chat` · `make chat-hitl` | CLI agent · with approval prompts. Both sign you in at the front door (`python -m app.channels.chat --sign-out` forgets it) and need that domain's worker: `AGENT_DOMAIN` picks it |
 | `make agent-worker[-support\|-ops\|-sales]` · `make ingest-worker` | Queue consumers |
-| `make telegram[-support\|-sales]` | Telegram gateway for a domain (needs `TELEGRAM_BOT_TOKEN` and that domain's worker) |
+| `make telegram[-support\|-sales]` · `make telegram-person ACTION=add\|disable\|enable TELEGRAM_ID=<id>` | Telegram gateway for a domain (needs `TELEGRAM_BOT_TOKEN`, `TELEGRAM_PERSON_SECRET` and that domain's worker) · add, disable or re-enable a Telegram person |
 | **📥 Data and models** | |
 | `make pull-models` · `make ingest` · `make index-skills` | Pull Ollama models · seed docs · index skills |
 | `make reembed COLLECTION_NAME=docs` | Rebuild a collection under the current embedding identity, swap atomically (`ARGS=--dry-run` first) |
@@ -803,11 +815,11 @@ app/
   api/         FastAPI: main.py mounts routers/ (chat, ingest, usage, system); deps.py (caller by AUTH_MODE), identity.py, schemas, health, webhook rate limit, web UI (static/index.html)
   billing_integration/  the app's one seam to the billing package (port.py)
   bootstrap.py binds every port to its adapter; each entrypoint calls wire() first
-  channels/    CLI (chat.py) and Telegram: front doors that publish turns to the queue and never run the graph
+  channels/    CLI (chat.py) and Telegram: clients of the chat API through the front door (door.py, sign-in, Telegram people); they never touch the queue or the graph
   core/        the kernel: config, security (SecurityCtx/Policy/AccessScope), metrics, errors, scrubbing, the gateway identity, tool timeout and the exactly-once guard (plus the SQL pool and other platform modules)
   domains/     ecorp/, support/, ops/, sales/ (store = the domain's adapter + tools + domain each), registry, shared sandbox session
   ingestion/   chunking, ingestor, crawler, object store, ingest worker
-  job_queue/   Redis Streams queue, agent worker, reclaim, producer (what the CLI and Telegram publish through)
+  job_queue/   Redis Streams queue, agent worker, reclaim (the API is the only producer)
   mcp/         server, ops_server (stdio), gateway (Streamable HTTP + OAuth 2.1), client
   ports/       the Protocols the application needs (cost, models, llm, sessions, retrieval, web, sandbox, a repository per domain, ...) and Slot, the typed seam
   retrieval/   embeddings, Qdrant store, semantic cache, memory deletion

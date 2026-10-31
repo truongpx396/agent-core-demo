@@ -374,6 +374,26 @@ agent_unattended_job_paused_total = Counter(
     "is why it is a counter and not an alert",
 )
 
+channel_signin_total = Counter(
+    "channel_signin_total",
+    "A channel's sign-in at the authorization server (app/channels/oauth.py), by channel and outcome. The CLI and the Telegram channel are "
+    "clients of the front door and hold a sign-in per person (specs/020)",
+    ["channel", "outcome"],
+)  # channel: cli | telegram; outcome: ok | refreshed | forbidden | unknown_person | credentials | unavailable
+
+channel_door_refusal_total = Counter(
+    "channel_door_refusal_total",
+    "A request from the CLI or the Telegram channel that the front door (or the API behind it) did not serve (app/channels/door.py), by why. "
+    "`unreachable` is the door not answering at all: the turn was NOT sent, and nothing falls back to publishing it directly",
+    ["channel", "reason"],
+)  # reason: unauthenticated | forbidden | not_found | rate_limited | unavailable | unreachable | invalid | other
+
+channel_person_provisioned_total = Counter(
+    "channel_person_provisioned_total",
+    "Telegram people created at the authorization server by the bot itself (TELEGRAM_AUTO_PROVISION), by outcome",
+    ["outcome"],
+)  # outcome: created | failed
+
 agent_retrieval_degraded_total = Counter(
     "agent_retrieval_degraded_total",
     "Hybrid retrieval stages that failed and degraded (app/retrieval/qdrant_store.py::hybrid_search)",

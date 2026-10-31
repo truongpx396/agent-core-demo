@@ -1,13 +1,11 @@
-"""Every chat front door runs its turns on the queue; none runs the graph in its own process.
+"""The CLI and the Telegram channel are clients of the chat API through the front door; neither reaches the work queue or the graph (specs/020).
 
-The CLI and the Telegram channel used to call `astream_events_turn*` and open the checkpointer
-themselves, which gave them a second execution path that the worker's guarantees did not reach:
-the per-thread lock (two messages into one conversation could overlap), crash reclaim and the
-dead-letter archive. They now publish through `app/job_queue/producer.py`, and this fails the build
-if one imports the graph runtime again, which would quietly bring the second path back.
+They once published their turns straight to the queue from their own process (GRAPH_PATTERNS.md 89), with an identity they built themselves, so the
+front door's limits, signed identity and revocation never applied to them and anything able to write to the queue could name any tenant and person.
+This fails the build if a channel can do that again, by import: the channel modules may not import the graph, the runtime, the queue's publisher or
+reader, or the module that used to wrap them.
 
-What a channel may still import from `app.agent.runtime` is `sessions` (a constant: the reserved
-`telegram:` thread prefix), not the graph or a streaming turn.
+Telegram keeps ONE Redis key of its own (its poll offset), through `app.job_queue.queue.get_client` and nothing else from that module.
 """
 import ast
 from pathlib import Path
@@ -15,58 +13,93 @@ from pathlib import Path
 import pytest
 
 REPO = Path(__file__).resolve().parents[2]
-CHANNELS = [REPO / "app" / "channels" / "chat.py", REPO / "app" / "channels" / "telegram.py"]
+CHANNELS = sorted((REPO / "app" / "channels").glob("*.py"))
+CHANNELS = [path for path in CHANNELS if path.name != "__init__.py"]
 
-# Importing any of these runs, or builds, the graph.
-THE_GRAPH = ("app.agent.graph", "app.agent.runtime.core", "app.agent.runtime.stream")
+# Importing any of these runs the graph, builds it, or puts a turn on the queue.
+FORBIDDEN = (
+    "app.agent.graph",
+    "app.agent.runtime.core",
+    "app.agent.runtime.stream",
+    "app.job_queue.producer",
+    "app.job_queue.agent_worker",
+    "app.bootstrap",
+)
+QUEUE = "app.job_queue.queue"
+ALLOWED_FROM_QUEUE = {"get_client"}
 
 
-def _imported_names(path: Path) -> set[str]:
-    """Every module an import statement in `path` names, and every `module.name` a `from` import
-    could be reading as a submodule (`from app.agent.runtime import stream`)."""
-    names: set[str] = set()
-    for node in ast.walk(ast.parse(path.read_text())):
+def imported(source: str) -> list[tuple[str, str | None]]:
+    """(module, name) for every import; `name` is None for `import module`."""
+    found: list[tuple[str, str | None]] = []
+    for node in ast.walk(ast.parse(source)):
         if isinstance(node, ast.Import):
-            names.update(alias.name for alias in node.names)
-        elif isinstance(node, ast.ImportFrom) and node.module:
-            names.add(node.module)
-            names.update(f"{node.module}.{alias.name}" for alias in node.names)
-    return names
+            found.extend((alias.name, None) for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module and node.level == 0:
+            found.extend((node.module, alias.name) for alias in node.names)
+    return found
+
+
+def _within(path: str, package: str) -> bool:
+    return path == package or path.startswith(package + ".")
+
+
+def offences(source: str) -> list[str]:
+    bad: list[str] = []
+    for module, name in imported(source):
+        # `from a.b import c` may be importing the MODULE a.b.c, so both spellings are checked.
+        paths = [module] + ([f"{module}.{name}"] if name else [])
+        if any(_within(path, f) for path in paths for f in FORBIDDEN):
+            bad.append(f"{module}{'.' + name if name else ''}")
+        if module == QUEUE and name not in ALLOWED_FROM_QUEUE:
+            bad.append(f"{module}{'.' + name if name else ''}")
+        if module == "app.job_queue" and name == "queue":
+            bad.append("app.job_queue.queue")
+    return bad
 
 
 def test_there_are_channels_for_this_test_to_be_about():
-    """A floor against a vacuous pass: a path that no longer exists would make every check below
-    true."""
-    assert all(path.is_file() for path in CHANNELS) and len(CHANNELS) == 2
+    """A floor against a vacuous pass: a moved directory would make every check below true."""
+    names = {path.name for path in CHANNELS}
+    assert {"chat.py", "telegram.py", "door.py", "oauth.py", "cli_auth.py", "telegram_people.py"} <= names
 
 
 @pytest.mark.parametrize("channel", CHANNELS, ids=lambda p: p.name)
-def test_a_channel_does_not_import_the_graph_runtime(channel):
-    imported = _imported_names(channel)
-
-    offending = sorted(
-        name for name in imported if any(name == g or name.startswith(g + ".") for g in THE_GRAPH)
-    )
-
-    assert not offending, (
-        f"{channel.name} imports {offending}: a channel publishes its turn to the queue "
-        "(app/job_queue/producer.py) and a worker runs it"
+def test_a_channel_cannot_reach_the_graph_or_the_queue(channel):
+    assert offences(channel.read_text()) == [], (
+        f"{channel.name} must send its turns to the chat API through the front door (app/channels/door.py), never to the queue or the graph"
     )
 
 
-@pytest.mark.parametrize("channel", CHANNELS, ids=lambda p: p.name)
-def test_a_channel_reaches_the_graph_through_the_producer(channel):
-    assert "app.job_queue.producer" in _imported_names(channel)
+@pytest.mark.parametrize("channel", ["chat.py", "telegram.py"])
+def test_the_two_channels_reach_the_agent_through_the_door(channel):
+    modules = {module for module, _ in imported((REPO / "app" / "channels" / channel).read_text())}
+
+    assert "app.channels.door" in modules
 
 
-@pytest.mark.parametrize("channel", CHANNELS, ids=lambda p: p.name)
-def test_a_channel_does_not_call_a_streaming_turn_by_name(channel):
-    """Catches the call through an alias or a module attribute that the import check cannot see
-    (`runtime.astream_events_turn(...)`)."""
-    called = {
-        node.func.attr if isinstance(node.func, ast.Attribute) else getattr(node.func, "id", "")
-        for node in ast.walk(ast.parse(channel.read_text()))
-        if isinstance(node, ast.Call)
-    }
+def test_the_module_that_published_for_them_is_gone():
+    assert not (REPO / "app" / "job_queue" / "producer.py").exists()
 
-    assert not {name for name in called if name.startswith("astream_events_")}
+
+@pytest.mark.parametrize(
+    ("source", "flagged"),
+    [
+        ("from app.job_queue.producer import stream_turn\n", True),
+        ("from app.job_queue import producer\n", True),
+        ("from app.job_queue.queue import publish_request\n", True),
+        ("from app.job_queue.queue import get_client, read_results\n", True),
+        ("from app.job_queue import queue\n", True),
+        ("import app.job_queue.queue\n", True),
+        ("from app.agent.runtime import stream\n", True),
+        ("from app.agent.graph.build import build_graph\n", True),
+        ("from app.bootstrap import wire\n", True),
+        # what a channel may do
+        ("from app.job_queue.queue import get_client\n", False),
+        ("from app.agent.runtime.sessions import TELEGRAM_THREAD_PREFIX\n", False),
+        ("from app.channels.door import Door\n", False),
+    ],
+)
+def test_the_check_flags_what_it_should(source, flagged):
+    """The checker itself, so a regression in it cannot pass for a clean channel."""
+    assert bool(offences(source)) is flagged

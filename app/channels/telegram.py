@@ -1,9 +1,9 @@
 """Telegram bot channel (pattern 42): a fourth interface beside the CLI, the HTTP API and the web UI. It
-long-polls `getUpdates` (no public webhook) and publishes each message as an UNATTENDED turn onto the domain's
-requests stream (`app/job_queue/producer.py`, pattern 43), where an `agent_worker.py` runs it through
-`astream_events_turn_unattended()`. Telegram has no token streaming, so this process collects the worker's
-events into one reply. It never runs the graph, holds no checkpointer pool, and needs Redis from `make up`
-plus a worker for its domain.
+long-polls `getUpdates` (no public webhook) and sends each message to the chat API through the front door as an
+UNATTENDED turn (specs/020; `app/channels/door.py`), acting as that Telegram user's own person at the authorization
+server (`app/channels/telegram_people.py`). A worker runs it through `astream_events_turn_unattended()`. Telegram
+has no token streaming, so this process collects the events into one reply. It never touches the queue or the
+graph; it keeps only its poll offset in Redis and needs a worker for its domain.
 
 Requires `TELEGRAM_BOT_TOKEN` (from @BotFather) and refuses to start without it, the same fail-closed
 discipline as SecurityCtx and moderation. It is the ONE surface that necessarily reaches the public internet.
@@ -14,7 +14,7 @@ own bot token (not the unbuilt "several domains from one process" registry). A W
 `handle_message`/`stream_turn()` and differ only in transport; not built, for lack of credentials to verify
 it.
 
-HITL: there is no approve/reject UX. The job carries `unattended=True`, so the worker auto-declines a
+HITL: there is no approve/reject UX. The request carries `unattended=True`, so the worker auto-declines a
 mandatory-gate pause (up to `UNATTENDED_MAX_DECLINE_ROUNDS`, then cancels the run): a mutating request never
 becomes a silent write and never leaves the conversation paused. The user always sees a reply: the answer, an
 explicit "needs a person's approval" message, or `_NO_REPLY_FALLBACK` for a turn with no text (`_send_message`
@@ -32,14 +32,17 @@ import httpx
 import redis.asyncio as redis
 
 from app.agent.runtime.sessions import TELEGRAM_THREAD_PREFIX
-from app.bootstrap import verify_wired, wire
+from app.channels import telegram_people
+from app.channels.door import SIGNIN_MESSAGES, Auth, Door, HeaderAuth, make_http_client
+from app.channels.oauth import SignInRefused
+from app.channels.telegram_people import TelegramPeople
 from app.core import metrics
-from app.core.config import AGENT_DOMAIN, DEFAULT_TENANT, TELEGRAM_BOT_TOKEN
+from app.core.config import AGENT_DOMAIN, DEFAULT_TENANT, TELEGRAM_BOT_TOKEN, settings
 from app.core.logging_config import configure_logging
-from app.core.security import SecurityCtx
 from app.core.telemetry import configure_telemetry
-from app.domains.registry import resolve_domain
-from app.job_queue.producer import cancel_turn, stream_turn
+from app.domains.registry import DOMAINS
+
+# The poll offset only: a turn is never published from here.
 from app.job_queue.queue import get_client as get_redis_client
 
 logger = logging.getLogger(__name__)
@@ -77,19 +80,38 @@ async def _save_offset(client: redis.Redis, domain: str, offset: int) -> None:
     await client.set(_offset_key(domain), str(offset))
 
 
-def _thread_id_for_chat(chat_id: int) -> str:
-    """One durable conversation thread per Telegram chat — stable across
-    process restarts (the durable checkpointer), so history survives a
-    bot restart. The prefix is shared with `app/agent/runtime/sessions.py` because HTTP callers
-    may never claim an id in this namespace (see `TELEGRAM_THREAD_PREFIX`)."""
-    return f"{TELEGRAM_THREAD_PREFIX}{chat_id}"
+def _thread_id(principal: str, chat_id: int) -> str:
+    """One durable conversation per person per Telegram chat, stable across restarts (the durable checkpointer). It NAMES its owner
+    (`telegram:<person>:<chat>`) because the API lets a caller claim an id in this namespace only if it names that caller
+    (app/api/routers/chat.py), so nobody can squat a chat's conversation before its person writes. In a group chat each person has their own."""
+    return f"{TELEGRAM_THREAD_PREFIX}{principal}:{chat_id}"
 
 
-def _ctx_for_user(user_id: int) -> SecurityCtx:
-    """Every Telegram user is its own principal within one shared tenant —
-    same shape as chat.py's local dev ctx, keyed by Telegram's user id
-    instead of the OS username, so different users never share memories."""
-    return {"tenant": DEFAULT_TENANT, "principal": f"telegram:{user_id}", "claims": {}}
+class Channel:
+    """How the bot reaches the front door as each Telegram user. In `identity` mode every user is a person at the authorization server and the
+    bot presents that person's token; in `headers` mode (development) it names the user in headers, as the web page's pickers do."""
+
+    def __init__(self, http: httpx.AsyncClient) -> None:
+        self.http = http
+        self.people = None if settings.auth_mode == "headers" else TelegramPeople(http)
+
+    async def door_for(self, user_id: int) -> tuple[Door, str]:
+        """(a door that acts as this Telegram user, that person's id). Raises `SignInRefused` when they cannot be signed in."""
+        if self.people is None:
+            principal = f"telegram:{user_id}"
+            auth: Auth = HeaderAuth(settings.telegram_tenant.strip() or DEFAULT_TENANT, principal)
+        else:
+            person = self.people.person(user_id)
+            principal = await person.sign_in()
+            if not principal:
+                raise SignInRefused("credentials")  # a token with no subject names nobody
+            auth = person
+        return Door(auth, channel="telegram", domain=AGENT_DOMAIN, http=self.http), principal
+
+
+def _refusal_reply(reason: str, user_id: int) -> str:
+    text = SIGNIN_MESSAGES.get(reason, SIGNIN_MESSAGES["credentials"])
+    return f"{text} (Your Telegram id is {user_id}.)" if reason == "unknown_person" else text
 
 
 _NO_REPLY_FALLBACK = (
@@ -124,7 +146,7 @@ async def _send_message(client: httpx.AsyncClient, chat_id: int, text: str) -> N
             )
 
 
-def _dedup_key(update_id: int) -> str:
+def _replay_key(update_id: int) -> str:
     """What makes two deliveries of one Telegram update "the same submission".
 
     The domain is part of it because the thread id is not: two bots (two domains, two
@@ -135,22 +157,20 @@ def _dedup_key(update_id: int) -> str:
 
 
 async def _run_turn(
-    text: str, thread_id: str, ctx: SecurityCtx, *, dedup_key: str | None = None
+    door: Door, text: str, thread_id: str, *, replay_key: str | None = None
 ) -> tuple[str, list[dict]]:
-    """Publish the message as an unattended turn, wait for the worker's events, and collect the
+    """Send the message as an unattended turn, wait for the worker's events, and collect the
     one final reply + citations this channel sends — built locally since this channel needs
     one full reply per message, not the raw event stream.
 
-    `dedup_key` is what keeps a redelivered update from becoming a second turn (see
-    `producer.stream_turn`): the turn outlives this process now, so replaying the message after
-    a crash would run it again rather than retry something that died with the channel."""
+    `replay_key` is what keeps a redelivered update from becoming a second turn (the API's
+    `replay_key`): the turn outlives this process, so replaying the message after a crash
+    would run it again rather than retry something that died with the channel."""
     parts: list[str] = []
     citations: list[dict] = []
     # `aclosing`: the `error` branch returns before the stream is exhausted, and a bare
     # `async for` leaves it to the event loop's finalizer to close what that return abandoned.
-    async with aclosing(
-        stream_turn(text, thread_id, ctx, domain=AGENT_DOMAIN, unattended=True, dedup_key=dedup_key)
-    ) as events:
+    async with aclosing(door.stream_turn(text, thread_id, unattended=True, replay_key=replay_key)) as events:
         async for event in events:
             kind = event["type"]
             if kind == "token":
@@ -160,12 +180,12 @@ async def _run_turn(
             elif kind == "error":
                 return event["content"], []
             elif kind == "approval_required":
-                return await _decline_pause(thread_id, ctx, event), []
+                return await _decline_pause(door, thread_id, event), []
     return "".join(parts), citations
 
 
-async def _decline_pause(thread_id: str, ctx: SecurityCtx, event: dict) -> str:
-    """A job published as unattended should never end at a pause: the worker declines it. One
+async def _decline_pause(door: Door, thread_id: str, event: dict) -> str:
+    """A turn sent as unattended should never end at a pause: the worker declines it. One
     that does was run by a worker that predates the flag (a rolling deploy that upgraded this
     channel first), which ran it as an ordinary turn. Nothing ran — the gate held — but the
     conversation is left paused, and an unattended channel can never resolve a pause, so every
@@ -175,17 +195,18 @@ async def _decline_pause(thread_id: str, ctx: SecurityCtx, event: dict) -> str:
     metrics.agent_unattended_job_paused_total.inc()
     logger.warning("telegram_unattended_job_paused", extra={"thread_id": thread_id, "tools": names})
     try:
-        await cancel_turn(thread_id, ctx, domain=AGENT_DOMAIN)
+        await door.cancel_turn(thread_id)
     except Exception as exc:  # noqa: BLE001 - the person still gets the reply below; a cancel that did not land leaves the pause, which the operator sees in this warning
         logger.warning("telegram_pause_cancel_failed", extra={"error_class": type(exc).__name__})
     return f"That needs a person's approval ({names}), which this channel can't provide — so it wasn't done."
 
 
 async def handle_message(
-    client: httpx.AsyncClient, message: dict, update_id: int | None = None
+    client: httpx.AsyncClient, message: dict, update_id: int | None = None, *, channel: Channel
 ) -> None:
-    """Process one Telegram `message` update end to end: resolve thread/ctx,
-    run the turn, and reply.
+    """Process one Telegram `message` update end to end: sign the user in at the front door, run the
+    turn, and reply. A user who cannot be signed in (not registered, disabled, the sign-in service
+    down) is told so in words, and nothing is sent to the agent.
 
     `update_id` (the update this message arrived in) makes the turn idempotent across a
     redelivery; without it every call is a new turn.
@@ -199,8 +220,12 @@ async def handle_message(
     if not text:
         return
 
-    thread_id = _thread_id_for_chat(chat_id)
-    ctx = _ctx_for_user(user_id)
+    try:
+        door, principal = await channel.door_for(user_id)
+    except SignInRefused as exc:
+        await _send_message(client, chat_id, _refusal_reply(exc.reason, user_id))
+        return
+    thread_id = _thread_id(principal, chat_id)
 
     try:
         await client.post(
@@ -210,10 +235,10 @@ async def handle_message(
         pass
 
     reply_text, citations = await _run_turn(
+        door,
         text,
         thread_id,
-        ctx,
-        dedup_key=None if update_id is None else _dedup_key(update_id),
+        replay_key=None if update_id is None else _replay_key(update_id),
     )
     if not reply_text.strip():
         reply_text = _NO_REPLY_FALLBACK
@@ -221,8 +246,6 @@ async def handle_message(
 
 
 async def run() -> None:
-    wire()
-    verify_wired()
     """The long-poll loop: fetch updates since the last offset, handle each sequentially (one chat at a time),
     then advance AND PERSIST `offset` past each. A message is never replayed after a successful reply, and
     since `offset` is durable in Redis, a restart resumes from the last one actually handled instead of
@@ -231,7 +254,7 @@ async def run() -> None:
     A crash between finishing `handle_message` and the `_save_offset` below still redelivers that one message
     (a duplicate reply), the accepted tradeoff against persisting BEFORE handling, which would silently drop a
     user's message forever if the crash hit while handling it. The redelivery is not a second TURN:
-    `handle_message` keys the submission by update id (`producer.stream_turn`'s `dedup_key`), so within
+    `handle_message` keys the submission by update id (the API's `replay_key`), so within
     `RESULTS_STREAM_TTL_SECONDS` it reads the first attempt's results instead of publishing again: possibly a
     second copy of the reply, never a second model call or a second question in the thread.
 
@@ -244,11 +267,13 @@ async def run() -> None:
         raise RuntimeError(
             "TELEGRAM_BOT_TOKEN is not set — see app/channels/telegram.py's module docstring"
         )
+    telegram_people.check_settings()
 
-    # Fails loud on a typo'd AGENT_DOMAIN, before a stream no worker pool reads is ever
-    # published to. The graph itself is built by the worker, not here.
-    manifest, _ = resolve_domain(AGENT_DOMAIN)
-    logger.info("telegram_channel_domain", extra={"domain": manifest.name})
+    # Fails loud on a typo'd AGENT_DOMAIN, before a request no worker pool reads is ever sent.
+    # The graph itself is built by the worker, not here; this process binds no port (see EXEMPT in tests/core/test_entrypoints_wire.py).
+    if AGENT_DOMAIN not in DOMAINS:
+        raise RuntimeError(f"AGENT_DOMAIN={AGENT_DOMAIN!r} is not a registered domain ({', '.join(sorted(DOMAINS))})")
+    logger.info("telegram_channel_domain", extra={"domain": AGENT_DOMAIN})
     redis_client = get_redis_client()
     offset = await _load_offset(redis_client, AGENT_DOMAIN)
 
@@ -261,7 +286,8 @@ async def run() -> None:
     for sig in (signal.SIGTERM, signal.SIGINT):
         loop.add_signal_handler(sig, stop_event.set)
 
-    async with httpx.AsyncClient(timeout=_POLL_TIMEOUT_SECONDS + 10) as client:
+    async with httpx.AsyncClient(timeout=_POLL_TIMEOUT_SECONDS + 10) as client, make_http_client() as door_http:
+        channel = Channel(door_http)
         logger.info("telegram_channel_started")
         while not stop_event.is_set():
             try:
@@ -279,7 +305,7 @@ async def run() -> None:
             for update in updates:
                 message = update.get("message")
                 if message:
-                    await handle_message(client, message, update_id=update["update_id"])
+                    await handle_message(client, message, update_id=update["update_id"], channel=channel)
                 offset = update["update_id"] + 1
                 await _save_offset(redis_client, AGENT_DOMAIN, offset)
 

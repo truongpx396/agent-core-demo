@@ -552,6 +552,32 @@ class Settings(BillingSettings):
     web_auth_audience: str = "https://api.localhost:8443"
     web_auth_scope: str = "api:chat"
 
+    # The CLI and the Telegram channel are clients of the chat API through the front door (specs/020; app/channels/door.py). Where they
+    # send a turn: the front door's address (`https://api.localhost:8443` on the local stack), or the API itself in header mode. They sign in
+    # at `web_auth_issuer` for `web_auth_audience` and `web_auth_scope`, as the web page does. `channel_ca_file` is the PEM of the CA that
+    # signed the door's certificate when it is not in the system store (`make mcp-gateway-ca` exports Caddy's local root); empty = system store.
+    channel_api_url: str = "http://localhost:8000"
+    channel_ca_file: str = ""
+    # The CLI signs in with a browser and a one-shot listener on this loopback port, registered as a redirect URI of the tenant's chat client
+    # (scripts/mcp_gateway_bootstrap.py): the authorization server compares redirect URIs exactly, so the port cannot be chosen per run.
+    channel_cli_callback_port: int = Field(default=33420, ge=1024, le=65535)
+    # The tenant the CLI's person belongs to (the Casdoor organization whose `api-<tenant>` client it signs in at); empty = DEFAULT_TENANT.
+    channel_cli_tenant: str = ""
+    # Where the CLI keeps its sign-in (mode 600, in a mode 700 directory); empty = ~/.config/agent-core-demo/channel-session.json.
+    channel_cli_session_file: str = ""
+    # Telegram people (specs/020 FR-004/FR-005). Each Telegram user is a person `telegram-<id>` of ONE tenant, and the bot signs in as them with a
+    # password it DERIVES from this secret (HMAC of the tenant and the id): it stores no per-person secret, a restart gives the same people, and a
+    # leak of this value exposes only the Telegram people, never anyone else. Required in identity mode; the bot refuses to start without it.
+    telegram_person_secret: str = ""
+    telegram_tenant: str = ""  # empty = DEFAULT_TENANT
+    # Off (the default): an operator adds a person (`make telegram-person TELEGRAM_ID=...`) and the bot holds no credential that can create one.
+    # On: the bot creates the person on that user's first message, with the application credentials below. MEASURED on Casdoor 4.24.0 (specs/020
+    # research R1): an application's client id and secret are an administrator's of its whole organization (they reset any person's password), so
+    # switching this on puts a tenant-wide credential in the bot's environment. Use a dedicated tenant, or leave it off.
+    telegram_auto_provision: bool = False
+    telegram_provision_client_id: str = ""
+    telegram_provision_client_secret: str = ""
+
     # POST /ingest/upload's per-file cap, enforced before any MinIO write —
     # an unbounded upload is a memory/storage exhaustion vector.
     max_upload_size_mb: int = 25
