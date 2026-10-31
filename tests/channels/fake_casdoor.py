@@ -7,6 +7,7 @@ What it reproduces on purpose, because each was a way to get this wrong:
 - a refresh must repeat the original grant's `resource`, and a disabled person's refresh token is revoked;
 - PKCE is checked, a code is single-use, and an application's client credentials (HTTP Basic) can add a person.
 """
+import asyncio
 import base64
 import hashlib
 import json
@@ -56,7 +57,13 @@ class FakeCasdoor:
 
     # -- the transport ------------------------------------------------------------------------------------------------------------------
     def client(self) -> httpx.AsyncClient:
-        return httpx.AsyncClient(transport=httpx.MockTransport(self.handle))
+        async def handle(request: httpx.Request) -> httpx.Response:
+            # A real server takes time, and concurrent callers interleave while it does. Without this yield a mock answers inside the caller's own
+            # turn on the event loop, "simultaneous" requests run one after another, and a missing lock cannot be seen (the mutation check found it).
+            await asyncio.sleep(0)
+            return self.handle(request)
+
+        return httpx.AsyncClient(transport=httpx.MockTransport(handle))
 
     def handle(self, request: httpx.Request) -> httpx.Response:
         self.requests.append((request.method, request.url.path))

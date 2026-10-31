@@ -191,7 +191,8 @@ def test_only_process_entrypoints_import_the_composition_root():
         rel for rel in importers if not _is_entrypoint(files[rel]) and rel not in BOOTSTRAP_IMPORTERS_BESIDES_ENTRYPOINTS
     )
     assert not_entrypoints == [], "wire the ports where the process starts, not from inside the application"
-    assert len(importers) >= 8, "a floor against a vacuous pass: the API, the workers, the channels and the MCP servers all start here"
+    # The channels used to be importers too; they are plain HTTP clients now (specs/020) and bind no port (EXEMPT in tests/core/test_entrypoints_wire.py).
+    assert len(importers) >= 6, "a floor against a vacuous pass: the API, the workers and the MCP servers all start here"
 
 
 def test_the_leaf_and_composition_scanners_can_fail():

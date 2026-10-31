@@ -4,7 +4,7 @@
 
 **Created**: 2026-10-31
 
-**Status**: Draft
+**Status**: Implemented in PR #226 (the spec and the code travel together at the maintainer's request). R1 is measured (research.md) and overturned FR-005 and SC-008 as first drafted; both are restated below with what was actually built.
 
 **Input**: The maintainer's request of 2026-10-31: move the CLI (`make chat`) and the Telegram channel behind the front door of spec 018, as clients of the same chat routes the web UI uses, each acting as a real person in the authorization server (one person per CLI user, one per Telegram user). Decided in conversation the same day: two PRs (the diagram and README caveat first, #224, then this), and one authorization-server user per person rather than a service credential that may act as anyone, or moving only the CLI.
 
@@ -42,7 +42,7 @@ A person runs `make chat`. The first time, they sign in with the same sign-in th
 
 ### User Story 2 - Every Telegram person is a distinct, provable person (Priority: P1)
 
-A person messages the Telegram bot. The first time, the bot creates a person for them in the authorization server (inside the one tenant the bot serves); from then on every message from that Telegram user reaches the agent as that person, proven by the door, and two Telegram users never share a person or each other's memories.
+A person messages the Telegram bot. Every Telegram user is a person in the authorization server (inside the one tenant the bot serves), added by an operator (the default) or, if the operator opts in, created by the bot on that user's first message; every message from that user reaches the agent as that person, proven by the door, and two Telegram users never share a person or each other's memories.
 
 **Why this priority**: Without it Telegram cannot go through the door at all, and it is the surface that most needs the door.
 
@@ -50,9 +50,9 @@ A person messages the Telegram bot. The first time, the bot creates a person for
 
 **Acceptance Scenarios**:
 
-1. **Given** a Telegram user who has never messaged the bot, **When** they send a message, **Then** exactly one person is created for them and the turn runs as that person.
+1. **Given** a Telegram user an operator has added, **When** they send a message, **Then** the turn runs as that person. **Given** one nobody added, **Then** they are told to ask an administrator (with their Telegram id) and nothing is sent to the agent. **Given** the opt-in `TELEGRAM_AUTO_PROVISION`, **Then** a first message creates exactly one person and the turn runs as them.
 2. **Given** the same user messaging again after a bot restart, **When** they send a message, **Then** it runs as the same person.
-3. **Given** ten simultaneous first messages from one new user, **When** they arrive, **Then** exactly one person exists afterwards.
+3. **Given** the opt-in and ten simultaneous first messages from one new user, **When** they arrive, **Then** exactly one person exists afterwards.
 4. **Given** a person revoked or disabled at the door, **When** their Telegram user messages the bot, **Then** the turn is refused, they are told they are not allowed, and the bot does not re-create or re-enable them.
 5. **Given** a person created for a Telegram user, **When** anyone tries to sign in as them at the web UI or the terminal, **Then** they cannot: that person has no sign-in a human could use or guess.
 
@@ -153,8 +153,8 @@ A developer who runs the API directly in header mode (explicitly chosen, loudly 
 - **FR-001**: The CLI and the Telegram channel MUST send every turn, approval answer and cancel to the chat API through the front door, and MUST NOT write to the work queue, the results streams or the cancel flags themselves. A test fails the build if either channel can reach the work queue or the results directly (it replaces the check that they do not import the graph).
 - **FR-002**: The tenant and person a turn runs as MUST be the ones the front door signs from the caller's token. Neither channel supplies them, and the API in identity mode ignores any the channel sends (spec 018's header stripping).
 - **FR-003**: The CLI MUST sign a person in with the web UI's sign-in, keep them signed in across runs until the sign-in's own lifetime ends, renew it when it can, and let them sign out. The stored sign-in MUST be readable only by that operating-system user and MUST never be printed, logged or put in an error.
-- **FR-004**: Each Telegram user MUST map to exactly one person in the authorization server, in the one tenant the bot serves, created on that user's first message; the same Telegram user MUST always map to the same person, and two Telegram users MUST never share one. Concurrent first messages MUST create one person.
-- **FR-005**: A person created for a Telegram user MUST have no interactive sign-in a human could use or guess. The sign-ins the bot holds MUST be limited to the chat routes, to people in the Telegram group of that one tenant, and MUST NOT be usable for any other person, other tenant or other route.
+- **FR-004**: Each Telegram user MUST map to exactly one person in the authorization server, in the one tenant the bot serves; the same Telegram user MUST always map to the same person (including after a restart), and two Telegram users MUST never share one. The person is added by an operator by default; the bot creates it on a first message only when the operator opts in (`TELEGRAM_AUTO_PROVISION`), and then concurrent first messages MUST create one person.
+- **FR-005** *(restated after R1)*: A Telegram person's password MUST be one no human could guess and the bot MUST store nothing per person (it is derived from one secret). By default the bot MUST hold no credential able to create or change a person. MEASURED: an application's client credentials are an administrator of the whole organization, so the opt-in creation puts a tenant-wide credential in the bot's environment and MUST say so where it is set. The first draft also required the bot's sign-in to be unusable at the web page and limited to the chat routes; Casdoor cannot do that (any application of the organization accepts a person's password), so a leak of the derivation secret is usable AS THOSE TELEGRAM PEOPLE at the web page and an MCP client's sign-in, and nobody else.
 - **FR-006**: A revoked or disabled person MUST be refused on both channels like on any other route; the bot MUST NOT create a replacement, re-enable them or hide the refusal.
 - **FR-007**: A chat request MUST be able to say the turn is unattended. An unattended turn that reaches an approval pause MUST decline the pause (never approve it), run nothing, and leave the conversation resumable. The statement MUST only ever make a turn stricter; no request value may approve a call or bypass the gate (constitution Principle II).
 - **FR-008**: Every Telegram turn MUST be sent as unattended. The CLI MUST send ordinary (attended) turns, with approval prompts under `make chat-hitl` as today.
@@ -187,8 +187,8 @@ A developer who runs the API directly in header mode (explicitly chosen, loudly 
 - **SC-004**: Across at least 10 approval-gated prompts sent over Telegram, 0 writes happen, 0 conversations are left paused, and the next message in each is answered normally.
 - **SC-005**: Delivering the same Telegram update 5 times, including once after a simulated crash before the offset was saved, runs exactly 1 turn and gives 1 reply; the same key from a second person never returns the first person's turn.
 - **SC-006**: A person revoked at the door is refused on both channels within 5 seconds (spec 018 SC-007) and the bot does not re-create them.
-- **SC-007**: Ten concurrent first messages from one new Telegram user create exactly 1 person; two distinct new users create 2.
-- **SC-008**: A sign-in extracted from the bot's stored state cannot be used at the web UI, for another tenant, for a non-Telegram person, or on any route but chat (verified by trying each).
+- **SC-007**: With the opt-in, ten concurrent first messages from one new Telegram user create exactly 1 person; two distinct new users create 2. Without it, 0 people are created by the bot.
+- **SC-008** *(restated after R1)*: What the bot holds in its environment cannot create or change a person (default), cannot sign in a non-Telegram person, and cannot be used in another tenant. It CAN sign in a Telegram person at the web page (measured, disclosed in GRAPH_PATTERNS.md 91).
 - **SC-009**: The time added to a turn's first token by going through the door, measured on the local stack against the direct-to-queue path and recorded in the research notes, has a median under 100 ms.
 - **SC-010**: A search of every service's logs and of the terminal's and bot's output after the end-to-end run finds no token, key or password.
 - **SC-011**: The default hermetic suite passes with no service running; every deliberate defect on a mutation list for the new checks (identity taken from the channel, unattended mark approving, replay key shared across people, fallback to the queue when the door is down, a bot sign-in valid beyond chat) is caught by a test.
@@ -198,8 +198,8 @@ A developer who runs the API directly in header mode (explicitly chosen, loudly 
 
 - **A1 (not deployed, so no migration).** The app has never been deployed (maintainer, 2026-10-29). Conversations and people from before this change are not carried over, no compatibility shim keeps the old direct path, and the existing channel files may be rewritten.
 - **A2 (one person per person).** Decided 2026-10-31: each CLI user is a person who signs in, and each Telegram user is a person the bot creates. Rejected alternatives: one service credential that may act as any Telegram user (a new, powerful door feature and a threat-model amendment), and moving only the CLI.
-- **A3 (Telegram people).** They live in the single tenant the bot serves today, in a group that cannot sign in interactively. Any Telegram user who can message the bot gets a person on first message, as any Telegram user can today; an allow-list is out of scope, and becomes possible because the door can now revoke.
-- **A4 (open research item R1: how the bot gets a sign-in for a person it created).** The bot must be able to obtain a sign-in for a person without that person signing in, and without that sign-in being usable by anyone else (FR-005). Whether and how the authorization server (Casdoor 4.24.0, measured in spec 017) allows this is the first item of the plan. **If it cannot be done safely, the Telegram half is revisited with the maintainer; the terminal half (User Story 1) stands on its own and is the first PR.**
+- **A3 (Telegram people)** *(changed by R1)*. They live in the single tenant the bot serves today. The first draft let any Telegram user who messages the bot get a person on first message, as today. Measuring what that credential can do (R1) made the safe default an operator-added list, so an unregistered user is told to ask an administrator; the open bot is the opt-in `TELEGRAM_AUTO_PROVISION`. The maintainer can flip the default by changing one setting's default; the code supports both.
+- **A4 (R1, answered)**. The bot signs in as the person with the authorization-code flow and a password it derives; no admin credential is needed for that. Creating the person is the part that needs one, which is why it is an operator step by default. Full measurements: research.md.
 - **A5 (production wiring).** The production Caddyfile and compose are not wired to the door yet (spec 018 task T069, the maintainer's). This feature is proven on the local stack and in the hermetic suite; until T069 lands, production has the same exposure as before.
 - **A6 (header mode).** In an explicitly chosen header mode the channels follow the API's mode (FR-016). Identity mode is the default, as in spec 018 A9.
 - **A7 (limits).** Defaults stay as in spec 018 (30 a minute per tenant, 10 a minute per person). Telegram people share their tenant's bucket with everyone else in that tenant, so a busy bot can use up the tenant's allowance for the web UI; the per-person bucket bounds any one Telegram person. Giving the Telegram group its own tenant or bucket is a follow-up, not part of this feature.

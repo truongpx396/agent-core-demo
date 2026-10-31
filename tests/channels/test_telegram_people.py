@@ -72,6 +72,16 @@ class TestThePasswordIsDerivedNotStored:
         assert person_name(123456789) == "telegram-123456789"
 
 
+class TestTheDefaults:
+    def test_the_bot_does_not_create_people_unless_told_to(self):
+        """The safe default is a property of the setting, so it is pinned there, not through a fixture that sets it (a mutation check found the
+        fixture hiding a flipped default)."""
+        from app.core.config import Settings
+
+        assert Settings.model_fields["telegram_auto_provision"].default is False
+        assert Settings.model_fields["telegram_provision_client_secret"].default == ""
+
+
 class TestCheckSettings:
     def test_identity_mode_refuses_to_start_without_a_real_secret(self, monkeypatch):
         monkeypatch.setattr(settings, "auth_mode", "identity")
