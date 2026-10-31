@@ -211,9 +211,9 @@ def test_the_leaf_and_composition_scanners_can_fail():
 # DECISIONS the constitution's principles rest on (who may see what, what a URL may be, what is scrubbed, what a budget allows, what a turn may spend,
 # what a domain's policy permits) do not read a message object or a graph state, so they are testable, and can be read, without the framework. This list
 # is what is true today; a module joins it when it is cleaned of the framework, and a framework import into one of these is a failure.
-# NOT on it, on purpose: the graph's own nodes and guards (`routing.should_continue`, `hitl`, `tool_guards`, `loop_guards`, `output_checks`, `messages`,
-# `state`), which read `AIMessage.tool_calls` and the graph's `State`. Separating them would need a second message model that mirrors LangChain's;
-# ARCHITECTURE.md says why that is not worth its cost.
+# NOT on it, on purpose: the graph's own nodes and guards (`routing.should_continue`, `hitl`, `tool_guards`, `loop_guards`, `skill_guards`, `output_checks`,
+# `messages`, `state`). LangChain's messages are the graph's transport type (the checkpointed `State.messages`): a node reads them and the logic it calls
+# runs on plain data, so mirroring them would add a mapper for an `isinstance` at each edge. ARCHITECTURE.md ("Decisions") has the reasoning.
 FRAMEWORK = ("langgraph", "langchain", "langchain_core", "langchain_openai")
 FRAMEWORK_FREE = (
     "app/core/security.py", "app/core/errors.py", "app/core/scrubbing.py", "app/core/untrusted.py", "app/core/routing_policy.py",
