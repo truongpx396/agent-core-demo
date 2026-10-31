@@ -42,5 +42,4 @@ no test that would have caught any of it. One AST pass measured the worklist: 40
 
 ## Not done
 
-See "Not done, and why" in `ARCHITECTURE.md`: the inbound adapters and the ingest pipeline still reach some infrastructure directly (they are adapters by the rule); the graph's own nodes are bound to LangChain
-messages; the constitution is not amended (a MINOR addition, through `/speckit-constitution`).
+See "Not done, and why" in `ARCHITECTURE.md`: the inbound adapters and the ingest pipeline still reach some infrastructure directly (they are adapters by the rule); the constitution is not amended (a MINOR addition, through `/speckit-constitution`).

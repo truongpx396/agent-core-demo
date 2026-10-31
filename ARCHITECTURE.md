@@ -104,8 +104,11 @@ usage-event store, the model catalog, the classifier and the injection scorer is
 - **A typed slot, not a constructor argument.** The code this was retrofitted onto is module-level functions called from graph nodes, tools and scripts, and the repo's own earlier port
   (`billing_port.billing`) is "a module-level name read at call time". Threading a container through every call would have touched most of the 285 files; a slot reads the same and
   can be listed, checked and overridden. The price is an ambient lookup; the test that every entrypoint wires, and the one that every port has an adapter, are what pay it.
-- **LangGraph and LangChain core are in the application ring.** The agent is a graph over LangChain messages. The decisions the principles rest on are framework-free and kept so; the graph
-  nodes that read `AIMessage.tool_calls` and the graph `State` are not, and separating them would need a second message model mirroring LangChain's.
+- **LangGraph and LangChain core are in the application ring, and LangChain's messages are the graph's transport type.** `State.messages` is `list[BaseMessage]` under LangGraph's
+  `add_messages` reducer, and that is what the checkpointer stores, so there is no second message model mirroring it. A graph node is the adapter: it reads the message and hands what the
+  decision needs (tool-call dicts, a capability map, a string) to code that knows no message type. The decisions the principles rest on are pinned framework-free (`FRAMEWORK_FREE`). The
+  guards (`routing`, `tool_guards`, `loop_guards`, `skill_guards`, `output_checks`) are part of the graph and keep a message-type check or cast at their edge; beyond it they work on
+  tool-call dicts, mappings, strings and `CheckContext`. If the framework is ever replaced, the mapper goes at that boundary.
 - **OpenTelemetry, Langfuse and structlog are allowed everywhere.** Observability is cross-cutting.
 - **A domain's `store.py` is its adapter, as a module.** The `store.py` + `tools.py` + `domain.py` shape is the documented convention, and a module satisfies a `Protocol`
   structurally, so the SQL did not move and its tests did not change.
@@ -117,6 +120,5 @@ usage-event store, the model catalog, the classifier and the injection scorer is
   operator scripts import adapter modules (`scripts/followup_sweep.py` calls the sales store). They are adapters, so the rule allows it; routing them through ports would add ports with one caller.
 - **`app/ingestion/` and `app/retrieval/memory.py` are classified as adapters but hold pipeline logic** (chunking, crawl, the ingest job). Splitting that logic from the Qdrant and MinIO calls is a port or two
   (`VectorWriter`, `ObjectStore`) not written here.
-- **The graph's own nodes are not framework-free** (above).
 - **The integration and live tiers were not run in this change** (they need Docker and models). Their fixtures were rewritten to bind the adapters and the tiers still collect.
 - **No constitution amendment.** The rings and the four rules above are a MINOR addition to "Architecture & Technology Constraints"; that goes through `/speckit-constitution`.
