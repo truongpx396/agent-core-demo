@@ -101,7 +101,7 @@ flowchart TB
     end
 
     WebUI --> Caddy
-    ExtMCP -. Streamable HTTP + OAuth 2.1 token .-> Caddy
+    ExtMCP -.->|"Streamable HTTP + OAuth 2.1 token"| Caddy
     WebUI -. sign in .-> Casdoor
     ExtMCP -. get a token .-> Casdoor
     Caddy -- asks about every request --> Authlimit
@@ -111,15 +111,15 @@ flowchart TB
     Caddy -- bearer token --> MCPGateway["MCP gateway<br/>(app/mcp/gateway.py)"]
     MCPGateway -. response .-> Caddy
     Caddy -. response .-> ExtMCP
-    CLI -- straight to Redis, outside the front door --> TurnQueue
-    Telegram -- straight to Redis, outside the front door --> TurnQueue
+    CLI -->|"straight to Redis, outside the front door"| TurnQueue
+    Telegram -->|"straight to Redis, outside the front door"| TurnQueue
 
     Queued --> TurnQueue[("Redis Stream: turn requests<br/>one per domain, consumer group,<br/>crash reclaim + dead-letter")]
     TurnQueue --> AgentWorker["agent-worker pool"]
     AgentWorker --> Runtime["Shared runtime<br/>(app/agent/runtime/core.py)"]
     Runtime -- stream events --> Results[("Redis Stream: results<br/>one per request, 5 min TTL")]
     Results -- answer + citations as SSE --> Queued
-    Queued -- SSE, not buffered --> Caddy
+    Queued -->|"SSE, not buffered"| Caddy
     Caddy -- SSE --> WebUI
     Results -- read back --> CLI
     Results -- read back --> Telegram
@@ -162,9 +162,9 @@ flowchart TB
     ToolsNode --> SQL
     SQL --> Postgres[("Postgres: appdata")]
     Retrieve --> Qdrant[("Qdrant<br/>hybrid search")]
-    ToolsNode -. MCP stdio, one long-lived child process .-> SandboxBridge["opensandbox-mcp bridge<br/>(opt-in: make sandbox-up)"]
-    SandboxBridge -. HTTP + API key .-> OpenSandbox["OpenSandbox server<br/>isolated code execution"]
-    ToolsNode -. SSRF-checked page render .-> Crawl4ai["crawl4ai container<br/>(JS rendering; not in prod)"]
+    ToolsNode -.->|"MCP stdio, one long-lived child process"| SandboxBridge["opensandbox-mcp bridge<br/>(opt-in: make sandbox-up)"]
+    SandboxBridge -.->|"HTTP + API key"| OpenSandbox["OpenSandbox server<br/>isolated code execution"]
+    ToolsNode -.->|"SSRF-checked page render"| Crawl4ai["crawl4ai container<br/>(JS rendering; not in prod)"]
     Retrieve -. rerank .-> MLService["ml-service<br/>(reranker, Prompt Guard)"]
     Moderate -. classify .-> MLService
     Route -. label .-> MLService
