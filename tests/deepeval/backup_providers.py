@@ -13,7 +13,7 @@ In try-order (`BACKUP_PROVIDERS`), each enabled by its own key alone:
 1. Plugsky (OpenAI-compatible, `PLUGSKY_API_KEY`): `plugsky-micro` (NVIDIA Nemotron 3 Super 120B), then
    `plugsky-lite`. `DEEPEVAL_BACKUP_MODEL` overrides the list (the original knob name, kept so an existing
    `.env` works).
-2. OpenRouter (`OPENROUTER_API_KEY`): `nvidia/nemotron-3-super-120b-a12b:free`, then `qwen/qwen3.8-27b:free`.
+2. OpenRouter (`OPENROUTER_API_KEY`): `nvidia/nemotron-3-ultra-550b-a55b:free`, then `google/gemma-4-31b-it:free`.
    `DEEPEVAL_OPENROUTER_MODEL` overrides. Last, because its free quota is thinnest.
 
 Lists are comma-separated; `none` switches one provider's models off even with its key set.
@@ -25,8 +25,10 @@ A longer chain is not more capacity:
   second model adds an upstream, not quota; the value is a provider whose quota is separate from the others.
   50/day can be exhausted by one `make deepeval` run.
 - `:free` ids churn (some carry an `expiration_date`). A retired id returns 404, deliberately not transient,
-  so it fails loudly; re-pick from openrouter.ai/models?variant=free. The defaults (chosen 2026-10-05) are
-  large (small models grade unreliably), have no `expiration_date`, ~99.9% uptime and distinct upstreams.
+  so it fails loudly; re-pick from openrouter.ai/models?variant=free. Both of the first defaults (chosen
+  2026-10-05) had left the list by 2026-10-31 and a CI run died on the 404. The current ones (chosen 2026-10-31) are
+  large (small models grade unreliably), carried no `expiration_date` in OpenRouter's model list that day, and have
+  distinct upstreams (NVIDIA, Google). Uptime is not in that list and was not checked.
   `openrouter/free` (a random model per call) was left out: a changing grader makes scores irreproducible.
 - Neither OpenRouter default has been run against a real key, and how those reasoning models handle deepeval's
   JSON-in-text parsing is untested.
@@ -67,7 +69,7 @@ OPENROUTER = BackupProvider(
     api_key_env="OPENROUTER_API_KEY",
     base_url="https://openrouter.ai/api/v1",
     models_env="DEEPEVAL_OPENROUTER_MODEL",
-    default_models=("nvidia/nemotron-3-super-120b-a12b:free", "qwen/qwen3.8-27b:free"),
+    default_models=("nvidia/nemotron-3-ultra-550b-a55b:free", "google/gemma-4-31b-it:free"),
 )
 # Try-order, not alphabetical: the provider with the thinnest quota goes last.
 BACKUP_PROVIDERS = (PLUGSKY, OPENROUTER)
