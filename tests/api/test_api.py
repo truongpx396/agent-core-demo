@@ -7,6 +7,7 @@ suite calls the handler functions directly instead, the same "test the
 function, not the framework wiring" approach the rest of this codebase
 already takes for graph nodes (see tests/agent/graph/test_nodes.py's module docstring).
 """
+import hashlib
 import io
 import json
 from decimal import Decimal
@@ -770,6 +771,124 @@ class TestConversationOwnership:
         )
 
         assert len(redis.streams[queue.requests_stream_key("ecorp")]) == 1
+
+
+    async def test_a_telegram_id_is_claimable_only_by_the_caller_it_names(self, redis, ownership):
+        """The channel sends `telegram:<person>:<chat>` (specs/020): the reserved namespace stays unsquattable, now that the Telegram channel is an
+        HTTP client and so has to be able to CLAIM its conversations. Nobody can take an id that names someone else."""
+        person = {"tenant": "ecorp", "principal": "abc-123", "claims": {}}
+
+        await chat_router.chat_stream_queued(ChatRequest(message="hi", thread_id="telegram:abc-123:555"), ctx=person, domain="ecorp")
+        assert ownership.rows["telegram:abc-123:555"] == ("ecorp", "abc-123", "ecorp")
+
+        with pytest.raises(HTTPException) as exc:
+            await chat_router.chat_stream_queued(
+                ChatRequest(message="hi", thread_id="telegram:abc-123:777"), ctx=OTHER_PRINCIPAL, domain="ecorp"
+            )
+        assert exc.value.status_code == 404
+        assert "telegram:abc-123:777" not in ownership.rows
+
+    async def test_a_prefix_that_merely_starts_like_the_callers_id_is_not_theirs(self, redis, ownership):
+        """`telegram:abc` must not unlock `telegram:abc-123:...` (the id is compared with its separator)."""
+        short = {"tenant": "ecorp", "principal": "abc", "claims": {}}
+
+        with pytest.raises(HTTPException):
+            await chat_router.chat_stream_queued(ChatRequest(message="hi", thread_id="telegram:abc-123:555"), ctx=short, domain="ecorp")
+
+
+class TestTheStricterOnlyRequestFields:
+    """`unattended`, `require_approval` and `replay_key` (specs/020): what the CLI and the Telegram channel need from a request that used to be
+    decided in their own process. Each can only make a turn stricter or safer to repeat, so none needs an authority a caller lacks."""
+
+    @pytest.fixture
+    def redis(self, monkeypatch):
+        client = FakeRedis()
+        monkeypatch.setattr(queue, "get_client", lambda: client)
+        return client
+
+    @staticmethod
+    def _job(client):
+        (entry,) = client.streams[queue.requests_stream_key("ecorp")]
+        return json.loads(entry[1]["payload"])
+
+    async def test_an_ordinary_request_is_neither_unattended_nor_gated_on_every_call(self, redis):
+        await chat_router.chat_stream_queued(ChatRequest(message="hi", thread_id="t1"), ctx=TEST_CTX, domain="ecorp")
+
+        job = self._job(redis)
+        assert (job["unattended"], job["require_approval"]) == (False, False)
+
+    async def test_unattended_and_require_approval_reach_the_job(self, redis):
+        await chat_router.chat_stream_queued(
+            ChatRequest(message="hi", thread_id="t1", unattended=True, require_approval=True), ctx=TEST_CTX, domain="ecorp"
+        )
+
+        job = self._job(redis)
+        assert (job["unattended"], job["require_approval"]) == (True, True)
+
+    async def test_a_replay_key_makes_a_repeat_one_turn_even_when_the_words_differ(self, redis):
+        for words in ("hello", "hello again"):
+            await chat_router.chat_stream_queued(
+                ChatRequest(message=words, thread_id="t1", replay_key="telegram:ecorp:update:7"), ctx=TEST_CTX, domain="ecorp"
+            )
+
+        assert len(redis.streams[queue.requests_stream_key("ecorp")]) == 1
+
+    async def test_two_different_keys_with_the_same_words_are_two_turns(self, redis):
+        """Replay is by KEY, not by text: a person who sends "yes" twice means both."""
+        for key in ("telegram:ecorp:update:7", "telegram:ecorp:update:8"):
+            await chat_router.chat_stream_queued(
+                ChatRequest(message="yes", thread_id="t1", replay_key=key), ctx=TEST_CTX, domain="ecorp"
+            )
+
+        assert len(redis.streams[queue.requests_stream_key("ecorp")]) == 2
+
+    async def test_a_replay_claim_lasts_as_long_as_the_results_stream(self, redis):
+        """A hit must find the first attempt's events, never a stream that expired under a live claim: the claim's TTL is the stream's, not the
+        ten seconds an unkeyed duplicate gets."""
+        await chat_router.chat_stream_queued(
+            ChatRequest(message="hi", thread_id="t1", replay_key="k"), ctx=TEST_CTX, domain="ecorp"
+        )
+        digest = hashlib.sha256(json.dumps(["replay", "k"]).encode()).hexdigest()
+
+        assert redis.expiries[queue._submission_dedup_key("t1", digest)] == queue.RESULTS_STREAM_TTL_SECONDS
+
+    async def test_another_person_cannot_replay_into_the_owners_turn(self, redis, ownership):
+        """The key is scoped to the conversation, which only its owner can reach: the ownership check comes before the claim."""
+        await chat_router.chat_stream_queued(
+            ChatRequest(message="private", thread_id="owned", replay_key="k"), ctx=TEST_CTX, domain="ecorp"
+        )
+
+        with pytest.raises(HTTPException) as exc:
+            await chat_router.chat_stream_queued(
+                ChatRequest(message="private", thread_id="owned", replay_key="k"), ctx=OTHER_PRINCIPAL, domain="ecorp"
+            )
+
+        assert exc.value.status_code == 404
+        assert len(redis.streams[queue.requests_stream_key("ecorp")]) == 1
+
+    async def test_a_replay_whose_publish_failed_is_released_so_the_key_can_be_sent_again(self, redis, monkeypatch):
+        real = queue.publish_request
+        calls = {"n": 0}
+
+        async def fails_once(*args, **kwargs):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise ConnectionError("redis went away")
+            return await real(*args, **kwargs)
+
+        monkeypatch.setattr(queue, "publish_request", fails_once)
+        request = ChatRequest(message="hi", thread_id="t1", replay_key="k")
+
+        with pytest.raises(ConnectionError):
+            await chat_router.chat_stream_queued(request, ctx=TEST_CTX, domain="ecorp")
+        await chat_router.chat_stream_queued(request, ctx=TEST_CTX, domain="ecorp")
+
+        assert len(redis.streams[queue.requests_stream_key("ecorp")]) == 1
+
+    def test_an_empty_or_oversized_replay_key_is_refused_at_the_boundary(self):
+        for bad in ("", "x" * 201):
+            with pytest.raises(ValueError):
+                ChatRequest(message="hi", thread_id="t1", replay_key=bad)
 
 
 class TestChatSessions:
