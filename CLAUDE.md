@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-A production-shaped, fully local LangGraph RAG agent: LiteLLM proxy → Ollama, Qdrant, Postgres,
+A production-shaped LangGraph RAG agent: LiteLLM proxy → Ollama, Qdrant, Postgres,
 Redis Streams, Langfuse, FastAPI. Three example domains (support, ops, sales) run on one
 unmodified graph. Python 3.13.
 

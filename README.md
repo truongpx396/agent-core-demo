@@ -1,16 +1,16 @@
 # 🤖 agent-core-demo — Production-Shaped RAG Agent
 
-### A multi-tenant LangGraph agent with human-approved writes. Runs fully local, deploys against any OpenAI-compatible LLM
+### A multi-tenant LangGraph agent with human-approved writes. Runs on Ollama or any OpenAI-compatible LLM
 
 **Hybrid RAG, mandatory approval for every write, exactly-once side effects and full observability**, served through a
-Redis Streams queue behind a Go edge-auth front door. Develop on a laptop against a local model; deploy to a DigitalOcean
-droplet against any OpenAI-compatible endpoint. The app talks only to LiteLLM aliases (`chat`, `embed`), so changing
+Redis Streams queue behind a Go edge-auth front door. Run it against Ollama or any OpenAI-compatible endpoint; the shipped Terraform
+deploys it to a DigitalOcean droplet. The app talks only to LiteLLM aliases (`chat`, `embed`), so changing
 provider is a LiteLLM config change, not a code change.
 
 [![CI](https://github.com/truongpx396/agent-core-demo/actions/workflows/ci.yml/badge.svg)](https://github.com/truongpx396/agent-core-demo/actions/workflows/ci.yml)
 [![Python](https://img.shields.io/badge/python-3.13-3776AB?logo=python&logoColor=white)](#-quickstart)
 [![Stack](https://img.shields.io/badge/Stack-LangGraph%20%C2%B7%20LiteLLM%20%C2%B7%20Qdrant%20%C2%B7%20Postgres%20%C2%B7%20Redis-1f6feb)](#-architecture)
-[![Local](https://img.shields.io/badge/Runs-fully%20local%20with%20Ollama-2ea44f)](#-quickstart)
+[![LLM](https://img.shields.io/badge/LLM-Ollama%20%C2%B7%20any%20OpenAI--compatible-2ea44f)](#-quickstart)
 [![Isolation](https://img.shields.io/badge/Isolation-tenant%20%2B%20principal-8250df)](#-safety-model)
 [![Writes](https://img.shields.io/badge/Writes-human--approved%20%2B%20exactly--once-d1242f)](#-safety-model)
 [![Spec Kit](https://img.shields.io/badge/Spec%20Kit-18%20specs-0969da)](specs/)
