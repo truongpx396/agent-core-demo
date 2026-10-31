@@ -14,16 +14,9 @@ here, for a future policy to use.
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Protocol, TypedDict, TypeGuard
-
-from qdrant_client.models import (
-    Condition,
-    DatetimeRange,
-    FieldCondition,
-    Filter,
-    MatchValue,
-)
+from typing import Literal, Protocol, TypedDict, TypeGuard
 
 from app.core.config import MEMORY_RETENTION_DAYS
 
@@ -40,6 +33,21 @@ class SecurityCtx(TypedDict):
     claims: dict  # opaque; no code in this app reads a key out of it (yet)
 
 
+@dataclass(frozen=True)
+class AccessScope:
+    """What a ctx may see in a store, in store-neutral terms: the output of `Policy.lower` and the one thing a store is handed to
+    isolate tenants. The store MUST apply it INSIDE the query as a pre-filter (the Qdrant adapter turns it into one,
+    `app/retrieval/qdrant_store.py::scope_filter`), never as a Python post-filter over an unscoped result.
+
+    `tenant` is always set. `owner` narrows a memory to the person who wrote it. `created_after` is the retention cutoff for memories,
+    enforced at read time: a record with no creation time does not satisfy it, so it is invisible rather than visible forever."""
+
+    tenant: str
+    kind: Literal["document", "memory"]
+    owner: str | None = None
+    created_after: datetime | None = None
+
+
 class Policy(Protocol):
     """The access model. PURE — no I/O, no clock, no randomness — so it's
     exhaustively testable and can't fail open on a network blip (a Policy
@@ -52,12 +60,11 @@ class Policy(Protocol):
         False — fail closed, not fail open."""
         ...
 
-    def lower(self, ctx: SecurityCtx, target: str) -> Filter:
-        """Lower ctx into a store-native predicate scoped to `target`
-        ("documents" | "memories", sharing one Qdrant collection). MUST be
-        applied INSIDE the store as a pre-filter (app/retrieval/qdrant_store.py)
-        — post-filtering in Python is a correctness bug even if the output
-        looks identical, since the store already returned rows this
+    def lower(self, ctx: SecurityCtx, target: str) -> AccessScope:
+        """Lower ctx into the scope of `target` ("documents" | "memories", sharing one
+        collection). The store MUST apply it INSIDE the query as a pre-filter
+        (app/retrieval/qdrant_store.py) — post-filtering in Python is a correctness bug even
+        if the output looks identical, since the store already returned rows this
         principal may not see."""
         ...
 
@@ -83,32 +90,20 @@ class TenantIsolationPolicy:
         # accidentally mishandle into failing open.
         return valid_ctx(ctx)
 
-    def lower(self, ctx: SecurityCtx, target: str) -> Filter:
+    def lower(self, ctx: SecurityCtx, target: str) -> AccessScope:
         if target not in _TARGETS:
             raise ValueError(f"unknown lowering target: {target!r}")
-        must: list[Condition] = [
-            FieldCondition(key="tenant", match=MatchValue(value=ctx["tenant"])),
-            FieldCondition(
-                key="kind",
-                match=MatchValue(value="document" if target == "documents" else "memory"),
-            ),
-        ]
-        if target == "memories":
-            must.append(
-                FieldCondition(key="owner", match=MatchValue(value=ctx["principal"]))
-            )
-            # Retention enforced AT RECALL TIME, not just by a background
-            # sweep (app/retrieval/memory.py::delete_memories, pattern 33) — a memory past
-            # MEMORY_RETENTION_DAYS is invisible on the next read even if
-            # unswept. Note: Qdrant treats a missing field as never matching
-            # a range filter, so a memory with no `created_at` (written
-            # before this field existed) is also excluded — invisible until
-            # re-written, not just a future-only guarantee.
-            cutoff = datetime.now(UTC) - timedelta(days=MEMORY_RETENTION_DAYS)
-            must.append(
-                FieldCondition(key="created_at", range=DatetimeRange(gte=cutoff))
-            )
-        return Filter(must=must)
+        if target == "documents":
+            return AccessScope(tenant=ctx["tenant"], kind="document")
+        # Retention enforced AT RECALL TIME, not just by a background sweep (app/retrieval/memory.py::delete_memories, pattern 33) — a
+        # memory past MEMORY_RETENTION_DAYS is invisible on the next read even if unswept. A memory with no `created_at` (written before
+        # the field existed) does not satisfy the cutoff either: invisible until re-written, not just a future-only guarantee.
+        return AccessScope(
+            tenant=ctx["tenant"],
+            kind="memory",
+            owner=ctx["principal"],
+            created_after=datetime.now(UTC) - timedelta(days=MEMORY_RETENTION_DAYS),
+        )
 
 
 DEFAULT_POLICY: Policy = TenantIsolationPolicy()

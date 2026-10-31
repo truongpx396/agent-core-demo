@@ -46,6 +46,7 @@ from langgraph.types import Command
 
 from app.agent.graph.build import build_graph
 from app.agent.runtime.core import DEFAULT_DOMAIN
+from app.bootstrap import wire
 from app.core.config import DEFAULT_TENANT
 from app.core.security import SecurityCtx
 from app.domains.registry import resolve_domain
@@ -357,6 +358,7 @@ def print_comparison(results: list[CaseResult], previous: dict[str, dict]) -> No
 
 
 def main() -> None:
+    wire()
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--no-compare", action="store_true", help="skip before/after comparison"

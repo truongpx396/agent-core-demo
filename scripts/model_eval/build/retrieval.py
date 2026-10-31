@@ -227,6 +227,9 @@ def ollama_generator(model: str = "qwen2.5:7b", base: str = "http://localhost:11
 
 
 def main() -> None:
+    from app.bootstrap import wire
+
+    wire()
     import sys
     from datetime import UTC, datetime
 

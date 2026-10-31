@@ -19,6 +19,7 @@ from contextlib import asynccontextmanager
 import psycopg
 import pytest
 
+from app.adapters.postgres import sessions as pg_sessions
 from app.agent.runtime import sessions
 from tests.containers import ensure_postgres
 
@@ -38,7 +39,7 @@ def real_appdata(monkeypatch):
         async with await psycopg.AsyncConnection.connect(url, autocommit=True) as conn:
             yield conn
 
-    monkeypatch.setattr(sessions, "get_connection", get_connection)
+    monkeypatch.setattr(pg_sessions, "get_connection", get_connection)
     return get_connection
 
 

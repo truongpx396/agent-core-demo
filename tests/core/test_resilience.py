@@ -1,5 +1,5 @@
 """Tests for app/core/resilience.py's CircuitBreaker: the retry-with-backoff
-+ fail-fast primitive behind app/domains/sandbox_tools.py::load_sandbox_tools
++ fail-fast primitive behind app/adapters/mcp/sandbox_tools.py::load_sandbox_tools
 and app/ingestion/web_crawler.py::_crawl (see that module's own docstring
 for why it exists and what it deliberately does NOT cover).
 

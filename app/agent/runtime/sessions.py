@@ -1,13 +1,7 @@
 """Session directory for the web UI's session switcher — lets a user list
 and switch between their own past conversation threads.
 
-Persisted in the `appdata` Postgres database (`chat_sessions` table,
-postgres-init/06-chat-sessions.sql), not reused from the usage tables: that
-table no-ops on a zero-token/rejected turn and carries no title, so a
-session with no billable tokens would vanish from the switcher. The
-checkpointer's own `checkpoints` table has no tenant/principal column to
-scope by, and parsing a title out of its internal blob format would be
-fragile across version bumps.
+Where the rows live is the `SessionStore` port (`app/ports/sessions.py`; the Postgres adapter explains why it is its own table).
 
 Every row is tenant+principal scoped (SecurityCtx) and, since pattern 49,
 domain-scoped too: a session belongs to whichever domain actually ran on
@@ -20,7 +14,7 @@ like `title`.
 import logging
 
 from app.core.security import SecurityCtx, valid_ctx
-from app.core.sql_store import get_connection
+from app.ports.sessions import session_store
 
 logger = logging.getLogger(__name__)
 
@@ -60,15 +54,8 @@ async def upsert_session(
     """
     if not valid_ctx(ctx) or not thread_id:
         return
-    display_title = _display_title(title)
     try:
-        async with get_connection() as conn:
-            await conn.execute(
-                "INSERT INTO chat_sessions (thread_id, tenant, principal, title, domain) "
-                "VALUES (%s, %s, %s, %s, %s) "
-                "ON CONFLICT (thread_id) DO UPDATE SET last_active_at = now()",
-                (thread_id, ctx["tenant"], ctx["principal"], display_title, domain),
-            )
+        await session_store.get().touch(ctx["tenant"], ctx["principal"], thread_id, _display_title(title), domain)
     except Exception as exc:  # noqa: BLE001
         logger.warning(
             "chat session upsert failed; continuing without recording",
@@ -86,8 +73,7 @@ async def claim_session(
     Conversation state (checkpoint, cancel flag, thread lock, submission-dedup key) is keyed by `thread_id`
     alone and the id is client-supplied, so without a gate whoever names an id continues that conversation.
     `upsert_session`, the per-turn bookkeeping, is `ON CONFLICT DO UPDATE` and never asked who owned the row.
-    `INSERT ... ON CONFLICT DO NOTHING` makes the claim atomic: of two racers for a new id the loser blocks on
-    the unique index until the winner commits, then sees its row.
+    The store makes the claim atomic: of two racers for a new id the loser waits for the winner, then sees its row.
 
     Unlike `upsert_session` this does NOT swallow a store failure: that one is best-effort and must never fail
     a turn, but this is an authorization decision, and when it can't be made the answer is "no" (the caller
@@ -95,19 +81,7 @@ async def claim_session(
     """
     if not valid_ctx(ctx) or not thread_id:
         return False
-    async with get_connection() as conn:
-        await conn.execute(
-            "INSERT INTO chat_sessions (thread_id, tenant, principal, title, domain) "
-            "VALUES (%s, %s, %s, %s, %s) "
-            "ON CONFLICT (thread_id) DO NOTHING",
-            (thread_id, ctx["tenant"], ctx["principal"], _display_title(title), domain),
-        )
-        cur = await conn.execute(
-            "SELECT 1 FROM chat_sessions WHERE thread_id = %s AND tenant = %s "
-            "AND principal = %s AND domain = %s",
-            (thread_id, ctx["tenant"], ctx["principal"], domain),
-        )
-        return await cur.fetchone() is not None
+    return await session_store.get().claim(ctx["tenant"], ctx["principal"], thread_id, _display_title(title), domain)
 
 
 async def list_sessions(ctx: SecurityCtx | None, domain: str = "ecorp") -> list[dict]:
@@ -118,15 +92,7 @@ async def list_sessions(ctx: SecurityCtx | None, domain: str = "ecorp") -> list[
     never appear in each other's switcher."""
     if not valid_ctx(ctx):
         return []
-    async with get_connection() as conn:
-        cur = await conn.execute(
-            "SELECT thread_id, title, created_at, last_active_at FROM chat_sessions "
-            "WHERE tenant = %s AND principal = %s AND domain = %s ORDER BY last_active_at DESC",
-            (ctx["tenant"], ctx["principal"], domain),
-        )
-        columns = [desc.name for desc in cur.description]
-        rows = await cur.fetchall()
-        return [dict(zip(columns, row, strict=True)) for row in rows]
+    return await session_store.get().list(ctx["tenant"], ctx["principal"], domain)
 
 
 async def session_belongs_to(ctx: SecurityCtx | None, thread_id: str, domain: str = "ecorp") -> bool:
@@ -142,10 +108,4 @@ async def session_belongs_to(ctx: SecurityCtx | None, thread_id: str, domain: st
     found," same as a different tenant's or principal's thread."""
     if not valid_ctx(ctx) or not thread_id:
         return False
-    async with get_connection() as conn:
-        cur = await conn.execute(
-            "SELECT 1 FROM chat_sessions WHERE thread_id = %s AND tenant = %s "
-            "AND principal = %s AND domain = %s",
-            (thread_id, ctx["tenant"], ctx["principal"], domain),
-        )
-        return await cur.fetchone() is not None
+    return await session_store.get().owns(ctx["tenant"], ctx["principal"], thread_id, domain)

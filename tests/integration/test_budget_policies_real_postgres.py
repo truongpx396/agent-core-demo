@@ -21,9 +21,10 @@ from contextlib import asynccontextmanager
 import psycopg
 import pytest
 
-from app.agent.cost import budget_holds, budget_policies, budgets, spend
+from app.agent.cost import budget_policies, budgets
 from scripts import budget_policy
 from tests.containers import ensure_postgres
+from tests.integration.postgres_adapters import use_real_postgres
 from tests.integration.usage_seed import seed_event
 
 pytestmark = pytest.mark.integration
@@ -44,8 +45,7 @@ def real_appdata(appdata_url, monkeypatch):
         async with await psycopg.AsyncConnection.connect(appdata_url) as conn:
             yield conn
 
-    for module in (budget_policies, budget_holds, spend):
-        monkeypatch.setattr(module, "get_connection", get_connection)
+    use_real_postgres(monkeypatch, get_connection)
     monkeypatch.setattr(budget_policies, "overrides_for", _REAL_OVERRIDES_FOR)
     monkeypatch.setattr(budget_policies, "BUDGET_POLICY_REFRESH_SECONDS", 0)
     return get_connection

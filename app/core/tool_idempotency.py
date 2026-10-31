@@ -4,9 +4,9 @@ pending at its `human_approval` pause under the SAME `tool_call_id`s (the pause 
 `Command(resume=...)` continues that exact state). Without this, a retry risked re-sending an email or
 re-creating a ticket.
 
-Persisted in the `appdata` Postgres (`tool_call_dedup`, postgres-init/13-tool-call-dedup.sql), keyed by
+The claims live behind the `ToolCallLedger` port (`app/ports/idempotency.py`; the Postgres adapter keys them by
 `tool_call_id` alone: the provider assigns a fresh one per tool call, so two invocations sharing an id are, by
-construction, the SAME invocation attempted again.
+construction, the SAME invocation attempted again).
 
 Scope, deliberately narrow: this makes ONE invocation exactly-once. It does NOT make a whole crashed "turn"
 safe to retry through a fresh `astream_events_turn`, which re-asks the LLM and gets new ids this can't connect
@@ -30,7 +30,7 @@ from langchain_core.runnables import RunnableConfig
 
 from app.core import metrics
 from app.core.security import SecurityCtx
-from app.core.sql_store import get_connection
+from app.ports.idempotency import tool_call_ledger
 
 logger = logging.getLogger(__name__)
 
@@ -69,21 +69,7 @@ async def _claim_or_cached_result(tool_call_id: str, ctx: SecurityCtx, config: R
     `result IS NULL` — see `idempotent`'s own docstring on why that narrow
     race is accepted, not closed, here). Any other return value is the
     prior call's own cached result, to hand back unchanged."""
-    async with get_connection() as conn:
-        cur = await conn.execute(
-            "INSERT INTO tool_call_dedup (tool_call_id, tenant, thread_id, tool_name) "
-            "VALUES (%s, %s, %s, %s) ON CONFLICT (tool_call_id) DO NOTHING "
-            "RETURNING tool_call_id",
-            [tool_call_id, ctx["tenant"], _thread_id_from_config(config), tool_name],
-        )
-        claimed = await cur.fetchone() is not None
-        if claimed:
-            return None
-        cur = await conn.execute(
-            "SELECT result FROM tool_call_dedup WHERE tool_call_id = %s", [tool_call_id]
-        )
-        row = await cur.fetchone()
-    return row[0] if row is not None else None
+    return await tool_call_ledger.get().claim_or_cached(tool_call_id, ctx["tenant"], _thread_id_from_config(config), tool_name)
 
 
 async def idempotent(
@@ -98,9 +84,9 @@ async def idempotent(
     second call with an id already seen returns the FIRST call's result without running `fn` again, so the
     side effect (an email, a ticket, a note) happens once however many times the call is replayed.
 
-    Mechanics: an unconditional `INSERT ... ON CONFLICT DO NOTHING` on `tool_call_id` (the primary key) is the
-    atomic claim. Whichever caller's INSERT lands owns running `fn`; every other caller sees no row inserted
-    and reads back what is there.
+    Mechanics: the ledger's claim is atomic (the Postgres adapter: an unconditional `INSERT ... ON CONFLICT DO
+    NOTHING` on `tool_call_id`, the primary key). Whichever caller's claim lands owns running `fn`; every other
+    caller reads back what is there.
 
     Narrow accepted race: if the row read back has `result IS NULL` (the winner's `fn()` is still running, or
     died before the closing UPDATE), this caller runs `fn()` itself rather than blocking or looping, so a
@@ -135,10 +121,7 @@ async def idempotent(
         # for it.
         raise MutatingToolTimedOut(tool_name) from exc
     try:
-        async with get_connection() as conn:
-            await conn.execute(
-                "UPDATE tool_call_dedup SET result = %s WHERE tool_call_id = %s", [result, tool_call_id]
-            )
+        await tool_call_ledger.get().store_result(tool_call_id, result)
     except Exception as exc:  # noqa: BLE001 - fn() already succeeded; a failure to CACHE that must not fail the call
         logger.warning(
             "tool_call_dedup_result_not_stored",
@@ -161,9 +144,4 @@ async def sweep_stale_rows(*, older_than_hours: int) -> int:
     attempt) by a wide margin — the sweep script's own default is generous
     accordingly. Returns the number of rows deleted.
     """
-    async with get_connection() as conn:
-        cur = await conn.execute(
-            "DELETE FROM tool_call_dedup WHERE created_at < now() - make_interval(hours => %s)",
-            [older_than_hours],
-        )
-        return cur.rowcount
+    return await tool_call_ledger.get().sweep(older_than_hours)

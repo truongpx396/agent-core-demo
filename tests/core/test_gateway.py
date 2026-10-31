@@ -22,6 +22,7 @@ from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
 
+from app.adapters.litellm.failures import OpenAiFailures
 from app.agent.graph.build import GraphDeps
 from app.agent.graph.compaction import _estimate_tokens, make_compact_history_node
 from app.agent.graph.core import AGENT_RETRY_POLICY
@@ -45,6 +46,8 @@ LITELLM_BUDGET_BODY = {
         "code": "429",
     }
 }
+
+FAILURES = OpenAiFailures()  # the adapter that knows what the SDK's exceptions mean
 
 
 def _status_error(status: int, body: dict) -> openai.APIStatusError:
@@ -304,32 +307,32 @@ class TestWhatActuallyLeavesTheProcess:
             await self._llm(handler).ainvoke([HumanMessage(content="hi")], **gateway.call_identity(TEST_CTX))
 
         assert raised.value.status_code == status
-        assert gateway.is_budget_exceeded(raised.value)
+        assert FAILURES.is_budget_exceeded(raised.value)
 
 
 class TestRecognisingTheGatewaySayingStop:
     @pytest.mark.parametrize("status", [429, 400])
     def test_a_budget_exceeded_error_is_recognised_at_either_status(self, status):
-        assert gateway.is_budget_exceeded(_budget_error(status))
+        assert FAILURES.is_budget_exceeded(_budget_error(status))
 
     def test_any_other_400_is_not(self):
         other = _status_error(400, {"error": {"message": "bad request", "type": "invalid_request_error"}})
 
-        assert not gateway.is_budget_exceeded(other)
+        assert not FAILURES.is_budget_exceeded(other)
 
     def test_a_real_rate_limit_is_not(self):
         """A 429 of another type is the key's rpm/tpm limit: retryable, and a different fix from
         "out of budget" — which is why the status alone cannot decide this."""
         rate_limited = _status_error(429, {"error": {"message": "slow down", "type": "throttling_error"}})
 
-        assert not gateway.is_budget_exceeded(rate_limited)
+        assert not FAILURES.is_budget_exceeded(rate_limited)
 
     def test_an_unrelated_exception_is_not_even_with_a_matching_attribute(self):
         """Only the SDK's status error counts; a stray `.type` on something else must not."""
         impostor = RuntimeError("budget_exceeded")
         impostor.type = "budget_exceeded"  # type: ignore[attr-defined] - the point of the test
 
-        assert not gateway.is_budget_exceeded(impostor)
+        assert not FAILURES.is_budget_exceeded(impostor)
 
     def test_the_caller_facing_envelope_names_no_money_and_no_key(self):
         envelope = gateway.budget_envelope()

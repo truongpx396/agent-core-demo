@@ -25,8 +25,8 @@ from langgraph.types import Command
 
 from app.agent.graph import build as app_build
 from app.agent.graph.build import GraphDeps
-from app.agent.manifest import AgentManifest
 from app.core.security import Policy, SecurityCtx, valid_ctx
+from app.ports.domains import AgentManifest
 from tests.ecorp import (
     ECORP_DOMAIN_PLUGIN,
     ECORP_MANIFEST,

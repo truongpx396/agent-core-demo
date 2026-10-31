@@ -4,6 +4,7 @@ anything is written); tests/integration/test_budget_policies_real_postgres.py ru
 import pytest
 
 from app.agent.cost import budget_policies
+from app.ports.cost import Override
 from scripts import budget_policy
 
 
@@ -19,10 +20,10 @@ def calls(monkeypatch):
         return True
 
     async def list_overrides(tenant):
-        return [budget_policies.Override("", "day", 50.0), budget_policies.Override("alice", "month", 0.0)]
+        return [Override("", "day", 50.0), Override("alice", "month", 0.0)]
 
     async def overrides_for(tenant, principal):
-        return [budget_policies.Override("alice", "day", 25.0)]
+        return [Override("alice", "day", 25.0)]
 
     async def close_pool():
         log["closed"] += 1

@@ -44,16 +44,15 @@ names the rule and the matched phrase, so it never reaches the caller.
 """
 import hashlib
 import re
-from dataclasses import dataclass
 from typing import Any
 from urllib.parse import quote, unquote
 
-import openai
 from langchain_core.runnables import RunnableConfig
 
 from app.core import metrics
 from app.core.errors import ErrorCode, ErrorEnvelope
 from app.core.security import SecurityCtx, valid_ctx
+from app.ports.llm import ContentBlock, llm_failures
 
 
 def end_user_id(tenant: str, principal: str) -> str:
@@ -118,21 +117,11 @@ def identity_from_config(config: RunnableConfig | None) -> dict:
     return call_identity(configurable.get("ctx"), session_id=thread_id if isinstance(thread_id, str) else None)
 
 
-def is_budget_exceeded(exc: BaseException) -> bool:
-    """True if `exc` is the gateway refusing a call because a budget it enforces is spent. Every
-    gateway budget (key, end user, team, tag) raises the same type, so this does not say WHICH ran
-    out; LiteLLM's own message and spend log name it, and the operator reads those, not the caller.
-    (The per-person budget of pattern 74 is an END-USER budget: read from the installed LiteLLM,
-    `_check_end_user_budget` raises `BudgetExceededError`, which `auth_exception_handler` answers
-    as this same type; a stop from a live gateway with a real database was not run.)"""
-    return isinstance(exc, openai.APIStatusError) and getattr(exc, "type", None) == "budget_exceeded"
-
-
 def note_budget_stop(exc: BaseException) -> bool:
     """If `exc` is the gateway's budget stop, count it and return True. The one place the counter
     is incremented, so a path that swallows the error (follow-ups, history compaction) still
     leaves the trace GatewayBudgetExceeded alerts on, instead of a log line nobody reads."""
-    if not is_budget_exceeded(exc):
+    if not llm_failures.get().is_budget_exceeded(exc):
         return False
     metrics.agent_gateway_budget_exceeded_total.inc()
     return True
@@ -150,55 +139,10 @@ def budget_envelope() -> ErrorEnvelope:
     )
 
 
-# Client errors that can pass on a second try: a request timeout, a conflict with a concurrent change,
-# "too early" and a rate limit. Every other 4xx says the request itself is refused, and the same
-# request is refused again.
-_TRANSIENT_CLIENT_STATUSES = frozenset({408, 409, 425, 429})
-
-
-def is_permanent_client_error(exc: BaseException) -> bool:
-    """True if `exc` is the gateway or the provider rejecting the request itself (a 4xx other than a
-    timeout, conflict, "too early" or rate limit), so sending the identical request again cannot
-    succeed. The status is read from the SDK's own exception: LangGraph's default retry predicate
-    only knows `httpx`'s."""
-    if not isinstance(exc, openai.APIStatusError):
-        return False
-    return 400 <= exc.status_code < 500 and exc.status_code not in _TRANSIENT_CLIENT_STATUSES
-
-
-# The values LiteLLM puts in `guardrail_mode`; anything else is counted as "other" so the metric's label
-# set stays bounded whatever a gateway version or a custom guardrail sends.
-_GUARDRAIL_MODES = frozenset({"pre_call", "post_call", "during_call"})
-
-
-@dataclass(frozen=True)
-class ContentBlock:
-    """A content guardrail's refusal. Only `mode` is kept: the guardrail's name, its category and the
-    phrase it matched are the operator's (they are on the gateway's own log), not the caller's."""
-
-    mode: str  # pre_call | post_call | during_call | other
-
-
-def content_block(exc: BaseException) -> ContentBlock | None:
-    """The guardrail refusal in `exc`, or None if it is anything else (a budget stop, another 400, a
-    5xx). Recognised by the structured fields LiteLLM sets (`provider_specific_fields.guardrail_name`),
-    else by the "Content blocked" prefix of its message; never by status alone, since a 400 is also how
-    the gateway reports a malformed request."""
-    if not isinstance(exc, openai.BadRequestError):
-        return None
-    body = exc.body if isinstance(exc.body, dict) else {}
-    fields = body.get("provider_specific_fields")
-    fields = fields if isinstance(fields, dict) else {}
-    if not (fields.get("guardrail_name") or str(body.get("message") or "").startswith("Content blocked")):
-        return None
-    mode = fields.get("guardrail_mode")
-    return ContentBlock(mode=mode if mode in _GUARDRAIL_MODES else "other")
-
-
 def note_content_block(exc: BaseException) -> ContentBlock | None:
     """If `exc` is a guardrail refusal, count it and return it. The one place the counter is
     incremented (the same shape as `note_budget_stop`)."""
-    block = content_block(exc)
+    block = llm_failures.get().content_block(exc)
     if block is not None:
         metrics.agent_gateway_content_blocked_total.labels(mode=block.mode).inc()
     return block

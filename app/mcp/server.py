@@ -21,9 +21,10 @@ from typing import Any
 from mcp.server import MCPServer
 from mcp.types import ToolAnnotations
 
+from app.bootstrap import wire
 from app.core.logging_config import configure_logging
 from app.core.security import DEFAULT_POLICY
-from app.domains.ecorp.store import Department, query_employees_impl
+from app.domains.ecorp.usecases import Department, query_employees_impl
 from app.mcp.audit import audited
 from app.mcp.identity import (
     IdentityMissing,
@@ -92,6 +93,7 @@ mcp = build_server(launcher_source())
 
 
 def main() -> None:
+    wire()
     # JSON lines to STDERR (stdout is the protocol channel), and no serving at all without an identity.
     configure_logging()
     try:

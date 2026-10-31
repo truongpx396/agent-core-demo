@@ -36,6 +36,7 @@ import uuid
 from pathlib import Path
 from typing import cast
 
+from app.bootstrap import verify_wired, wire
 from app.core import metrics
 from app.core.config import (
     INGEST_WORKER_MAX_CONCURRENCY,
@@ -258,6 +259,8 @@ async def _reclaim_loop(client, stop_event: asyncio.Event) -> None:
 
 
 async def run() -> None:
+    wire()
+    verify_wired()
     loop = asyncio.get_running_loop()
     # asyncio.to_thread borrows the loop's DEFAULT executor
     # (min(32, os.cpu_count()+4)) — capped at 32 regardless of host, which

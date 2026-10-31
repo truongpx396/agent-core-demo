@@ -56,7 +56,7 @@ class Settings(BillingSettings):
     # it is worth it is `make model-eval` (specs/014 User Story 1), not an assumption.
     embed_query_prefix: str = ""
     embed_document_prefix: str = ""
-    # An operator label folded into the embedding identity. The alias resolver (app/core/model_resolver.py) sees which model an alias
+    # An operator label folded into the embedding identity. The alias resolver (app/adapters/litellm/model_catalog.py) sees which model an alias
     # points at, but not that the same name was re-pulled to different weights in place (an Ollama tag moved); bump this when that
     # happens so the identity changes and the guard demands a re-embed.
     embed_model_revision: str = ""
@@ -388,7 +388,7 @@ class Settings(BillingSettings):
     sandbox_ttl_seconds: int = 1800  # 30 min — enough for several human-approval
     # pauses, short enough that an abandoned sandbox doesn't linger.
 
-    # Team-channel notifications (app/domains/notify.py) — used by the ops
+    # Team-channel notifications (app/adapters/notify/team_channel.py) — used by the ops
     # bot's post_to_team_channel and support/sales's escalate/handoff tools.
     # Empty by default: degrades to a local file+log sink rather than
     # refusing to start (opposite posture from TELEGRAM_BOT_TOKEN) — a demo
@@ -442,7 +442,7 @@ class Settings(BillingSettings):
     # `-np 1` ceiling vs a genuinely concurrent backend).
     agent_worker_max_concurrency: int = 10
 
-    # app/agent/runtime/core.py::_open_checkpointer's AsyncConnectionPool size.
+    # app/adapters/postgres/checkpointing.py::PgCheckpointing.open's AsyncConnectionPool size.
     # Raising this ALONE won't raise checkpoint throughput past one
     # connection's worth: AsyncPostgresSaver wraps every checkpoint I/O in
     # one `asyncio.Lock()` per saver instance guarding pool.connection()
@@ -562,7 +562,7 @@ class Settings(BillingSettings):
     # just changes how many files one submission may batch.
     max_upload_files_per_request: int = 5
 
-    # OpenSandbox MCP bridge (app/domains/sandbox_tools.py, pattern 50) —
+    # OpenSandbox MCP bridge (app/adapters/mcp/sandbox_tools.py, pattern 50) —
     # `--domain` passed to the `opensandbox-mcp` stdio bridge process
     # (mcp/client.py::load_remote_tools spawns it), i.e. the host:port
     # `opensandbox-server` listens on. Localhost:PORT since the bridge is
@@ -637,7 +637,7 @@ class Settings(BillingSettings):
     crawl4ai_api_token: str = ""
 
     # API key for serper.dev (a Google Search API), the backend of the `web_search` tool
-    # (app/core/serper.py, app/domains/web_search.py). Optional and OFF when empty, like Langfuse and the
+    # (app/adapters/web/serper.py, app/domains/web_search.py). Optional and OFF when empty, like Langfuse and the
     # Slack webhook: the core runs fully offline, and with no key the tool is still declared (the tool list
     # must not change between deploys, or a thread paused on an approval for it could not resume) but
     # answers that web search is not configured, without a network call. Every search spends one of the

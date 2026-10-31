@@ -11,7 +11,9 @@ from decimal import Decimal
 
 import pytest
 
+from app.adapters.postgres import usage_events as pg_usage_events
 from app.agent.cost import budget_holds, budgets, spend
+from app.ports import cost as cost_ports
 from tests.conftest import TEST_CTX, _NoPostgresInTests
 
 
@@ -33,12 +35,19 @@ class _Connection:
         return _Cursor(self._row)
 
 
+@pytest.fixture(autouse=True)
+def _the_postgres_adapter():
+    """These tests prove the SQL the spend read sends, so the real adapter is bound (the suite's default is a fake store)."""
+    with cost_ports.usage_events.overriding(pg_usage_events.PgUsageEventStore()):
+        yield
+
+
 def _use(monkeypatch, fake):
     @asynccontextmanager
     async def get_connection():
         yield fake
 
-    monkeypatch.setattr(spend, "get_connection", get_connection)
+    monkeypatch.setattr(pg_usage_events, "get_connection", get_connection)
 
 
 async def test_it_reads_the_usage_events_and_never_the_ledger(monkeypatch):
@@ -135,7 +144,7 @@ async def test_a_database_error_is_raised_not_read_as_zero(monkeypatch):
         raise ConnectionError("appdata postgres unreachable")
         yield  # pragma: no cover
 
-    monkeypatch.setattr(spend, "get_connection", broken)
+    monkeypatch.setattr(pg_usage_events, "get_connection", broken)
 
     with pytest.raises(ConnectionError):
         await spend.usage_summary("acme")

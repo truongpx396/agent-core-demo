@@ -139,7 +139,7 @@ pyyaml>=6.0,<7
 # its headless browser — see Dockerfile for the containerized equivalent.
 crawl4ai==0.9.3
 
-# OpenSandbox MCP bridge (app/domains/sandbox_tools.py, GRAPH_PATTERNS.md
+# OpenSandbox MCP bridge (app/adapters/mcp/sandbox_tools.py, GRAPH_PATTERNS.md
 # pattern 50) — a real stdio MCP SERVER (not a library this app calls
 # directly) that app/mcp/client.py::load_remote_tools spawns as a
 # subprocess (`python -m opensandbox_mcp`) and keeps one connection to (app/mcp/connection.py). Bridges to a separately-run

@@ -27,11 +27,13 @@ from app.core.tool_idempotency import idempotent
 from app.core.tool_runtime import arun_with_timeout
 from app.core.tool_schema import ToolArgs
 from app.core.untrusted import frame_untrusted
-from app.domains import notify, sandbox_session
-from app.domains.ops import metrics_client, store
+from app.domains import sandbox_session
+from app.domains.ops import metric_checks
 from app.domains.policy import ActionAllowlistPolicy
 from app.domains.web_search import make_web_search_tool
-from app.ingestion.web_crawler import CRAWL_TOOL_TIMEOUT_SECONDS, render_url_to_markdown
+from app.ports.notify import team_channel
+from app.ports.ops import incident_store, metrics_reader
+from app.ports.web import CRAWL_TOOL_TIMEOUT_SECONDS, page_renderer
 
 NO_CTX_REFUSAL = (
     "Refused: no valid tenant/principal context for this request. "
@@ -76,9 +78,9 @@ class FetchMetricsSummaryArgs(BaseModel):
 
 
 async def fetch_metrics_summary_impl() -> str:
-    readings = await metrics_client.fetch_readings()
-    anomalies = metrics_client.detect_anomalies(readings)
-    lines = [metrics_client.format_readings(readings)]
+    readings = await metrics_reader.get().fetch_readings()
+    anomalies = metric_checks.detect_anomalies(readings)
+    lines = [metric_checks.format_readings(readings)]
     if anomalies:
         lines.append("\nAnomalies (past an alert-matching threshold):")
         lines.extend(f"- {a}" for a in anomalies)
@@ -114,7 +116,7 @@ class PostToTeamChannelArgs(BaseModel):
 
 
 async def _post_to_team_channel_impl(channel: str, message: str) -> str:
-    return await notify.post_to_team_channel(channel, message)
+    return await team_channel.get().post(channel, message)
 
 
 @tool(args_schema=PostToTeamChannelArgs)
@@ -158,7 +160,7 @@ class LogIncidentArgs(ToolArgs):
 async def _log_incident_impl(
     summary: str, detail: str | None, ctx: SecurityCtx, tool_call_id: str
 ) -> str:
-    incident_id = await store.log_incident(ctx["principal"], summary, detail, tool_call_id=tool_call_id)
+    incident_id = await incident_store.get().log_incident(ctx["principal"], summary, detail, tool_call_id=tool_call_id)
     return f"Incident #{incident_id} logged: {summary}"
 
 
@@ -189,7 +191,7 @@ class ListRecentIncidentsArgs(ToolArgs):
 
 
 async def list_recent_incidents_impl(status: str | None) -> str:
-    incidents = await store.list_recent_incidents(status=status)
+    incidents = await incident_store.get().list_recent_incidents(status=status)
     if not incidents:
         return "No incidents on record."
     lines = [
@@ -224,7 +226,7 @@ class ResolveIncidentArgs(BaseModel):
 
 
 async def _resolve_incident_impl(incident_id: int, resolution: str, ctx: SecurityCtx) -> str:
-    updated = await store.resolve_incident(incident_id, resolution)
+    updated = await incident_store.get().resolve_incident(incident_id, resolution)
     if not updated:
         return f"No incident #{incident_id} found to resolve."
     return f"Incident #{incident_id} resolved: {resolution}"
@@ -255,7 +257,7 @@ class CheckVendorStatusPageArgs(BaseModel):
 
 async def _check_vendor_status_page_impl(url: str) -> str:
     # Page text is untrusted data (SYSTEM_PROMPT's promise about tool results).
-    return frame_untrusted(await render_url_to_markdown(url))
+    return frame_untrusted(await page_renderer.get().render(url))
 
 
 @tool(args_schema=CheckVendorStatusPageArgs)

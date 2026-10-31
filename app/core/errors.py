@@ -119,3 +119,20 @@ def internal_error_envelope(exc: BaseException) -> ErrorEnvelope:
         message=INTERNAL_ERROR_MESSAGE,
         details={"error_class": type(exc).__name__},
     )
+
+
+# What a data store's DRIVER raises (psycopg's `Error`, today). The kernel must not import a driver, so the composition root registers the
+# base classes of the drivers it wires (`app/bootstrap.py`), and the kernel asks `is_store_error`. The reason it needs to ask: a driver's
+# message carries the failing statement and names tables and columns, and a tool's failure text is read by the model and repeated to the
+# person, so the message of a store error must never reach a prompt (`app/agent/graph/utils.py::friendly_tool_error`).
+_STORE_ERRORS: list[type[BaseException]] = []
+
+
+def register_store_error(error_class: type[BaseException]) -> None:
+    """Declares `error_class` (and its subclasses) a data-store driver error. Idempotent."""
+    if error_class not in _STORE_ERRORS:
+        _STORE_ERRORS.append(error_class)
+
+
+def is_store_error(exc: BaseException) -> bool:
+    return bool(_STORE_ERRORS) and isinstance(exc, tuple(_STORE_ERRORS))

@@ -19,10 +19,10 @@ from app.agent.graph.messages import (
     heal_legacy_retry_artifacts,
     legacy_retry_artifact_ids,
 )
-from app.agent.manifest import AgentManifest
 from app.agent.runtime import core as agent_module
 from app.agent.runtime import stream as stream_module
 from app.core import metrics
+from app.ports.domains import AgentManifest
 from tests.agent.fakes import cfg, scripted_llm
 from tests.conftest import metric_value
 from tests.ecorp import build_graph

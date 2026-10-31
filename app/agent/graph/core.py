@@ -41,8 +41,9 @@ from app.agent.graph.state import (
     STATE_SCHEMA_VERSION,
     State,
 )
-from app.core import gateway, metrics, moderation
+from app.core import metrics, moderation
 from app.core.security import valid_ctx
+from app.ports.llm import llm_failures
 
 if TYPE_CHECKING:
     pass
@@ -58,8 +59,8 @@ def _retry_agent_on(exc: Exception) -> bool:
     stop repeats until the budget resets, so it is refused a retry whatever status it came with
     (app/core/gateway.py)."""
     return (
-        not gateway.is_budget_exceeded(exc)
-        and not gateway.is_permanent_client_error(exc)
+        not llm_failures.get().is_budget_exceeded(exc)
+        and not llm_failures.get().is_permanent_client_error(exc)
         and default_retry_on(exc)
     )
 

@@ -53,6 +53,7 @@ from starlette.responses import JSONResponse
 from starlette.routing import Mount, Route
 from starlette.types import ASGIApp, Receive, Scope, Send
 
+from app.bootstrap import wire
 from app.core.config import Settings
 from app.core.config import settings as app_settings
 from app.core.logging_config import configure_logging
@@ -251,6 +252,7 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--host", default="127.0.0.1", help="bind address (default loopback; the compose service passes 0.0.0.0)")
     parser.add_argument("--port", type=int, default=8000)
     args = parser.parse_args(argv)
+    wire()
     configure_logging()
     configure_telemetry("agent-core-mcp-gateway")  # metrics are PUSHED (OTLP), like the workers': nothing scrapes this process
     try:

@@ -29,6 +29,7 @@ import sys
 import uuid
 from contextlib import aclosing
 
+from app.bootstrap import wire
 from app.core.config import AGENT_DOMAIN, DEFAULT_TENANT
 from app.core.security import SecurityCtx
 from app.domains.registry import resolve_domain
@@ -153,4 +154,5 @@ async def async_main(hitl: bool = False) -> None:
 
 
 if __name__ == "__main__":
+    wire()
     asyncio.run(async_main(hitl="--hitl" in sys.argv))

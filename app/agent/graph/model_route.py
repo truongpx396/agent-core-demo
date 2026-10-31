@@ -9,7 +9,7 @@ non-negotiable rules.
 
 How it decides: two signals each name the lowest tier they accept (`app/core/routing_policy.py`, pure, also
 run by the evaluation harness): rules over the user's message, and the label from the ML service's label set
-(`app/core/classification.py`). The tier is the highest configured tier at or below `min(ceiling, max(rules,
+(`app/ports/classification.py`). The tier is the highest configured tier at or below `min(ceiling, max(rules,
 label))`. A label that can't be had (service down or slow, no topic, unknown topic) leaves the rules to
 decide, and is counted.
 
@@ -31,13 +31,12 @@ import logging
 import time
 from dataclasses import dataclass, replace
 
-import openai
 from langchain_core.runnables import RunnableConfig
 
 from app.agent.cost import pricing
 from app.agent.graph.messages import human_text, last_human_message
 from app.agent.graph.state import State
-from app.core import classification, gateway, metrics, routing_policy
+from app.core import metrics, routing_policy
 from app.core.config import (
     MEDIUM_CHAT_MODEL,
     ROUTER_LABELS,
@@ -47,12 +46,14 @@ from app.core.config import (
     STRONG_CHAT_MODEL,
 )
 from app.core.routing_policy import Tier
+from app.ports.classification import Choice, Labelled, route_classifier
+from app.ports.llm import llm_failures
 
 logger = logging.getLogger(__name__)
 
 # The one question this node asks of the decision interface. Named after the ML service's label set; the options are exactly LABEL_TIERS' keys
 # (tests/core/test_routing_policy.py), so a topic the app has no tier for cannot be offered, and one the set lacks is refused by the service.
-ROUTE_QUESTION = classification.Choice("route-topics", routing_policy.ROUTE_INSTRUCTIONS, routing_policy.LABEL_DESCRIPTIONS)
+ROUTE_QUESTION = Choice("route-topics", routing_policy.ROUTE_INSTRUCTIONS, routing_policy.LABEL_DESCRIPTIONS)
 
 Route = Tier
 
@@ -89,25 +90,21 @@ def routed_unreachable(exc: BaseException) -> bool:
     request, bad key, rate limit), which a retry elsewhere would paper over. Checked in that order, so a
     budget stop that arrives as a 5xx is still not caught.
     """
-    if gateway.is_budget_exceeded(exc):
-        return False
-    if isinstance(exc, openai.APIConnectionError):  # includes APITimeoutError
-        return True
-    return isinstance(exc, openai.APIStatusError) and exc.status_code >= 500
+    return llm_failures.get().is_unreachable(exc)
 
 
 @dataclass(frozen=True)
 class _Result:
     outcome: str
     decision: routing_policy.Decision | None = None
-    labelled: classification.Labelled | None = None
+    labelled: Labelled | None = None
 
 
 async def _decide(state: State) -> _Result:
     text = human_text(last_human_message(list(state.get("messages") or [])))
     if not text.strip():
         return _Result("no_text")
-    labelled = await classification.choose(ROUTE_QUESTION, text) if ROUTER_LABELS else None
+    labelled = await route_classifier.get().choose(ROUTE_QUESTION, text) if ROUTER_LABELS else None
     label = labelled.label if labelled is not None and labelled.outcome == "labelled" else None
     configured = configured_tiers()
     decision = routing_policy.decide(

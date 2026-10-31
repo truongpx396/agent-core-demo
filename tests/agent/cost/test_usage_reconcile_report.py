@@ -10,12 +10,16 @@ from decimal import Decimal as D
 import httpx
 import pytest
 
+from app.adapters.litellm.spend_logs import HttpGatewaySpendLog
 from app.agent.cost import usage_reconcile as reconcile
-from app.agent.cost.usage_reconcile import Report, Tolerance, Window
+from app.agent.cost.usage_reconcile import Report, Tolerance
 from app.core import metrics
 from app.core.gateway import end_user_id
+from app.ports import cost as cost_ports
+from app.ports.cost import EventsByTenantDay, Window
 from tests.agent.fake_gateway import FakeGateway, spend_row
 from tests.conftest import metric_value
+from tests.fakes.cost import InMemoryUsageEventStore
 
 DAY = date(2026, 10, 6)
 WINDOW = Window(datetime(2026, 10, 6, tzinfo=UTC), datetime(2026, 10, 6, 18, 0, tzinfo=UTC))
@@ -23,20 +27,26 @@ NOON = datetime(2026, 10, 6, 12, 0, tzinfo=UTC)
 STRICT = Tolerance(usd=D("0.001"), pct=D("0"))
 
 
-@pytest.fixture
-def sources(monkeypatch):
+class _Sources(InMemoryUsageEventStore):
     """The records, as a test sets them: events by (tenant, day) and the tenants the database knows."""
-    state = {"events": {}, "unpriced": {}, "tenants": {"acme"}}
 
-    async def events(window):
-        return dict(state["events"]), dict(state["unpriced"]), len(state["events"])
+    def __init__(self):
+        super().__init__()
+        self.state = {"events": {}, "unpriced": {}, "tenants": {"acme"}}
 
-    async def tenants():
-        return set(state["tenants"])
+    async def by_tenant_day(self, window):
+        s = self.state
+        return EventsByTenantDay(dict(s["events"]), dict(s["unpriced"]), len(s["events"]))
 
-    monkeypatch.setattr(reconcile, "events_by_tenant_day", events)
-    monkeypatch.setattr(reconcile, "known_tenants", tenants)
-    return state
+    async def known_tenants(self):
+        return set(self.state["tenants"])
+
+
+@pytest.fixture
+def sources():
+    store = _Sources()
+    with cost_ports.usage_events.overriding(store):
+        yield store.state
 
 
 def gateway_saw(*spend: float, end_user: str | None = None) -> FakeGateway:
@@ -49,7 +59,7 @@ async def run(gateway: FakeGateway | None, **kwargs) -> Report:
     if gateway is None:
         return await reconcile.reconcile(WINDOW, **kwargs)
     async with gateway.client() as client:
-        return await reconcile.reconcile(WINDOW, gateway_client=client, **kwargs)
+        return await reconcile.reconcile(WINDOW, spend_log=HttpGatewaySpendLog(client), **kwargs)
 
 
 class TestTheRecordsAgree:
@@ -147,14 +157,16 @@ class TestWhatItCannotCompareIsSaidNotSkippedSilently:
         assert report.outcome == "ok" and report.gateway_rows is None
         assert "gateway: not compared (not requested)" in report.skipped
 
-    async def test_an_empty_window_reads_nothing_and_says_why(self, monkeypatch):
-        async def never(*args, **kwargs):
-            raise AssertionError("an empty window must not touch the database")
+    async def test_an_empty_window_reads_nothing_and_says_why(self):
+        class Never(InMemoryUsageEventStore):
+            async def by_tenant_day(self, window):
+                raise AssertionError("an empty window must not touch the database")
 
-        for name in ("events_by_tenant_day", "known_tenants"):
-            monkeypatch.setattr(reconcile, name, never)
+            async def known_tenants(self):
+                raise AssertionError("an empty window must not touch the database")
 
-        report = await reconcile.reconcile(Window(WINDOW.end, WINDOW.start))
+        with cost_ports.usage_events.overriding(Never()):
+            report = await reconcile.reconcile(Window(WINDOW.end, WINDOW.start))
 
         assert report.skipped and "empty" in report.skipped[0] and report.findings == []
 
@@ -164,7 +176,7 @@ class TestWhatItCannotCompareIsSaidNotSkippedSilently:
         async with gateway.client() as client:
             client.headers["Authorization"] = "Bearer someone-else"
             with pytest.raises(httpx.HTTPStatusError):
-                await reconcile.reconcile(WINDOW, gateway_client=client, tolerance=STRICT)
+                await reconcile.reconcile(WINDOW, spend_log=HttpGatewaySpendLog(client), tolerance=STRICT)
 
 
 class TestWhatItPublishes:

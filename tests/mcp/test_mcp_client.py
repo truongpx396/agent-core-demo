@@ -10,7 +10,7 @@ otherwise-hermetic tests).
 `load_remote_tools` is `async def` now (awaits `_list_remote_tools`
 directly, no more inner `asyncio.run(...)` bridge), and every wrapped
 remote tool is `coroutine`-only — no sync `func` — since this module's one
-real caller (app/domains/sandbox_tools.py::load_sandbox_tools) is `async
+real caller (app/adapters/mcp/sandbox_tools.py::load_sandbox_tools) is `async
 def` too now, with nothing left calling `.invoke()` synchronously. No
 pytest-asyncio in this project (see tests/agent/runtime/test_durable_checkpoint.py)
 — every call below wraps in asyncio.run(), same pattern used there.

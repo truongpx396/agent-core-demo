@@ -12,13 +12,13 @@ from langchain_core.tools import tool
 
 from app.agent.graph import build as graph
 from app.agent.graph.build import GraphDeps
-from app.agent.manifest import AgentManifest
 from app.agent.runtime import stream as stream_module
 from app.agent.tools.subagent_catalog import (
     SubagentLoadError,
     _parse_subagent_file,
     load_subagents,
 )
+from app.ports.domains import AgentManifest
 from tests.agent.fakes import Domain, call, cfg, scripted_llm
 from tests.ecorp import build_graph
 

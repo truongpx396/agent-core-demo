@@ -15,6 +15,7 @@ Lessons that are not about the agent. They were written in `GRAPH_PATTERNS.md` a
 | 86 | A smoke check that shares state with its previous run passes once and fails the second time |
 | 87 | A live test that rests on what a 3B model infers fails for the model, not the code |
 | 88 | Four ways a check passes without checking |
+| 90 | A dependency rule that is not an import scan is a wish |
 
 ## Patterns
 
@@ -121,3 +122,12 @@ Each was caught because something else forced a look, and each is cheap to guard
 - **A double that can't know what the real thing wants.** The page's sign-in tests ran against a DOM stub and passed while a real browser got a 400: the authorization server wanted `resource` on the code exchange too. The stub tests now pin the field, but only the real run could find it, so the real run is a tier of its own (`make authlimit-web-check`).
 - **A comparison against a series that doesn't exist yet.** `errors > 0 and increase(ok) == 0` is an empty result before the first success, so the alert stayed silent in the case it exists for (the API has never been able to fetch the keys). `errors > 0 unless increase(ok) > 0` fires. (The alert test asserts the operator, since the expression isn't evaluated here.)
 - **Use when:** a test, smoke or alert was written to prove something is absent and has never been seen to fail.
+
+### 90. A dependency rule that is not an import scan is a wish
+The repository said where things belong ("`app/core` imports nothing from `agent`, `domains` or `api`") and no test read an import. One AST pass over `app/`, written to answer "is this hexagonal?", found 40 violations in 26 files: the cost policy opened Postgres, the graph built its own OpenAI client, the shared tools called Qdrant, the security kernel imported `qdrant_client` because `Policy.lower` returned its filter type, the guard that makes a side effect happen once (Principle IV) talked to Postgres itself. Every one of them was reasonable on the day it was written.
+- **State the rule as a list of imports, and keep the list as a ratchet.** `tests/core/test_architecture_layers.py` names the rings, the infrastructure clients and the adapter modules. The violations that existed went into a `LEDGER` that may only shrink (a new violation fails; a listed one that is gone also fails, so the list is deleted from, not left to rot). It started with 40 entries and ended empty, and each change that removed some said which.
+- **A scanner needs its own tests.** The table in that file feeds the scanner source strings and asserts exactly which imports it flags, including a function-local `import psycopg` and `from app.core import sql_store`, which a top-level scan of module names would miss.
+- **An unbound port fails closed.** A default adapter inside the slot would put the application back in the business of knowing which adapter is the real one. `Slot.get` raises `PortNotBound` naming the port; `tests/core/test_entrypoints_wire.py` fails the build for an entrypoint that never wires, and `tests/core/test_bootstrap.py` for a port with no adapter.
+- **A fake is trusted only if it is checked.** `tests/fakes/conformance.py` holds every adapter and every fake to its Protocol (names, async-ness, parameters). A test double that quietly drifts is the same failure as a mock that passes while the code is wrong.
+- **Move code, do not rewrite it.** The SQL and HTTP moved verbatim and the adapter classes look the module function up at call time, so the existing SQL-shape tests kept their meaning; the diff to review is where things live and what imports them.
+- **Use when:** a rule about what may depend on what is only written in prose, or a new external system is about to be imported from the inside.

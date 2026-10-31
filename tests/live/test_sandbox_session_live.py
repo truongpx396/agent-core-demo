@@ -9,13 +9,13 @@ looked like a twice-reproduced timing race (sandbox creation succeeding server-s
 poll sometimes hanging). That diagnosis was wrong. Tracing the real request URLs in debug-level httpx logs
 showed that the OpenSandbox SDK's `ConnectionConfig.use_server_proxy` defaults to `False` and
 `opensandbox-mcp==0.1.1`'s CLI had no flag or env var to override it. So the client (a bare host process,
-app/domains/sandbox_tools.py) tried to reach each sandbox directly at its Docker bridge-network IP (e.g.
+app/adapters/mcp/sandbox_tools.py) tried to reach each sandbox directly at its Docker bridge-network IP (e.g.
 `172.19.0.13:port`), genuinely UNREACHABLE from the host on Docker Desktop for Mac, not merely slow. Confirmed
 directly: a raw `Sandbox.create()` hung 44+ seconds with `use_server_proxy=False` against that address and
 completed in under 1.2s with `use_server_proxy=True`.
 
 Fixed via `--use-server-proxy` (release 1.1 of the packaged CLI; until then a wrapper script forced it), and
-`app/domains/sandbox_tools.py` now launches `python -m opensandbox_mcp ... --use-server-proxy`. With the real
+`app/adapters/mcp/sandbox_tools.py` now launches `python -m opensandbox_mcp ... --use-server-proxy`. With the real
 bug fixed, both tests complete in ~5s end to end, reliably, so hard-asserting success is the correct bar
 again, not a flakiness risk.
 """

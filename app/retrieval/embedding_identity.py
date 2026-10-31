@@ -11,7 +11,7 @@ operator revision label). Its first 8 hex digits go in the collection's NAME (`d
 cache's index name, so any process can read what a collection holds with no second store, and `qdrant_store`
 compares it with the configured identity on every read and write.
 
-"Resolved model" comes from LiteLLM's /model/info (app/core/model_resolver.py). Where that answers nothing
+"Resolved model" comes from LiteLLM's /model/info (app/adapters/litellm/model_catalog.py). Where that answers nothing
 (OPENAI_API_BASE straight at an OpenAI-compatible server, as in the live test tier, or LiteLLM briefly down)
 the identity falls back to the ALIAS NAME. That is weaker (re-pointing the alias at another model of the same
 size goes unnoticed, which `EMBED_MODEL_REVISION` is for) but stable per deployment, and counted as
@@ -29,7 +29,7 @@ from app.core.config import (
     EMBED_QUERY_PREFIX,
 )
 from app.core.errors import ErrorCode
-from app.core.model_resolver import resolve_model
+from app.ports import models as ports
 from app.retrieval import embeddings
 
 HASH_LENGTH = 8
@@ -95,7 +95,7 @@ async def current_identity() -> EmbeddingIdentity:
     the dimension is probed once."""
     return EmbeddingIdentity(
         alias=EMBED_MODEL,
-        resolved_model=await resolve_model(EMBED_MODEL),
+        resolved_model=await ports.model_catalog.get().resolve(EMBED_MODEL),
         dim=await embeddings.embedding_dim(),
         query_prefix=EMBED_QUERY_PREFIX,
         document_prefix=EMBED_DOCUMENT_PREFIX,

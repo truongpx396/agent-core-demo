@@ -1,4 +1,4 @@
-"""Reading the gateway's spend log (app/agent/cost/usage_reconcile.py::fetch_gateway_spend) against a stand-in built from LiteLLM's own source
+"""Reading the gateway's spend log (app/adapters/litellm/spend_logs.py::fetch_gateway_spend) against a stand-in built from LiteLLM's own source
 (tests/agent/fake_gateway.py): the request it makes, the pages it walks, and every way the read can be untrustworthy.
 
 The rule these pin: a read that is not whole is NEVER compared. A truncated sum would show every tenant as under-metered and page
@@ -10,11 +10,8 @@ from decimal import Decimal as D
 import httpx
 import pytest
 
-from app.agent.cost.usage_reconcile import (
-    GATEWAY_PAGE_SIZE,
-    Window,
-    fetch_gateway_spend,
-)
+from app.adapters.litellm.spend_logs import GATEWAY_PAGE_SIZE, fetch_gateway_spend
+from app.ports.cost import Window
 from tests.agent.fake_gateway import API_KEY, FakeGateway, spend_row
 
 START = datetime(2026, 10, 6, 0, 0, 0, tzinfo=UTC)

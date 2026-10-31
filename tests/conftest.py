@@ -6,7 +6,7 @@ be up.
   `GraphDeps`. A test that cares about a retrieved or cached value injects its own fake
   (`GraphDeps(search_docs=fake)`, `GraphDeps(cache_get=fake, ...)`, or `make_retrieve_context_node(fake)` /
   `make_check_semantic_cache_node(fake)` at node level).
-- `mock_classification`: the model router's one live call (`app/core/classification.py`, a POST to the ML
+- `mock_classification`: the model router's one live call (`app/adapters/mlservice/classification.py`, a POST to the ML
   service's /v1/decide) always sees "no answer". The usage event's model-alias lookup is guarded inside
   `usage_event_sink`, the only caller of `model_resolver.resolve_model`.
 - `mock_ml_moderation`: `moderate_input` runs on every full-graph turn and its ML layer is a real HTTP call to
@@ -19,9 +19,9 @@ be up.
   every model call writes a usage event. Each degrades gracefully on a connection FAILURE, but not from a slow
   TCP attempt with no Postgres listening (CI runs none for this job), so every turn paid a real psycopg pool
   timeout, stacked past `REQUEST_TIMEOUT_SECONDS` and took the suite from ~10 s to ~20+ minutes (see
-  GRAPH_PATTERNS.md 46). It patches `get_connection` in `budget_holds`, `spend`, `sessions` and
-  `tool_idempotency` (each module's OWN binding; patching the origin wouldn't reach it) and NOT the
-  higher-level functions, because tests/agent/cost/test_tenant_budget.py, tests/agent/runtime/test_sessions.py
+  GRAPH_PATTERNS.md 46). It patches `get_connection` in the Postgres adapters (`app/adapters/postgres/`
+  `budget_holds`, `usage_events`, `sessions` and `tool_idempotency`; each module's OWN binding; patching
+  the origin wouldn't reach it) and NOT the higher-level functions, because tests/agent/cost/test_tenant_budget.py, tests/agent/runtime/test_sessions.py
   and tests/core/test_tool_idempotency.py test those AS the function under test and patch `get_connection`
   locally, which overrides this one. It raises at once rather than faking query-shaped rows, so it exercises
   the already-tested degrade path.
@@ -43,13 +43,23 @@ from opentelemetry import metrics as metrics_api
 from opentelemetry.sdk.metrics import MeterProvider
 from opentelemetry.sdk.metrics.export import InMemoryMetricReader
 
+from app import bootstrap
+from app.adapters.mlservice import classification as ml_classification
 from app.agent.graph import build as graph_build
 from app.api import identity
-from app.core import classification, moderation
 from app.core.config import settings
+from app.ports import classification as classification_ports
+from app.ports import screening as screening_ports
 from app.retrieval.embedding_identity import EmbeddingIdentity
+from tests.fakes.ml import ConstantScorer, NoAnswerClassifier
 
 TEST_CTX = {"tenant": "ecorp", "principal": "test-user", "claims": {}}
+
+# Every port gets its production adapter, as it does in a real process (`app/bootstrap.py`). The adapters' I/O is what this module's
+# autouse fixtures below already guard (`mock_appdata_postgres`, the classification and moderation stand-ins), so a test that does not
+# care runs exactly as before, and a test of a consumer binds a fake with `Slot.overriding`. At import time, like the meter provider
+# below: conftest loads before any test module, so nothing can ask a port for its adapter first.
+bootstrap.wire()
 
 _METRIC_READER = InMemoryMetricReader()
 metrics_api.set_meter_provider(MeterProvider(metric_readers=[_METRIC_READER]))
@@ -105,10 +115,6 @@ TEST_EMBEDDING_IDENTITY = EmbeddingIdentity(
 )
 
 
-async def _benign_ml_score(text: str) -> float:
-    return 0.0
-
-
 @pytest.fixture(autouse=True)
 def no_real_tracing(monkeypatch):
     """The default suite never builds a real Langfuse client (it starts threads, tries the network, and registers
@@ -122,10 +128,10 @@ def no_real_tracing(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def no_real_web_search(monkeypatch):
-    """`web_search` (app/core/serper.py) is a billed call to a third party, and a developer's `.env` can hold a
+    """`web_search` (app/adapters/web/serper.py) is a billed call to a third party, and a developer's `.env` can hold a
     real `SERPER_API_KEY` (it is meant to).
     """
-    from app.core import serper
+    from app.adapters.web import serper
 
     monkeypatch.setattr(serper, "SERPER_API_KEY", "")
 
@@ -164,22 +170,21 @@ def no_real_qdrant(request, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def mock_ml_moderation(monkeypatch):
-    monkeypatch.setattr(moderation, "_ml_malicious_score", _benign_ml_score)
+def mock_ml_moderation():
+    """The prompt-injection scorer (the `InjectionScorer` port) scores every text 0.0: nothing is malicious unless a test says so."""
+    with screening_ports.injection_scorer.overriding(ConstantScorer(0.0)):
+        yield
 
 
-# Kept so the one test that proves this guard works (tests/core/test_default_suite_makes_no_classify_call.py) can put the real function back.
-REAL_CHOOSE = classification.choose
-
-
-async def _no_answer(question, text: str):
-    return classification.NO_ANSWER
+# Kept so the tests of the ML-service ADAPTER (tests/adapters/mlservice/) can call the real function the suite's guard keeps off the turn path.
+REAL_CHOOSE = ml_classification.choose
 
 
 @pytest.fixture(autouse=True)
-def mock_classification(monkeypatch):
-    """`route_model` asks the ML service's /v1/decide for a topic (app/core/classification.py)."""
-    monkeypatch.setattr(classification, "choose", _no_answer)
+def mock_classification():
+    """`route_model` asks the ML service's /v1/decide for a topic (the `RouteClassifier` port): the default suite's classifier has no answer."""
+    with classification_ports.route_classifier.overriding(NoAnswerClassifier()):
+        yield
 
 
 @pytest.fixture(autouse=True)
@@ -206,15 +211,18 @@ def mock_semantic_cache(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def mock_appdata_postgres(monkeypatch):
-    from app.agent.cost import budget_holds, spend
-    from app.agent.runtime import sessions
-    from app.core import tool_idempotency as tool_idempotency
+    from app.adapters.postgres import (
+        budget_holds,
+        sessions,
+        tool_idempotency,
+        usage_events,
+    )
     from credit_billing import credits
 
     monkeypatch.setattr(budget_holds, "get_connection", _no_postgres_in_tests)
-    # The spend read behind every dollar cap and GET /usage (specs/010 T030): it moved out of the retired usage_ledger module, so it
-    # needs its own guard or an ordinary turn test would pay a real connection attempt for it again.
-    monkeypatch.setattr(spend, "get_connection", _no_postgres_in_tests)
+    # The spend read behind every dollar cap and GET /usage (specs/010 T030) and the usage-event write are one adapter, so one guard: an
+    # ordinary turn test would otherwise pay a real connection attempt for each again.
+    monkeypatch.setattr(usage_events, "get_connection", _no_postgres_in_tests)
     # The credit wallet is read before a turn only when CREDITS_ENFORCEMENT is on and on the usage
     # endpoint only when CREDITS_PER_USD is set; both are off in the default world, but a test that
     # turns one on must not reach a real database by forgetting to stub the wallet.
@@ -228,27 +236,20 @@ def mock_appdata_postgres(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def usage_event_sink(monkeypatch):
-    """Every model call now writes one usage event (`usage_events.record_call`, via `metering.metered_invoke`),
-    which means a real INSERT into `appdata` Postgres and a real `resolve_model` HTTP call on the turn path.
+def usage_event_sink():
+    """Every model call now writes one usage event (`usage_events.record_call`, via `metering.metered_invoke`), which on the real adapter
+    means a real INSERT into `appdata` Postgres and a real `resolve` HTTP call on the turn path. Both ports are bound to in-memory fakes for
+    the test (`tests/fakes/cost.py`); the fixture yields the list of events the test's turn wrote, with the table's `event_id` dedup.
     """
     from app.agent.cost import usage_events
+    from app.ports import cost as cost_ports
+    from app.ports import models as model_ports
+    from tests.fakes.cost import InMemoryUsageEventStore, NoGatewayModelCatalog
 
-    async def _no_model_resolution(alias):
-        return None
-
-    captured: list[dict] = []
-
-    async def _capture(row):
-        if row["event_id"] in {r["event_id"] for r in captured}:
-            return False  # the same duplicate story the real table tells
-        captured.append(row)
-        return True
-
-    monkeypatch.setattr(usage_events, "resolve_model", _no_model_resolution)
-    monkeypatch.setattr(usage_events, "_insert", _capture)
+    store = InMemoryUsageEventStore()
     usage_events.reset_state()
-    yield captured
+    with cost_ports.usage_events.overriding(store), model_ports.model_catalog.overriding(NoGatewayModelCatalog()):
+        yield store.rows
     usage_events.reset_state()
 
 

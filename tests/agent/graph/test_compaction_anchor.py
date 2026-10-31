@@ -17,7 +17,7 @@ from langgraph.checkpoint.memory import MemorySaver
 from app.agent.graph.build import GraphDeps
 from app.agent.graph.messages import COMPACTION_MARKER_KEY
 from app.agent.graph.retrieval import make_retrieve_context_node
-from app.agent.manifest import AgentManifest
+from app.ports.domains import AgentManifest
 from tests.agent.fakes import cfg, scripted_llm
 from tests.ecorp import build_graph
 

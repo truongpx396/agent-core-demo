@@ -13,8 +13,8 @@ from contextlib import asynccontextmanager
 
 import pytest
 
-from app.core import metrics
-from app.core import tool_idempotency as tool_idempotency
+from app.adapters.postgres import tool_idempotency as pg_tool_idempotency
+from app.core import metrics, tool_idempotency
 from tests.conftest import TEST_CTX
 from tests.conftest import metric_value as _count
 
@@ -77,7 +77,7 @@ def _cfg(thread_id="t1"):
 class TestIdempotent:
     async def test_first_call_runs_fn_and_stores_the_result(self, monkeypatch):
         store = _FakeDedupStore()
-        monkeypatch.setattr(tool_idempotency, "get_connection", _fake_get_connection(store))
+        monkeypatch.setattr(pg_tool_idempotency, "get_connection", _fake_get_connection(store))
         calls = []
 
         async def fn():
@@ -99,7 +99,7 @@ class TestIdempotent:
         self, monkeypatch
     ):
         store = _FakeDedupStore()
-        monkeypatch.setattr(tool_idempotency, "get_connection", _fake_get_connection(store))
+        monkeypatch.setattr(pg_tool_idempotency, "get_connection", _fake_get_connection(store))
         calls = []
 
         async def fn():
@@ -118,7 +118,7 @@ class TestIdempotent:
 
     async def test_different_tool_call_ids_each_run_fn_independently(self, monkeypatch):
         store = _FakeDedupStore()
-        monkeypatch.setattr(tool_idempotency, "get_connection", _fake_get_connection(store))
+        monkeypatch.setattr(pg_tool_idempotency, "get_connection", _fake_get_connection(store))
         calls = []
 
         async def fn():
@@ -142,7 +142,7 @@ class TestIdempotent:
         fallback path runs fn() rather than hanging or raising."""
         store = _FakeDedupStore()
         store.rows["call-1"] = {"tenant": "x", "thread_id": "t1", "tool_name": "add_note", "result": None}
-        monkeypatch.setattr(tool_idempotency, "get_connection", _fake_get_connection(store))
+        monkeypatch.setattr(pg_tool_idempotency, "get_connection", _fake_get_connection(store))
         calls = []
 
         async def fn():
@@ -160,7 +160,7 @@ class TestIdempotent:
         def _broken():
             raise ConnectionError("appdata postgres unreachable")
 
-        monkeypatch.setattr(tool_idempotency, "get_connection", _broken)
+        monkeypatch.setattr(pg_tool_idempotency, "get_connection", _broken)
         calls = []
 
         async def fn():
@@ -193,7 +193,7 @@ class TestIdempotent:
             async with real_conn() as conn:
                 yield conn
 
-        monkeypatch.setattr(tool_idempotency, "get_connection", flaky_get_connection)
+        monkeypatch.setattr(pg_tool_idempotency, "get_connection", flaky_get_connection)
 
         async def fn():
             return "the real answer"
@@ -215,7 +215,7 @@ class TestIdempotent:
         MutatingToolTimedOut so graph/utils.py::friendly_tool_error can
         steer the agent instead of silently swallowing the ambiguity."""
         store = _FakeDedupStore()
-        monkeypatch.setattr(tool_idempotency, "get_connection", _fake_get_connection(store))
+        monkeypatch.setattr(pg_tool_idempotency, "get_connection", _fake_get_connection(store))
 
         async def fn():
             raise TimeoutError("Postgres was slow")
@@ -239,7 +239,7 @@ class TestIdempotent:
         the plain exception (and friendly_tool_error's generic message)
         is already correct for it."""
         store = _FakeDedupStore()
-        monkeypatch.setattr(tool_idempotency, "get_connection", _fake_get_connection(store))
+        monkeypatch.setattr(pg_tool_idempotency, "get_connection", _fake_get_connection(store))
 
         async def fn():
             raise ValueError("bad input")
@@ -251,7 +251,7 @@ class TestIdempotent:
 
     async def test_thread_id_is_optional_when_config_has_none(self, monkeypatch):
         store = _FakeDedupStore()
-        monkeypatch.setattr(tool_idempotency, "get_connection", _fake_get_connection(store))
+        monkeypatch.setattr(pg_tool_idempotency, "get_connection", _fake_get_connection(store))
 
         async def fn():
             return "ok"
@@ -284,7 +284,7 @@ class TestSweepStaleRows:
         async def fake_get_connection():
             yield _FakeConnection()
 
-        monkeypatch.setattr(tool_idempotency, "get_connection", fake_get_connection)
+        monkeypatch.setattr(pg_tool_idempotency, "get_connection", fake_get_connection)
 
         deleted = await tool_idempotency.sweep_stale_rows(older_than_hours=24)
 

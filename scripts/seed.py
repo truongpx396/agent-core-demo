@@ -11,6 +11,7 @@ Each sample doc is short enough to become one parent chunk with one child
 """
 import asyncio
 
+from app.bootstrap import wire
 from app.core.config import DEFAULT_TENANT
 from app.core.security import SecurityCtx
 from app.ingestion import ingestor
@@ -25,6 +26,7 @@ _INGEST_CTX: SecurityCtx = {"tenant": DEFAULT_TENANT, "principal": "make-ingest"
 
 
 async def main() -> None:
+    wire()
     try:
         # ensure_collection recreates the collection (destructive), so it's
         # called explicitly once here, never implicitly inside ingest_text

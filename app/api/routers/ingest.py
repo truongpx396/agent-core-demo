@@ -149,7 +149,7 @@ async def ingest_upload(
             logger.warning(
                 # "filename" is a reserved stdlib LogRecord attribute (the
                 # source file of THIS log call) — same collision
-                # app/domains/notify.py's own docstring already notes for
+                # app/adapters/notify/team_channel.py's own docstring already notes for
                 # "message"; "upload_filename" instead.
                 "ingest_upload_failed",
                 extra={"upload_filename": filename, "error_class": type(exc).__name__},

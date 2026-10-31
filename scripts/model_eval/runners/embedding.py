@@ -90,11 +90,13 @@ class GatewayEmbedding:
     def __init__(self, candidate: Candidate) -> None:
         self._candidate = candidate
         try:
+            from app import bootstrap
             from app.core.config import EMBED_MODEL
-            from app.core.model_resolver import resolve_model
+            from app.ports import models as model_ports
             from app.retrieval import embeddings as app_embeddings
         except Exception as exc:  # noqa: BLE001 - importing the app needs its settings; any failure means the gateway path is unavailable
             raise PrerequisiteMissing(f"cannot import the app's embedding client ({type(exc).__name__}: {exc})") from exc
+        bootstrap.wire()
         self._client = app_embeddings.embeddings
         self._batch = getattr(app_embeddings, "EMBED_BATCH_SIZE", INGEST_BATCH)
         self._loop = asyncio.new_event_loop()  # one loop for the client's life: its connection pool is bound to the loop that made it
@@ -104,7 +106,7 @@ class GatewayEmbedding:
             raise PrerequisiteMissing(
                 f"the gateway did not answer an embedding request ({type(exc).__name__}); is the stack up (`make up`) and OPENAI_API_BASE correct?"
             ) from exc
-        resolved = self._loop.run_until_complete(resolve_model(EMBED_MODEL))
+        resolved = self._loop.run_until_complete(model_ports.model_catalog.get().resolve(EMBED_MODEL))
         self.identity = resolved or EMBED_MODEL
 
     def embed_queries(self, texts: Sequence[str]) -> np.ndarray:

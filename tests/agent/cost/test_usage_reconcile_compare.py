@@ -7,12 +7,12 @@ from decimal import Decimal as D
 from app.agent.cost.usage_reconcile import (
     Finding,
     Tolerance,
-    Window,
     attribute_gateway,
     compare,
     default_window,
 )
 from app.core.gateway import end_user_id, legacy_end_user_id
+from app.ports.cost import Window
 
 DAY = date(2026, 10, 6)
 NEXT = date(2026, 10, 7)

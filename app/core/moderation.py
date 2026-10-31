@@ -5,7 +5,7 @@ Two layers, cheapest first:
 1. A pattern check (known injection/jailbreak phrasings plus a small denylist): near-instant regex, honestly
    scoped as "catches known patterns", not "understands intent". Short-circuits on a hit.
 2. An ML classifier (Meta's Llama Prompt Guard 2, 22M, via the `ml-service` container the reranker also uses,
-   `/prompt-guard`) that catches paraphrased or novel attempts the patterns miss. Viable because `ml-service`
+   `/prompt-guard`; the `InjectionScorer` port) that catches paraphrased or novel attempts the patterns miss. Viable because `ml-service`
    is already local/offline (no hosted API, no new model pull) and adds only ~25-100 ms per call.
 
 A genuine match at either layer fails closed (`allowed=False`). A failure of the check ITSELF (regex bug,
@@ -15,12 +15,8 @@ configured, which is worse than none.
 """
 import re
 
-import httpx
-
 from app.core import metrics
-from app.core.config import ML_SERVICE_URL
-
-_ML_CHECK_TIMEOUT_SECONDS = 3
+from app.ports.screening import injection_scorer
 
 # Llama Prompt Guard 2's natural decision boundary (argmax over its 2-class
 # softmax). Not recalibrated against live traffic like MIN_RERANK_SCORE
@@ -69,15 +65,9 @@ _DENYLIST_PATTERNS = [
 
 
 async def _ml_malicious_score(text: str) -> float:
-    """Raises on any failure to reach/parse ml-service's response —
-    `screen` owns the fail-open degrade policy, same split as
-    `embeddings.py::rerank` raising and `hybrid_search` owning the degrade
-    decision. Fresh `httpx.AsyncClient` per call, not shared — same
-    loop-affinity reasoning as `rerank`."""
-    async with httpx.AsyncClient(timeout=_ML_CHECK_TIMEOUT_SECONDS) as client:
-        resp = await client.post(f"{ML_SERVICE_URL}/prompt-guard", json={"texts": [text]})
-    resp.raise_for_status()
-    return resp.json()[0]["malicious_score"]
+    """Raises on any failure to get a score: `screen` owns the fail-open degrade policy, same split as `embeddings.py::rerank` raising and
+    `hybrid_search` owning the degrade decision. The scorer is the `InjectionScorer` port (`app/adapters/mlservice/prompt_guard.py`)."""
+    return await injection_scorer.get().malicious_score(text)
 
 
 async def screen(text: str) -> ModerationResult:

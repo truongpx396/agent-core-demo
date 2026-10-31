@@ -9,7 +9,6 @@ every other domain uses, and is absent when no bundled AGENT.md declares this do
 """
 from dataclasses import dataclass
 
-from app.agent.manifest import AgentManifest, DomainPlugin
 from app.agent.tools.builtin import (
     SHARED_TOOL_CAPABILITIES,
     ask_clarification,
@@ -22,6 +21,7 @@ from app.agent.tools.run_subagent_domain import make_domain_subagent_tool
 from app.core.security import DEFAULT_POLICY, Policy
 from app.domains.ecorp.tools import TOOL_CAPABILITIES as _ECORP_TOOL_CAPABILITIES
 from app.domains.ecorp.tools import TOOLS as _ECORP_TOOLS
+from app.ports.domains import AgentManifest, DomainPlugin
 
 # ECORP_SYSTEM_PROMPT gotchas, found via live testing with qwen2.5:3b (not just
 # inspection) — don't reintroduce these:

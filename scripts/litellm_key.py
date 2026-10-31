@@ -48,8 +48,8 @@ import sys
 
 import httpx
 
+from app.adapters.litellm.model_catalog import admin_base_url
 from app.core.gateway import end_user_id, legacy_end_user_id
-from app.core.model_resolver import admin_base_url
 
 # Every alias deploy/litellm/litellm-config.prod.yaml defines (tests/scripts/test_litellm_key.py keeps the two in step). A key lists the
 # aliases it may call, and an alias missing here is refused for the app, so the tiers an operator attaches later would fail with

@@ -1,5 +1,5 @@
 """Retry-with-backoff plus a circuit breaker for calls into this app's shared LOCAL dependencies:
-opensandbox-server (app/domains/sandbox_tools.py) and crawl4ai (app/ingestion/web_crawler.py). Both are
+opensandbox-server (app/adapters/mcp/sandbox_tools.py) and crawl4ai (app/ingestion/web_crawler.py). Both are
 compose services that can be briefly unreachable (still starting, restarted) through no fault of the code;
 app/domains/sandbox_session.py's self-healing cache is the "already warmed up" side, this is the "still cold"
 half.

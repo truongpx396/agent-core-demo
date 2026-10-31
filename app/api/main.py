@@ -45,6 +45,7 @@ from app.api import identity
 from app.api.rate_limit import WebhookRateLimitMiddleware
 from app.api.routers import chat, ingest, system, usage
 from app.billing_integration import http as billing_http
+from app.bootstrap import verify_wired, wire
 from app.core import sql_store
 from app.core.config import (
     CORS_ALLOWED_ORIGINS,
@@ -59,10 +60,13 @@ from app.mcp.connection import close_all_connections
 # service had no logging handler at all, so every `logger.info(...)` call
 # was silently discarded under `make serve` (see logging_config.py).
 configure_logging()
+# Every port gets its production adapter (app/bootstrap.py), at import like the logging above; the lifespan then refuses to start with one missing.
+wire()
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    verify_wired()
     # Opens the durable checkpointer on uvicorn's own event loop, once, at
     # startup, not lazily on first request — GET /chat/sessions/{thread_id}/
     # messages also reads it via get_session_messages, and it must be bound

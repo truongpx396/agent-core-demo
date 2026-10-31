@@ -84,6 +84,7 @@ from app.agent.runtime.stream import (
     astream_events_turn_unattended,
     cancel_run,
 )
+from app.bootstrap import verify_wired, wire
 from app.core import metrics, sql_store
 from app.core.config import (
     AGENT_DOMAIN,
@@ -563,6 +564,8 @@ async def _reclaim_loop(client, stop_event: asyncio.Event, *, graph) -> None:
 
 
 async def run() -> None:
+    wire()
+    verify_wired()
     manifest, domain = resolve_domain(AGENT_DOMAIN)  # fails loud on a typo'd AGENT_DOMAIN
     graph = await init_graph_async(manifest=manifest, domain=domain)  # opens the durable
     # checkpointer on THIS process's own loop, against AGENT_DOMAIN's manifest/tools.

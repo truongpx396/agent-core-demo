@@ -76,6 +76,10 @@ Telegram publish and read back, and `agent-worker` processes run the graph, so e
 runs the graph in its own process, which is why the per-thread lock, crash reclaim and dead-letter archive cover all of them
 (pattern 89).
 
+The code is laid out as **ports and adapters**: the agent and its domains reach Postgres, Qdrant, Redis, the LLM gateway, the ML service, the web and the sandbox
+only through `Protocol`s in `app/ports/`, the adapters implement them, and `app/bootstrap.py` binds the two when a process starts. A test fails the build when an import
+crosses a ring the wrong way or an entrypoint forgets to wire. [ARCHITECTURE.md](ARCHITECTURE.md) has the rings, the port catalogue and how to add one (pattern 90).
+
 ```mermaid
 flowchart TB
     subgraph clients_sg["Client surfaces"]
@@ -427,13 +431,13 @@ and needs no paid-API call and no training:
 3. Ask:
 
 ```python
-from app.core.classification import Choice, choose
+from app.ports.classification import Choice, route_classifier   # the port; the process binds the ML-service adapter at start
 
 EMAIL_INTENT = Choice(                                                  # named after the label set; the options are exactly its labels
     "email-intent", "Does this message ask us to send an email, or only to look something up?",
     {"send_email": "asks us to send or reply by email", "look_up": "only asks for information"},
 )
-answer = await choose(EMAIL_INTENT, message_text)                       # never raises; the first 2,000 characters are sent, nothing else
+answer = await route_classifier.get().choose(EMAIL_INTENT, message_text)                       # never raises; the first 2,000 characters are sent, nothing else
 if answer.outcome == "labelled" and answer.label == "send_email":       # label is None when the text is near none of the choices
     ...                                                                 # any other outcome (timeout, error, no_answer): decide without it
 ```
@@ -512,7 +516,7 @@ the chat API or the MCP routes.
 
 - 🔗 **MCP client** (`app/mcp/client.py::load_remote_tools`) binds an external server's tools into the graph. A remote tool not named in `capability_overrides` defaults to `outward`; the remote's own annotations are never trusted. What the remote says is input: a catalog can be pinned by a hash of what the model is shown (the sandbox bridge is: 5 of its 19 tools), and replies are scrubbed and cut to `MCP_TOOL_OUTPUT_MAX_CHARS` (head and tail kept). One long-lived connection per server (`app/mcp/connection.py`) replaces a process per call, and a call that may have reached the server is never sent twice (pattern 78).
 - 🕸️ **Web crawling:** [crawl4ai](https://github.com/unclecode/crawl4ai) renders JS-heavy pages (`app/ingestion/web_crawler.py`; needs the `crawl4ai` container and `CRAWL4AI_API_TOKEN`). Three `outward` tools use it: `enrich_lead_from_website` (sales), `fetch_external_reference` (support), `check_vendor_status_page` (ops).
-- 🔍 **Web search:** [serper.dev](https://serper.dev) finds the addresses those tools then read (`app/core/serper.py` the client, `app/domains/web_search.py` the tool; optional, off without `SERPER_API_KEY`). `web_search` is `outward` in support, ops and sales: each call waits for a human to approve the query, which goes to Serper and Google and spends one credit. Ecorp has none. Results are third-party text, framed as data and never numbered like a citation. Not built: metering the spend against the agent's caps; only `organic` results are read (GRAPH_PATTERNS.md pattern 87). `make web-search-check` spends one credit to test the key; `WebSearchProviderRefusing` fires when the provider refuses it.
+- 🔍 **Web search:** [serper.dev](https://serper.dev) finds the addresses those tools then read (`app/adapters/web/serper.py` the client, `app/domains/web_search.py` the tool; optional, off without `SERPER_API_KEY`). `web_search` is `outward` in support, ops and sales: each call waits for a human to approve the query, which goes to Serper and Google and spends one credit. Ecorp has none. Results are third-party text, framed as data and never numbered like a citation. Not built: metering the spend against the agent's caps; only `organic` results are read (GRAPH_PATTERNS.md pattern 87). `make web-search-check` spends one credit to test the key; `WebSearchProviderRefusing` fires when the provider refuses it.
 - 📦 **Sandbox:** [OpenSandbox](https://github.com/opensandbox-group/OpenSandbox) over MCP gives every domain isolated code execution (`make sandbox-up`, needs `OPENSANDBOX_API_KEY`), per tenant and conversation. The model never sees its raw ~19-tool API: `app/domains/sandbox_session.py` wraps it as four flat tools (`run_command_in_sandbox`, `run_python_in_sandbox`, `read_sandbox_file`, `write_sandbox_file`), because the raw catalog made a small model hallucinate sandbox ids (pattern 50).
 - ☣️ **Crawled text is untrusted.** `app/core/untrusted.py::frame_untrusted` wraps it in `<retrieved_document>` delimiters the system prompt calls data, not instructions, and a closing tag inside the page can't end the frame. Framing marks the boundary; the approval gate stops a model that follows it anyway (pattern 12).
 
@@ -543,7 +547,7 @@ requester + subject", since what counts as the same ticket is a product decision
 
 ## 🏢 Example domains
 
-`AgentManifest` + `DomainPlugin` (`app/agent/manifest.py`) mean a new use case is a manifest and a plugin, never a fork of
+`AgentManifest` + `DomainPlugin` (`app/ports/domains.py`) mean a new use case is a manifest and a plugin, never a fork of
 `build_graph()`. Four domains run on the one unmodified graph, the default included:
 
 | Domain | What it does | Run |
@@ -780,27 +784,30 @@ casually. The compose files live in `deploy/compose/` but resolve paths and `.en
 
 ```
 app/
-  agent/       graph/ (LangGraph), runtime/ (turns, streaming, sessions), tools/ (built-ins, catalogs, run_subagent), cost/ (meter, caps), manifest.py
+  adapters/    the outbound adapters that have no older home: postgres/, litellm/, mlservice/, web/, notify/, mcp/
+  agent/       graph/ (LangGraph), runtime/ (turns, streaming, sessions), tools/ (built-ins, catalogs, run_subagent), cost/ (meter, caps)
   api/         FastAPI: main.py mounts routers/ (chat, ingest, usage, system); deps.py (caller by AUTH_MODE), identity.py, schemas, health, webhook rate limit, web UI (static/index.html)
   billing_integration/  the app's one seam to the billing package (port.py)
+  bootstrap.py binds every port to its adapter; each entrypoint calls wire() first
   channels/    CLI (chat.py) and Telegram: front doors that publish turns to the queue and never run the graph
-  core/        what every package uses: config, security (SecurityCtx/Policy), metrics, errors, scrubbing, SQL pool, LLM gateway contract, tool timeout and idempotency
-  domains/     support/, ops/, sales/ (store + tools + domain each), registry, shared sandbox tools
+  core/        the kernel: config, security (SecurityCtx/Policy/AccessScope), metrics, errors, scrubbing, the gateway identity, tool timeout and the exactly-once guard (plus the SQL pool and other platform modules)
+  domains/     ecorp/, support/, ops/, sales/ (store = the domain's adapter + tools + domain each), registry, shared sandbox session
   ingestion/   chunking, ingestor, crawler, object store, ingest worker
   job_queue/   Redis Streams queue, agent worker, reclaim, producer (what the CLI and Telegram publish through)
   mcp/         server, ops_server (stdio), gateway (Streamable HTTP + OAuth 2.1), client
+  ports/       the Protocols the application needs (cost, models, llm, sessions, retrieval, web, sandbox, a repository per domain, ...) and Slot, the typed seam
   retrieval/   embeddings, Qdrant store, semantic cache, memory deletion
 scripts/       seed, eval, cron jobs, ops_investigate, defectdojo import; ai_review/ is the PR-review tool
 services/authlimit/       the edge auth and rate-limit service: the only Go in the repo (own tests, Dockerfile, CI job)
 evals/ scripts/model_eval/   the model-evaluation harness and its frozen datasets, candidates, baselines
-specs/ .specify/          Spec Kit specs 001–018 and the constitution
+specs/ .specify/          Spec Kit specs 001–019 and the constitution
 skills/ subagents/        the agent's own catalogs
 docker/ Dockerfile        ml-service, OpenSandbox, sandbox image; the app image (the Dockerfile stays at the root: the build context)
 deploy/                   compose/ (dev, prod, observability, load test), caddy/, litellm/ (configs, patches/)
 infra/terraform/          DigitalOcean droplets; infra/README.md is the runbook
 observability/            Prometheus (+ alerts.yml), Alertmanager, Loki, Promtail, otel-collector, Grafana
 postgres-init/            numbered SQL schema (fresh volumes only)
-tests/                    mirrors app/; integration/, live/, deepeval/ are the marked tiers
+tests/                    mirrors app/; adapters/ (SQL shape, requests), fakes/ (in-memory ports); integration/, live/, deepeval/ are the marked tiers
 packages/billing/         the independent billing package: src, tests, schema, alerts, docs, specs
 promptfoo/ garak/ loadtest/   prompt checks (the repo's only package.json), jailbreak scan, Locust
 .github/workflows/        ci, deploy, ai-review, terraform-validate, redteam, strix, zap

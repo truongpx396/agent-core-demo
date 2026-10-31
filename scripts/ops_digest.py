@@ -20,8 +20,9 @@ from app.agent.cost import metering
 from app.core.config import CHAT_MODEL, DEFAULT_TENANT, OPENAI_API_BASE, OPENAI_API_KEY
 from app.core.job_runtime import scheduled_job
 from app.core.security import SecurityCtx
-from app.domains import notify
-from app.domains.ops import metrics_client
+from app.domains.ops import metric_checks
+from app.ports.notify import team_channel
+from app.ports.ops import metrics_reader
 
 # The automated job's own identity — never a real person's — so usage-event
 # rows and team-channel posts from this script are attributable to "the
@@ -43,7 +44,7 @@ def build_digest_prompt(readings: dict[str, float | None], anomalies: list[str])
     LLM."""
     lines = [
         "Today's metric readings:",
-        metrics_client.format_readings(readings),
+        metric_checks.format_readings(readings),
     ]
     if anomalies:
         lines.append("\nFlagged anomalies (past an alert-matching threshold):")
@@ -59,8 +60,8 @@ async def run_digest(llm=None) -> str:
     `llm` override) — defaults to a real ChatOpenAI client via the LiteLLM
     proxy, no tools bound (a plain completion, not a tool-calling turn —
     see this module's docstring for why)."""
-    readings = await metrics_client.fetch_readings()
-    anomalies = metrics_client.detect_anomalies(readings)
+    readings = await metrics_reader.get().fetch_readings()
+    anomalies = metric_checks.detect_anomalies(readings)
     human_prompt = build_digest_prompt(readings, anomalies)
 
     chat = llm if llm is not None else ChatOpenAI(
@@ -82,7 +83,7 @@ async def run_digest(llm=None) -> str:
     response = call.response
     summary = response.content if isinstance(response.content, str) else str(response.content)
 
-    await notify.post_to_team_channel("ops-digest", summary)
+    await team_channel.get().post("ops-digest", summary)
     return summary
 
 

@@ -681,7 +681,7 @@ agent_circuit_breaker_half_open_total = Counter(
 
 agent_web_search_total = Counter(
     "agent_web_search_total",
-    "One `web_search` call's outcome (app/core/serper.py), counted once per call that got as far as the client. ok / no_results "
+    "One `web_search` call's outcome (app/adapters/web/serper.py), counted once per call that got as far as the client. ok / no_results "
     "are answers. not_configured: SERPER_API_KEY is empty, so no request was made. blank_query: refused locally, because "
     "serper.dev answers a blank query with unrelated results and spends a credit on it (measured). auth_failed (401/403; a wrong "
     "key is a measured 403) and rejected (any other 4xx; an account out of credits is expected to land here, which is NOT "
@@ -726,7 +726,7 @@ agent_mcp_connection_events_total = Counter(
 
 agent_sandbox_unavailable_total = Counter(
     "agent_sandbox_unavailable_total",
-    "The sandbox tool catalog could not be loaded (app/domains/sandbox_tools.py::load_sandbox_tools): the feature degrades "
+    "The sandbox tool catalog could not be loaded (app/adapters/mcp/sandbox_tools.py::load_sandbox_tools): the feature degrades "
     "to 'no sandbox tools' and the turn goes on, which before this counter was a log line nobody was watching (specs/009 A9). "
     "reason=connection|timeout when the bridge started but could not be used, circuit_open when the breaker is refusing "
     "to try, other for anything else (opensandbox-mcp not installed, crashing at start, an SDK it cannot import).",
@@ -773,7 +773,7 @@ agent_api_auth_mode = Gauge(
 
 agent_team_channel_notify_total = Counter(
     "agent_team_channel_notify_total",
-    "app/domains/notify.py::post_to_team_channel attempts by sink and outcome. "
+    "app/adapters/notify/team_channel.py::post_to_team_channel attempts by sink and outcome. "
     "This is a PIVOT transaction (can't be un-sent) backing a human_approval'd "
     "escalation/handoff/incident-log write that already committed — a failed "
     "send here used to be a log line only (no metric, so no alert could ever "

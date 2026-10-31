@@ -13,14 +13,16 @@ from contextlib import asynccontextmanager
 import pytest
 from psycopg import errors as pg_errors
 
+from app.adapters.postgres import budget_policies as pg_budget_policies
 from app.agent.cost import budget_policies, budgets
 from app.agent.runtime import core as runtime_module
 from app.core import errors, metrics
+from app.ports.cost import Override
 from tests.conftest import TEST_CTX, metric_value
 
 _REAL_OVERRIDES_FOR = budget_policies.overrides_for
 
-O = budget_policies.Override  # noqa: N817 - a table of rows reads better with a short name
+O = Override  # noqa: N817 - a table of rows reads better with a short name
 DEFAULTS = budgets.Defaults(tenant_day=20.0, tenant_month=400.0, principal_day=5.0, principal_month=100.0)
 
 
@@ -111,7 +113,7 @@ def _use(monkeypatch, conn):
     async def get_connection():
         yield conn
 
-    monkeypatch.setattr(budget_policies, "get_connection", get_connection)
+    monkeypatch.setattr(pg_budget_policies, "get_connection", get_connection)
 
 
 @pytest.fixture
@@ -216,7 +218,7 @@ class TestWriting:
         async def fail(*args, **kwargs):
             raise AssertionError("nothing may be written for invalid input")
 
-        monkeypatch.setattr(budget_policies, "get_connection", fail)
+        monkeypatch.setattr(pg_budget_policies, "get_connection", fail)
 
         with pytest.raises(ValueError):
             await budget_policies.set_override(tenant, "alice", period, limit, by)

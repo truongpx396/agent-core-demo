@@ -14,6 +14,7 @@ drives the real table, including the abandoned-hold cases this file cannot.
 import uuid
 from contextlib import asynccontextmanager
 
+from app.adapters.postgres import budget_holds as pg_budget_holds
 from app.agent.cost import budget_holds
 from tests.conftest import TEST_CTX
 
@@ -47,7 +48,7 @@ def _fake_get_connection(fake):
 class TestReserveBudget:
     async def test_inserts_one_hold_for_this_tenant_and_returns_its_id(self, monkeypatch):
         fake = _FakeConnection()
-        monkeypatch.setattr(budget_holds, "get_connection", _fake_get_connection(fake))
+        monkeypatch.setattr(pg_budget_holds, "get_connection", _fake_get_connection(fake))
 
         hold_id = await budget_holds.reserve_budget(TEST_CTX, 0.5)
 
@@ -58,7 +59,7 @@ class TestReserveBudget:
 
     async def test_each_reservation_is_its_own_hold(self, monkeypatch):
         fake = _FakeConnection()
-        monkeypatch.setattr(budget_holds, "get_connection", _fake_get_connection(fake))
+        monkeypatch.setattr(pg_budget_holds, "get_connection", _fake_get_connection(fake))
 
         first = await budget_holds.reserve_budget(TEST_CTX, 0.5)
         second = await budget_holds.reserve_budget(TEST_CTX, 0.5)
@@ -67,7 +68,7 @@ class TestReserveBudget:
 
     async def test_sweeps_only_this_tenants_abandoned_holds_before_inserting(self, monkeypatch):
         fake = _FakeConnection()
-        monkeypatch.setattr(budget_holds, "get_connection", _fake_get_connection(fake))
+        monkeypatch.setattr(pg_budget_holds, "get_connection", _fake_get_connection(fake))
 
         await budget_holds.reserve_budget(TEST_CTX, 0.5)
 
@@ -80,14 +81,14 @@ class TestReserveBudget:
         async def _fail_if_called():
             raise AssertionError("get_connection should not be reached for an invalid ctx")
 
-        monkeypatch.setattr(budget_holds, "get_connection", _fail_if_called)
+        monkeypatch.setattr(pg_budget_holds, "get_connection", _fail_if_called)
         assert await budget_holds.reserve_budget(None, 0.5) is None
 
     async def test_none_for_a_non_positive_amount(self, monkeypatch):
         async def _fail_if_called():
             raise AssertionError("get_connection should not be reached for amount <= 0")
 
-        monkeypatch.setattr(budget_holds, "get_connection", _fail_if_called)
+        monkeypatch.setattr(pg_budget_holds, "get_connection", _fail_if_called)
         assert await budget_holds.reserve_budget(TEST_CTX, 0.0) is None
 
     async def test_fails_open_when_the_write_raises(self, monkeypatch):
@@ -100,14 +101,14 @@ class TestReserveBudget:
         def _broken():
             raise ConnectionError("appdata postgres unreachable")
 
-        monkeypatch.setattr(budget_holds, "get_connection", _broken)
+        monkeypatch.setattr(pg_budget_holds, "get_connection", _broken)
         assert await budget_holds.reserve_budget(TEST_CTX, 0.5) is None
 
 
 class TestReleaseBudgetReservation:
     async def test_deletes_exactly_this_hold_scoped_to_the_tenant(self, monkeypatch):
         fake = _FakeConnection()
-        monkeypatch.setattr(budget_holds, "get_connection", _fake_get_connection(fake))
+        monkeypatch.setattr(pg_budget_holds, "get_connection", _fake_get_connection(fake))
 
         await budget_holds.release_budget_reservation(TEST_CTX, "hold-1")
 
@@ -120,35 +121,35 @@ class TestReleaseBudgetReservation:
         async def _fail_if_called():
             raise AssertionError("get_connection should not be reached without a hold id")
 
-        monkeypatch.setattr(budget_holds, "get_connection", _fail_if_called)
+        monkeypatch.setattr(pg_budget_holds, "get_connection", _fail_if_called)
         await budget_holds.release_budget_reservation(TEST_CTX, None)  # must not raise
 
     async def test_an_invalid_ctx_is_a_noop(self, monkeypatch):
         async def _fail_if_called():
             raise AssertionError("get_connection should not be reached for an invalid ctx")
 
-        monkeypatch.setattr(budget_holds, "get_connection", _fail_if_called)
+        monkeypatch.setattr(pg_budget_holds, "get_connection", _fail_if_called)
         await budget_holds.release_budget_reservation(None, "hold-1")  # must not raise
 
     async def test_never_raises_even_if_the_write_fails(self, monkeypatch):
         def _broken():
             raise ConnectionError("appdata postgres unreachable")
 
-        monkeypatch.setattr(budget_holds, "get_connection", _broken)
+        monkeypatch.setattr(pg_budget_holds, "get_connection", _broken)
         await budget_holds.release_budget_reservation(TEST_CTX, "hold-1")  # must not raise
 
 
 class TestInFlightReservation:
     async def test_returns_the_summed_fresh_holds(self, monkeypatch):
         fake = _FakeConnection(fetchone_result=(0.75,))
-        monkeypatch.setattr(budget_holds, "get_connection", _fake_get_connection(fake))
+        monkeypatch.setattr(pg_budget_holds, "get_connection", _fake_get_connection(fake))
 
         assert await budget_holds.in_flight_reservation("ecorp") == 0.75
 
     async def test_zero_when_there_is_no_row_or_a_null_sum(self, monkeypatch):
         for result in (None, (None,)):
             fake = _FakeConnection(fetchone_result=result)
-            monkeypatch.setattr(budget_holds, "get_connection", _fake_get_connection(fake))
+            monkeypatch.setattr(pg_budget_holds, "get_connection", _fake_get_connection(fake))
 
             assert await budget_holds.in_flight_reservation("ecorp") == 0.0
 
@@ -158,7 +159,7 @@ class TestInFlightReservation:
         cutoff is a WHERE clause on each hold's OWN timestamp, so an
         abandoned hold simply doesn't match, whatever the tenant does next."""
         fake = _FakeConnection(fetchone_result=None)
-        monkeypatch.setattr(budget_holds, "get_connection", _fake_get_connection(fake))
+        monkeypatch.setattr(pg_budget_holds, "get_connection", _fake_get_connection(fake))
 
         await budget_holds.in_flight_reservation("ecorp")
 
@@ -171,5 +172,5 @@ class TestInFlightReservation:
         def _broken():
             raise ConnectionError("appdata postgres unreachable")
 
-        monkeypatch.setattr(budget_holds, "get_connection", _broken)
+        monkeypatch.setattr(pg_budget_holds, "get_connection", _broken)
         assert await budget_holds.in_flight_reservation("ecorp") == 0.0

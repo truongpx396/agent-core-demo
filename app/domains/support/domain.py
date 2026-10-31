@@ -17,7 +17,6 @@ names (pattern 23).
 """
 from dataclasses import dataclass
 
-from app.agent.manifest import AgentManifest, DomainPlugin
 from app.agent.tools.builtin import (
     SHARED_TOOL_CAPABILITIES,
     ask_clarification,
@@ -30,6 +29,7 @@ from app.core.security import Policy
 from app.domains.support.tools import SUPPORT_POLICY
 from app.domains.support.tools import TOOL_CAPABILITIES as _SUPPORT_TOOL_CAPABILITIES
 from app.domains.support.tools import TOOLS as _SUPPORT_TOOLS
+from app.ports.domains import AgentManifest, DomainPlugin
 
 _SKILL_SEARCH, _USE_SKILL = make_skill_tools("support")
 

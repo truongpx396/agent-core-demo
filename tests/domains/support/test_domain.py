@@ -28,6 +28,7 @@ from app.domains.support import store
 from app.domains.support.domain import SUPPORT_DOMAIN_PLUGIN, SUPPORT_MANIFEST
 from tests.conftest import TEST_CTX
 from tests.ecorp import ECORP_DOMAIN_PLUGIN, build_graph
+from tests.fakes.web import use_page_renderer
 
 _CORE_SUPPORT_TOOLS = {
     "search_docs",
@@ -277,12 +278,11 @@ async def test_fetch_external_reference_pauses_for_approval_as_an_outward_tool()
 
 
 async def test_approving_fetch_external_reference_runs_it_and_finishes(monkeypatch):
-    from app.domains.support import tools as support_tools
 
     async def fake_render_url_to_markdown(url):
         return "Webhook payloads must include `id`."
 
-    monkeypatch.setattr(support_tools, "render_url_to_markdown", fake_render_url_to_markdown)
+    use_page_renderer(monkeypatch, fake_render_url_to_markdown)
 
     llm = _fake_llm_returning(
         _tool_call("fetch_external_reference", {"url": "https://vendor.example.com/docs"}),
@@ -304,7 +304,7 @@ async def test_escalate_to_human_notifies_the_team_channel(monkeypatch):
     """escalate_to_human's own side effect (app/domains/support/tools.py)
     — a unit-level check, not through the graph, so it doesn't also need a
     fake LLM/tool-call round trip just to reach one function call."""
-    from app.domains import notify
+    from app.adapters.notify import team_channel as notify
     from app.domains.support.tools import _escalate_to_human_impl
 
     async def fake_escalate_ticket(tenant, ticket_id, reason):

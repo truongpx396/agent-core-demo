@@ -11,11 +11,10 @@ Four things are proven here, each against the cheapest tier that can prove it:
   * that the per-call events add up to the running total the per-turn ledger row is written from.
 
 The primary key and the `ON CONFLICT` the duplicate story depends on are real-Postgres behaviour:
-tests/integration/test_usage_events_real_postgres.py. Here the statement's text and parameters only.
+tests/integration/test_usage_events_real_postgres.py; the statement's text and parameters are the adapter's, in
+tests/adapters/postgres/test_usage_events.py. Here the store is a fake (tests/fakes/cost.py).
 """
 import uuid
-from contextlib import asynccontextmanager
-from types import SimpleNamespace
 from typing import Annotated, TypedDict
 
 import httpx
@@ -26,17 +25,18 @@ from langchain_openai import ChatOpenAI
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
-from psycopg import errors as pg_errors
 
 from app.agent.cost import metering, pricing, usage_events
 from app.agent.graph.build import GraphDeps
 from app.core import metrics
+from app.ports import cost as cost_ports
+from app.ports import models as model_ports
+from app.ports.cost import UsageTableMissing
 from tests.agent.fakes import make_agent_node
 from tests.agent.graph.test_graph_integration import _config
 from tests.conftest import TEST_CTX, metric_value
 from tests.ecorp import build_graph
-
-_REAL_INSERT = usage_events._insert  # imported before any autouse fixture patches it
+from tests.fakes.cost import InMemoryUsageEventStore
 
 CONFIG = {"configurable": {"ctx": TEST_CTX, "thread_id": "thread-1"}}
 
@@ -195,15 +195,15 @@ class TestWhatAnEventRecords:
         """Pattern 38: an alias can be re-pointed at another model, so what a call actually ran on is written down with it.
         (This was the per-turn ledger's test until the ledger write was retired; the property moved with the money.)"""
 
-        async def resolve(alias):
-            assert alias == "gpt-4o"
-            return "openai/gpt-4o-2024-08-06"
+        class Catalog:
+            async def resolve(self, alias):
+                assert alias == "gpt-4o"
+                return "openai/gpt-4o-2024-08-06"
 
-        monkeypatch.setattr(usage_events, "resolve_model", resolve)
-
-        await metering.metered_invoke(
-            _llm(_reply()), [HumanMessage(content="q")], config=CONFIG, kind="chat", model_alias="gpt-4o"
-        )
+        with model_ports.model_catalog.overriding(Catalog()):  # type: ignore[arg-type] - only `resolve` is asked of it here
+            await metering.metered_invoke(
+                _llm(_reply()), [HumanMessage(content="q")], config=CONFIG, kind="chat", model_alias="gpt-4o"
+            )
 
         (row,) = usage_event_sink
         assert (row["model_alias"], row["resolved_model"]) == ("gpt-4o", "openai/gpt-4o-2024-08-06")
@@ -326,6 +326,15 @@ class TestWhenNothingCanBeMetered:
         assert _count("usage_event_write") == before + 1
 
 
+class _FailingStore(InMemoryUsageEventStore):
+    def __init__(self, error: Exception) -> None:
+        super().__init__()
+        self.error = error
+
+    async def insert(self, row):
+        raise self.error
+
+
 class TestAFailedWriteNeverFailsTheTurnAndIsNeverSilent:
     @staticmethod
     async def _record():
@@ -334,84 +343,32 @@ class TestAFailedWriteNeverFailsTheTurnAndIsNeverSilent:
             TEST_CTX, thread_id="t", message_id="m", kind="chat", model_alias="chat", priced=priced
         )
 
-    async def test_a_database_error_is_swallowed_and_counted_as_a_write_failure(self, monkeypatch):
-        async def broken(row):
-            raise ConnectionError("appdata unreachable")
-
-        monkeypatch.setattr(usage_events, "_insert", broken)
+    async def test_a_database_error_is_swallowed_and_counted_as_a_write_failure(self):
         before = _count("usage_event_write")
 
-        await self._record()  # does not raise
+        with cost_ports.usage_events.overriding(_FailingStore(ConnectionError("appdata unreachable"))):
+            await self._record()  # does not raise
 
         assert _count("usage_event_write") == before + 1
 
-    async def test_a_missing_table_is_its_own_counted_path_and_warns_once(self, monkeypatch, caplog):
-        async def missing(row):
-            raise pg_errors.UndefinedTable("relation \"usage_events\" does not exist")
-
-        monkeypatch.setattr(usage_events, "_insert", missing)
+    async def test_a_missing_table_is_its_own_counted_path_and_warns_once(self, caplog):
         before = _count("usage_event_table_missing")
         write_before = _count("usage_event_write")
 
-        with caplog.at_level("WARNING", logger=usage_events.logger.name):
-            for _ in range(3):
-                await self._record()
+        with cost_ports.usage_events.overriding(_FailingStore(UsageTableMissing())):
+            with caplog.at_level("WARNING", logger=usage_events.logger.name):
+                for _ in range(3):
+                    await self._record()
 
         assert _count("usage_event_table_missing") == before + 3
         assert _count("usage_event_write") == write_before, "an unapplied migration is not a write failure"
         assert len([r for r in caplog.records if "table is missing" in r.getMessage()]) == 1
 
-    async def test_the_agent_node_still_answers_when_the_write_fails(self, monkeypatch):
-        async def broken(row):
-            raise ConnectionError("appdata unreachable")
-
-        monkeypatch.setattr(usage_events, "_insert", broken)
-
-        result = await make_agent_node(_llm(_reply("the answer")))({"messages": [HumanMessage(content="q")]}, CONFIG)
+    async def test_the_agent_node_still_answers_when_the_write_fails(self):
+        with cost_ports.usage_events.overriding(_FailingStore(ConnectionError("appdata unreachable"))):
+            result = await make_agent_node(_llm(_reply("the answer")))({"messages": [HumanMessage(content="q")]}, CONFIG)
 
         assert result["messages"][0].content == "the answer"
-
-
-class TestTheStatement:
-    """What it says, through a fake connection. That it WORKS against a unique key is the integration test."""
-
-    @staticmethod
-    def _fake_connection(monkeypatch, rowcount):
-        calls = []
-
-        class Conn:
-            async def execute(self, sql, params):
-                calls.append((sql, params))
-                return SimpleNamespace(rowcount=rowcount)
-
-        @asynccontextmanager
-        async def get_connection():
-            yield Conn()
-
-        monkeypatch.setattr(usage_events, "get_connection", get_connection)
-        return calls
-
-    ROW = {
-        "event_id": "e1", "tenant": "acme", "principal": "alice", "thread_id": "t", "kind": "chat",
-        "model_alias": "chat", "resolved_model": None, "input_tokens": 1, "output_tokens": 2,
-        "cached_input_tokens": 0, "total_tokens": 3, "cost_usd": 0.5,
-        "price_input_per_token": 0.1, "price_output_per_token": 0.2,
-    }
-
-    async def test_it_inserts_with_on_conflict_do_nothing_on_the_event_id(self, monkeypatch):
-        calls = self._fake_connection(monkeypatch, rowcount=1)
-
-        assert await _REAL_INSERT(self.ROW) is True
-
-        (sql, params), = calls
-        assert "INSERT INTO usage_events" in sql
-        assert "ON CONFLICT (event_id) DO NOTHING" in sql
-        assert params == self.ROW
-
-    async def test_a_duplicate_reports_false(self, monkeypatch):
-        self._fake_connection(monkeypatch, rowcount=0)
-
-        assert await _REAL_INSERT(self.ROW) is False
 
 
 class TestTheEventsAddUpToWhatTheLedgerRowIsWrittenFrom:

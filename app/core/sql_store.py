@@ -24,7 +24,7 @@ from app.core.config import APPDATA_DATABASE_URL
 # qdrant_store.py/semantic_cache.py's own lazy clients).
 #
 # `AsyncConnectionPool`, same loop-affinity constraint as
-# app/agent/runtime/core.py::_open_checkpointer's pool: bound to whichever loop was
+# app/adapters/postgres/checkpointing.py::PgCheckpointing.open's pool: bound to whichever loop was
 # running at first open, and every later get_connection() must be awaited
 # from that SAME loop. Fine for every real long-lived process here (each
 # holds one loop for its lifetime). No explicit init_*_async() call wired
@@ -106,7 +106,7 @@ async def query_employees(
     narrows, never widens" rule).
 
     `limit`, when given, becomes a SQL `LIMIT` at the store rather than
-    trimming in Python — `app/domains/ecorp/store.py::query_employees_impl` calls this with
+    trimming in Python — `app/domains/ecorp/usecases.py::query_employees_impl` calls this with
     `limit=cap + 1` to detect "more rows exist" without a second query.
 
     Returns {name, department, title, hired_on} dicts, never a raw

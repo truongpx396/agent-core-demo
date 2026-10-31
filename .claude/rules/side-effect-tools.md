@@ -30,7 +30,7 @@ Constitution Principles I–IV apply. Use `app/domains/support/tools.py::create_
    `tool_call_id` that dedup cannot see. Don't add a generic retry around a write.
 6. A cron or other unattended job calls the `_impl`/store function directly; it never invokes the
    tool through the agent loop (the approval gate has no unattended bypass, by design).
-7. A best-effort pivot send backing an already-committed write (`app/domains/notify.py`) never
+7. A best-effort pivot send backing an already-committed write (`app/adapters/notify/team_channel.py`) never
    raises, but MUST emit a metric and have an alert (see `runtime-reliability.md`).
 
 ## Store layer (`store.py`, `core/sql_store.py`)

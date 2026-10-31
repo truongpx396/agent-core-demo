@@ -53,7 +53,7 @@ class TestBoundSecrets:
         assert "[REDACTED]" in result
 
     def test_the_web_search_api_key_is_redacted_if_a_tool_result_ever_echoes_it(self, monkeypatch):
-        """`web_search` sends SERPER_API_KEY in a header and never prints it (app/core/serper.py), but a provider error body or a snippet that quotes
+        """`web_search` sends SERPER_API_KEY in a header and never prints it (app/adapters/web/serper.py), but a provider error body or a snippet that quotes
         it would otherwise reach the model and the trace verbatim: a hex key matches none of the generic credential patterns."""
         import app.core.config as config
 

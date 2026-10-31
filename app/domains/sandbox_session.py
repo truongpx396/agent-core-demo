@@ -45,8 +45,7 @@ from app.core.config import (
 )
 from app.core.output_limits import bound_output
 from app.core.scrubbing import scrub
-from app.domains.sandbox_tools import SANDBOX_DEPENDENCY, load_sandbox_tools
-from app.mcp.client import REMOTE_ERROR_PREFIX
+from app.ports.sandbox import REMOTE_ERROR_PREFIX, SANDBOX_DEPENDENCY, sandbox_catalog
 
 logger = logging.getLogger(__name__)
 
@@ -60,7 +59,7 @@ SANDBOX_CALL_TIMEOUT_SECONDS = 60  # own budget vs TOOL_TIMEOUT_SECONDS:
 # Was briefly bumped to 150s after prod timeouts traced to
 # `ConnectionConfig.use_server_proxy=False` making opensandbox-mcp try to
 # reach each sandbox at its unreachable Docker bridge IP (44s+ retries);
-# fixed by launching the bridge with `--use-server-proxy` (app/domains/sandbox_tools.py), so 60s is generous again.
+# fixed by launching the bridge with `--use-server-proxy` (app/adapters/mcp/sandbox_tools.py), so 60s is generous again.
 
 
 class SandboxCallFailed(Exception):
@@ -93,7 +92,7 @@ async def load_raw_sandbox_tools() -> dict[str, BaseTool]:
     """
     global _raw_sandbox_tools_cache
     if not _raw_sandbox_tools_cache:
-        raw_tools, _capabilities = await load_sandbox_tools()
+        raw_tools, _capabilities = await sandbox_catalog.get().load()
         _raw_sandbox_tools_cache = {t.name: t for t in raw_tools}
     return _raw_sandbox_tools_cache
 

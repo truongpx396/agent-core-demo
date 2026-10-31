@@ -43,6 +43,7 @@ import yaml
 from langchain_core.utils.function_calling import convert_to_openai_tool
 
 from app.agent.runtime.core import DEFAULT_DOMAIN
+from app.bootstrap import wire
 from app.core.config import settings as app_settings
 from app.core.tool_schema import strict_tool_schema
 from app.domains.registry import resolve_domain
@@ -245,6 +246,7 @@ def summarize(results: list[tuple[Probe, str]]) -> tuple[int, int, Counter]:
 
 
 def main(argv: list[str] | None = None, client: httpx.Client | None = None) -> int:
+    wire()
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--alias", default="chat", help="gateway alias to read the model and options from (default: chat)")
     parser.add_argument("--model", help="an Ollama model tag to use instead of the alias's")
