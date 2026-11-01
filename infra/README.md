@@ -46,7 +46,7 @@ Two separate, deliberately non-automatic-together pieces:
 - A **separate** key pair dedicated to CI deploys — don't reuse your
   personal key:
   ```
-  ssh-keygen -t ed25519 -f ./deploy_key -C "agent-core-demo-ci" -N ""
+  ssh-keygen -t ed25519 -f ./deploy_key -C "graph-agent-core-ci" -N ""
   ```
   Keep `deploy_key` (private) and `deploy_key.pub` (public) handy for the
   next two steps.
@@ -89,8 +89,8 @@ own header). SSH into each once and create it yourself:
 
 ```
 ssh deploy@<reserved_ip>
-sudo mkdir -p /opt/agent-core-demo   # cloud-init already does this; harmless if it exists
-cd /opt/agent-core-demo
+sudo mkdir -p /opt/graph-agent-core   # cloud-init already does this; harmless if it exists
+cd /opt/graph-agent-core
 # paste this repo's deploy/env/prod.env.example content into .env and fill in real
 # values (POSTGRES_PASSWORD, LITELLM_MASTER_KEY, LLM_API_KEY, MINIO_*,
 # CORS_ALLOWED_ORIGINS, APP_IMAGE/ML_IMAGE, OBS_COLLECTOR_ENDPOINT/
@@ -158,7 +158,7 @@ budget-capped key and give it to the app. The script ships in the `api` image an
 over the compose network; the master key is passed from your shell's environment, never as an argument:
 
 ```
-cd /opt/agent-core-demo
+cd /opt/graph-agent-core
 export LITELLM_MASTER_KEY="$(grep '^LITELLM_MASTER_KEY=' .env | cut -d= -f2-)"
 dc exec -e LITELLM_MASTER_KEY api python -m scripts.litellm_key create --max-budget <usd per window> --rpm-limit 600
 unset LITELLM_MASTER_KEY
@@ -242,7 +242,7 @@ the no-domain HTTP-only fallback.
 
 ```
 ssh deploy@<reserved_ip>
-cd /opt/agent-core-demo
+cd /opt/graph-agent-core
 # Compose files live under deploy/compose/ but resolve their paths and .env
 # from this directory, so every call needs --project-directory . (an env var
 # can't replace it — COMPOSE_FILE alone makes paths resolve under

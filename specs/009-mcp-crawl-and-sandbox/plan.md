@@ -37,7 +37,7 @@ fail-closed capability* properties hold where they are asserted. **B24 is a tena
 **Primary Dependencies**: `mcp[cli]` 1.29.0 (pinned to the last 1.x because 2.0 removed the high-level server API), `crawl4ai` 0.9.3 (pinned exactly — it has broken its own API between releases; both the Python client and the
 `unclecode/crawl4ai:0.9.3` server image), `opensandbox` 0.1.16 and `opensandbox-mcp` 0.1.1 (the sandbox SDK and its MCP server), `httpx`, `pydantic`, `langchain-core` (`StructuredTool`), `ipaddress`/`socket` from the standard library.
 Services (compose): `crawl4ai` (default profile, port 11235, bearer token required), `opensandbox-server` (own `sandbox` profile; built from `docker/opensandbox-server.Dockerfile` and `.toml`; **bind-mounts the host's container-runtime socket
-read-write**), the sandbox image `agent-core-demo-sandbox` (`docker/sandbox.Dockerfile`: Python 3.12 + numpy + pandas).
+read-write**), the sandbox image `graph-agent-core-sandbox` (`docker/sandbox.Dockerfile`: Python 3.12 + numpy + pandas).
 
 **Storage**: none new. The sandbox service keeps its own sqlite file in a named volume; lead notes are rows in the existing CRM table (feature 005); breaker state is process memory.
 

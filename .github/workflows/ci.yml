@@ -269,7 +269,7 @@ jobs:
       - id: ollama-cache
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: ~/.cache/agent-core-demo-ollama-models
+          path: ~/.cache/graph-agent-core-ollama-models
           key: ollama-models-${{ runner.os }}-${{ env.TEST_LLM_MODEL }}-nomic-embed-text
         env:
           TEST_LLM_MODEL: qwen2.5:3b
@@ -370,7 +370,7 @@ jobs:
       - id: ollama-cache
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: ~/.cache/agent-core-demo-ollama-models
+          path: ~/.cache/graph-agent-core-ollama-models
           key: ollama-models-${{ runner.os }}-${{ env.PROMPTFOO_MODEL }}
         env:
           PROMPTFOO_MODEL: qwen2.5:1.5b
@@ -385,10 +385,10 @@ jobs:
       # path, but the same shared parent directory. Pre-creating this one
       # path is enough: `mkdir -p` makes every ancestor, `~/.cache`
       # included, as `runner`.
-      - run: mkdir -p ~/.cache/agent-core-demo-ollama-models
+      - run: mkdir -p ~/.cache/graph-agent-core-ollama-models
       - run: >
           docker run -d --name ollama -p 11434:11434
-          -v ${HOME}/.cache/agent-core-demo-ollama-models:/root/.ollama
+          -v ${HOME}/.cache/graph-agent-core-ollama-models:/root/.ollama
           ollama/ollama:latest
       - run: >
           timeout 60 bash -c 'until docker exec ollama ollama list >/dev/null 2>&1; do sleep 1; done'
@@ -590,7 +590,7 @@ jobs:
       - id: ollama-cache
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: ~/.cache/agent-core-demo-ollama-models
+          path: ~/.cache/graph-agent-core-ollama-models
           key: ollama-models-${{ runner.os }}-${{ env.DEEPEVAL_MODEL }}-nomic-embed-text
         env:
           DEEPEVAL_MODEL: qwen2.5:3b
@@ -731,7 +731,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - run: docker build -t agent-core-demo:ci .
+      - run: docker build -t graph-agent-core:ci .
       # Building proves the Dockerfile parses and the dependencies install; it
       # says nothing about whether the image can DO anything. This image once
       # built green for weeks while containing no skills, no subagents and no
@@ -743,7 +743,7 @@ jobs:
       # interpreter and working directory, exactly as a container would.
       - name: The image contains what the app reads at runtime
         run: |
-          docker run --rm -i --entrypoint python agent-core-demo:ci - <<'PY'
+          docker run --rm -i --entrypoint python graph-agent-core:ci - <<'PY'
           import asyncio
           import sys
 
@@ -861,13 +861,13 @@ jobs:
       # default) just because an earlier, unrelated step failed.
       - name: Build image
         if: always()
-        run: docker build -t agent-core-demo:trivy .
+        run: docker build -t graph-agent-core:trivy .
 
       - name: Trivy image — hard gate (fixable CRITICAL vulns)
         if: always()
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
-          image-ref: agent-core-demo:trivy
+          image-ref: graph-agent-core:trivy
           severity: CRITICAL
           ignore-unfixed: true
           trivyignores: .trivyignore.yaml
@@ -878,7 +878,7 @@ jobs:
         if: always()
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
-          image-ref: agent-core-demo:trivy
+          image-ref: graph-agent-core:trivy
           severity: HIGH,CRITICAL
           format: sarif
           output: trivy-image-results.sarif

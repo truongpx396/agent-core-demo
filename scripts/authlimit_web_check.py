@@ -66,12 +66,12 @@ async def one_tenant(browser, door: Door, tenant: str, api: str) -> None:
     check("back on the page, signed in as that person and tenant", username in who and tenant in who, who)
     check("the address bar holds no code, state or token", page.url.rstrip("/") == api.rstrip("/") and "code=" not in page.url and "token" not in page.url, page.url)
     storage = await page.evaluate(
-        "(() => { const t = sessionStorage.getItem('agent-core-demo:access-token');"
+        "(() => { const t = sessionStorage.getItem('graph-agent-core:access-token');"
         " return {session: Object.keys(sessionStorage), tokenInLocal: Object.keys(localStorage).some(k => localStorage.getItem(k).includes(t) || k.includes('token')),"
-        " organization: localStorage.getItem('agent-core-demo:organization'), cookie: document.cookie}; })()"
+        " organization: localStorage.getItem('graph-agent-core:organization'), cookie: document.cookie}; })()"
     )
     # localStorage also holds the page's own picker lists (tenants, principals; that is old behaviour and not a credential). What matters is the token.
-    check("the token is in sessionStorage and in no localStorage entry; the organization is remembered; no cookie", "agent-core-demo:access-token" in storage["session"]
+    check("the token is in sessionStorage and in no localStorage entry; the organization is remembered; no cookie", "graph-agent-core:access-token" in storage["session"]
           and storage["tokenInLocal"] is False and storage["organization"] == tenant and storage["cookie"] == "", str(storage))
     history_length_ok = await page.evaluate("history.length") <= 4
     check("the code was replaced in the history, not left as an entry the Back button would replay", history_length_ok)
@@ -106,11 +106,11 @@ async def one_tenant(browser, door: Door, tenant: str, api: str) -> None:
     await page.click("#authSignOut")
     await page.wait_for_selector("#authSignIn:not([hidden])", timeout=TIMEOUT_MS)
     check("signing out lands on the sign-in box with the conversation gone", await page.locator("#messages .msg").count() == 0)
-    check("and the token is gone from the tab", "agent-core-demo:access-token" not in await page.evaluate("Object.keys(sessionStorage)"))
+    check("and the token is gone from the tab", "graph-agent-core:access-token" not in await page.evaluate("Object.keys(sessionStorage)"))
 
     # A token the door refuses (revoked, tampered, expired) must put the page back at the box, never loop. Plant a well-formed but unsigned one.
     await page.evaluate(
-        "sessionStorage.setItem('agent-core-demo:access-token', 'e30.' + btoa(JSON.stringify({sub:'x', exp: 4102444800})).replace(/=/g,'') + '.sig')"
+        "sessionStorage.setItem('graph-agent-core:access-token', 'e30.' + btoa(JSON.stringify({sub:'x', exp: 4102444800})).replace(/=/g,'') + '.sig')"
     )
     await page.reload()
     # The page first looks signed in (the token parses and has not expired), then its first request is refused with a 401 and it signs itself out:

@@ -504,7 +504,7 @@
 // crypto.randomUUID() — a locked-down browser context (private
 // browsing's storage restrictions vary) must not break page load over a
 // cosmetic preference.
-const THEME_STORAGE_KEY = "agent-core-demo:theme";
+const THEME_STORAGE_KEY = "graph-agent-core:theme";
 const themeToggleEl = document.getElementById("themeToggle");
 const prefersDarkQuery = window.matchMedia ? window.matchMedia("(prefers-color-scheme: dark)") : null;
 
@@ -1724,8 +1724,8 @@ function onIdentityChange() {
   startFreshConversation();
   loadSessions();
 }
-setupIdentitySelect(tenantEl, "agent-core-demo:tenants", "ecorp", "tenant", onIdentityChange);
-setupIdentitySelect(principalEl, "agent-core-demo:principals", "web-user", "principal", onIdentityChange);
+setupIdentitySelect(tenantEl, "graph-agent-core:tenants", "ecorp", "tenant", onIdentityChange);
+setupIdentitySelect(principalEl, "graph-agent-core:principals", "web-user", "principal", onIdentityChange);
 
 // A different domain runs a different manifest/tool set/graph
 // (app/domains/registry.py) — continuing an EXISTING thread_id under it

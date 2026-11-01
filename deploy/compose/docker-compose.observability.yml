@@ -1,6 +1,6 @@
 # A distinct project name (not just this directory's own basename, the
 # default) — keeps this stack's containers/volumes fully separate from
-# docker-compose.yml's own "agent-core-demo" project rather than sharing
+# docker-compose.yml's own project (named after the checkout directory) rather than sharing
 # that namespace, so `docker compose -f docker-compose.yml ...` never sees
 # these as orphans (or vice versa) and each can be torn down independently
 # without touching the other.

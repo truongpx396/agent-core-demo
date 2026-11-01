@@ -384,7 +384,7 @@ class Settings(BillingSettings):
     # `make sandbox-build`, currently python:3.12-slim + numpy + pandas) —
     # bump both if a real deployment needs more. No domain prefix: sandbox
     # creation was never ops-specific, only its original wiring was.
-    sandbox_image: str = "agent-core-demo-sandbox:latest"
+    sandbox_image: str = "graph-agent-core-sandbox:latest"
     sandbox_ttl_seconds: int = 1800  # 30 min — enough for several human-approval
     # pauses, short enough that an abandoned sandbox doesn't linger.
 

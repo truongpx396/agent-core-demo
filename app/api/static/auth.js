@@ -19,9 +19,9 @@
 (function () {
   "use strict";
 
-  const TOKEN_KEY = "agent-core-demo:access-token";
-  const FLOW_KEY = "agent-core-demo:pkce-flow";
-  const ORG_KEY = "agent-core-demo:organization";
+  const TOKEN_KEY = "graph-agent-core:access-token";
+  const FLOW_KEY = "graph-agent-core:pkce-flow";
+  const ORG_KEY = "graph-agent-core:organization";
 
   function readConfig() {
     const tag = document.querySelector('meta[name="agent-auth"]');

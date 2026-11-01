@@ -1,6 +1,6 @@
 resource "digitalocean_project" "this" {
   name        = var.project_name
-  description = "agent-core-demo lean production stack (see docker-compose.prod.yml)"
+  description = "graph-agent-core lean production stack (see docker-compose.prod.yml)"
   purpose     = "Web Application"
   environment = var.environment
 }
@@ -34,7 +34,7 @@ resource "digitalocean_droplet" "app" {
     # No 8000 here — `api` no longer publishes a fixed host port (see
     # digitalocean_firewall.app's own comment on why).
     ufw_tcp_ports = [80, 443]
-    app_dir       = "/opt/agent-core-demo"
+    app_dir       = "/opt/graph-agent-core"
   })
 
   # cloud-init (user_data) only runs on FIRST boot — editing it later and

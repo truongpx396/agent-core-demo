@@ -16,8 +16,8 @@ admin_ip_cidrs = ["203.0.113.4/32"]
 # Public half of a SEPARATE key pair dedicated to CI deploys (don't reuse
 # your personal key here) — the private half goes in the DEPLOY_SSH_KEY
 # GitHub Actions secret. Generate with:
-#   ssh-keygen -t ed25519 -f ./deploy_key -C "agent-core-demo-ci" -N ""
-deploy_ssh_public_key = "ssh-ed25519 AAAA... agent-core-demo-ci"
+#   ssh-keygen -t ed25519 -f ./deploy_key -C "graph-agent-core-ci" -N ""
+deploy_ssh_public_key = "ssh-ed25519 AAAA... graph-agent-core-ci"
 
 region       = "nyc3"
 droplet_size = "s-4vcpu-8gb"

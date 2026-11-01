@@ -59,8 +59,8 @@ jobs:
           target: runtime
           push: true
           tags: |
-            ghcr.io/${{ github.repository_owner }}/agent-core-demo:${{ steps.tag.outputs.value }}
-            ghcr.io/${{ github.repository_owner }}/agent-core-demo:latest
+            ghcr.io/${{ github.repository_owner }}/graph-agent-core:${{ steps.tag.outputs.value }}
+            ghcr.io/${{ github.repository_owner }}/graph-agent-core:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
           # What a pulled image can be audited against: a software bill of materials and SLSA build provenance, attached to the
@@ -74,8 +74,8 @@ jobs:
           file: docker/ml-service.Dockerfile
           push: true
           tags: |
-            ghcr.io/${{ github.repository_owner }}/agent-core-demo-ml-service:${{ steps.tag.outputs.value }}
-            ghcr.io/${{ github.repository_owner }}/agent-core-demo-ml-service:latest
+            ghcr.io/${{ github.repository_owner }}/graph-agent-core-ml-service:${{ steps.tag.outputs.value }}
+            ghcr.io/${{ github.repository_owner }}/graph-agent-core-ml-service:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
           # What a pulled image can be audited against: a software bill of materials and SLSA build provenance, attached to the
@@ -121,7 +121,7 @@ jobs:
       # --delete is scoped to postgres-init/ and observability/ specifically,
       # not the whole target dir, so it can't ever touch the
       # operator-managed .env sitting alongside these files in
-      # /opt/agent-core-demo.
+      # /opt/graph-agent-core.
       - name: Sync compose/config files to the droplet
         run: |
           # -R keeps each file's repo path (deploy/compose/..., deploy/caddy/...),
@@ -131,17 +131,17 @@ jobs:
           rsync -azR -e "ssh -i ~/.ssh/deploy_key -o UserKnownHostsFile=~/.ssh/known_hosts" \
             deploy/compose/docker-compose.prod.yml deploy/caddy/Caddyfile \
             deploy/litellm/litellm-config.prod.yaml \
-            deploy@${{ secrets.DROPLET_HOST }}:/opt/agent-core-demo/
+            deploy@${{ secrets.DROPLET_HOST }}:/opt/graph-agent-core/
           rsync -az --delete -e "ssh -i ~/.ssh/deploy_key -o UserKnownHostsFile=~/.ssh/known_hosts" \
             postgres-init/ \
-            deploy@${{ secrets.DROPLET_HOST }}:/opt/agent-core-demo/postgres-init/
+            deploy@${{ secrets.DROPLET_HOST }}:/opt/graph-agent-core/postgres-init/
           # otel-collector-agent + promtail configs (docker-compose.prod.yml's
           # observability sidecars) — this app droplet only ever needs its
           # OWN agent-side configs, not the gateway-side ones the
           # deploy-observability job below ships to the other droplet.
           rsync -az --delete -e "ssh -i ~/.ssh/deploy_key -o UserKnownHostsFile=~/.ssh/known_hosts" \
             observability/ \
-            deploy@${{ secrets.DROPLET_HOST }}:/opt/agent-core-demo/observability/
+            deploy@${{ secrets.DROPLET_HOST }}:/opt/graph-agent-core/observability/
 
       - name: Pull new images and restart
         env:
@@ -149,14 +149,14 @@ jobs:
         run: |
           ssh -i ~/.ssh/deploy_key -o UserKnownHostsFile=~/.ssh/known_hosts \
             deploy@${{ secrets.DROPLET_HOST }} \
-            "cd /opt/agent-core-demo && \
+            "cd /opt/graph-agent-core && \
              IMAGE_TAG=$IMAGE_TAG docker compose --project-directory . -f deploy/compose/docker-compose.prod.yml pull && \
              IMAGE_TAG=$IMAGE_TAG docker compose --project-directory . -f deploy/compose/docker-compose.prod.yml up -d --remove-orphans && \
              rm -f docker-compose.prod.yml Caddyfile litellm-config.prod.yaml && \
              docker image prune -f"
           # The rm above is a one-time migration, safe to drop once both
           # droplets have deployed from this layout: before deploy/ existed
-          # these three files were rsynced flat into /opt/agent-core-demo/.
+          # these three files were rsynced flat into /opt/graph-agent-core/.
           # Left behind, a stale docker-compose.prod.yml there would still
           # run (its ./Caddyfile mount resolves to the stale flat copy) and
           # silently recreate containers from frozen config. It runs only

@@ -94,7 +94,7 @@ def test_one_model_that_cannot_load_does_not_take_the_other_endpoints_down(tmp_p
         'revision = "5c38ec7c405ec4b44b94cc5a9bb96e735b38267a"\npooling = "cls"\nmax_length = 512\npad_token = "[PAD]"\nlicence = "MIT"\n'
     )
     container = (
-        DockerContainer("agent-core-demo-ml-service:test")
+        DockerContainer("graph-agent-core-ml-service:test")
         .with_exposed_ports(80)
         .with_volume_mapping(str(registry), "/app/models.toml", "ro")
     )

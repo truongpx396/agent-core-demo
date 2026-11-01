@@ -671,7 +671,7 @@ services:
       OTEL_EXPORTER_OTLP_ENDPOINT: ${AUTHLIMIT_OTLP_ENDPOINT-http://host.docker.internal:4318}
     volumes:
       # The signing keys, read-only. Outside the repository (the convention of `make mcp-gateway-secrets`): see `make authlimit-keys`.
-      - ${AUTHLIMIT_KEYS_DIR:-${HOME:-/tmp}/.cache/agent-core-demo-authlimit/keys}:/keys:ro
+      - ${AUTHLIMIT_KEYS_DIR:-${HOME:-/tmp}/.cache/graph-agent-core-authlimit/keys}:/keys:ro
     extra_hosts:
       - "host.docker.internal:host-gateway"   # so OTEL_EXPORTER_OTLP_ENDPOINT resolves on native Linux Docker too
     # Ready means "can decide a request": a signing key, usable Casdoor keys, a trustworthy revocation list. A replica that cannot is

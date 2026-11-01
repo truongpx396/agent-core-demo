@@ -37,7 +37,9 @@ logger = logging.getLogger(__name__)
 # The closed set the table's CHECK enforces. Embeddings and cron arrive with the PRs that route them here.
 KINDS = frozenset({"chat", "followups", "compaction", "subagent", "embedding", "cron"})
 
-_EVENT_NAMESPACE = uuid.uuid5(uuid.NAMESPACE_URL, "agent-core-demo/usage-event")
+# A seed, not a label: it is part of every stored event id, so changing it re-keys every event recorded afterwards (a retry of one recorded under
+# the old seed would insert twice). Renamed once, with the project (a test pins a value); never follow a rename of the project with it again.
+_EVENT_NAMESPACE = uuid.uuid5(uuid.NAMESPACE_URL, "graph-agent-core/usage-event")
 _warned_missing_table = False
 
 

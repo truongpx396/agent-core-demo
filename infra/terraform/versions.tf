@@ -32,7 +32,7 @@ terraform {
   # backend "s3" {
   #   endpoints                   = { s3 = "https://nyc3.digitaloceanspaces.com" }
   #   bucket                      = "<your-spaces-bucket>"
-  #   key                         = "agent-core-demo/terraform.tfstate"
+  #   key                         = "graph-agent-core/terraform.tfstate"
   #   region                      = "us-east-1" # required by the S3 backend schema; ignored by Spaces
   #   skip_credentials_validation = true
   #   skip_metadata_api_check     = true

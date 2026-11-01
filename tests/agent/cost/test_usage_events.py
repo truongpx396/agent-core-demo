@@ -81,6 +81,10 @@ def _price_models(monkeypatch, **per_alias):
 
 
 class TestEventId:
+    def test_the_id_of_a_known_call_never_changes(self):
+        """The seed is state: an id stored today must be the id a retry derives tomorrow, or the retry inserts a second row."""
+        assert usage_events.event_id_for("acme", "run--1-0") == "a97c553a-fbc5-5b05-be91-90ac5c9a2a6e"
+
     def test_it_is_a_pure_function_of_tenant_and_message(self):
         assert usage_events.event_id_for("acme", "run--1-0") == usage_events.event_id_for("acme", "run--1-0")
 

@@ -7,7 +7,7 @@ variable "do_token" {
 variable "project_name" {
   description = "Name for the DigitalOcean project grouping these resources, and prefix for resource names."
   type        = string
-  default     = "agent-core-demo"
+  default     = "graph-agent-core"
 }
 
 variable "environment" {
@@ -83,7 +83,7 @@ variable "enable_backups" {
 }
 
 variable "deploy_user" {
-  description = "Unprivileged Linux user created by cloud-init on BOTH droplets, owning /opt/agent-core-demo (app droplet) or /opt/agent-core-observability (observability droplet) and running `docker compose` there; the CI deploy workflow SSHes in as this user on each."
+  description = "Unprivileged Linux user created by cloud-init on BOTH droplets, owning /opt/graph-agent-core (app droplet) or /opt/agent-core-observability (observability droplet) and running `docker compose` there; the CI deploy workflow SSHes in as this user on each."
   type        = string
   default     = "deploy"
 }
