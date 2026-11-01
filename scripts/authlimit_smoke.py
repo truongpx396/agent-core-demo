@@ -901,7 +901,7 @@ def main() -> None:
     parser.add_argument("--api", default="https://api.localhost:8443")
     parser.add_argument("--mcp", default="https://mcp.localhost:8443")
     parser.add_argument("--auth", default="https://auth.localhost:8443")
-    parser.add_argument("--keys-dir", default=os.environ.get("AUTHLIMIT_KEYS_DIR") or "~/.cache/agent-core-demo-authlimit/keys")
+    parser.add_argument("--keys-dir", default=os.environ.get("AUTHLIMIT_KEYS_DIR") or "~/.cache/graph-agent-core-authlimit/keys")
     parser.add_argument("--compose", default="", help="the compose command of the running stack, as one string split like a shell would (make authlimit-smoke passes it); needed by revoke, logs and the destructive stages")
     parser.add_argument("--upstream", choices=["echo", "api"], default="echo",
                         help="what stands behind the door: the stub that reports what it received (make authlimit-up, the default) or the real API (make authlimit-up-app)")

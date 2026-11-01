@@ -75,7 +75,7 @@ def _shared_root() -> Path:
     `tmp_path_factory` basetemp.
     """
     digest = hashlib.sha1(str(_REPO_ROOT).encode()).hexdigest()[:12]
-    root = Path(tempfile.gettempdir()) / f"agent-core-demo-live-containers-{digest}"
+    root = Path(tempfile.gettempdir()) / f"graph-agent-core-live-containers-{digest}"
     root.mkdir(exist_ok=True)
     return root
 
@@ -458,7 +458,7 @@ def ensure_ml_service() -> dict[str, str]:
         import httpx
         from testcontainers.core.container import DockerContainer
 
-        tag = "agent-core-demo-ml-service:test"
+        tag = "graph-agent-core-ml-service:test"
         _build_image("docker/ml-service.Dockerfile", tag)
         container = DockerContainer(tag).with_exposed_ports(80)
         container.start()
@@ -491,7 +491,7 @@ def ensure_ml_service() -> dict[str, str]:
     return _acquire("ml-service", _start)
 
 
-_OLLAMA_HOME = Path.home() / ".cache" / "agent-core-demo-ollama-models"
+_OLLAMA_HOME = Path.home() / ".cache" / "graph-agent-core-ollama-models"
 
 
 def ensure_ollama(model: str, embed_model: str = "nomic-embed-text") -> dict[str, str]:

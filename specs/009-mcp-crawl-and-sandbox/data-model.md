@@ -29,7 +29,7 @@ The result is the **only** value in the sandbox's tag `{"agent_core_thread": <va
 |-------|-------|
 | id | assigned by the service; held only inside one call — never shown to the model |
 | metadata | `{"agent_core_thread": <tag>}` |
-| image | `SANDBOX_IMAGE` (default `agent-core-demo-sandbox:latest`: Python 3.12 + numpy + pandas) |
+| image | `SANDBOX_IMAGE` (default `graph-agent-core-sandbox:latest`: Python 3.12 + numpy + pandas) |
 | lifetime | `SANDBOX_TTL_SECONDS` = 1,800 s from creation (not renewed — renewal is disabled); the server's ceiling is 86,400 s |
 | contents | files the assistant wrote and whatever a command left; **lost silently** at expiry — the next call creates an empty sandbox |
 | network / limits | bridge networking, host-published port allocation, `pids_limit = 4096`; no memory or CPU limit configured; "no egress by default" is a claim about the third-party default and is **unverified** (A2) |
@@ -130,7 +130,7 @@ Breaker state is per process, in memory; transitions increment `agent_circuit_br
 | `CRAWL4AI_API_TOKEN` | empty; required by the server | yes |
 | `OPENSANDBOX_MCP_DOMAIN` | `localhost:8090` (compose: `opensandbox-server:8090`) | **no** |
 | `OPENSANDBOX_API_KEY` | empty; passed to the bridge in its **environment** (A5, resolved) | yes |
-| `SANDBOX_IMAGE` | `agent-core-demo-sandbox:latest` | **no** |
+| `SANDBOX_IMAGE` | `graph-agent-core-sandbox:latest` | **no** |
 | `SANDBOX_TTL_SECONDS` | `1800` | **no** |
 | `CRAWL_TIMEOUT_SECONDS` / `CRAWL_TOOL_TIMEOUT_SECONDS` / `_MAX_MARKDOWN_CHARS` | 30 / 40 / 20,000 | constants, `web_crawler.py` |
 | `SANDBOX_CALL_TIMEOUT_SECONDS` | 60 | constant, `sandbox_session.py` |

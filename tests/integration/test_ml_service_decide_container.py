@@ -27,7 +27,7 @@ from app.core import routing_policy
 
 pytestmark = pytest.mark.integration
 
-TAG = "agent-core-demo-ml-service:test"
+TAG = "graph-agent-core-ml-service:test"
 PRIMARY, FALLBACK = "bge-small-en-v1.5", "all-MiniLM-L6-v2"
 REPOS = {PRIMARY: "BAAI/bge-small-en-v1.5", FALLBACK: "sentence-transformers/all-MiniLM-L6-v2"}
 PINNED = {PRIMARY: "5c38ec7c405ec4b44b94cc5a9bb96e735b38267a", FALLBACK: "1110a243fdf4706b3f48f1d95db1a4f5529b4d41"}

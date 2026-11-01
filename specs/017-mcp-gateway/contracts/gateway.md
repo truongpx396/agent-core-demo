@@ -52,7 +52,7 @@ in-network dotless name (JWKS).
 
 ```bash
 make mcp-gateway-up && make mcp-gateway-bootstrap && make mcp-gateway-ca
-export NODE_EXTRA_CA_CERTS=~/.cache/agent-core-demo-mcp-gateway/caddy-root.crt   # before starting Claude Code
+export NODE_EXTRA_CA_CERTS=~/.cache/graph-agent-core-mcp-gateway/caddy-root.crt   # before starting Claude Code
 claude mcp add --transport http --callback-port 33418 --client-id <printed by the bootstrap> ecorp https://mcp.localhost:8443/ecorp/mcp
 # then /mcp in Claude Code, and log in as the printed user
 ```

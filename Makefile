@@ -17,16 +17,16 @@
 export PYTHONPATH := $(CURDIR)/packages/billing/src:$(CURDIR)/docker/ml-service$(if $(PYTHONPATH),:$(PYTHONPATH))
 
 DEFECTDOJO_VERSION := 3.3.100
-DEFECTDOJO_DIR := $(HOME)/.cache/agent-core-demo-defectdojo
+DEFECTDOJO_DIR := $(HOME)/.cache/graph-agent-core-defectdojo
 
 # The MCP gateway stack's generated secrets (the Casdoor database and admin passwords) live OUTSIDE the repo, in a private directory, and are
 # handed to compose as a second --env-file; `.env` is passed first when it exists so every other variable keeps coming from it.
-GATEWAY_DIR     := $(HOME)/.cache/agent-core-demo-mcp-gateway
+GATEWAY_DIR     := $(HOME)/.cache/graph-agent-core-mcp-gateway
 GATEWAY_SECRETS := $(GATEWAY_DIR)/secrets.env
 
 # The authlimit service's internal signing keys (specs/018) also live OUTSIDE the repo, in a private directory created with the host user's
 # ownership (so the container, which runs as that user, can read what only its owner may). Never committed, never in an image.
-AUTHLIMIT_DIR      := $(HOME)/.cache/agent-core-demo-authlimit
+AUTHLIMIT_DIR      := $(HOME)/.cache/graph-agent-core-authlimit
 AUTHLIMIT_KEYS_DIR := $(AUTHLIMIT_DIR)/keys
 
 # Every compose file lives under deploy/compose/, but they were written with
@@ -37,14 +37,17 @@ AUTHLIMIT_KEYS_DIR := $(AUTHLIMIT_DIR)/keys
 # `--project-directory .` the paths would resolve under deploy/compose/, the
 # root `.env` would be ignored, and the dev stack's project name (it sets no
 # `name:`, so it comes from the directory) would silently become `compose`,
-# orphaning every existing volume and breaking `sonar-scan`'s hard-coded
-# `agent-core-demo_default` network. Pinning it here (rather than editing
+# orphaning every existing volume and breaking `sonar-scan`'s network.
+# Pinning it here (rather than editing
 # every path to `../../`) is also what lets deploy.yml mirror this layout on
 # the droplets unchanged. Consequence: a bare `docker compose up` from the
 # repo root no longer finds a compose file — use `make up`, or pass the same
 # two flags by hand.
 COMPOSE     := docker compose --project-directory . -f deploy/compose/docker-compose.yml
 COMPOSE_OBS := docker compose --project-directory . -f deploy/compose/docker-compose.observability.yml
+# The dev stack's default network is `<project>_default`, and with no `name:` the project is the checkout directory's name (lowercased, characters
+# compose rejects dropped; COMPOSE_PROJECT_NAME wins when set). Derived, not typed: a clone or worktree under any name still finds its network.
+COMPOSE_NETWORK := $(or $(COMPOSE_PROJECT_NAME),$(shell basename "$(CURDIR)" | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9_-'))_default
 
 help:  ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
@@ -60,7 +63,7 @@ sandbox-up: sandbox-build  ## Start the containerized, authenticated OpenSandbox
 	$(COMPOSE) --profile sandbox up -d --build
 
 sandbox-build:  ## Build the shared sandbox base image (docker/sandbox.Dockerfile — python:3.12-slim + numpy + pandas, non-root, no network egress) that SANDBOX_IMAGE (app/core/config.py) references. Shared by every domain's sandbox tools, not ops-specific. A plain `docker build`, not a docker-compose service — opensandbox-server pulls it by tag from the same host Docker daemon it already has via its bind-mounted socket. Run again after editing that Dockerfile.
-	docker build -t agent-core-demo-sandbox:latest -f docker/sandbox.Dockerfile .
+	docker build -t graph-agent-core-sandbox:latest -f docker/sandbox.Dockerfile .
 
 pull-models:  ## Download the chat model (qwen2.5:7b, about 4.7 GB), the small model the test tiers default to (qwen2.5:3b, about 1.9 GB) and the embedding model onto the native macOS Ollama this stack talks to (see litellm-config.yaml)
 	ollama pull qwen2.5:7b
@@ -444,9 +447,9 @@ trivy:  ## Scan dependencies/Dockerfile+compose/secrets for known vulns (aquasec
 		--skip-dirs .venv,**/node_modules,.git,.mypy_cache,.ruff_cache,.pytest_cache,infra/terraform /repo
 
 trivy-image:  ## Build the app image (see Dockerfile) and scan it for OS/library vulnerabilities
-	docker build -t agent-core-demo:trivy .
+	docker build -t graph-agent-core:trivy .
 	docker run --rm -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy:0.74.0 image \
-		--severity HIGH,CRITICAL --ignore-unfixed agent-core-demo:trivy
+		--severity HIGH,CRITICAL --ignore-unfixed graph-agent-core:trivy
 
 semgrep:  ## Static analysis (SAST) over app/scripts/docker/Dockerfile via Docker (no local install) — same rulesets and hard gate as CI's `semgrep` job; see that job's own comment for why these `p/*` configs need no `semgrep login`
 	docker run --rm -v $(PWD):/src -w /src semgrep/semgrep:1.177.0 semgrep scan --error --metrics=off \
@@ -470,7 +473,7 @@ sonar-scan:  ## Run a scan against the persistent `make sonar-up` server (needs 
 	# publish) — NOT `--network host` (what CI's ephemeral job uses, see
 	# that job's own comment): host networking is Linux-only-reliable and
 	# this target needs to work the same on a Mac dev machine too.
-	docker run --rm --network agent-core-demo_default \
+	docker run --rm --network $(COMPOSE_NETWORK) \
 		-e SONAR_HOST_URL=http://sonarqube:9000 -e SONAR_TOKEN=$$SONAR_TOKEN \
 		-v $(PWD):/usr/src -w /usr/src \
 		sonarsource/sonar-scanner-cli@sha256:23ca0f137965d9dff2198074043fd48d386280bc5d0ccac8c8349cea4cf096a9

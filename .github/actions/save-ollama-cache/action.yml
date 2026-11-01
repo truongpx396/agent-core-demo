@@ -1,6 +1,6 @@
 name: Save the Ollama model cache
 description: >
-  Saves ~/.cache/agent-core-demo-ollama-models, the directory the CI jobs bind-mount into their
+  Saves ~/.cache/graph-agent-core-ollama-models, the directory the CI jobs bind-mount into their
   Ollama container, so the next run restores the models instead of downloading them again.
 
 # Why this exists instead of actions/cache's own post-job save. Two real failures, both read out
@@ -37,7 +37,7 @@ runs:
       if: inputs.cache-hit != 'true'
       shell: bash
       run: |
-        dir="$HOME/.cache/agent-core-demo-ollama-models"
+        dir="$HOME/.cache/graph-agent-core-ollama-models"
         if [ ! -d "$dir/models/manifests" ]; then
           echo "::notice::No Ollama model was pulled (the job stopped before it), so there is nothing to cache"
           echo "save=false" >> "$GITHUB_OUTPUT"
@@ -57,5 +57,5 @@ runs:
     - if: steps.ready.outputs.save == 'true'
       uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
-        path: ~/.cache/agent-core-demo-ollama-models
+        path: ~/.cache/graph-agent-core-ollama-models
         key: ${{ inputs.key }}

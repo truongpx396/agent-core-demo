@@ -78,7 +78,7 @@ def test_the_signing_keys_are_mounted_read_only_from_outside_the_repository():
     keys = [v for v in volumes if v.endswith(":/keys:ro")]
     assert len(keys) == 1, "the key directory is mounted exactly once, read-only"
     host_path = keys[0].split(":/keys")[0]
-    assert ".cache/agent-core-demo-authlimit" in host_path, "outside the repository, like make mcp-gateway-secrets"
+    assert ".cache/graph-agent-core-authlimit" in host_path, "outside the repository, like make mcp-gateway-secrets"
     assert not host_path.startswith("./"), "a path inside the repository would put a private key one `git add` from a commit"
 
 
@@ -224,7 +224,7 @@ def test_the_gateway_stack_target_starts_authlimit_and_makes_sure_a_key_exists_f
     assert up and "authlimit-keys-ensure" in up.group(1)
     assert "authlimit authlimit-echo caddy-gateway" in up.group(2)
     assert "AUTHLIMIT_KEYS_DIR=$(AUTHLIMIT_KEYS_DIR)" in makefile, "compose must be told where the host's key directory is"
-    assert "AUTHLIMIT_DIR      := $(HOME)/.cache/agent-core-demo-authlimit" in makefile
+    assert "AUTHLIMIT_DIR      := $(HOME)/.cache/graph-agent-core-authlimit" in makefile
     phony = makefile.split("\n", 1)[0].removeprefix(".PHONY:").split()
     for target in (
         "authlimit-test", "authlimit-build", "authlimit-keys", "authlimit-up", "authlimit-up-app", "authlimit-down", "authlimit-down-app",
