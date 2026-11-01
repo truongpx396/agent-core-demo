@@ -5,14 +5,15 @@
 **Hybrid RAG with verified citations, human-in-the-loop approval for every write, exactly-once side effects and full
 observability**, run by scalable stateless workers off a Redis Streams queue, behind a Go edge-auth front door.
 
-Around the graph sit tools (MCP as server and client), skills, subagents, a semantic cache, opt-in model routing and
-layered guardrails. A new use case is a domain plug-in, never a fork of the graph. The app talks only to LiteLLM, an
-OpenAI-compatible gateway, through tiered aliases (`chat`, `chat-medium`, `chat-strong`, `embed`), so moving to another
-model or provider, hosted or local (Ollama included), is a LiteLLM config change, not a code change.
+Around the graph sit tools (MCP as server and client), skills, subagents, a semantic cache, opt-in model routing, layered
+guardrails and Langfuse tracing (plus OpenTelemetry metrics). A new use case is a domain plug-in, never a fork of the
+graph. The app talks only to LiteLLM, an OpenAI-compatible gateway, through tiered aliases (`chat`, `chat-medium`,
+`chat-strong`, `embed`), so moving to another model or provider, hosted or local (Ollama included), is a LiteLLM config
+change, not a code change.
 
-[![CI](https://github.com/truongpx396/agent-core-demo/actions/workflows/ci.yml/badge.svg)](https://github.com/truongpx396/agent-core-demo/actions/workflows/ci.yml)
+[![CI](https://github.com/truongpx396/graph-agent-core/actions/workflows/ci.yml/badge.svg)](https://github.com/truongpx396/graph-agent-core/actions/workflows/ci.yml)
 [![Python](https://img.shields.io/badge/python-3.13-3776AB?logo=python&logoColor=white)](#-quickstart)
-[![Stack](https://img.shields.io/badge/Stack-LangGraph%20%C2%B7%20LiteLLM%20%C2%B7%20Qdrant%20%C2%B7%20Postgres%20%C2%B7%20Redis-1f6feb)](#-architecture)
+[![Stack](https://img.shields.io/badge/Stack-LangGraph%20%C2%B7%20LiteLLM%20%C2%B7%20Qdrant%20%C2%B7%20Postgres%20%C2%B7%20Redis%20%C2%B7%20Langfuse-1f6feb)](#-architecture)
 [![LLM](https://img.shields.io/badge/LLM-any%20OpenAI--compatible%20via%20LiteLLM-2ea44f)](#-retrieval-models-and-routing)
 [![Isolation](https://img.shields.io/badge/Isolation-multi--tenant%20%2B%20principal-8250df)](#-safety-model)
 [![Domains](https://img.shields.io/badge/Domains-multi--domain%2C%20one%20graph-e36209)](#-example-domains)
@@ -54,7 +55,7 @@ model or provider, hosted or local (Ollama included), is a LiteLLM config change
 | 🔀 Model gateway | **LiteLLM** proxy: one OpenAI-compatible API over any provider, retries, fallbacks, tiered aliases (`chat`, `chat-medium`, `chat-strong`, `embed`) |
 | 🔎 Retrieval | **Qdrant**: dense + BM25 hybrid search, metadata pre-filtering |
 | 💾 State | **Postgres** (checkpoints, app data, usage events), **Redis** (Streams queue, semantic cache) |
-| 📈 Observability | **Langfuse** traces, **OpenTelemetry** metrics, structlog JSON logs, optional Grafana/Loki/Prometheus |
+| 📈 Observability | **Langfuse** tracing (one trace per turn, grouped by `thread_id`), **OpenTelemetry** metrics, structlog JSON logs, optional Grafana/Loki/Prometheus |
 | ⚡ API | **FastAPI** + Pydantic: SSE chat, approval resume/cancel, uploads, built-in web UI |
 | 🚪 Edge | **Caddy** + **authlimit** (Go) + **Casdoor**: OAuth 2.1 tokens verified offline, per-tenant and per-person rate limits |
 
