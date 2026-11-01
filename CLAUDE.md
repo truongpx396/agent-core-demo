@@ -1,8 +1,8 @@
 # CLAUDE.md
 
-A production-shaped LangGraph RAG agent: LiteLLM proxy → Ollama, Qdrant, Postgres,
-Redis Streams, Langfuse, FastAPI. Three example domains (support, ops, sales) run on one
-unmodified graph. Python 3.13.
+Graph Agent Core: a production-shaped, multi-tenant, multi-domain LangGraph RAG agent. LiteLLM
+proxy → any OpenAI-compatible LLM (Ollama in dev), Qdrant, Postgres, Redis Streams, Langfuse,
+FastAPI. Four example domains (Ecorp, support, ops, sales) run on one unmodified graph. Python 3.13.
 
 Read these before changing behavior; they hold the reasoning this file deliberately omits:
 - `ARCHITECTURE.md` — the hexagonal layout: rings, the ports and their adapters, the dependency rule and the tests that enforce it, how to add a port, and what is not done.

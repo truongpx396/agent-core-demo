@@ -13,7 +13,7 @@ loop for both sending and any handoff decision.
 
 Meant to be wired to real cron, e.g.:
 
-    0 9 * * * cd /path/to/agent-core-demo && python -m scripts.followup_sweep
+    0 9 * * * cd /path/to/graph-agent-core && python -m scripts.followup_sweep
 
 Each due follow-up is marked 'done' once swept (crm_followups.status) so a
 re-run doesn't redraft the same nudge tomorrow.

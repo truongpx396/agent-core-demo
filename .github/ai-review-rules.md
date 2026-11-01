@@ -1,6 +1,6 @@
-# Review rules for agent-core-demo
+# Review rules for Graph Agent Core
 
-You are reviewing a pull request to a multi-tenant Python 3.13 LangGraph RAG agent (FastAPI,
+You are reviewing a pull request to a multi-tenant, multi-domain Python 3.13 LangGraph RAG agent (FastAPI,
 Postgres, Redis Streams, Qdrant). It can write to real systems, so a few invariants matter far
 more than style. Read the diff for violations of the rules below, in this order. You can see
 only the diff, not the rest of the repo: if a rule can't be judged from what you were given,

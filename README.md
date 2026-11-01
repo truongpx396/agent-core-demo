@@ -1,18 +1,22 @@
-# 🤖 agent-core-demo — Production-Shaped RAG Agent
+# 🤖 Graph Agent Core — Production-Shaped RAG Agent
 
-### A multi-tenant LangGraph agent with human-approved writes. Runs on Ollama or any OpenAI-compatible LLM
+### A multi-tenant, multi-domain LangGraph agent with human-in-the-loop approval. Runs on any OpenAI-compatible LLM
 
-**Hybrid RAG, mandatory approval for every write, exactly-once side effects and full observability**, served through a
-Redis Streams queue behind a Go edge-auth front door. Run it against Ollama or any OpenAI-compatible endpoint; the shipped Terraform
-deploys it to a DigitalOcean droplet. The app talks only to LiteLLM aliases (`chat`, `embed`), so changing
-provider is a LiteLLM config change, not a code change.
+**Hybrid RAG with verified citations, human-in-the-loop approval for every write, exactly-once side effects and full
+observability**, run by scalable stateless workers off a Redis Streams queue, behind a Go edge-auth front door.
+
+Around the graph sit tools (MCP as server and client), skills, subagents, a semantic cache, opt-in model routing and
+layered guardrails. A new use case is a domain plug-in, never a fork of the graph. The app talks only to LiteLLM, an
+OpenAI-compatible gateway, through tiered aliases (`chat`, `chat-medium`, `chat-strong`, `embed`), so moving to another
+model or provider, hosted or local (Ollama included), is a LiteLLM config change, not a code change.
 
 [![CI](https://github.com/truongpx396/agent-core-demo/actions/workflows/ci.yml/badge.svg)](https://github.com/truongpx396/agent-core-demo/actions/workflows/ci.yml)
 [![Python](https://img.shields.io/badge/python-3.13-3776AB?logo=python&logoColor=white)](#-quickstart)
 [![Stack](https://img.shields.io/badge/Stack-LangGraph%20%C2%B7%20LiteLLM%20%C2%B7%20Qdrant%20%C2%B7%20Postgres%20%C2%B7%20Redis-1f6feb)](#-architecture)
-[![LLM](https://img.shields.io/badge/LLM-Ollama%20%C2%B7%20any%20OpenAI--compatible-2ea44f)](#-quickstart)
-[![Isolation](https://img.shields.io/badge/Isolation-tenant%20%2B%20principal-8250df)](#-safety-model)
-[![Writes](https://img.shields.io/badge/Writes-human--approved%20%2B%20exactly--once-d1242f)](#-safety-model)
+[![LLM](https://img.shields.io/badge/LLM-any%20OpenAI--compatible%20via%20LiteLLM-2ea44f)](#-retrieval-models-and-routing)
+[![Isolation](https://img.shields.io/badge/Isolation-multi--tenant%20%2B%20principal-8250df)](#-safety-model)
+[![Domains](https://img.shields.io/badge/Domains-multi--domain%2C%20one%20graph-e36209)](#-example-domains)
+[![Writes](https://img.shields.io/badge/Writes-human--in--the--loop%20%2B%20exactly--once-d1242f)](#-safety-model)
 [![Spec Kit](https://img.shields.io/badge/Spec%20Kit-18%20specs-0969da)](specs/)
 
 * * *
@@ -47,16 +51,17 @@ provider is a LiteLLM config change, not a code change.
 | Layer | Tool |
 |---|---|
 | 🧠 Agent runtime | **LangGraph**: typed state, Postgres checkpointer, an approval pause that survives a restart |
-| 🔀 Model gateway | **LiteLLM** proxy: retries, fallbacks, alias routing (Ollama in dev, a hosted endpoint in prod) |
+| 🔀 Model gateway | **LiteLLM** proxy: one OpenAI-compatible API over any provider, retries, fallbacks, tiered aliases (`chat`, `chat-medium`, `chat-strong`, `embed`) |
 | 🔎 Retrieval | **Qdrant**: dense + BM25 hybrid search, metadata pre-filtering |
 | 💾 State | **Postgres** (checkpoints, app data, usage events), **Redis** (Streams queue, semantic cache) |
 | 📈 Observability | **Langfuse** traces, **OpenTelemetry** metrics, structlog JSON logs, optional Grafana/Loki/Prometheus |
 | ⚡ API | **FastAPI** + Pydantic: SSE chat, approval resume/cancel, uploads, built-in web UI |
 | 🚪 Edge | **Caddy** + **authlimit** (Go) + **Casdoor**: OAuth 2.1 tokens verified offline, per-tenant and per-person rate limits |
 
-- 🔎 **Hybrid RAG**: dense + BM25, RRF-fused, cross-encoder reranked; numbered citations checked against what retrieval returned.
-- 🏢 **Tenant isolation**: every read and write is scoped to tenant + principal *inside the store query*, never a Python post-filter.
-- ✋ **Mandatory approval**: any `mutating`/`outward` tool call pauses for a human. No flag turns this off.
+- 🔎 **Hybrid RAG with citations**: dense + BM25, RRF-fused, cross-encoder reranked; numbered citations checked against what retrieval returned.
+- 🏢 **Multi-tenant**: every read and write is scoped to tenant + principal *inside the store query*, never a Python post-filter.
+- 🧩 **Multi-domain**: a domain is a manifest plus a plugin (`store.py`, `tools.py`, `domain.py`); Ecorp, support, ops and sales run on one unmodified graph.
+- ✋ **Human-in-the-loop approval**: any `mutating`/`outward` tool call pauses for a human, and the pause survives a restart. No flag turns this off.
 - 1️⃣ **Exactly-once side effects**: keyed by the provider's `tool_call_id`, so a retry, crash-reclaim or double-submit can't write, send or spend twice.
 - ⚡ **Semantic cache**: repeated questions skip retrieval and the LLM; a turn that called a non-read-only tool is never cached.
 - 🧰 **Tools**: calculator, hybrid search, a fixed (never text-to-SQL) Postgres query, web crawling and search, an isolated code sandbox; MCP as server and client.
@@ -65,7 +70,7 @@ provider is a LiteLLM config change, not a code change.
 - 🧭 **Model routing** (off by default): per-turn choice of `chat` / `chat-medium` / `chat-strong`, plus a reusable label-set decision API.
 - 🔐 **Edge authentication**: a Go front door turns a Casdoor login into a signed identity the API trusts; MCP is served over OAuth 2.1.
 - 📱 **Interfaces**: CLI, HTTP API, web UI and Telegram, all publishing to one queue, one worker pool, one streaming core.
-- 🚦 **Operable**: independently scaled workers, dependency health checks, cost caps, optional prepaid credit billing, Terraform + automated deploys.
+- 🚦 **Scalable, stateless workers**: a turn keeps no in-process state (it lives in Postgres checkpoints), so any replica can take any job, and a dead worker's turn is reclaimed. Also dependency health checks, cost caps, optional prepaid credit billing, Terraform + automated deploys.
 
 * * *
 
@@ -465,7 +470,7 @@ seam, so the identity is the **launcher's**, never a tool argument: set `MCP_TEN
 only the principal) in `.env` or in the client's server entry, which runs `python -m app.mcp.server` from the repo root:
 
 ```json
-"env": { "PYTHONPATH": "/path/to/agent-core-demo/packages/billing/src", "MCP_TENANT": "ecorp", "MCP_PRINCIPAL": "alice" }
+"env": { "PYTHONPATH": "/path/to/graph-agent-core/packages/billing/src", "MCP_TENANT": "ecorp", "MCP_PRINCIPAL": "alice" }
 ```
 
 A server started without them exits and says why on stderr. The tools declare themselves read-only; each call writes one
