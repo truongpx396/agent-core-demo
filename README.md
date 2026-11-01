@@ -210,7 +210,7 @@ The same code runs in both; only configuration and the compose file differ.
 | **Services** | Full stack: Langfuse, MinIO, open-webui, crawl4ai, exporters, opt-in app/sandbox/quality profiles | `api`, `agent-worker`, `ingest-worker`, Postgres, Redis, Qdrant, LiteLLM, `ml-service`, behind Caddy (TLS) |
 | **Object storage** | MinIO | DigitalOcean Spaces (any S3-compatible store) |
 | **Observability** | Optional `make obs-up` | Separate droplet, fed by sidecars over the private VPC |
-| **Config** | `.env` from `.env.example` | `/opt/agent-core-demo/.env` from `deploy/env/prod.env.example`, created once by hand, never touched by CI |
+| **Config** | `.env` from `.env.example` | `/opt/graph-agent-core/.env` from `deploy/env/prod.env.example`, created once by hand, never touched by CI |
 | **Cost caps** | Local models cost $0 | `MAX_COST_USD_PER_TURN=0.50`, `MAX_COST_USD_PER_TENANT_PER_DAY=20.0`; monthly and per-person limits off at `0` ([COST_GOVERNANCE.md](COST_GOVERNANCE.md)) |
 | **Credits, payments** | Off | Off until `CREDITS_PER_USD` is set (a price is your decision); `BILLING_PROVIDERS` enables a signed webhook ([Credit billing](#credit-billing-optional)) |
 | **Provisioning** | `make up` | Terraform (human-run) + `deploy.yml` (automatic after CI passes on `main`) |

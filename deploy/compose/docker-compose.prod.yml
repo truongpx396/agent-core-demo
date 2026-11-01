@@ -18,15 +18,15 @@
 # Deployed by .github/workflows/deploy.yml: builds+pushes the app image
 # (root Dockerfile) and the ml-service image (docker/ml-service.Dockerfile)
 # to GHCR, rsyncs this file + Caddyfile + litellm-config.prod.yaml +
-# postgres-init/ + observability/ to /opt/agent-core-demo on the droplet, then runs
+# postgres-init/ + observability/ to /opt/graph-agent-core on the droplet, then runs
 # `docker compose -f docker-compose.prod.yml pull && up -d` over SSH —
 # api/agent-worker/ingest-worker/ml-service below all reference `image:`,
 # never `build:`, so the droplet only ever pulls layers, it never compiles
 # onnxruntime's dependency chain itself. The droplet's own
-# /opt/agent-core-demo/.env is created once by hand (copy
+# /opt/graph-agent-core/.env is created once by hand (copy
 # deploy/env/prod.env.example, fill in real secrets) and never touched by CI; see
 # infra/README.md's first-time-setup section.
-name: agent-core-demo
+name: graph-agent-core
 
 # The agent-worker and ingest-worker roles run the app's image, which carries the API's HEALTHCHECK
 # (Dockerfile): a probe of http://localhost:8000/health/ready. A worker binds no port, so inheriting it
