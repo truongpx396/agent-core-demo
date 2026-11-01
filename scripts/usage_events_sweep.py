@@ -7,7 +7,7 @@ never loses spend still inside it). Billing keeps its own record with its own re
 
 Like the sweeps before it (`python -m credit_billing.cli.inbox_sweep`), a fixed pipeline, deliberately NOT run
 automatically: spend is read from this table, so wire it to cron once your retention policy is decided, e.g.
-`30 3 * * 0 cd /path/to/agent-core-demo && python -m scripts.usage_events_sweep`. Export older rows first if
+`30 3 * * 0 cd /path/to/graph-agent-core && python -m scripts.usage_events_sweep`. Export older rows first if
 you need them (audit, invoicing). A re-run before more events age out deletes nothing.
 """
 import asyncio

@@ -1,4 +1,4 @@
-# agent-core-demo Constitution
+# Graph Agent Core Constitution
 
 ## Core Principles
 
@@ -295,4 +295,4 @@ states the intent and the conflicting document MUST be corrected.
 - **Runtime guidance**: day-to-day development guidance for agents and contributors lives in
   `CLAUDE.md` and `.claude/rules/`; those files MUST NOT contradict this constitution.
 
-**Version**: 1.4.0 | **Ratified**: 2026-10-01 | **Last Amended**: 2026-10-27
+**Version**: 1.4.1 | **Ratified**: 2026-10-01 | **Last Amended**: 2026-11-01

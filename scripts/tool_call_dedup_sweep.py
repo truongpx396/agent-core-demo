@@ -12,7 +12,7 @@ plain DELETE, no LLM involved.
 
 Meant to be wired to real cron, e.g.:
 
-    0 3 * * * cd /path/to/agent-core-demo && python -m scripts.tool_call_dedup_sweep
+    0 3 * * * cd /path/to/graph-agent-core && python -m scripts.tool_call_dedup_sweep
 
 Idempotent and safe to run as often as you like — a re-run before the next
 row goes stale just deletes nothing.
