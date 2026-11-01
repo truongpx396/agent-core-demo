@@ -100,9 +100,9 @@ degrades to defaults.
 
 | `localStorage` key | Content | Used by |
 |--------------------|---------|---------|
-| `agent-core-demo:theme` | `"light"` / `"dark"` | theme toggle |
-| `agent-core-demo:tenants` | recently used tenant ids | tenant selector |
-| `agent-core-demo:principals` | recently used principal ids | principal selector |
+| `graph-agent-core:theme` | `"light"` / `"dark"` | theme toggle |
+| `graph-agent-core:tenants` | recently used tenant ids | tenant selector |
+| `graph-agent-core:principals` | recently used principal ids | principal selector |
 
 In-memory only: the active `thread_id`, the active turn (`activeTurn`: thread, phase, event handler), the attached image.
 

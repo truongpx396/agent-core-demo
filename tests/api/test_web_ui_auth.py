@@ -213,12 +213,12 @@ HARNESS = textwrap.dedent(
       {
         const good = jwt({ sub: "u1", name: "alice", owner: "ecorp", exp: NOW + 600 });
         const stale = jwt({ sub: "u1", exp: NOW - 600 });
-        const live = makeEnv({ config: JSON.stringify(IDENTITY), session: { "agent-core-demo:access-token": good }, fetchImpl: () => json(200, {}) });
+        const live = makeEnv({ config: JSON.stringify(IDENTITY), session: { "graph-agent-core:access-token": good }, fetchImpl: () => json(200, {}) });
         await live.window.agentAuth.ready;
-        const dead = makeEnv({ config: JSON.stringify(IDENTITY), session: { "agent-core-demo:access-token": stale }, fetchImpl: () => json(200, {}) });
+        const dead = makeEnv({ config: JSON.stringify(IDENTITY), session: { "graph-agent-core:access-token": stale }, fetchImpl: () => json(200, {}) });
         await dead.window.agentAuth.ready;
         out.with_token = { headers: live.window.agentAuth.decorate({ "X-Tenant-Id": "x", "X-Domain": "ecorp" }), good };
-        out.expired = { headers: dead.window.agentAuth.decorate({ "X-Domain": "ecorp" }), kept: dead.sessionStorage.getItem("agent-core-demo:access-token") };
+        out.expired = { headers: dead.window.agentAuth.decorate({ "X-Domain": "ecorp" }), kept: dead.sessionStorage.getItem("graph-agent-core:access-token") };
       }
       // 4. starting a sign-in: S256 challenge of the stored verifier, a state, the resource, the tenant's client id, nothing secret in the URL
       {
@@ -226,7 +226,7 @@ HARNESS = textwrap.dedent(
         await env.window.agentAuth.ready;
         await env.window.agentAuth.signIn("  ecorp ");
         const url = new URL(env.location.assigned);
-        const flow = JSON.parse(env.sessionStorage.getItem("agent-core-demo:pkce-flow"));
+        const flow = JSON.parse(env.sessionStorage.getItem("graph-agent-core:pkce-flow"));
         out.sign_in = {
           origin: url.origin, path: url.pathname, params: Object.fromEntries(url.searchParams), flow,
           expectedChallenge: createHash("sha256").update(flow.verifier).digest("base64url"),
@@ -240,11 +240,11 @@ HARNESS = textwrap.dedent(
       {
         const first = makeEnv({ config: JSON.stringify(IDENTITY), fetchImpl: () => json(200, {}) });
         await first.window.agentAuth.signIn("ecorp");
-        const flowJson = first.sessionStorage.getItem("agent-core-demo:pkce-flow");
+        const flowJson = first.sessionStorage.getItem("graph-agent-core:pkce-flow");
         const flow = JSON.parse(flowJson);
         const token = jwt({ sub: "u1", owner: "ecorp", exp: NOW + 600 });
         const env = makeEnv({
-          config: JSON.stringify(IDENTITY), search: "?code=CODE123&state=" + flow.state, session: { "agent-core-demo:pkce-flow": flowJson },
+          config: JSON.stringify(IDENTITY), search: "?code=CODE123&state=" + flow.state, session: { "graph-agent-core:pkce-flow": flowJson },
           fetchImpl: () => json(200, { access_token: token }),
         });
         await env.window.agentAuth.ready;
@@ -252,30 +252,30 @@ HARNESS = textwrap.dedent(
         out.return_ok = {
           calls: env.fetchCalls.length, url: call && call.url, method: call && call.init.method, body: call && Object.fromEntries(new URLSearchParams(call.init.body)),
           order: env.events.filter((e) => e === "replaceState" || e === "fetch"), cleaned: env.location.cleaned, search: env.location.search,
-          stored: env.sessionStorage.getItem("agent-core-demo:access-token") === token, flowLeft: env.sessionStorage.getItem("agent-core-demo:pkce-flow"),
+          stored: env.sessionStorage.getItem("graph-agent-core:access-token") === token, flowLeft: env.sessionStorage.getItem("graph-agent-core:pkce-flow"),
           verifier: flow.verifier,
         };
       }
       // 6. the way back with a state that is not ours, with no flow at all, and with an error: no request, no token
       for (const [name, search, session] of [
-        ["wrong_state", "?code=C&state=NOT-OURS", { "agent-core-demo:pkce-flow": JSON.stringify({ state: "ours", verifier: "v", org: "ecorp" }) }],
+        ["wrong_state", "?code=C&state=NOT-OURS", { "graph-agent-core:pkce-flow": JSON.stringify({ state: "ours", verifier: "v", org: "ecorp" }) }],
         ["no_flow", "?code=C&state=anything", {}],
         ["refused", "?error=access_denied&state=s", {}],
       ]) {
         const env = makeEnv({ config: JSON.stringify(IDENTITY), search, session, fetchImpl: () => json(200, { access_token: "should-never-be-stored" }) });
         await env.window.agentAuth.ready;
-        out[name] = { calls: env.fetchCalls.length, token: env.sessionStorage.getItem("agent-core-demo:access-token"), cleaned: env.location.cleaned,
-                      flowLeft: env.sessionStorage.getItem("agent-core-demo:pkce-flow") };
+        out[name] = { calls: env.fetchCalls.length, token: env.sessionStorage.getItem("graph-agent-core:access-token"), cleaned: env.location.cleaned,
+                      flowLeft: env.sessionStorage.getItem("graph-agent-core:pkce-flow") };
       }
       // 7. a 401 from this origin forgets the token; one from the authorization server does not
       {
         const token = jwt({ sub: "u1", exp: NOW + 600 });
-        const env = makeEnv({ config: JSON.stringify(IDENTITY), session: { "agent-core-demo:access-token": token }, fetchImpl: () => json(401, {}) });
+        const env = makeEnv({ config: JSON.stringify(IDENTITY), session: { "graph-agent-core:access-token": token }, fetchImpl: () => json(401, {}) });
         await env.window.agentAuth.ready;
         await env.window.fetch(ISSUER + "/api/login", { method: "POST" });
-        const afterForeign = env.sessionStorage.getItem("agent-core-demo:access-token");
+        const afterForeign = env.sessionStorage.getItem("graph-agent-core:access-token");
         await env.window.fetch("/chat/sessions", {});
-        out.on_401 = { afterForeign: afterForeign === token, afterOwn: env.sessionStorage.getItem("agent-core-demo:access-token"), event: env.events.includes("agent-auth-changed") };
+        out.on_401 = { afterForeign: afterForeign === token, afterOwn: env.sessionStorage.getItem("graph-agent-core:access-token"), event: env.events.includes("agent-auth-changed") };
       }
       process.stdout.write(JSON.stringify(out));
     })().catch((err) => { console.error(err); process.exit(1); });
@@ -328,7 +328,7 @@ def test_signing_in_sends_the_person_to_the_authorization_server_with_a_pkce_cha
     assert p["state"] == s["flow"]["state"] and len(p["state"]) >= 16
     assert len(s["flow"]["verifier"]) >= 43, "RFC 7636: at least 43 characters"
     assert s["flow"]["verifier"] not in json.dumps(p), "the verifier itself never leaves the tab until the code exchange"
-    assert s["localKeys"] == ["agent-core-demo:organization"], "the only thing kept in local storage is which organization was typed"
+    assert s["localKeys"] == ["graph-agent-core:organization"], "the only thing kept in local storage is which organization was typed"
     assert s["fetches"] == 0
 
 
