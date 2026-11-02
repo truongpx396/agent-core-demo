@@ -179,7 +179,7 @@ authlimit-revoke:  ## Void every token issued to a person, on every authlimit re
 	@test -n "$(TENANT)" -a -n "$(SUB)" || { echo "usage: make authlimit-revoke TENANT=<tenant> SUB=<subject>"; exit 2; }
 	$(GATEWAY_COMPOSE) exec -T --index 1 authlimit /authlimit revoke --tenant "$(TENANT)" --sub "$(SUB)"
 
-telegram:  ## Start the Telegram bot channel for the Ecorp domain (needs TELEGRAM_BOT_TOKEN in .env, and `make agent-worker` running: messages go through the queue as unattended turns; see app/channels/telegram.py)
+telegram:  ## Start the Telegram bot channel for the Ecorp domain (needs TELEGRAM_BOT_TOKEN in .env, and `make agent-worker` running: messages reach the API through the front door; a turn that needs approval shows Approve/Reject buttons; see app/channels/telegram.py and specs/021)
 	python -m app.channels.telegram
 
 telegram-person:  ## Add, disable or re-enable a Telegram person at the authorization server (specs/020): make telegram-person ACTION=add|disable|enable TELEGRAM_ID=<telegram user id>. Needs TELEGRAM_PERSON_SECRET in .env and the gateway stack's Casdoor
