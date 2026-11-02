@@ -158,6 +158,7 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--tenant", action="append", default=[], help="a tenant (Casdoor organization) to create an Ecorp-directory application for; repeatable (default: ecorp)")
     parser.add_argument("--ops-org", default=os.environ.get("MCP_GATEWAY_OPS_TENANTS", "ops-team").split(",")[0].strip() or "ops-team")
     parser.add_argument("--callback-port", type=int, default=33418, help="the fixed port of the client's OAuth callback (claude mcp add --callback-port)")
+    parser.add_argument("--cli-callback-port", type=int, default=33420, help="the fixed port of `make chat`'s sign-in callback (CHANNEL_CLI_CALLBACK_PORT, specs/020)")
     parser.add_argument(
         "--token-hours",
         type=int,
@@ -175,6 +176,7 @@ def main(argv: list[str] | None = None) -> None:
         sys.exit("CASDOOR_ADMIN_PASSWORD is not set (make mcp-gateway-bootstrap passes it)")
     public = os.environ.get("MCP_GATEWAY_PUBLIC_URL", "https://mcp.localhost:8443").rstrip("/")
     callback = f"http://localhost:{args.callback_port}/callback"
+    cli_callback = f"http://localhost:{args.cli_callback_port}/callback"
     api_public = os.environ.get("AUTHLIMIT_AUDIENCE", "https://api.localhost:8443").rstrip("/")  # the chat API's resource identifier (the token's audience)
 
     try:
@@ -192,7 +194,7 @@ def main(argv: list[str] | None = None) -> None:
                 tenant,
                 "api:chat",
                 f"chat API for {tenant}",
-                [f"{api_public}/", API_SMOKE_CALLBACK],
+                [f"{api_public}/", API_SMOKE_CALLBACK, cli_callback],  # the page, the smoke check, and `make chat`
                 args.token_hours,
                 kind="API",
                 client_id=f"api-{tenant}",  # the rule the web page uses to find a tenant's client (app/api/web_auth.py::CLIENT_ID_PREFIX)

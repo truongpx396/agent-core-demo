@@ -58,8 +58,8 @@ request pending; `_reclaim_loop` (every worker runs one) sweeps those via `queue
 
 ## Who publishes
 
-The HTTP API (`/chat/stream/queued`, `/chat/resume`, `/chat/cancel`), and the CLI and Telegram channel through
-`app/job_queue/producer.py`. A `"turn"` carries `payload["unattended"]` when nobody can answer an approval
+The HTTP API (`/chat/stream/queued`, `/chat/resume`, `/chat/cancel`) and nothing else: the CLI and the Telegram channel
+are clients of those routes through the front door (specs/020). A `"turn"` carries `payload["unattended"]` when nobody can answer an approval
 prompt (Telegram): the worker then drives `astream_events_turn_unattended` (auto-declines any pause, never
 approves), and the flag survives a reclaim.
 """

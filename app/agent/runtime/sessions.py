@@ -21,9 +21,9 @@ logger = logging.getLogger(__name__)
 TITLE_MAX_CHARS = 60
 
 # Thread ids the Telegram channel derives itself (`app/channels/telegram.py::
-# _thread_id_for_chat` — `telegram:<chat id>`, a small predictable integer).
-# Reserved: HTTP callers may continue one they already own, but may never
-# *claim* an unused one, or they could squat a real chat user's conversation
+# _thread_id` — `telegram:<person>:<chat id>`, the person being the caller's own id).
+# Reserved: a caller may claim one only if it names THEM (app/api/routers/chat.py::
+# _require_conversation_owner), or they could squat a real chat user's conversation
 # before that user's first message.
 TELEGRAM_THREAD_PREFIX = "telegram:"
 

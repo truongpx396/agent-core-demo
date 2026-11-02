@@ -33,6 +33,7 @@ from app.core.config import (
 )
 from app.core.security import SecurityCtx
 from app.job_queue import queue
+from app.job_queue.queue import RESULTS_STREAM_TTL_SECONDS
 
 router = APIRouter()
 
@@ -94,10 +95,14 @@ async def _require_conversation_owner(
     `claim_with` is set only by a send, which may create a new conversation:
     the first claimant of an id owns it (the message becomes the session
     title). Resume and cancel only ever act on an existing one, so they
-    verify without claiming. A `telegram:`-prefixed id is never claimable over
-    HTTP — see `sessions.TELEGRAM_THREAD_PREFIX`.
+    verify without claiming. A `telegram:`-prefixed id is claimable only by the
+    caller it names (`telegram:<principal>:<chat>`, what the Telegram channel
+    sends): another caller can never squat a Telegram chat's conversation before
+    its owner writes — see `sessions.TELEGRAM_THREAD_PREFIX`.
     """
-    if claim_with is not None and not thread_id.startswith(sessions.TELEGRAM_THREAD_PREFIX):
+    prefix = sessions.TELEGRAM_THREAD_PREFIX
+    claimable = not thread_id.startswith(prefix) or thread_id.startswith(f"{prefix}{ctx['principal']}:")
+    if claim_with is not None and claimable:
         allowed = await sessions.claim_session(ctx, thread_id, claim_with, domain)
     else:
         allowed = await sessions.session_belongs_to(ctx, thread_id, domain)
@@ -139,16 +144,22 @@ async def chat_stream_queued(
     """
     await _require_conversation_owner(ctx, req.thread_id, domain, claim_with=req.message)
     client = queue.get_client()
-    digest = hashlib.sha256(
-        json.dumps([req.message, req.images or []]).encode()
-    ).hexdigest()
+    # A replay key names the attempt (a channel that is redelivered its input: GRAPH_PATTERNS.md 89) and holds for as long as the results
+    # stream lives, so a hit finds the first attempt's events and never a stream that expired under a live claim. Without one, identical content
+    # in a short window is the same attempt. Both claims are scoped to `thread_id`, which the check above made this caller's.
+    if req.replay_key is not None:
+        digest = hashlib.sha256(json.dumps(["replay", req.replay_key]).encode()).hexdigest()
+        claim_ttl = RESULTS_STREAM_TTL_SECONDS
+    else:
+        digest = hashlib.sha256(json.dumps([req.message, req.images or []]).encode()).hexdigest()
+        claim_ttl = CHAT_SUBMIT_DEDUP_TTL_SECONDS
     candidate_request_id = uuid.uuid4().hex
     request_id, is_new = await queue.claim_or_get_existing_submission(
         client,
         thread_id=req.thread_id,
         digest=digest,
         request_id=candidate_request_id,
-        ttl_seconds=CHAT_SUBMIT_DEDUP_TTL_SECONDS,
+        ttl_seconds=claim_ttl,
     )
     if is_new:
         try:
@@ -159,7 +170,9 @@ async def chat_stream_queued(
                 thread_id=req.thread_id,
                 ctx=ctx,
                 domain=domain,
+                require_approval=req.require_approval,
                 images=req.images or None,
+                unattended=req.unattended,
             )
         except Exception:
             # The claim above already landed — left as-is, it points at a

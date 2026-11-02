@@ -89,9 +89,19 @@ def test_the_chat_api_gets_one_public_client_per_tenant_with_its_own_scope(casdo
     assert api["organization"] == "ecorp"
     assert api["scope"] == "api:chat"
     assert api["kind"] == "API"
-    # The page signs in at its root URL; the smoke check at its own callback. Casdoor compares redirect URIs exactly.
-    assert api["redirect_uris"] == ["https://api.localhost:8443/", bootstrap.API_SMOKE_CALLBACK]
+    # The page signs in at its root URL; the smoke check and `make chat` at their own callbacks. Casdoor compares redirect URIs exactly.
+    assert api["redirect_uris"] == ["https://api.localhost:8443/", bootstrap.API_SMOKE_CALLBACK, "http://localhost:33420/callback"]
     assert apps["api-other-co"]["organization"] == "other-co", "the application belongs to the tenant's organization: that is what puts `owner` in the token"
+
+
+def test_the_cli_callback_port_is_the_one_the_cli_listens_on_and_can_be_moved(casdoor):
+    """`make chat` listens on CHANNEL_CLI_CALLBACK_PORT and Casdoor compares redirect URIs exactly (specs/020), so the bootstrap's default must be that
+    setting's default, and moving one means moving the other."""
+    from app.core.config import Settings
+
+    default = Settings.model_fields["channel_cli_callback_port"].default
+    assert f"http://localhost:{default}/callback" in by_name(casdoor())["api-ecorp"]["redirect_uris"]
+    assert "http://localhost:34000/callback" in by_name(casdoor(["--cli-callback-port", "34000"]))["api-ecorp"]["redirect_uris"]
 
 
 def test_the_chat_apis_clients_have_the_id_the_web_page_looks_for_and_the_mcp_ones_keep_a_generated_one(casdoor):

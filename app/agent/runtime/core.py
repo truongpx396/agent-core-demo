@@ -1,9 +1,9 @@
 """Shared agent runtime, run by `app/job_queue/agent_worker.py` and nothing else that serves chat.
 
 It centralises the compiled graph (singleton), per-thread system-prompt seeding and Langfuse callbacks, so
-memory and tracing behave the same whichever front door a turn came through: the FastAPI service, the CLI
-(`app/channels/chat.py`) and Telegram (`app/channels/telegram.py`) all publish turns to the queue
-(`app/job_queue/producer.py`) and a worker runs them here.
+memory and tracing behave the same whichever front door a turn came through: the CLI (`app/channels/chat.py`) and
+Telegram (`app/channels/telegram.py`) are clients of the FastAPI service, which publishes every turn to the queue,
+and a worker runs them here.
 
 ## Durable checkpointing (init_graph_async)
 

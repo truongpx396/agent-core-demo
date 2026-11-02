@@ -22,6 +22,29 @@ class ChatRequest(BaseModel):
             "fetched or decoded by this app itself."
         ),
     )
+    # The three below only ever make a turn STRICTER or safer to repeat: none can approve a call, skip the gate or widen what a person may
+    # do (constitution Principle II), so a caller may set them freely. A channel that cannot show an approval sets `unattended`.
+    require_approval: bool = Field(
+        default=False,
+        description="Ask for an approval before EVERY tool call, read-only ones included (`make chat-hitl`). Can only add approvals.",
+    )
+    unattended: bool = Field(
+        default=False,
+        description=(
+            "Nobody can answer an approval (the Telegram channel): the worker declines a pause and never approves it, "
+            "and the conversation is left ready for the next message (GRAPH_PATTERNS.md 89)."
+        ),
+    )
+    replay_key: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=200,
+        description=(
+            "Makes this request one attempt however often it is sent: a second request for the same conversation with the same key "
+            "streams the FIRST attempt's turn and starts none, for as long as its results stream lives. Scoped to the conversation, "
+            "and so to its owner."
+        ),
+    )
 
 
 class ResumeRequest(BaseModel):
