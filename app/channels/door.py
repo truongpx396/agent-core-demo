@@ -29,6 +29,7 @@ SIGNIN_MESSAGES = {
     "forbidden": "You are not allowed to use this assistant.",
     "unknown_person": "You are not registered yet. Ask an administrator to add you.",
     "credentials": "Your sign-in was refused. Sign in again and retry.",
+    "not_linked": "Your Telegram is not connected to an account yet. Send /login to connect it.",
     "unavailable": "The sign-in service is unavailable right now. Try again shortly.",
 }
 
@@ -165,10 +166,12 @@ class Door:
         async for event in self._stream("/chat/resume", {"thread_id": thread_id, "approved": approved}):
             yield event
 
-    async def cancel_turn(self, thread_id: str) -> None:
+    async def cancel_turn(self, thread_id: str, *, wait: bool = False) -> None:
         """Ask for the turn to stop, and return once the API has accepted the request without reading what it streams: it sets the cancel flag
         and publishes the cancel job BEFORE it begins to stream (app/api/routers/chat.py::chat_cancel), and the stream is only the paused-run
-        job's outcome, which nobody here waits for. Raises `DoorRefused` when the door or the API did not accept it, so a caller that logs can say why."""
-        async for event in self._stream("/chat/cancel", {"thread_id": thread_id}, read_body=False):
-            if event.get("type") == "error":
+        job's outcome, which nobody here waits for. `wait` reads that outcome too, for a caller that sends its next request on the same
+        conversation straight after (a stale pause cleared before a new message): without it the new turn can arrive before the cancel is done.
+        Raises `DoorRefused` when the door or the API did not accept it, so a caller that logs can say why."""
+        async for event in self._stream("/chat/cancel", {"thread_id": thread_id}, read_body=wait):
+            if event.get("type") == "error" and not (wait and event.get("code") == "cancelled"):
                 raise DoorRefused(str(event.get("content")))

@@ -578,6 +578,34 @@ class Settings(BillingSettings):
     telegram_provision_client_id: str = ""
     telegram_provision_client_secret: str = ""
 
+    # What the Telegram channel adds on top of that (specs/021). TRANSPORT: `poll` long-polls getUpdates and needs no public address; `webhook` is
+    # served at `telegram_webhook_url` (public HTTPS, ends in /telegram/webhook) and every request must carry `telegram_webhook_secret` in
+    # X-Telegram-Bot-Api-Secret-Token (Telegram: 1-256 of A-Z a-z 0-9 _ -). The bot's own listener binds loopback unless told otherwise: TLS and the
+    # public name belong to the reverse proxy.
+    telegram_mode: Literal["poll", "webhook"] = "poll"
+    telegram_webhook_url: str = ""
+    telegram_webhook_secret: str = ""
+    telegram_listen_host: str = "127.0.0.1"
+    telegram_listen_port: int = Field(default=8081, ge=1024, le=65535)
+    # Chats served at once (one chat's messages stay in order); a slow turn delays only its own chat.
+    telegram_max_concurrent_chats: int = Field(default=8, ge=1, le=64)
+    # On: a turn that needs approval shows Approve / Reject buttons and only the owner's tap resumes it. Off: the old behaviour, the worker declines.
+    # Nothing but a tap approves (constitution Principle II); an approval nobody answers expires and is cancelled the next time the person writes.
+    telegram_approvals: bool = True
+    telegram_approval_ttl_seconds: int = Field(default=900, ge=60, le=86400)
+    # A reply grows in one message (edited as tokens arrive) instead of arriving at the end. Telegram's edit rate limits are not documented
+    # where they could be read (specs/021 research), so the interval is a floor and a refused edit is ignored; the final text always lands.
+    telegram_stream_replies: bool = True
+    telegram_stream_edit_interval_seconds: float = Field(default=2.0, ge=0.5, le=30.0)
+    # Account linking: `/login` sends the person to the authorization server's own page and binds their Telegram id to the account they sign in
+    # as, instead of the bot signing in as a `telegram-<id>` person. `telegram_link_public_url` is the bot's public HTTPS base (the callback is
+    # `<it>/telegram/link/callback`, registered at the tenant's client by scripts/mcp_gateway_bootstrap.py); `telegram_link_key` is a Fernet key that
+    # encrypts the refresh token kept per link (`python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`).
+    telegram_linking: bool = False
+    telegram_link_public_url: str = ""
+    telegram_link_key: str = ""
+    telegram_link_state_ttl_seconds: int = Field(default=600, ge=60, le=3600)
+
     # POST /ingest/upload's per-file cap, enforced before any MinIO write —
     # an unbounded upload is a memory/storage exhaustion vector.
     max_upload_size_mb: int = 25

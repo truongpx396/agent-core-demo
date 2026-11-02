@@ -238,3 +238,12 @@ def test_the_replica_alert_does_not_fire_forever_where_the_service_is_not_deploy
     (rule,) = [r for r in _rules() if r["alert"] == "AuthlimitReplicasDown"]
 
     assert "absent(agent_authlimit_ready)" in rule["expr"] and "offset 30m" in rule["expr"]
+
+
+def test_every_telegram_channel_metric_an_alert_names_is_defined_in_the_code():
+    """The channel's metrics are `channel_*`, which the `agent_*` check above does not read (specs/021)."""
+    defined = _defined_metrics()
+    names = {name for rule in _rules() for name in re.findall(r"\b(channel_[a-z_]+?)(?:_bucket|_count|_sum)?\b(?=[\s{\[)(]|$)", rule["expr"])}
+
+    assert {"channel_telegram_update_total", "channel_telegram_webhook_total"} <= names, "the Telegram alerts this feature promised are missing"
+    assert names <= defined, f"alerts on metrics nothing records: {sorted(names - defined)}"

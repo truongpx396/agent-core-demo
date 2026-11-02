@@ -412,6 +412,33 @@ groups:
             going unnotified about real, already-applied business state.
             Check SLACK_WEBHOOK_URL / var/team_channel.log permissions.
 
+      - alert: TelegramUpdatesDropped
+        expr: increase(channel_telegram_update_total{outcome="dropped"}[15m]) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Telegram messages were given up on without an answer"
+          description: >-
+            channel_telegram_update_total{outcome="dropped"} increased — an update crashed the bot
+            MAX_ATTEMPTS times or could not be read (app/channels/telegram_inbox.py), so a person
+            wrote to the bot and never got a reply. Nothing was run for it. Find the update's
+            cause in the telegram_inbox_* log lines before it is sent again.
+
+      - alert: TelegramWebhookProbed
+        expr: increase(channel_telegram_webhook_total{outcome="forbidden"}[15m]) > 20
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Requests are reaching the Telegram webhook without its secret"
+          description: >-
+            channel_telegram_webhook_total{outcome="forbidden"} increased by more than 20 in 15m —
+            something other than Telegram is posting to the bot's public webhook address
+            (app/channels/telegram_server.py). Every such request was refused and nothing was
+            queued, so this is a probe, not an incident. If TELEGRAM_WEBHOOK_SECRET was rotated
+            and setWebhook not re-run, Telegram itself is among them and no message is arriving.
+
       - alert: SandboxToolsUnavailable
         expr: increase(agent_sandbox_unavailable_total[15m]) > 0
         for: 15m

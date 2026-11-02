@@ -5,7 +5,8 @@ front door's limits, signed identity and revocation never applied to them and an
 This fails the build if a channel can do that again, by import: the channel modules may not import the graph, the runtime, the queue's publisher or
 reader, or the module that used to wrap them.
 
-Telegram keeps ONE Redis key of its own (its poll offset), through `app.job_queue.queue.get_client` and nothing else from that module.
+Telegram keeps a little Redis state of its own (its poll offset, the inbox its updates wait in, its approval buttons and account links), through
+`app.job_queue.queue.get_client` and nothing else from that module: it never publishes a turn.
 """
 import ast
 from pathlib import Path
@@ -61,7 +62,7 @@ def offences(source: str) -> list[str]:
 def test_there_are_channels_for_this_test_to_be_about():
     """A floor against a vacuous pass: a moved directory would make every check below true."""
     names = {path.name for path in CHANNELS}
-    assert {"chat.py", "telegram.py", "door.py", "oauth.py", "cli_auth.py", "telegram_people.py"} <= names
+    assert {"chat.py", "telegram.py", "door.py", "oauth.py", "cli_auth.py", "telegram_people.py", "telegram_inbox.py", "telegram_link.py", "telegram_server.py"} <= names
 
 
 @pytest.mark.parametrize("channel", CHANNELS, ids=lambda p: p.name)

@@ -40,6 +40,8 @@ DEFAULT_TOKEN_HOURS = 168  # seven days (spec 018, FR-022)
 REFRESH_HOURS = 168
 # The smoke check (scripts/authlimit_smoke.py) signs in as a public client with this callback; the web page signs in with its own root URL.
 API_SMOKE_CALLBACK = "http://localhost:33419/callback"
+# Where the Telegram bot's browser returns after a login (app/channels/telegram_link.py::CALLBACK_PATH; a test holds the two equal: this script imports nothing from app/).
+TELEGRAM_LINK_CALLBACK_PATH = "/telegram/link/callback"
 
 
 class CasdoorError(Exception):
@@ -160,6 +162,12 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--callback-port", type=int, default=33418, help="the fixed port of the client's OAuth callback (claude mcp add --callback-port)")
     parser.add_argument("--cli-callback-port", type=int, default=33420, help="the fixed port of `make chat`'s sign-in callback (CHANNEL_CLI_CALLBACK_PORT, specs/020)")
     parser.add_argument(
+        "--telegram-link-url",
+        default="",
+        help="the Telegram bot's public https address (TELEGRAM_LINK_PUBLIC_URL, specs/021): its /telegram/link/callback is registered as a redirect URI of every tenant's chat client, "
+        "which the authorization server compares exactly. Leave it out when the bot does not link accounts",
+    )
+    parser.add_argument(
         "--token-hours",
         type=int,
         default=int(os.environ.get("TOKEN_HOURS") or DEFAULT_TOKEN_HOURS),
@@ -177,6 +185,8 @@ def main(argv: list[str] | None = None) -> None:
     public = os.environ.get("MCP_GATEWAY_PUBLIC_URL", "https://mcp.localhost:8443").rstrip("/")
     callback = f"http://localhost:{args.callback_port}/callback"
     cli_callback = f"http://localhost:{args.cli_callback_port}/callback"
+    link_url = args.telegram_link_url.strip().rstrip("/")
+    link_callbacks = [f"{link_url}{TELEGRAM_LINK_CALLBACK_PATH}"] if link_url else []
     api_public = os.environ.get("AUTHLIMIT_AUDIENCE", "https://api.localhost:8443").rstrip("/")  # the chat API's resource identifier (the token's audience)
 
     try:
@@ -194,7 +204,7 @@ def main(argv: list[str] | None = None) -> None:
                 tenant,
                 "api:chat",
                 f"chat API for {tenant}",
-                [f"{api_public}/", API_SMOKE_CALLBACK, cli_callback],  # the page, the smoke check, and `make chat`
+                [f"{api_public}/", API_SMOKE_CALLBACK, cli_callback, *link_callbacks],  # the page, the smoke check, `make chat`, and the Telegram bot's login return
                 args.token_hours,
                 kind="API",
                 client_id=f"api-{tenant}",  # the rule the web page uses to find a tenant's client (app/api/web_auth.py::CLIENT_ID_PREFIX)
