@@ -563,7 +563,7 @@ class Settings(BillingSettings):
     channel_cli_callback_port: int = Field(default=33420, ge=1024, le=65535)
     # The tenant the CLI's person belongs to (the Casdoor organization whose `api-<tenant>` client it signs in at); empty = DEFAULT_TENANT.
     channel_cli_tenant: str = ""
-    # Where the CLI keeps its sign-in (mode 600, in a mode 700 directory); empty = ~/.config/agent-core-demo/channel-session.json.
+    # Where the CLI keeps its sign-in (mode 600, in a mode 700 directory); empty = ~/.config/graph-agent-core/channel-session.json.
     channel_cli_session_file: str = ""
     # Telegram people (specs/020 FR-004/FR-005). Each Telegram user is a person `telegram-<id>` of ONE tenant, and the bot signs in as them with a
     # password it DERIVES from this secret (HMAC of the tenant and the id): it stores no per-person secret, a restart gives the same people, and a

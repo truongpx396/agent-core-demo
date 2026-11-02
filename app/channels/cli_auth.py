@@ -35,7 +35,7 @@ _FAILED_PAGE = "<!doctype html><meta charset=utf-8><title>Sign-in failed</title>
 
 def default_session_path() -> Path:
     configured = settings.channel_cli_session_file.strip()
-    return Path(configured) if configured else Path.home() / ".config" / "agent-core-demo" / "channel-session.json"
+    return Path(configured) if configured else Path.home() / ".config" / "graph-agent-core" / "channel-session.json"
 
 
 class SessionStore:

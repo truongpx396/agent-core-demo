@@ -42,7 +42,7 @@ def settings_for_the_local_stack(monkeypatch):
 
 @pytest.fixture
 def store(tmp_path):
-    return SessionStore(tmp_path / "config" / "agent-core-demo" / "session.json")
+    return SessionStore(tmp_path / "config" / "graph-agent-core" / "session.json")
 
 
 class _Browser:
