@@ -44,8 +44,8 @@ def test_the_default_chain_is_plugsky_micro_then_lite_then_openrouter_so_the_thi
     assert _names(spec) == [
         ("plugsky", "plugsky-micro"),
         ("plugsky", "plugsky-lite"),
-        ("openrouter", "nvidia/nemotron-3-super-120b-a12b:free"),
-        ("openrouter", "qwen/qwen3.8-27b:free"),
+        ("openrouter", "nvidia/nemotron-3-ultra-550b-a55b:free"),
+        ("openrouter", "google/gemma-4-31b-it:free"),
     ]
     assert BACKUP_PROVIDERS == (PLUGSKY, OPENROUTER)
 
@@ -120,8 +120,8 @@ def test_each_model_is_a_real_local_model_pointed_at_its_own_provider_with_its_o
     assert [m.get_model_name() for m in built] == [
         "plugsky-micro (Local Model)",
         "plugsky-lite (Local Model)",
-        "nvidia/nemotron-3-super-120b-a12b:free (Local Model)",
-        "qwen/qwen3.8-27b:free (Local Model)",
+        "nvidia/nemotron-3-ultra-550b-a55b:free (Local Model)",
+        "google/gemma-4-31b-it:free (Local Model)",
     ]
     hosts = [m.base_url for m in built]
     assert hosts == [PLUGSKY.base_url] * 2 + [OPENROUTER.base_url] * 2
