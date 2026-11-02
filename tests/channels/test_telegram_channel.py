@@ -1,86 +1,66 @@
-"""Tests for app/channels/telegram.py — a fake async httpx client stands in for a live Telegram API (see tests/core/test_model_resolver.py's
-_FakeResponse for the sync-httpx equivalent), and the door (`app/channels/door.py`, the way the bot reaches the chat API) is replaced by a fake that
-yields scripted events, so these never touch a queue/worker/graph/LLM, matching the rest of the suite's hermetic discipline. What the door and the
-sign-in do with real HTTP is tested in tests/channels/test_door.py, test_oauth.py and test_telegram_people.py.
+"""Tests for app/channels/telegram.py — the bot's turn flow, its approval buttons, its commands and its start-up checks. Telegram's API, the door
+(`app/channels/door.py`) and Redis are replaced by the fakes in tests/channels/telegram_fakes.py, so these never touch a network, a queue, a worker or
+a model. What the door and the sign-in do with real HTTP is tested in test_door.py, test_oauth.py and test_telegram_people.py; the inbox, the webhook
+server, linking and the Bot API client have their own files.
 """
+import asyncio
 
 import pytest
 
 from app.channels import telegram as telegram_channel
+from app.channels.door import SIGNIN_MESSAGES
 from app.channels.oauth import SignInRefused
+from app.channels.telegram import Bot
+from app.channels.telegram_approvals import ApprovalStore, parse_callback
+from app.channels.telegram_inbox import Inbox
 from app.core import metrics
 from app.core.config import settings
-from app.core.errors import ErrorCode, ErrorEnvelope
+from tests.channels.telegram_fakes import (
+    FakeApi,
+    FakeChannel,
+    FakeDoor,
+    FakeRedis,
+    message,
+    pause,
+)
 from tests.conftest import metric_value as _count
-from tests.job_queue.test_queue import FakeRedis
+
+THREAD = "telegram:p-42:1"  # person p-42 in chat 1, which is what `message()` defaults to
 
 
-class _FakeResponse:
-    def __init__(self, json_data=None, status_code=200):
-        self._json_data = json_data or {}
-        self.status_code = status_code
-
-    def raise_for_status(self):
-        if self.status_code >= 400:
-            raise RuntimeError(f"HTTP {self.status_code}")
-
-    def json(self):
-        return self._json_data
+@pytest.fixture(autouse=True)
+def _plain_replies(monkeypatch):
+    """One message per reply keeps the assertions about WHAT is sent; streaming has its own tests."""
+    monkeypatch.setattr(settings, "telegram_stream_replies", False)
+    monkeypatch.setattr(settings, "telegram_approvals", True)
 
 
-class _FakeAsyncClient:
-    """Records every call made through it; `get`/`post` both return a
-    canned _FakeResponse (configurable per test via `get_response`)."""
-
-    def __init__(self, get_response=None):
-        self.get_response = get_response or _FakeResponse({"result": []})
-        self.posts: list[tuple[str, dict]] = []
-
-    async def get(self, url, params=None):
-        return self.get_response
-
-    async def post(self, url, json=None):
-        self.posts.append((url, json))
-        return _FakeResponse({"ok": True})
+def make_bot(door=None, *, approvals=True, linker=None, refusal=None, api=None):
+    door = door if door is not None else FakeDoor()
+    api = api if api is not None else FakeApi()
+    store = ApprovalStore(FakeRedis(), "ecorp", ttl_seconds=900) if approvals else None
+    return Bot(api, FakeChannel(door, refusal=refusal), approvals=store, linker=linker), api, door, store
 
 
-def _message(text="hello", chat_id=1, user_id=42):
-    return {"chat": {"id": chat_id}, "from": {"id": user_id}, "text": text}
+def tap(token, *, approve=True, user_id=42, chat_id=1, message_id=101, text="⚠️ This needs your approval"):
+    return {
+        "update_id": 9,
+        "callback_query": {
+            "id": "cb1",
+            "from": {"id": user_id},
+            "message": {"message_id": message_id, "chat": {"id": chat_id}, "text": text},
+            "data": f"ap:{token}:{'y' if approve else 'n'}",
+        },
+    }
 
 
-class _FakeDoor:
-    """Stands in for `Door`: yields `events` for a turn and records what it was asked for."""
-
-    def __init__(self, events=(), *, cancel_fails=False):
-        self.events = list(events)
-        self.turns: list[dict] = []
-        self.cancels: list[str] = []
-        self.cancel_fails = cancel_fails
-
-    async def stream_turn(self, text, thread_id, **kwargs):
-        self.turns.append({"text": text, "thread_id": thread_id, **kwargs})
-        for event in self.events:
-            yield event
-
-    async def cancel_turn(self, thread_id):
-        self.cancels.append(thread_id)
-        if self.cancel_fails:
-            raise ConnectionError("the door went away")
-
-
-class _Channel:
-    """Stands in for `Channel`: every user is the person `p-<user id>`, or is refused with `refusal`."""
-
-    def __init__(self, door, *, refusal=None):
-        self.door = door
-        self.refusal = refusal
-        self.asked: list[int] = []
-
-    async def door_for(self, user_id):
-        self.asked.append(user_id)
-        if self.refusal is not None:
-            raise SignInRefused(self.refusal)
-        return self.door, f"p-{user_id}"
+async def pending_token(bot, door, store, *, first_events=None):
+    """Write one message that pauses, and return the token on its buttons."""
+    door.scripts.insert(0, first_events or [pause("add_note")])
+    await bot.handle_update({"update_id": 1, "message": message("save a note")})
+    pending = await store.for_thread(THREAD)
+    assert pending is not None
+    return pending.token
 
 
 class TestThreadId:
@@ -148,180 +128,78 @@ class TestFormatReply:
         assert telegram_channel._format_reply("hello there", []) == "hello there"
 
     def test_citations_appended_as_a_sources_footer(self):
-        citations = [{"marker": "[1]", "title": "Checkpointers", "doc_id": "abc"}]
-        result = telegram_channel._format_reply("answer text", citations)
-        assert "answer text" in result
-        assert "Sources:" in result
-        assert "[1] Checkpointers" in result
+        result = telegram_channel._format_reply("answer text", [{"marker": "[1]", "title": "Checkpointers", "doc_id": "abc"}])
+        assert "answer text" in result and "Sources:" in result and "[1] Checkpointers" in result
 
     def test_falls_back_to_doc_id_when_title_missing(self):
-        citations = [{"marker": "[1]", "doc_id": "abc123"}]
-        result = telegram_channel._format_reply("answer", citations)
-        assert "abc123" in result
+        assert "abc123" in telegram_channel._format_reply("answer", [{"marker": "[1]", "doc_id": "abc123"}])
 
 
-class TestSendMessage:
-    async def test_short_message_sent_as_a_single_post(self):
-        client = _FakeAsyncClient()
-        await telegram_channel._send_message(client, 1, "short reply")
-        assert len(client.posts) == 1
-        assert client.posts[0][1]["text"] == "short reply"
-        assert client.posts[0][1]["chat_id"] == 1
+class TestATurn:
+    async def test_it_goes_to_the_persons_thread_and_the_reply_comes_back(self):
+        bot, api, door, _ = make_bot(FakeDoor([[{"type": "token", "content": "the answer"}]]))
 
-    async def test_long_message_is_split_across_multiple_sends(self):
-        client = _FakeAsyncClient()
-        long_text = "x" * (telegram_channel._MESSAGE_CHAR_LIMIT + 500)
-        await telegram_channel._send_message(client, 1, long_text)
-        assert len(client.posts) == 2
-        assert sum(len(p[1]["text"]) for p in client.posts) == len(long_text)
-
-    async def test_a_failed_send_is_swallowed_not_raised(self):
-        class _RaisingClient(_FakeAsyncClient):
-            async def post(self, url, json=None):
-                raise RuntimeError("network down")
-
-        # Must not raise — a bad chat_id can't be allowed to kill the poll loop.
-        await telegram_channel._send_message(_RaisingClient(), 1, "hi")
-
-
-class TestRunTurn:
-    async def test_an_error_event_returns_early_and_closes_the_stream_it_abandoned(self):
-        """The `error` branch returns before the stream is exhausted. A bare `async for` would leave
-        the closing of what that return abandoned to the event loop's finalizer."""
-        closed = []
-
-        class _Door(_FakeDoor):
-            async def stream_turn(self, text, thread_id, **kwargs):
-                try:
-                    yield {"type": "error", "content": "Something went wrong."}
-                    yield {"type": "done"}
-                finally:
-                    closed.append(True)
-
-        reply = await telegram_channel._run_turn(_Door(), "hi", "telegram:p:1")
-
-        assert reply == ("Something went wrong.", [])
-        assert closed == [True]
-
-
-class TestAnUnattendedTurnThatEndsAtAPause:
-    """The worker declines a pause for an unattended turn, so the channel should never see one.
-    It can: a rolling deploy that upgrades this channel before its workers leaves an old worker
-    running the turn as an ordinary one, which stops at `approval_required`. Nothing has run (the
-    gate held), but the conversation is left paused and an unattended channel can never resolve a
-    pause, so every later message would be refused. The channel cancels it rather than depend on
-    the worker's version."""
-
-    PAUSING = [
-        {"type": "token", "content": "Sure, saving that"},
-        {"type": "approval_required", "tool_calls": [{"name": "add_note", "args": {}}, {"name": "add_note", "args": {}}]},
-    ]
-
-    async def test_the_pause_is_cancelled_and_the_person_is_told_it_was_not_done(self):
-        door = _FakeDoor(self.PAUSING)
-        before = _count(metrics.agent_unattended_job_paused_total)
-
-        reply, citations = await telegram_channel._run_turn(door, "save a note", "telegram:p:7")
-
-        assert door.cancels == ["telegram:p:7"]
-        assert _count(metrics.agent_unattended_job_paused_total) == before + 1  # visible, not only logged
-        assert "add_note" in reply and "person's approval" in reply and "wasn't done" in reply
-        assert "Sure, saving that" not in reply  # a half-sentence promising the write is not the answer
-        assert citations == []
-
-    async def test_a_cancel_that_fails_still_gives_the_person_a_reply(self):
-        door = _FakeDoor(self.PAUSING, cancel_fails=True)
-
-        reply, _ = await telegram_channel._run_turn(door, "save a note", "telegram:p:7")
-
-        assert len(door.cancels) == 1
-        assert "person's approval" in reply
-
-
-class TestHandleMessage:
-    async def test_sends_an_unattended_turn_for_the_persons_thread_and_replies(self, monkeypatch):
-        door = _FakeDoor([{"type": "token", "content": "the answer"}])
-        channel = _Channel(door)
-        client = _FakeAsyncClient()
-
-        await telegram_channel.handle_message(client, _message(text="hi", chat_id=7, user_id=42), channel=channel)
+        await bot.handle_update({"update_id": 1, "message": message("hi", chat_id=7, user_id=42)})
 
         (turn,) = door.turns
-        assert turn["text"] == "hi"
-        assert turn["thread_id"] == telegram_channel._thread_id("p-42", 7)
-        # Nobody can answer an approval here, so the worker must decline it.
-        assert turn["unattended"] is True
-        assert any("sendMessage" in url and body["text"] == "the answer" for url, body in client.posts)
+        assert (turn["text"], turn["thread_id"]) == ("hi", telegram_channel._thread_id("p-42", 7))
+        assert api.sent_texts() == ["the answer"]
 
     async def test_an_update_id_becomes_a_replay_key_scoped_to_the_domain(self, monkeypatch):
-        door = _FakeDoor([{"type": "done"}])
         monkeypatch.setattr(telegram_channel, "AGENT_DOMAIN", "support")
+        bot, _, door, _ = make_bot()
 
-        await telegram_channel.handle_message(_FakeAsyncClient(), _message(), update_id=777, channel=_Channel(door))
+        await bot.handle_update({"update_id": 777, "message": message()})
 
         assert door.turns[0]["replay_key"] == "telegram:support:update:777"
 
     async def test_the_same_update_id_on_another_domains_bot_is_another_submission(self, monkeypatch):
-        """Two bots share a person's conversation for one chat and each numbers its updates on its
-        own, so the update id alone could hand one bot the other's reply."""
+        """Two bots share a person's conversation for one chat and each numbers its updates on its own."""
         monkeypatch.setattr(telegram_channel, "AGENT_DOMAIN", "support")
         support_key = telegram_channel._replay_key(5)
         monkeypatch.setattr(telegram_channel, "AGENT_DOMAIN", "sales")
 
-        assert telegram_channel._replay_key(5) != support_key
-        assert telegram_channel._replay_key(5) != telegram_channel._replay_key(6)
+        assert telegram_channel._replay_key(5) != support_key != telegram_channel._replay_key(6)
 
     async def test_without_an_update_id_there_is_no_replay_key(self):
-        door = _FakeDoor([{"type": "done"}])
+        bot, _, door, _ = make_bot()
 
-        await telegram_channel.handle_message(_FakeAsyncClient(), _message(), channel=_Channel(door))
+        await bot.handle_update({"message": message()})
 
         assert door.turns[0]["replay_key"] is None
 
-    async def test_reply_includes_citations_footer(self):
+    async def test_reply_includes_a_citations_footer(self):
         cited = [{"marker": "[1]", "title": "Refund Policy", "doc_id": "d1"}]
-        door = _FakeDoor([{"type": "token", "content": "grounded answer [1]"}, {"type": "citations", "items": cited}])
-        client = _FakeAsyncClient()
+        bot, api, _, _ = make_bot(FakeDoor([[{"type": "token", "content": "grounded answer [1]"}, {"type": "citations", "items": cited}]]))
 
-        await telegram_channel.handle_message(client, _message(), channel=_Channel(door))
+        await bot.handle_update({"update_id": 1, "message": message()})
 
-        sent = next(body["text"] for url, body in client.posts if "sendMessage" in url)
-        assert "Sources:" in sent
+        assert "Sources:" in api.sent_texts()[0]
 
     async def test_a_turn_that_produces_no_text_still_gets_an_explicit_reply_not_silence(self):
-        """Real bug (reproduced): `_send_message` loops over `range(0, len(text), ...)`, so an EMPTY reply sends
-        nothing at all.
-        """
-        client = _FakeAsyncClient()
+        bot, api, _, _ = make_bot(FakeDoor([[{"type": "done"}]]))
 
-        await telegram_channel.handle_message(
-            client, _message(text="save a note", chat_id=7), channel=_Channel(_FakeDoor([{"type": "done"}]))
-        )
+        await bot.handle_update({"update_id": 1, "message": message("save a note")})
 
-        sent = [body["text"] for url, body in client.posts if "sendMessage" in url]
-        assert sent and sent[0].strip(), "an empty turn must still produce a visible reply"
+        assert api.sent_texts() == [telegram_channel._NO_REPLY_FALLBACK]
 
-    async def test_non_text_message_is_skipped_without_signing_anyone_in_or_sending_a_turn(self):
-        door = _FakeDoor()
-        channel = _Channel(door)
-        client = _FakeAsyncClient()
+    async def test_an_error_event_is_shown_as_the_reply_and_the_stream_it_abandoned_is_closed(self):
+        closed = []
 
-        await telegram_channel.handle_message(client, {"chat": {"id": 1}, "from": {"id": 1}}, channel=channel)
+        class _Door(FakeDoor):
+            async def stream_turn(self, text, thread_id, **kwargs):
+                try:
+                    yield {"type": "error", "content": "Sorry, that took too long."}
+                    yield {"type": "done"}
+                finally:
+                    closed.append(True)
 
-        assert (channel.asked, door.turns, client.posts) == ([], [], [])
+        bot, api, _, _ = make_bot(_Door())
 
-    async def test_an_error_envelope_still_produces_a_reply_not_a_crash(self):
-        """The worker's `error` event already carries a real message text — this just proves the channel doesn't
-        need any special-casing for that; it just forwards it."""
-        envelope = ErrorEnvelope(code=ErrorCode.TIMEOUT, message="Sorry, that took too long.")
-        client = _FakeAsyncClient()
+        await bot.handle_update({"update_id": 1, "message": message()})
 
-        await telegram_channel.handle_message(
-            client, _message(), channel=_Channel(_FakeDoor([{"type": "error", "content": envelope.message}]))
-        )
-
-        sent = next(body["text"] for url, body in client.posts if "sendMessage" in url)
-        assert sent == "Sorry, that took too long."
+        assert api.sent_texts() == ["Sorry, that took too long."]
+        assert closed == [True]
 
 
 class TestAUserWhoCannotBeSignedIn:
@@ -334,26 +212,396 @@ class TestAUserWhoCannotBeSignedIn:
             ("forbidden", "not allowed"),
             ("credentials", "sign-in was refused"),
             ("unavailable", "unavailable"),
+            ("not_linked", "/login"),
         ],
     )
     async def test_the_reply_says_why_and_no_turn_is_sent(self, reason, expected):
-        door = _FakeDoor([{"type": "token", "content": "must never be shown"}])
-        client = _FakeAsyncClient()
+        bot, api, door, _ = make_bot(FakeDoor([[{"type": "token", "content": "must never be shown"}]]), refusal=reason)
 
-        await telegram_channel.handle_message(client, _message(user_id=42), channel=_Channel(door, refusal=reason))
+        await bot.handle_update({"update_id": 1, "message": message(user_id=42)})
 
-        (sent,) = [body["text"] for url, body in client.posts if "sendMessage" in url]
-        assert expected in sent
+        (sent,) = api.sent_texts()
+        assert expected in sent and "must never be shown" not in sent
         assert door.turns == []
-        assert "must never be shown" not in sent
 
     async def test_an_unregistered_user_is_given_the_id_an_administrator_needs(self):
-        client = _FakeAsyncClient()
+        bot, api, _, _ = make_bot(refusal="unknown_person")
 
-        await telegram_channel.handle_message(client, _message(user_id=424242), channel=_Channel(_FakeDoor(), refusal="unknown_person"))
+        await bot.handle_update({"update_id": 1, "message": message(user_id=424242)})
 
-        sent = next(body["text"] for url, body in client.posts if "sendMessage" in url)
-        assert "424242" in sent
+        assert "424242" in api.sent_texts()[0]
+
+    def test_every_refusal_reason_has_words(self):
+        assert {"forbidden", "unknown_person", "credentials", "unavailable", "not_linked"} <= set(SIGNIN_MESSAGES)
+
+
+class TestOtherMessages:
+    @pytest.mark.parametrize("media", ["photo", "voice", "document", "sticker"])
+    async def test_media_is_answered_with_what_the_bot_can_read_not_silence(self, media):
+        bot, api, door, _ = make_bot()
+
+        await bot.handle_update({"update_id": 1, "message": {"chat": {"id": 1}, "from": {"id": 42}, media: [{}]}})
+
+        assert api.sent_texts() == [telegram_channel.NON_TEXT_REPLY]
+        assert door.turns == []
+
+    async def test_a_service_message_is_not_addressed_to_the_bot_and_gets_no_reply(self):
+        bot, api, door, _ = make_bot()
+
+        await bot.handle_update({"update_id": 1, "message": {"chat": {"id": 1}, "from": {"id": 42}, "new_chat_members": [{}]}})
+
+        assert (api.calls, door.turns) == ([], [])
+
+    @pytest.mark.parametrize("text", ["/start", "/help", "/help@my_bot"])
+    async def test_start_and_help_describe_the_bot_and_send_no_turn(self, text):
+        bot, api, door, _ = make_bot()
+
+        await bot.handle_update({"update_id": 1, "message": message(text)})
+
+        assert api.sent_texts() == [telegram_channel.HELP]
+        assert door.turns == []
+
+    async def test_a_slash_word_the_bot_does_not_know_is_an_ordinary_question(self):
+        bot, _, door, _ = make_bot()
+
+        await bot.handle_update({"update_id": 1, "message": message("/what is the refund policy")})
+
+        assert door.turns[0]["text"] == "/what is the refund policy"
+
+    async def test_login_without_linking_set_up_says_so(self):
+        bot, api, _, _ = make_bot()
+
+        await bot.handle_update({"update_id": 1, "message": message("/login")})
+
+        assert "not set up" in api.sent_texts()[0]
+
+    async def test_login_in_a_group_is_refused_because_the_link_it_gives_is_one_persons(self):
+        class _Linker:
+            called = False
+
+            async def login(self, *args):
+                self.called = True
+
+        linker = _Linker()
+        bot, api, _, _ = make_bot(linker=linker)
+
+        await bot.handle_update({"update_id": 1, "message": {**message("/login"), "chat": {"id": 1, "type": "supergroup"}}})
+
+        assert "private chat" in api.sent_texts()[0] and not linker.called
+
+    async def test_login_and_unlink_in_a_private_chat_reach_the_linker(self):
+        seen = []
+
+        class _Linker:
+            async def login(self, chat_id, user_id, sender):
+                seen.append(("login", chat_id, user_id, sender))
+
+            async def unlink(self, chat_id, user_id):
+                seen.append(("unlink", chat_id, user_id))
+
+        bot, _, _, _ = make_bot(linker=_Linker())
+
+        await bot.handle_update({"update_id": 1, "message": {**message("/login", chat_id=5, user_id=42), "from": {"id": 42, "first_name": "Ann"}}})
+        await bot.handle_update({"update_id": 2, "message": message("/unlink", chat_id=5, user_id=42)})
+
+        assert seen == [("login", 5, 42, {"id": 42, "first_name": "Ann"}), ("unlink", 5, 42)]
+
+
+class TestAnApprovalIsAskedForWithButtons:
+    async def test_a_turn_that_needs_approval_is_not_unattended_and_shows_what_it_wants_to_do(self):
+        bot, api, door, store = make_bot(FakeDoor([[{"type": "token", "content": "Sure, saving that"}, pause("add_note")]]))
+        before = _count(metrics.channel_telegram_approval_total, outcome="shown")
+
+        await bot.handle_update({"update_id": 1, "message": message("save a note")})
+
+        assert door.turns[0]["unattended"] is False
+        texts = api.sent_texts()
+        assert texts[0] == "Sure, saving that"
+        assert "add_note" in texts[1] and "approval" in texts[1]
+        buttons = api.of("send")[1][3]["inline_keyboard"][0]
+        pending = await store.for_thread(THREAD)
+        assert [parse_callback(b["callback_data"]) for b in buttons] == [(pending.token, True), (pending.token, False)]
+        assert (pending.user_id, pending.chat_id, pending.message_id) == (42, 1, 102)
+        assert _count(metrics.channel_telegram_approval_total, outcome="shown") == before + 1
+
+    async def test_with_approvals_off_the_turn_is_unattended_and_a_pause_is_cancelled_not_asked(self, monkeypatch):
+        """The worker declines a pause for an unattended turn, so the channel should never see one. It can: a rolling deploy that upgrades this
+        channel before its workers leaves an old worker running the turn as an ordinary one, and the conversation would stay paused."""
+        monkeypatch.setattr(settings, "telegram_approvals", False)
+        bot, api, door, _ = make_bot(FakeDoor([[{"type": "token", "content": "Sure, saving that"}, pause("add_note", "add_note")]]), approvals=False)
+        before = _count(metrics.agent_unattended_job_paused_total)
+
+        await bot.handle_update({"update_id": 1, "message": message("save a note")})
+
+        assert door.turns[0]["unattended"] is True
+        assert door.cancels == [(THREAD, False)]
+        assert _count(metrics.agent_unattended_job_paused_total) == before + 1
+        (reply,) = api.sent_texts()
+        assert "add_note" in reply and "person's approval" in reply and "wasn't done" in reply
+        assert "Sure, saving that" not in reply  # a half-sentence promising the write is not the answer
+        assert all(call[3] is None for call in api.of("send"))  # no buttons
+
+    async def test_a_cancel_that_fails_still_gives_the_person_a_reply(self, monkeypatch):
+        monkeypatch.setattr(settings, "telegram_approvals", False)
+        bot, api, door, _ = make_bot(FakeDoor([[pause("add_note")]], cancel_fails=True), approvals=False)
+
+        await bot.handle_update({"update_id": 1, "message": message()})
+
+        assert len(door.cancels) == 1 and "person's approval" in api.sent_texts()[0]
+
+    async def test_when_the_buttons_cannot_be_shown_the_pause_is_cancelled_so_nobody_is_stranded(self):
+        """Nobody can answer a question that was never shown; leaving it paused would refuse every later message."""
+        bot, _, door, store = make_bot(FakeDoor([[pause("add_note")]]), api=FakeApi(send_fails=True))
+
+        await bot.handle_update({"update_id": 1, "message": message()})
+
+        assert door.cancels == [(THREAD, False)]
+        assert await store.for_thread(THREAD) is None
+
+    async def test_a_redelivered_update_does_not_ask_twice(self):
+        bot, api, door, _ = make_bot(FakeDoor([[pause("add_note")], [pause("add_note")]]))
+        await bot.handle_update({"update_id": 1, "message": message("save a note")})
+        asked = len(api.of("send"))
+
+        await bot.handle_update({"update_id": 1, "message": message("save a note")})
+
+        assert len(door.turns) == 1  # the reminder path never reached the door
+        assert api.sent_texts()[asked:] == [telegram_channel._ASK_FIRST]
+
+
+class TestTappingAButton:
+    async def test_the_owner_approving_resumes_the_turn_once_and_the_reply_follows(self):
+        bot, api, door, store = make_bot(FakeDoor(resumes=[[{"type": "token", "content": "Saved."}]]))
+        token = await pending_token(bot, door, store)
+        before = _count(metrics.channel_telegram_approval_total, outcome="approved")
+
+        await bot.handle_update(tap(token, approve=True))
+
+        assert door.resumes == [(THREAD, True)]
+        assert api.sent_texts()[-1] == "Saved."
+        assert any("Approved" in call[3] and call[4] == {"inline_keyboard": []} for call in api.of("edit"))  # decided, and no buttons left
+        assert await store.for_thread(THREAD) is None
+        assert _count(metrics.channel_telegram_approval_total, outcome="approved") == before + 1
+
+    async def test_rejecting_resumes_with_a_no(self):
+        bot, _, door, store = make_bot()
+        token = await pending_token(bot, door, store)
+
+        await bot.handle_update(tap(token, approve=False))
+
+        assert door.resumes == [(THREAD, False)]
+
+    async def test_someone_else_in_the_chat_pressing_the_button_does_nothing(self):
+        """A group chat shows the buttons to everyone. Only the person the conversation belongs to may decide (Principle II)."""
+        bot, api, door, store = make_bot()
+        token = await pending_token(bot, door, store)
+        before = _count(metrics.channel_telegram_approval_total, outcome="not_owner")
+
+        await bot.handle_update(tap(token, user_id=7))
+
+        assert door.resumes == []
+        assert api.of("answer")[-1][3] is True  # an alert, so they see why
+        assert _count(metrics.channel_telegram_approval_total, outcome="not_owner") == before + 1
+        await bot.handle_update(tap(token, user_id=42))  # the refusal did not use the approval up
+        assert door.resumes == [(THREAD, True)]
+
+    async def test_a_second_tap_while_the_first_is_being_applied_does_nothing(self):
+        bot, api, door, store = make_bot()
+        token = await pending_token(bot, door, store)
+        assert await store.claim(token)  # the first tap's claim
+
+        await bot.handle_update(tap(token))
+
+        assert door.resumes == []
+        assert "Already being handled" in api.of("answer")[-1][2]
+
+    async def test_a_tap_after_the_decision_was_applied_finds_nothing_to_approve(self):
+        bot, api, door, store = make_bot()
+        token = await pending_token(bot, door, store)
+        await bot.handle_update(tap(token))
+
+        await bot.handle_update(tap(token))
+
+        assert door.resumes == [(THREAD, True)]  # once, not twice
+        assert "expired or was already handled" in api.of("answer")[-1][2]
+
+    async def test_a_tap_after_the_approval_expired_never_resumes_and_never_cancels(self):
+        """Cancelling from a late tap would set a flag that stops a turn that is running by then; expiry only says so."""
+        bot, api, door, store = make_bot()
+        token = await pending_token(bot, door, store)
+        for key in [k for k in store._redis.kv if k.startswith("telegram:approval:")]:
+            del store._redis.kv[key]  # the record's TTL ran out
+        before = _count(metrics.channel_telegram_approval_total, outcome="expired")
+
+        await bot.handle_update(tap(token))
+
+        assert door.resumes == [] and door.cancels == []
+        assert _count(metrics.channel_telegram_approval_total, outcome="expired") == before + 1
+        assert "No longer pending" in api.of("edit")[-1][3]
+
+    async def test_an_approval_is_stored_with_the_configured_lifetime(self):
+        bot, _, door, store = make_bot()
+        await pending_token(bot, door, store)
+
+        assert {ttl for key, ttl in store._redis.ttls.items() if key.startswith("telegram:approval:")} == {900}
+
+    async def test_a_decision_the_door_refused_puts_the_buttons_back_and_can_be_made_again(self):
+        refused = [{"type": "error", "content": "You are sending too much. Try again in 5 seconds."}]  # a door refusal carries no error code
+        bot, api, door, store = make_bot(FakeDoor(resumes=[refused, [{"type": "token", "content": "Saved."}]]))
+        token = await pending_token(bot, door, store)
+        before = _count(metrics.channel_telegram_approval_total, outcome="resume_failed")
+
+        await bot.handle_update(tap(token))
+
+        assert _count(metrics.channel_telegram_approval_total, outcome="resume_failed") == before + 1
+        assert api.of("edit")[-1][4]["inline_keyboard"][0]  # the buttons are back
+        assert "tap again" in api.sent_texts()[-1]
+        assert await store.for_thread(THREAD) is not None
+
+        await bot.handle_update(tap(token))
+
+        assert len(door.resumes) == 2 and api.sent_texts()[-1] == "Saved."
+
+    async def test_a_decision_the_agent_could_not_apply_is_reported_and_not_offered_again(self):
+        gone = [{"type": "error", "content": "checkpoint_lost: no paused run found", "code": "internal"}]
+        bot, api, door, store = make_bot(FakeDoor(resumes=[gone]))
+        token = await pending_token(bot, door, store)
+
+        await bot.handle_update(tap(token))
+
+        assert api.sent_texts()[-1].startswith("checkpoint_lost")
+        assert await store.for_thread(THREAD) is None
+
+    async def test_an_action_after_an_approval_that_needs_another_approval_asks_again_with_new_buttons(self):
+        bot, api, door, store = make_bot(FakeDoor(resumes=[[{"type": "token", "content": "Done. Now sending."}, pause("send_email")]]))
+        first = await pending_token(bot, door, store)
+
+        await bot.handle_update(tap(first))
+
+        second = await store.for_thread(THREAD)
+        assert second is not None and second.token != first
+        assert "send_email" in api.sent_texts()[-1]
+
+    async def test_a_person_who_can_no_longer_be_signed_in_decides_nothing_and_is_told_once(self):
+        bot, api, door, store = make_bot()
+        token = await pending_token(bot, door, store)
+        bot.channel.refusal = "forbidden"
+        sent_before = len(api.sent_texts())
+
+        await bot.handle_update(tap(token))
+
+        assert door.resumes == []
+        assert api.sent_texts()[sent_before:] == [SIGNIN_MESSAGES["forbidden"]]
+        assert await store.claim(token)  # the claim was given back
+
+    async def test_an_approval_asked_of_an_earlier_sign_in_is_not_applied_to_this_one(self):
+        """The conversation id names its owner; if the person behind the Telegram id changed (a relink) the old question is not theirs."""
+        bot, api, door, store = make_bot()
+        token = await pending_token(bot, door, store)
+        pending = await store.get(token)
+        await store._save(type(pending)(**{**pending.__dict__, "thread_id": "telegram:someone-else:1"}))
+
+        await bot.handle_update(tap(token))
+
+        assert door.resumes == []
+        assert "earlier sign-in" in api.sent_texts()[-1]
+
+    @pytest.mark.parametrize("data", ["", "ap:", "ap:x:maybe", "other:x:y", None, 5])
+    async def test_a_button_this_bot_did_not_make_is_not_active(self, data):
+        bot, api, door, _ = make_bot()
+        update = tap("x")
+        update["callback_query"]["data"] = data
+
+        await bot.handle_update(update)
+
+        assert door.resumes == []
+        assert "not active" in api.of("answer")[-1][2]
+
+    async def test_a_tap_with_approvals_off_is_not_active(self):
+        bot, api, door, _ = make_bot(approvals=False)
+
+        await bot.handle_update(tap("anything"))
+
+        assert door.resumes == [] and "not active" in api.of("answer")[-1][2]
+
+
+class TestWritingWhileAnApprovalIsWaiting:
+    async def test_the_person_is_pointed_at_the_buttons_and_nothing_is_sent_to_the_agent(self):
+        bot, api, door, store = make_bot()
+        await pending_token(bot, door, store)
+
+        await bot.handle_update({"update_id": 2, "message": message("hello?")})
+
+        assert len(door.turns) == 1
+        assert api.sent_texts()[-1] == telegram_channel._ASK_FIRST
+
+    async def test_after_the_approval_expired_the_stale_pause_is_cleared_and_the_message_goes_through(self):
+        bot, api, door, store = make_bot()
+        await pending_token(bot, door, store)
+        store._redis.kv.clear()  # every record expired
+        refusal = {"type": "error", "content": "This conversation has a pending approval", "code": "pending_approval"}
+        door.scripts += [[refusal], [{"type": "token", "content": "Here you go."}]]
+
+        await bot.handle_update({"update_id": 2, "message": message("hello?")})
+
+        assert door.cancels == [(THREAD, True)]  # waited for: the new turn must not arrive before the cancel is done
+        assert [t["replay_key"] for t in door.turns[1:]] == ["telegram:ecorp:update:2", "telegram:ecorp:update:2:cleared"]
+        assert api.sent_texts()[-1] == "Here you go."
+
+    async def test_a_pause_that_cannot_be_cleared_shows_the_refusal_instead_of_looping(self):
+        bot, api, door, store = make_bot()
+        await pending_token(bot, door, store)
+        store._redis.kv.clear()
+        door.cancel_fails = True
+        door.scripts.append([{"type": "error", "content": "pending approval", "code": "pending_approval"}])
+
+        await bot.handle_update({"update_id": 2, "message": message("hello?")})
+
+        assert len(door.turns) == 2
+        assert api.sent_texts()[-1] == "pending approval"
+
+
+class TestCancel:
+    async def test_cancelling_a_waiting_approval_drops_it_and_takes_the_buttons_away(self):
+        bot, api, door, store = make_bot()
+        await pending_token(bot, door, store)
+        before = _count(metrics.channel_telegram_approval_total, outcome="cancelled")
+
+        await bot.handle_update({"update_id": 2, "message": message("/cancel")})
+
+        assert door.cancels == [(THREAD, False)]
+        assert await store.for_thread(THREAD) is None
+        assert "Cancelled" in api.of("edit")[-1][3] and api.of("edit")[-1][4] == {"inline_keyboard": []}
+        assert api.sent_texts()[-1] == "Cancelled."
+        assert _count(metrics.channel_telegram_approval_total, outcome="cancelled") == before + 1
+
+    async def test_cancelling_with_nothing_waiting_still_asks_the_agent_to_stop(self):
+        bot, api, door, _ = make_bot()
+
+        await bot.handle_update({"update_id": 1, "message": message("/cancel@my_bot")})
+
+        assert door.cancels == [(THREAD, False)]
+        assert "stop" in api.sent_texts()[-1]
+
+    async def test_a_cancel_the_door_refused_tells_the_person(self):
+        bot, api, _, _ = make_bot(FakeDoor(cancel_fails=True))
+
+        await bot.handle_update({"update_id": 1, "message": message("/cancel")})
+
+        assert "could not reach" in api.sent_texts()[-1]
+
+
+class TestStreamingTheReply:
+    async def test_the_reply_grows_in_one_message_and_the_last_word_is_exact(self, monkeypatch):
+        monkeypatch.setattr(settings, "telegram_stream_replies", True)
+        monkeypatch.setattr(settings, "telegram_stream_edit_interval_seconds", 30.0)  # nothing but the first and the final write goes out
+        events = [{"type": "token", "content": c} for c in ("Hel", "lo", " there")]
+        bot, api, _, _ = make_bot(FakeDoor([events]))
+
+        await bot.handle_update({"update_id": 1, "message": message()})
+
+        assert api.sent_texts() == ["Hel"]
+        assert api.of("edit")[-1][3] == "Hello there"
 
 
 class TestRun:
@@ -365,14 +613,24 @@ class TestRun:
     async def test_refuses_to_start_in_identity_mode_without_the_secret_the_people_are_derived_from(self, monkeypatch):
         monkeypatch.setattr(telegram_channel, "TELEGRAM_BOT_TOKEN", "fake-token")
         monkeypatch.setattr(settings, "auth_mode", "identity")
+        monkeypatch.setattr(settings, "telegram_linking", False)
         monkeypatch.setattr(settings, "telegram_person_secret", "too short")
 
         with pytest.raises(SystemExit, match="TELEGRAM_PERSON_SECRET"):
             await telegram_channel.run()
 
+    async def test_a_linking_bot_does_not_need_the_derivation_secret_but_does_need_its_own_settings(self, monkeypatch):
+        monkeypatch.setattr(telegram_channel, "TELEGRAM_BOT_TOKEN", "fake-token")
+        monkeypatch.setattr(settings, "auth_mode", "identity")
+        monkeypatch.setattr(settings, "telegram_linking", True)
+        monkeypatch.setattr(settings, "telegram_person_secret", "")
+        monkeypatch.setattr(settings, "telegram_link_public_url", "")
+
+        with pytest.raises(SystemExit, match="TELEGRAM_LINK_PUBLIC_URL"):
+            await telegram_channel.run()
+
     async def test_validates_agent_domain_before_polling(self, monkeypatch):
-        """AGENT_DOMAIN must be checked BEFORE the poll loop starts, so a typo'd domain fails at startup instead of
-        sending to a stream no worker pool reads."""
+        """AGENT_DOMAIN is checked BEFORE the loop starts, so a typo'd domain fails at startup instead of sending to a stream no worker pool reads."""
         monkeypatch.setattr(telegram_channel, "TELEGRAM_BOT_TOKEN", "fake-token")
         monkeypatch.setattr(settings, "auth_mode", "headers")
         monkeypatch.setattr(telegram_channel, "AGENT_DOMAIN", "no-such-domain")
@@ -380,112 +638,69 @@ class TestRun:
         with pytest.raises(RuntimeError, match="no-such-domain"):
             await telegram_channel.run()
 
+    async def test_a_webhook_bot_with_a_weak_secret_does_not_start(self, monkeypatch):
+        monkeypatch.setattr(telegram_channel, "TELEGRAM_BOT_TOKEN", "fake-token")
+        monkeypatch.setattr(settings, "auth_mode", "headers")
+        monkeypatch.setattr(settings, "telegram_mode", "webhook")
+        monkeypatch.setattr(settings, "telegram_webhook_url", "https://bot.example.com/telegram/webhook")
+        monkeypatch.setattr(settings, "telegram_webhook_secret", "short")
+
+        with pytest.raises(SystemExit, match="TELEGRAM_WEBHOOK_SECRET"):
+            await telegram_channel.run()
+
+
+class TestPolling:
+    class _Api:
+        def __init__(self, batches):
+            self.batches = list(batches)
+            self.offsets = []
+
+        async def get_updates(self, offset, timeout):
+            self.offsets.append(offset)
+            if not self.batches:
+                raise ConnectionError("stop")
+            return self.batches.pop(0)
+
+    async def test_updates_go_to_the_inbox_and_the_offset_moves_past_them_once_they_are_there(self, monkeypatch):
+        redis = FakeRedis()
+        stop = asyncio.Event()
+        api = self._Api([[{"update_id": 5, "message": message("a")}, {"update_id": 6, "message": message("b")}]])
+
+        async def stop_instead_of_sleeping(_):
+            stop.set()
+
+        monkeypatch.setattr(telegram_channel.asyncio, "sleep", stop_instead_of_sleeping)
+        await telegram_channel._poll(api, redis, Inbox(redis, "ecorp"), stop)
+
+        assert await telegram_channel._load_offset(redis, "ecorp") == 7
+        assert api.offsets == [0, 7]
+        assert len(redis.lists["telegram:inbox:ecorp"]) == 2
+
+    async def test_a_push_that_fails_leaves_the_offset_alone_so_the_updates_come_again(self, monkeypatch):
+        redis = FakeRedis()
+        stop = asyncio.Event()
+
+        class _BrokenInbox:
+            async def push(self, update):
+                raise ConnectionError("redis is down")
+
+        async def stop_instead_of_sleeping(_):
+            stop.set()
+
+        monkeypatch.setattr(telegram_channel.asyncio, "sleep", stop_instead_of_sleeping)
+        await telegram_channel._poll(self._Api([[{"update_id": 5, "message": message("a")}]]), redis, _BrokenInbox(), stop)
+
+        assert await telegram_channel._load_offset(redis, "ecorp") == 0
+
 
 class TestOffsetPersistence:
-    """`_load_offset`/`_save_offset` are the fix for a real bug: `offset`
-    used to live only in a local variable inside run(), so any process
-    restart reset it to 0 and Telegram would redeliver every update it
-    still remembers — every already-handled message since the last
-    restart, each producing a fresh duplicate turn and reply to a real
-    user. See run()'s own docstring for the full reasoning."""
+    """`_load_offset`/`_save_offset` are the fix for a real bug: `offset` used to live only in a local variable, so any process restart reset it to 0
+    and Telegram would redeliver every update it still remembers, each producing a fresh duplicate turn and reply to a real user."""
 
     async def test_load_returns_zero_when_nothing_persisted_yet(self):
-        client = FakeRedis()
-        assert await telegram_channel._load_offset(client, "ecorp") == 0
+        assert await telegram_channel._load_offset(FakeRedis(), "ecorp") == 0
 
     async def test_save_then_load_round_trips(self):
         client = FakeRedis()
         await telegram_channel._save_offset(client, "ecorp", 12345)
         assert await telegram_channel._load_offset(client, "ecorp") == 12345
-
-    async def test_offsets_are_scoped_per_domain(self):
-        """Each domain runs as its own process/bot token — a support
-        channel's offset must never leak into (or be clobbered by) a
-        sales channel's, even sharing the same Redis."""
-        client = FakeRedis()
-        await telegram_channel._save_offset(client, "support", 10)
-        await telegram_channel._save_offset(client, "sales", 20)
-
-        assert await telegram_channel._load_offset(client, "support") == 10
-        assert await telegram_channel._load_offset(client, "sales") == 20
-
-
-class _StopHere(BaseException):
-    """BaseException, not Exception: raised from INSIDE getUpdates, which run()'s own poll loop wraps in a broad
-    `except Exception` (a real poll failure must not kill the loop) — an ordinary Exception would be swallowed
-    and retried forever instead of ending the test."""
-
-
-class _ClientBase:
-    def __init__(self, *a, **kw):
-        pass
-
-    async def __aenter__(self):
-        return self
-
-    async def __aexit__(self, *exc):
-        return False
-
-
-class TestRunPersistsOffsetAcrossPolls:
-    @pytest.fixture(autouse=True)
-    def a_running_bot(self, monkeypatch):
-        monkeypatch.setattr(telegram_channel, "TELEGRAM_BOT_TOKEN", "fake-token")
-        monkeypatch.setattr(telegram_channel, "AGENT_DOMAIN", "ecorp")
-        monkeypatch.setattr(settings, "auth_mode", "headers")
-
-    async def test_resumes_from_the_previously_persisted_offset(self, monkeypatch):
-        """A fresh process must pick up where the last one left off, not restart from 0 (Telegram's own update
-        history) — the actual regression this whole fix exists for."""
-        redis_client = FakeRedis()
-        await telegram_channel._save_offset(redis_client, "ecorp", 500)
-        seen_offsets = []
-
-        class _RecordingThenStoppingClient(_ClientBase):
-            async def get(self, url, params=None):
-                seen_offsets.append(params["offset"])
-                raise _StopHere()
-
-        monkeypatch.setattr(telegram_channel, "get_redis_client", lambda: redis_client)
-        monkeypatch.setattr(telegram_channel.httpx, "AsyncClient", _RecordingThenStoppingClient)
-
-        with pytest.raises(_StopHere):
-            await telegram_channel.run()
-
-        assert seen_offsets == [500]
-
-    async def test_persists_the_new_offset_after_each_message_is_handled(self, monkeypatch):
-        """`_save_offset` is called from the `for update in updates:` body, NOT inside run()'s narrow
-        `except Exception` around getUpdates — raising from there stops the loop right after the one behavior
-        this test cares about, without depending on run()'s own retry/sleep mechanics at all."""
-        redis_client = FakeRedis()
-        real_save_offset = telegram_channel._save_offset
-
-        async def _save_offset_then_stop(client, domain, offset):
-            await real_save_offset(client, domain, offset)
-            raise _StopHere()
-
-        class _OneBatchClient(_ClientBase):
-            async def get(self, url, params=None):
-                return _FakeResponse({"result": [{"update_id": 777, "message": _message()}]})
-
-            async def post(self, url, json=None):
-                return _FakeResponse({"ok": True})
-
-        door = _FakeDoor([{"type": "token", "content": "ok"}])
-
-        async def door_for(self, user_id):
-            return door, f"p-{user_id}"
-
-        monkeypatch.setattr(telegram_channel.Channel, "door_for", door_for)
-        monkeypatch.setattr(telegram_channel, "get_redis_client", lambda: redis_client)
-        monkeypatch.setattr(telegram_channel, "_save_offset", _save_offset_then_stop)
-        monkeypatch.setattr(telegram_channel.httpx, "AsyncClient", _OneBatchClient)
-
-        with pytest.raises(_StopHere):
-            await telegram_channel.run()
-
-        assert await telegram_channel._load_offset(redis_client, "ecorp") == 778
-        # The poll loop is where the update id enters. Dropped here, nothing else notices: every message still
-        # gets a reply, and a redelivered one quietly becomes a second turn again.
-        assert door.turns[0]["replay_key"] == "telegram:ecorp:update:777"

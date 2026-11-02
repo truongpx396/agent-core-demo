@@ -394,6 +394,33 @@ channel_person_provisioned_total = Counter(
     ["outcome"],
 )  # outcome: created | failed
 
+channel_telegram_update_total = Counter(
+    "channel_telegram_update_total",
+    "A Telegram update after it reached the bot's inbox (app/channels/telegram_inbox.py), by what became of it. `dropped` is an update the "
+    "bot gave up on after a crash loop or could not read, and the person never got an answer",
+    ["outcome"],
+)  # outcome: handled | error | overflow | requeued | dropped
+
+channel_telegram_approval_total = Counter(
+    "channel_telegram_approval_total",
+    "Approval buttons in the Telegram channel (specs/021), by what happened. `not_owner` and `expired` are taps that did nothing; `resume_failed` "
+    "is a decision the door refused after the person tapped, which they are told about and can tap again",
+    ["outcome"],
+)  # outcome: shown | approved | rejected | expired | not_owner | duplicate | resume_failed | cancelled
+
+channel_telegram_link_total = Counter(
+    "channel_telegram_link_total",
+    "Telegram account linking (specs/021), by step and outcome. `refused` covers an unknown, reused or expired state and a login the authorization "
+    "server did not accept; the person is shown a plain page and nothing is bound",
+    ["step", "outcome"],
+)  # step: start | callback | confirm | refresh | unlink; outcome: ok | refused | unavailable | revoked
+
+channel_telegram_webhook_total = Counter(
+    "channel_telegram_webhook_total",
+    "Requests to the bot's webhook (app/channels/telegram_server.py), by outcome. `forbidden` is a request without the secret Telegram was given",
+    ["outcome"],
+)  # outcome: accepted | forbidden | invalid | unavailable
+
 agent_retrieval_degraded_total = Counter(
     "agent_retrieval_degraded_total",
     "Hybrid retrieval stages that failed and degraded (app/retrieval/qdrant_store.py::hybrid_search)",

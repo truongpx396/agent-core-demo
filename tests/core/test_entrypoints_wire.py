@@ -26,7 +26,8 @@ APPLICATION_PACKAGES = (
 EXEMPT = {
     "scripts/telegram_person.py": "an operator tool over the authorization server's HTTP API; it imports two pure helpers from a channel module and calls no port",
     "app/channels/chat.py": "a client of the chat API through the front door (specs/020): plain HTTP, it reaches no port and never touches the queue or the graph",
-    "app/channels/telegram.py": "a client of the chat API through the front door (specs/020): plain HTTP, it reaches no port and never touches the graph; its poll offset is one Redis key",
+    "app/channels/telegram.py": "a client of the chat API through the front door (specs/020): plain HTTP, it reaches no port and never touches the graph; its Redis state is its own small keys (offset, inbox, approvals, links) and its listener serves only the webhook and the link pages (specs/021)",
+    "app/channels/telegram_server.py": "the Telegram channel's own listener, run inside app/channels/telegram.py's process (exempt above for the same reason): it serves the webhook and the link pages and reaches no port",
     "scripts/litellm_key.py": "mints a gateway key over HTTP; it imports one pure helper (`admin_base_url`) from an adapter module and calls no port",
 }
 

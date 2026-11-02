@@ -213,3 +213,14 @@ def test_a_named_client_id_is_used_on_creation_and_replaces_the_kept_one_on_a_re
     rerun = RecordingCasdoor(existing)
     assert rerun.ensure_application("api-ecorp", "ecorp", "api:chat", "chat API", ["https://api.localhost:8443/"], 168, kind="API", client_id="api-ecorp") == "api-ecorp"
     assert rerun.writes[0][1]["clientId"] == "api-ecorp" and rerun.writes[0][1]["clientSecret"] == "kept-secret", "the id changes, the secret does not"
+
+
+def test_the_telegram_bots_login_return_is_registered_only_when_asked_and_is_the_path_the_bot_serves(casdoor):
+    from app.channels import telegram_link
+
+    assert bootstrap.TELEGRAM_LINK_CALLBACK_PATH == telegram_link.CALLBACK_PATH
+    assert by_name(casdoor())["api-ecorp"]["redirect_uris"] == ["https://api.localhost:8443/", bootstrap.API_SMOKE_CALLBACK, "http://localhost:33420/callback"]
+
+    uris = by_name(casdoor(["--telegram-link-url", "https://bot.example.com/"]))["api-ecorp"]["redirect_uris"]
+
+    assert uris[-1] == "https://bot.example.com/telegram/link/callback"
