@@ -1,23 +1,10 @@
 .PHONY: model-eval model-eval-all model-eval-baseline model-eval-data model-eval-verify router-label labelset-calibrate test-billing-package help up up-app sandbox-up sandbox-build pull-models pull-strong-model probe-tools ingest index-skills reembed chat chat-hitl serve mcp-serve mcp-serve-ops mcp-gateway-secrets mcp-gateway-up mcp-gateway-bootstrap mcp-gateway-ca mcp-gateway-smoke mcp-gateway-down authlimit-test authlimit-build authlimit-keys authlimit-keys-ensure authlimit-up authlimit-up-app authlimit-down authlimit-down-app authlimit-smoke authlimit-web-check authlimit-latency authlimit-mutants authlimit-revoke telegram telegram-support telegram-sales telegram-person agent-worker agent-worker-support agent-worker-ops agent-worker-sales restart-all fake-llm ingest-worker ops-digest followup-sweep tool-call-dedup-sweep usage-events-sweep usage-events-carry-over billing-migrate billing-migrate-status billing-inbox-sweep billing-export-worker billing-usage-sweep usage-reconcile usage-reconcile-worker budget-policy litellm-key gateway-check web-search-check test test-integration test-live test-sandbox lint typecheck eval promptfoo promptfoo-redteam deepeval garak garak-full trivy trivy-image semgrep checkov sonar-up sonar-down sonar-scan zap-baseline zap-api-scan zap-view defectdojo-up defectdojo-down defectdojo-import loadtest-queued loadtest-queued-headless strix strix-app strix-view logs down clean clear-cache clear-streams clear-checkpoints clear-langfuse clear-litellm clear-all obs-up obs-down obs-logs obs-clean
 
-# Pinned DefectDojo release — see `defectdojo-up`'s own comment for why this
-# is a plain git clone into ~/.cache (NOT vendored into this repo, same
-# "external tool, own lifecycle" treatment `make strix` already gives
-# pipx-installed strix-agent) rather than a docker-compose.yml service like
-# sonarqube/sonarqube-db above: DefectDojo is a 6-container app with its own
-# release cadence, not a two-container official image this repo can just
-# declare inline. DJANGO_VERSION/NGINX_VERSION below are exported to match —
-# verified directly both `defectdojo/defectdojo-django:3.3.100` and
-# `defectdojo/defectdojo-nginx:3.3.100` exist on Docker Hub, not assumed
-# from the compose file's own `:latest` default.
 # The billing package is found by path, not installed: the lock file is a machine-generated freeze of a real install and a path
 # dependency does not belong in it (spec 011 D20). Absolute, so a target that `cd`s into packages/billing still finds it.
 # The billing package and the ML service's `ml_service` package are found by path, not installed (pyproject.toml's pytest `pythonpath` and
 # mypy_path do the same for the tools they run). scripts/model_eval imports ml_service to embed with the code the service serves with.
 export PYTHONPATH := $(CURDIR)/packages/billing/src:$(CURDIR)/docker/ml-service$(if $(PYTHONPATH),:$(PYTHONPATH))
-
-DEFECTDOJO_VERSION := 3.3.100
-DEFECTDOJO_DIR := $(HOME)/.cache/graph-agent-core-defectdojo
 
 # The MCP gateway stack's generated secrets (the Casdoor database and admin passwords) live OUTSIDE the repo, in a private directory, and are
 # handed to compose as a second --env-file; `.env` is passed first when it exists so every other variable keeps coming from it.
@@ -49,15 +36,32 @@ COMPOSE_OBS := docker compose --project-directory . -f deploy/compose/docker-com
 # compose rejects dropped; COMPOSE_PROJECT_NAME wins when set). Derived, not typed: a clone or worktree under any name still finds its network.
 COMPOSE_NETWORK := $(or $(COMPOSE_PROJECT_NAME),$(shell basename "$(CURDIR)" | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9_-'))_default
 
+# Named explicitly: the included files bring targets of their own.
+.DEFAULT_GOAL := help
+
 help:  ## Show this help
-	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
+	@grep -hE '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
 		awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2}'
+
+# The other targets, by kind.
+include make/admin.mk
+include make/evals.mk
+include make/security.mk
+include make/host.mk
 
 up:  ## Start all services (litellm, qdrant, langfuse, postgres, minio; talks to a native macOS Ollama on the host, see litellm-config.yaml)
 	$(COMPOSE) up -d
 
 up-app:  ## Start infra + the containerized app itself (api, agent-worker, ingest-worker; see Dockerfile)
 	$(COMPOSE) --profile app up -d --build
+
+# One compose call over the app and gateway profiles (not sandbox or quality), in identity mode like authlimit-up-app; observability is its own project.
+up-all: mcp-gateway-secrets authlimit-keys-ensure  ## Start everything in containers: infra, app behind the front door, MCP gateway, observability (not sandbox or SonarQube); web UI https://api.localhost:8443/
+	@curl -sf -o /dev/null http://localhost:11434/api/version || echo "warning: no Ollama on :11434 (start it with: ollama serve)"
+	AUTH_MODE=identity AUTHLIMIT_UPSTREAM=api:8000 $(GATEWAY_COMPOSE) --profile app up -d --build
+	$(COMPOSE_OBS) up -d
+	@echo "up. Web UI https://api.localhost:8443/ · Grafana http://localhost:3300 · Langfuse http://localhost:3000"
+	@echo "first time: make mcp-gateway-bootstrap, then make mcp-gateway-ca and trust the CA in your browser"
 
 sandbox-up: sandbox-build  ## Start the containerized, authenticated OpenSandbox server (docker/opensandbox-server.{Dockerfile,toml}) that the ops/support/sales domains' sandbox tools execute against — opt-in `sandbox` profile like `up-app`'s `app` profile, not part of plain `make up`, since it bind-mounts the host Docker socket to create sibling sandbox containers. Needs OPENSANDBOX_API_KEY set in .env first (see .env.example) — the server refuses to start without one.
 	$(COMPOSE) --profile sandbox up -d --build
@@ -73,9 +77,6 @@ pull-models:  ## Download the chat model (qwen2.5:7b, about 4.7 GB), the small m
 pull-strong-model:  ## Download the dev stand-in for the escalation alias (chat-strong): a LOCAL 14B model, about 9 GB (a size up from the 7B chat model). Only needed once ROUTER_MODE is shadow or on
 	ollama pull qwen2.5:14b
 
-probe-tools:  ## Does the configured chat model emit tool calls the app can use? 25 labelled prompts against the app's real tools plus 4 open-ended ones that must not loop; about 2 minutes on a native Ollama (`ARGS=--no-loops` is the seconds-long tool half). Run it after ANY change to a chat alias's model or repeat_penalty: make probe-tools [ARGS="--alias chat-strong"] [ARGS="--model qwen2.5:7b --repeat-penalty 1.3 1.1"] (GRAPH_PATTERNS.md pattern 73)
-	python -m scripts.toolcall_probe $(ARGS)
-
 ingest:  ## Embed sample docs and upsert them into Qdrant
 	python -m scripts.seed
 
@@ -87,32 +88,6 @@ reembed:  ## Rebuild a vector collection under the CURRENT embedding identity, t
 	# variables to the recipe, so `COLLECTION=skills` would rename the main collection for this process and reject `docs`.
 	@test -n "$(COLLECTION_NAME)" || { echo "usage: make reembed COLLECTION_NAME=<docs|skills collection> [ARGS=--dry-run]"; exit 2; }
 	python -m scripts.reembed $(COLLECTION_NAME) $(ARGS)
-
-chat:  ## Start the interactive agent CLI (shows tool calls). Each turn goes through the queue, so it needs `make up` and a worker for its domain (`make agent-worker`); AGENT_DOMAIN=support|ops|sales picks another pool
-	python -m app.channels.chat
-
-chat-hitl:  ## Interactive CLI with human-in-the-loop tool approval (the answer is a resume job on the queue; same worker requirement as `make chat`)
-	python -m app.channels.chat --hitl
-
-serve:  ## Start the FastAPI service (http://localhost:8000/docs)
-	# --reload-dir scopes the file watcher to app/ only. Without it, uvicorn
-	# watches the ENTIRE working directory recursively, including .venv —
-	# 17k+ files here vs ~150 in app/ — and continuously re-scans that whole
-	# tree (verified empirically via `sample`: hundreds of lstat/open/
-	# getdirentries syscalls per second). That's real, sustained CPU
-	# competing directly with Ollama's own CPU-bound inference in this
-	# docker-compose stack — on a resource-constrained machine it was
-	# measurably slowing down/timing out ordinary chat turns.
-	uvicorn app.api.main:app --host 0.0.0.0 --port 8000 --reload --reload-dir app
-
-mcp-serve:  ## Start the MCP server exposing query_employees (stdio transport; needs `make up`, and MCP_TENANT + MCP_PRINCIPAL in .env or exported: the identity it acts for, never a tool argument)
-	python -m app.mcp.server
-
-mcp-inspect:  ## Launch the MCP Inspector against app/mcp/server.py for interactive testing (set MCP_TENANT + MCP_PRINCIPAL first, as for mcp-serve)
-	mcp dev app/mcp/server.py
-
-mcp-serve-ops:  ## Start the MCP server exposing fetch_metrics_summary/list_recent_incidents (stdio transport; needs `make up`, and MCP_PRINCIPAL in .env or exported) — see app/mcp/ops_server.py
-	python -m app.mcp.ops_server
 
 # GATEWAY_COMPOSE is defined after COMPOSE (which the command line may override, as the tests of this stack do).
 # AUTHLIMIT_UID/GID run the authlimit containers as the host user (see the service in docker-compose.yml); AUTHLIMIT_KEYS_DIR is the key directory.
@@ -175,136 +150,11 @@ authlimit-latency:  ## How much time the front door's check adds to a request: a
 authlimit-mutants:  ## Apply each deliberate defect of the authlimit service's mutation list and require a test to fail (specs/018 SC-010). Edits the source in place and restores it; run on a clean tree. Needs Go
 	python scripts/authlimit_mutants.py
 
-authlimit-revoke:  ## Void every token issued to a person, on every authlimit replica within seconds: make authlimit-revoke TENANT=ecorp SUB=<the person's id>   (`authlimit revoke --list` shows them)
-	@test -n "$(TENANT)" -a -n "$(SUB)" || { echo "usage: make authlimit-revoke TENANT=<tenant> SUB=<subject>"; exit 2; }
-	$(GATEWAY_COMPOSE) exec -T --index 1 authlimit /authlimit revoke --tenant "$(TENANT)" --sub "$(SUB)"
-
-telegram:  ## Start the Telegram bot channel for the Ecorp domain (needs TELEGRAM_BOT_TOKEN in .env, and `make agent-worker` running: messages reach the API through the front door; a turn that needs approval shows Approve/Reject buttons; see app/channels/telegram.py and specs/021)
-	python -m app.channels.telegram
-
-telegram-person:  ## Add, disable or re-enable a Telegram person at the authorization server (specs/020): make telegram-person ACTION=add|disable|enable TELEGRAM_ID=<telegram user id>. Needs TELEGRAM_PERSON_SECRET in .env and the gateway stack's Casdoor
-	@test -n "$(TELEGRAM_ID)" || { echo "usage: make telegram-person ACTION=add|disable|enable TELEGRAM_ID=<telegram user id>"; exit 2; }
-	@. $(GATEWAY_SECRETS) && export CASDOOR_ADMIN_PASSWORD && python -m scripts.telegram_person $(or $(ACTION),add) --telegram-id "$(TELEGRAM_ID)"
-
-telegram-support:  ## Start the Telegram channel as the Tier-1 support copilot (see app/domains/support/); needs `make agent-worker-support` running
-	AGENT_DOMAIN=support python -m app.channels.telegram
-
-telegram-sales:  ## Start the Telegram channel as the sales/CRM concierge (see app/domains/sales/); needs `make agent-worker-sales` running
-	AGENT_DOMAIN=sales python -m app.channels.telegram
-
-agent-worker:  ## Start a Redis Streams agent worker for the Ecorp domain (run several for independent scaling). Every chat front door publishes to it: POST /chat/stream/queued, `make chat` and `make telegram`
-	python -m app.job_queue.agent_worker
-
-agent-worker-support:  ## Start an agent worker pool for the Tier-1 support domain (see app/domains/support/); the web UI's X-Domain: support turns route here
-	AGENT_DOMAIN=support python -m app.job_queue.agent_worker
-
-agent-worker-ops:  ## Start an agent worker pool for the ops domain (see app/domains/ops/); the web UI's X-Domain: ops turns route here
-	AGENT_DOMAIN=ops python -m app.job_queue.agent_worker
-
-agent-worker-sales:  ## Start an agent worker pool for the sales/CRM domain (see app/domains/sales/); the web UI's X-Domain: sales turns route here
-	AGENT_DOMAIN=sales python -m app.job_queue.agent_worker
-
-restart-all:  ## Kill and relaunch the API service (which also serves the built-in web UI) + every domain's agent-worker pool + the ingest-worker as backgrounded host processes (logs under var/*.log), then reset+re-seed ingest data (`make ingest`) and the skills search index (`make index-skills`) — host-native dev convenience; not for the containerized `up-app` stack
-	pkill -f 'uvicorn app\.api\.main:app' 2>/dev/null || true
-	# Reload mode (`serve`'s own `--reload`) runs the real server as a
-	# `multiprocessing` worker whose OS-level command line is just a generic
-	# Python multiprocessing bootstrap string — verified directly this
-	# means the pkill above can NEVER match it, only the reloader parent.
-	# If that parent has already died for any reason (crashed, terminal
-	# closed), the worker is silently orphaned: still bound to :8000, still
-	# serving stale code, forever invisible to the pkill above. Killing
-	# whatever actually holds the port catches that case.
-	lsof -tiTCP:8000 -sTCP:LISTEN 2>/dev/null | xargs -r kill 2>/dev/null || true
-	pkill -f 'app\.job_queue\.agent_worker' 2>/dev/null || true
-	pkill -f 'app\.ingestion\.ingest_worker' 2>/dev/null || true
-	# A killed process doesn't free its port / stop matching `pgrep`
-	# instantly — verified directly this isn't theoretical: a plain
-	# `sleep 1` here twice left a stale agent-worker alive long enough to
-	# start a SECOND, duplicate worker for the same domain (both then
-	# competing for the same Redis consumer group), and separately caused
-	# a real code/config change to silently not take effect because the
-	# stale process was still the one actually handling requests. Poll
-	# for actual exit instead of guessing a fixed delay; SIGKILL anything
-	# still alive after 10s rather than waiting forever.
-	for i in $$(seq 1 20); do \
-		lsof -tiTCP:8000 -sTCP:LISTEN >/dev/null 2>&1 || pgrep -f 'app\.job_queue\.agent_worker' >/dev/null 2>&1 || pgrep -f 'app\.ingestion\.ingest_worker' >/dev/null 2>&1 || break; \
-		sleep 0.5; \
-	done
-	lsof -tiTCP:8000 -sTCP:LISTEN 2>/dev/null | xargs -r kill -9 2>/dev/null || true
-	pkill -9 -f 'app\.job_queue\.agent_worker' 2>/dev/null || true
-	pkill -9 -f 'app\.ingestion\.ingest_worker' 2>/dev/null || true
-	mkdir -p var
-	nohup $(MAKE) serve > var/serve.log 2>&1 &
-	nohup $(MAKE) agent-worker > var/agent-worker.log 2>&1 &
-	nohup $(MAKE) agent-worker-support > var/agent-worker-support.log 2>&1 &
-	nohup $(MAKE) agent-worker-ops > var/agent-worker-ops.log 2>&1 &
-	nohup $(MAKE) agent-worker-sales > var/agent-worker-sales.log 2>&1 &
-	nohup $(MAKE) ingest-worker > var/ingest-worker.log 2>&1 &
-	$(MAKE) ingest
-	$(MAKE) index-skills
-
-fake-llm:  ## Start the fake concurrent-LLM double (loadtest/fake_llm_server.py, :9009) for load-testing agent_worker.py's own concurrency in isolation from native Ollama's hard `-np 1` ceiling — see that file's docstring for how to point a run at it
-	uvicorn loadtest.fake_llm_server:app --host 0.0.0.0 --port 9009
-
-ingest-worker:  ## Start a document-ingestion worker (PDF/DOCX uploads; run several for independent scaling; see POST /ingest/upload)
-	python -m app.ingestion.ingest_worker
-
-ops-digest:  ## Run the ops bot's one-shot metrics digest, posting to the team channel (see scripts/ops_digest.py; meant for real cron)
-	python -m scripts.ops_digest
-
-followup-sweep:  ## Run the sales concierge's one-shot due-follow-up sweep, drafting nudges for a human to review (see scripts/followup_sweep.py; meant for real cron)
-	python -m scripts.followup_sweep
-
-tool-call-dedup-sweep:  ## Delete stale tool_call_dedup rows past their retention window (see scripts/tool_call_dedup_sweep.py; meant for real cron)
-	python -m scripts.tool_call_dedup_sweep
-
-budget-policy:  ## Operator CLI for per-tenant / per-person spend-limit overrides, e.g. `make budget-policy ARGS="show --tenant acme --principal alice"` (see scripts/budget_policy.py)
-	python -m scripts.budget_policy $(ARGS)
-
-litellm-key:  ## Mint / inspect the app's scoped, budget-capped LiteLLM key, set the default per-person budget, e.g. `LITELLM_MASTER_KEY=... make litellm-key ARGS="create --max-budget 600"` or `ARGS="person-budget set --max-budget 20"` (see scripts/litellm_key.py)
-	python -m scripts.litellm_key $(ARGS)
-
 gateway-check:  ## Run the PINNED LiteLLM image on the shipped dev config and a stub model backend: every alias priced, spend equals tokens x price, and nothing identifying (the readable end user, tenant, principal, conversation) reaches the backend. Needs Docker, no model, key or database. Re-run after bumping the image (infra/README.md)
 	python -m scripts.gateway_check
 
 web-search-check:  ## Does SERPER_API_KEY work? One real search through the web_search tool's own client; spends ONE serper.dev credit, prints the outcome and the first result, never the key. Exit 0 ok, 1 refused/failed, 2 no key (GRAPH_PATTERNS.md pattern 87)
 	python -m scripts.web_search_check
-
-usage-events-sweep:  ## Delete usage events older than USAGE_EVENT_RETENTION_DAYS (floor 35) (see scripts/usage_events_sweep.py; the table the caps read, so wire to cron only once your retention policy is decided)
-	python -m scripts.usage_events_sweep
-
-usage-events-carry-over:  ## One-time, idempotent: copy usage_ledger history older than the first usage event into usage_events, because the dollar caps sum the events and would otherwise forget the month so far. Run it before deploying that change and once after. ARGS=--dry-run counts and writes nothing; ARGS="--tenant acme" does one tenant (see scripts/usage_events_carry_over.py)
-	python -m scripts.usage_events_carry_over $(ARGS)
-
-billing-export-worker:  ## Drain billing_export_outbox to the enabled providers that bill on usage, in a loop (the billing package's credit-billing-export-worker; `ARGS=--once` for a single pass; set BILLING_PROVIDERS the same as the API and agent workers)
-	python -m credit_billing.cli.export_worker $(ARGS)
-
-billing-usage-sweep:  ## Delete the billing package's usage events older than BILLING_USAGE_EVENT_RETENTION_DAYS (floor 35), never one whose export never finished (credit-billing-usage-sweep; wire to cron once your retention policy is decided)
-	python -m credit_billing.cli.usage_sweep
-
-billing-migrate:  ## Apply the billing package's schema scripts to an existing database, in order, and record them (see packages/billing/src/credit_billing/cli/migrate.py; safe to re-run and to run twice at once; `ARGS=--lock-timeout-seconds=30` to wait longer)
-	python -m credit_billing.cli.migrate $(ARGS)
-
-billing-migrate-status:  ## Show which billing schema scripts are applied, pending or changed, and write nothing; `make billing-migrate-status ARGS=--check` exits 1 if any is not current (a deploy gate)
-	python -m credit_billing.cli.migrate --status $(ARGS)
-
-billing-inbox-sweep:  ## Delete applied/ignored billing webhook inbox rows older than BILLING_INBOX_RETENTION_DAYS (see packages/billing/src/credit_billing/cli/inbox_sweep.py; never touches open or quarantined rows; wire to cron once your retention policy is decided)
-	python -m credit_billing.cli.inbox_sweep
-
-credits:  ## Operator CLI for the credit wallet, e.g. `make credits ARGS="grant --tenant acme --amount 500 --by alice --reason 'pilot top-up'"`, `adjust` (signed) and `show` (balance, lots, entries); --by and --reason are required for a change (see packages/billing/src/credit_billing/cli/credits.py)
-	python -m credit_billing.cli.credits $(ARGS)
-
-credit-reconcile:  ## Wallet check: was every recorded usage worth credits actually charged? Over the last CREDIT_RECONCILE_LOOKBACK_DAYS; exit 0 charged / 1 drift / 2 could not finish / 3 database unreachable (the billing package's credit-billing-reconcile; ARGS="--days 7 --json")
-	python -m credit_billing.cli.reconcile $(ARGS)
-
-credit-reconcile-worker:  ## The same check as a worker: a pass every CREDIT_RECONCILE_INTERVAL_SECONDS, re-publishing the drift and balance gauges every minute for the dashboard and alerts
-	python -m credit_billing.cli.reconcile --loop $(ARGS)
-
-usage-reconcile:  ## Meter check: do the usage events agree with the LLM gateway's spend log over the last USAGE_RECONCILE_LOOKBACK_DAYS? exit 0 agree / 1 drift / 2 could not finish. Needs LITELLM_MASTER_KEY; ARGS="--days 7 --json" (see scripts/usage_reconcile.py)
-	python -m scripts.usage_reconcile $(ARGS)
-
-usage-reconcile-worker:  ## The same comparison as a worker: a pass every USAGE_RECONCILE_INTERVAL_SECONDS, re-publishing the drift gauge every minute for the dashboard and alerts (see scripts/usage_reconcile.py)
-	python -m scripts.usage_reconcile --loop $(ARGS)
 
 test:  ## Run the graph test suite in parallel (no live services needed — fake LLM, no Qdrant), then the billing package's own tests (a separate process: both have a `tests` package)
 	pytest -n auto -q
@@ -337,196 +187,6 @@ lint:  ## Static checks: ruff (style/correctness) — see pyproject.toml's [tool
 typecheck:  ## Static checks: mypy over app/ and scripts/ — see pyproject.toml's [tool.mypy]
 	mypy
 
-eval:  ## Run the golden-dataset evaluation against the real stack (needs `make up` + `make ingest`)
-	python -m scripts.eval
-
-model-eval:  ## Evaluate ONE model against its recorded baseline: make model-eval KIND=embedding|reranker|screen|classifier CANDIDATE=<name> [VIA=gateway|service|inprocess] [DATASET=<name>] [OUTCOMES=<file>] (a label set: KIND=classifier CANDIDATE=labelset-bge-small-en-v1.5 DATASET=route-topics). A manual tier like `make eval` (needs models/services); specs/014, evals/README.md
-	@test -n "$(KIND)" -a -n "$(CANDIDATE)" || { echo "usage: make model-eval KIND=embedding CANDIDATE=<name> [VIA=...] [DATASET=...]"; exit 2; }
-	python -m scripts.model_eval run --kind $(KIND) --candidate $(CANDIDATE) $(if $(VIA),--via $(VIA)) $(if $(DATASET),--dataset $(DATASET)) $(if $(OUTCOMES),--outcomes $(OUTCOMES))
-
-model-eval-all:  ## The same candidate for every kind that declares it: make model-eval-all CANDIDATE=<name> (a control such as baseline-as-candidate runs for all)
-	@test -n "$(CANDIDATE)" || { echo "usage: make model-eval-all CANDIDATE=<name>"; exit 2; }
-	python -m scripts.model_eval run --all-kinds --candidate $(CANDIDATE) $(if $(VIA),--via $(VIA))
-
-model-eval-baseline:  ## RECORD a baseline (immutable; FORCE=1 to replace, ADD_HARDWARE=1 to add this machine's latency): make model-eval-baseline KIND=... CANDIDATE=...
-	@test -n "$(KIND)" -a -n "$(CANDIDATE)" || { echo "usage: make model-eval-baseline KIND=embedding CANDIDATE=<name>"; exit 2; }
-	python -m scripts.model_eval baseline --kind $(KIND) --candidate $(CANDIDATE) $(if $(VIA),--via $(VIA)) $(if $(DATASET),--dataset $(DATASET)) $(if $(FORCE),--force) $(if $(ADD_HARDWARE),--add-hardware)
-
-model-eval-data:  ## Download and verify the pinned public evaluation datasets (needs the network once; offline afterwards)
-	python -m scripts.model_eval fetch
-
-model-eval-verify:  ## Check every committed evaluation dataset, baseline, licence and control, with no model and no network
-	python -m scripts.model_eval verify
-
-labelset-calibrate:  ## Choose a label set's "none of these" cutoff for ONE model on the dev split (needs the model cached): make labelset-calibrate CANDIDATE=labelset-bge-small-en-v1.5 [LABELSET=route-topics] [KEEP=0.95]. Prints the line to put under `calibration` in docker/ml-service/labelsets/<set>.json; specs/015
-	@test -n "$(CANDIDATE)" || { echo "usage: make labelset-calibrate CANDIDATE=<a classifier candidate with source.model, e.g. labelset-bge-small-en-v1.5>"; exit 2; }
-	python -m scripts.model_eval labelset-calibrate --candidate $(CANDIDATE) $(if $(LABELSET),--labelset $(LABELSET)) $(if $(KEEP),--keep $(KEEP))
-
-router-label:  ## Score the route prompts' answers from the local and strong model with a judge (minutes per prompt; needs the gateway): make router-label JUDGE=<alias> [LOCAL=chat] [STRONG=chat-strong] [DEADLINE=<seconds>] [LIMIT=<n>]. Writes the ignored outcomes/ file; resumable
-	@test -n "$(JUDGE)" || { echo "usage: make router-label JUDGE=<gateway alias that scores the answers>"; exit 2; }
-	python -m scripts.model_eval route-label --judge $(JUDGE) $(if $(LOCAL),--local $(LOCAL)) $(if $(STRONG),--strong $(STRONG)) $(if $(STRONG_ID),--strong-id $(STRONG_ID)) $(if $(DEADLINE),--deadline $(DEADLINE)) $(if $(LIMIT),--limit $(LIMIT))
-
-promptfoo:  ## Prompt-level regression checks for the domain system prompts against a real Ollama (needs `make up` or a native Ollama with CHAT_MODEL pulled)
-	cd promptfoo && npm install --include=optional
-	python -m promptfoo.dump_prompts
-	cd promptfoo && for domain in support ops sales; do \
-		npx promptfoo eval --config $$domain.yaml || exit 1; \
-	done
-
-promptfoo-redteam:  ## Adversarial variants of the support/sales/ops prompts (prompt injection, policy violations, sandbox misuse) against the real local target, generated+graded by Gemini 3.1 Flash-Lite (needs GOOGLE_API_KEY, see .env.example) — see promptfoo/redteam.yaml's own comments for why redteam.provider is the one deliberate exception to this project's offline commitment
-	cd promptfoo && npm install --include=optional
-	python -m promptfoo.dump_prompts
-	# `--max-concurrency 1 --delay 2100`: keeps every domain's redteam.provider
-	# calls serial with >2s between them, safely under the free Gemini tier's
-	# 30 req/min this was built against (see redteam.yaml's own RATE LIMIT
-	# paragraph) — raise only alongside a paid tier/higher quota.
-	# Every promptfoo command runs from inside promptfoo/, where package.json and node_modules live
-	# (so the repo root stays Python-only); --config and --output are therefore relative to that directory.
-	# `redteam run`'s generated+graded test suite is written to `-o`/
-	# `--output`, which DEFAULTS to a HARDCODED `redteam.yaml` in the
-	# --config file's own DIRECTORY — not to the --config file itself,
-	# regardless of what it's named (confirmed directly in promptfoo's own
-	# installed source, promptfoo/node_modules/promptfoo/dist/src/main.js:
-	# `redteamPath = path.join(configDir, "redteam.yaml")`). Copying each
-	# domain's config to its own scratch file first does NOT protect the
-	# hand-authored sources on its own — every scratch file already lives in
-	# THIS SAME `promptfoo/` directory, so all three would silently default
-	# to overwriting `promptfoo/redteam.yaml` (support's own hand-authored
-	# file) regardless of which domain actually ran. An explicit `-o`
-	# pointed back at each stanza's own scratch file is what actually keeps
-	# them isolated — verified the hard way: an early version of this target
-	# without it clobbered the checked-in `redteam.yaml` from a run against
-	# an unrelated scratch config. Three explicit stanzas, not a
-	# `for domain in ...` loop like the `promptfoo` target above — support's
-	# file is `redteam.yaml` (no domain prefix, predates the sales/ops
-	# siblings), so the source filename isn't uniform across domains the way
-	# `promptfoo/$$domain.yaml` already is.
-	#
-	# Leading `-` on each `redteam run` line: promptfoo's OWN exit code is
-	# nonzero (a hardcoded 100 by default) the moment ANY test case fails —
-	# confirmed directly in its installed source (`process.exitCode =
-	# failedTestExitCode ?? 100`), verified the hard way when a real Gemini
-	# run found a genuine finding in `sales-redteam` and `make` aborted
-	# right there, never reaching `ops-redteam` at all. That's the opposite
-	# of what a MANUAL, read-it-by-hand target wants — a finding here isn't
-	# a bug in this target, it's the entire point of running it — so `-`
-	# tells `make` to keep going to the next domain regardless.
-	-cp promptfoo/redteam.yaml promptfoo/.support-redteam-run-scratch.yaml
-	-cd promptfoo && PROMPTFOO_DISABLE_REMOTE_GENERATION=true npx promptfoo redteam run --config .support-redteam-run-scratch.yaml --output .support-redteam-run-scratch.yaml --max-concurrency 1 --delay 2100
-	-cp promptfoo/sales-redteam.yaml promptfoo/.sales-redteam-run-scratch.yaml
-	-cd promptfoo && PROMPTFOO_DISABLE_REMOTE_GENERATION=true npx promptfoo redteam run --config .sales-redteam-run-scratch.yaml --output .sales-redteam-run-scratch.yaml --max-concurrency 1 --delay 2100
-	-cp promptfoo/ops-redteam.yaml promptfoo/.ops-redteam-run-scratch.yaml
-	-cd promptfoo && PROMPTFOO_DISABLE_REMOTE_GENERATION=true npx promptfoo redteam run --config .ops-redteam-run-scratch.yaml --output .ops-redteam-run-scratch.yaml --max-concurrency 1 --delay 2100
-
-deepeval:  ## LLM-judged RAG quality (tests/deepeval/test_rag_quality_deepeval.py) + a multi-turn conversation simulation (test_conversation_simulator_deepeval.py) + tool-call trajectory correctness (test_tool_correctness_deepeval.py) against the real graph — needs Docker + GOOGLE_API_KEY (RAG quality/tool correctness, tests/deepeval/conftest.py's deepeval_judge fixture) + GROQ_API_KEY (conversation simulation only — Gemini's response_schema can't grade its KnowledgeRetentionMetric, see deepeval_conversation_judge); read the printed reasons by hand, don't trust pass/fail alone (see those files' own disclosed judge-reliability findings, GRAPH_PATTERNS.md pattern 48). Same command CI's own `deepeval` job runs; every file's test cases are `flaky=True` there so a bad score can't fail the build.
-	DEEPEVAL_TELEMETRY_OPT_OUT=1 pytest -m deepeval -q -s --reruns 2 --reruns-delay 10 --only-rerun "(ServerError|UNAVAILABLE|RESOURCE_EXHAUSTED|DEADLINE_EXCEEDED|RateLimitError|APITimeoutError|APIConnectionError|InternalServerError)" tests/deepeval
-
-garak:  ## Fast, curated probe subset scanning the real model for known jailbreak/injection patterns — needs `make up`/a native Ollama AND a SEPARATE Python environment, never this repo's own .venv (installing garak here upgrades langgraph-checkpoint past what this app's own pin allows — see garak/requirements-garak.txt)
-	python -m pip install -q -r garak/requirements-garak.txt
-	python garak/run_ci_scan.py
-
-garak-full:  ## The full, slow garak probe suite — deliberate, pre-release scanning, not a per-PR gate (same framing as `make eval`); same separate-environment requirement as `make garak`
-	python -m pip install -q -r garak/requirements-garak.txt
-	OPENAICOMPATIBLE_API_KEY="sk-not-checked-by-ollama" python -m garak --config garak/config.yaml --target_type openai.OpenAICompatible --target_name "$${GARAK_MODEL:-qwen2.5:3b}"
-
-trivy:  ## Scan dependencies/Dockerfile+compose/secrets for known vulns (aquasec/trivy via Docker — no local trivy install needed; same policy as CI's `trivy` job)
-	# --file-patterns points trivy's pip analyzer at requirements-lock.txt,
-	# not requirements.txt (trivy's own default match) — verified directly
-	# this matters: requirements.txt's version RANGES (`langgraph>=0.2.20,<0.3`)
-	# don't resolve to one installed version to check against the CVE
-	# database, so scanning it alone silently finds nothing. Scanning the
-	# exact-pinned lock file — what the Dockerfile/CI actually install,
-	# per requirements-lock.txt's own header — surfaced 5 real HIGH-severity
-	# fixable CVEs on first run here, including an RCE in langgraph-checkpoint
-	# (CVE-2025-64439); see this repo's own disclosed pin-compatibility
-	# constraints (garak/requirements-garak.txt) before bumping it.
-	# infra/terraform excluded — Checkov (`make checkov`) owns that
-	# directory's IaC scanning; see CI's `trivy` job for why (Trivy's own
-	# DigitalOcean firewall policies flag this repo's necessary public
-	# 80/443 ingress + broad egress as CRITICAL with no way to distinguish
-	# it from an actually-dangerous open port).
-	docker run --rm -v $(PWD):/repo aquasec/trivy:0.74.0 fs \
-		--scanners vuln,secret,misconfig --severity HIGH,CRITICAL --ignore-unfixed \
-		--file-patterns 'pip:requirements-lock\.txt$$' \
-		--skip-dirs .venv,**/node_modules,.git,.mypy_cache,.ruff_cache,.pytest_cache,infra/terraform /repo
-
-trivy-image:  ## Build the app image (see Dockerfile) and scan it for OS/library vulnerabilities
-	docker build -t graph-agent-core:trivy .
-	docker run --rm -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy:0.74.0 image \
-		--severity HIGH,CRITICAL --ignore-unfixed graph-agent-core:trivy
-
-semgrep:  ## Static analysis (SAST) over app/scripts/docker/Dockerfile via Docker (no local install) — same rulesets and hard gate as CI's `semgrep` job; see that job's own comment for why these `p/*` configs need no `semgrep login`
-	docker run --rm -v $(PWD):/src -w /src semgrep/semgrep:1.177.0 semgrep scan --error --metrics=off \
-		--config p/security-audit --config p/secrets --config p/python --config p/dockerfile \
-		app/ scripts/ docker/ Dockerfile
-
-checkov:  ## Scan infra/terraform for IaC misconfigurations — same config/gate as CI's `checkov` job. pip install, not Docker: verified directly bridgecrewio/checkov's Docker Hub image no longer pulls ("repository does not exist"), unlike every other Docker-based scanner target in this file
-	pip install -q checkov==3.3.17
-	checkov --config-file .checkov.yaml
-
-sonar-up:  ## Start a PERSISTENT self-hosted SonarQube (Community Edition) at http://localhost:9002 — opt-in `quality` profile (see docker-compose.yml's own comment on why 9002, not 9000/9001, and why this is separate from CI's ephemeral `sonarqube` job). First login: admin/admin, then change the password before running `make sonar-scan` for real (a throwaway local instance can skip that, same as CI's own ephemeral one).
-	$(COMPOSE) --profile quality up -d sonarqube-db sonarqube
-
-sonar-down:  ## Stop the persistent SonarQube server (keeps its volumes — history/trends survive)
-	$(COMPOSE) --profile quality stop sonarqube sonarqube-db
-
-sonar-scan:  ## Run a scan against the persistent `make sonar-up` server (needs SONAR_TOKEN — generate one under My Account -> Security in the UI first). The very first baseline scan of this repo found ~90 pre-existing issues (2 BLOCKER, 10 CRITICAL) that the default "clean new code" quality gate does NOT block on — see the dashboard to triage them; that gate only fails a scan when NEW code introduces a new issue.
-	@test -n "$$SONAR_TOKEN" || (echo "SONAR_TOKEN is required — generate one in the SonarQube UI (My Account -> Security)" && exit 1)
-	# Joins docker-compose.yml's own network and talks to the `sonarqube`
-	# service by its in-network name/port (9000, not the 9002 host
-	# publish) — NOT `--network host` (what CI's ephemeral job uses, see
-	# that job's own comment): host networking is Linux-only-reliable and
-	# this target needs to work the same on a Mac dev machine too.
-	docker run --rm --network $(COMPOSE_NETWORK) \
-		-e SONAR_HOST_URL=http://sonarqube:9000 -e SONAR_TOKEN=$$SONAR_TOKEN \
-		-v $(PWD):/usr/src -w /usr/src \
-		sonarsource/sonar-scanner-cli@sha256:23ca0f137965d9dff2198074043fd48d386280bc5d0ccac8c8349cea4cf096a9
-
-zap-baseline:  ## OWASP ZAP baseline DAST scan (spider + PASSIVE rules only, no active attacks — safe against anything you merely have read access to) against a running target, default the local API (`make serve`/`make up-app`). Override with ZAP_TARGET=<url>. Docker-based (zaproxy/zap-stable, no local ZAP install needed); reports land under zap_reports/ (gitignored) as HTML + the XML format `make defectdojo-import` (DefectDojo's own ZAP parser — verified directly it wants XML, not the JSON zap-baseline.py can also emit) expects.
-	mkdir -p zap_reports
-	# --add-host: this is a standalone `docker run`, not joined to
-	# docker-compose.yml's own network, so it needs the same
-	# host.docker.internal mapping that file's own `api`/`agent-worker`
-	# services set up for themselves (extra_hosts) to reach a host-process
-	# `make serve` OR the containerized `make up-app` (both publish :8000
-	# to the host either way) — native Linux Docker doesn't wire this up
-	# for a bare `docker run` the way Docker Desktop does automatically.
-	docker run --rm --add-host=host.docker.internal:host-gateway \
-		-v $(PWD)/zap_reports:/zap/wrk:rw -t zaproxy/zap-stable zap-baseline.py \
-		-t $${ZAP_TARGET:-http://host.docker.internal:8000} \
-		-x baseline-report.xml -r baseline-report.html -I
-
-zap-api-scan:  ## OWASP ZAP ACTIVE scan driven by the app's own OpenAPI spec (needs `make serve`/`make up-app` running) — the one that actually attacks each documented endpoint's input handling, same "dynamic pass against the live app" tier as `make strix-app`, just OWASP's own standard scanner instead of an autonomous agent. Only ever run against a target you own or have explicit permission to test — same rule `make strix-app` states for itself.
-	mkdir -p zap_reports
-	docker run --rm --add-host=host.docker.internal:host-gateway \
-		-v $(PWD)/zap_reports:/zap/wrk:rw -t zaproxy/zap-stable zap-api-scan.py \
-		-t $${ZAP_TARGET:-http://host.docker.internal:8000}/openapi.json -f openapi \
-		-x api-scan.xml -r api-scan.html -I
-
-zap-view:  ## Open the most recently modified ZAP HTML report (from `make zap-baseline`/`make zap-api-scan`)
-	open "$$(ls -t zap_reports/*.html | head -1)" 2>/dev/null || xdg-open "$$(ls -t zap_reports/*.html | head -1)"
-
-defectdojo-up:  ## Start a PERSISTENT self-hosted DefectDojo (http://localhost:8080) — where `make defectdojo-import` sends ZAP/Trivy/Semgrep/Checkov findings to get deduplicated and tracked across runs, the same "opt-in, persistent, cross-run history" role `make sonar-up` plays for SonarQube above. First run clones the pinned release ($(DEFECTDOJO_VERSION)) into $(DEFECTDOJO_DIR) (NOT into this repo — see this file's own header comment) and pulls DefectDojo's prebuilt images (no `docker compose build` needed — verified directly the checked-in docker-compose.yml's own `image:` lines are enough); every run after that just restarts the same instance. Prints the initializer's one-time-generated admin password (user: admin) — SAVE IT, it isn't shown again (short of digging through `docker compose logs` in $(DEFECTDOJO_DIR) yourself).
-	@mkdir -p $(HOME)/.cache
-	@test -d "$(DEFECTDOJO_DIR)" || git clone --branch $(DEFECTDOJO_VERSION) --depth 1 https://github.com/DefectDojo/django-DefectDojo.git "$(DEFECTDOJO_DIR)"
-	cd "$(DEFECTDOJO_DIR)" && DJANGO_VERSION=$(DEFECTDOJO_VERSION) NGINX_VERSION=$(DEFECTDOJO_VERSION) docker compose up -d
-	@echo "Waiting for the initializer (first run: DB migration + seed data, up to ~3 min)..."
-	@for i in $$(seq 1 60); do \
-		cd "$(DEFECTDOJO_DIR)" && docker compose logs initializer 2>/dev/null | grep -q "Admin password:" && break; \
-		sleep 5; \
-	done
-	@cd "$(DEFECTDOJO_DIR)" && docker compose logs initializer 2>/dev/null | grep "Admin password:" || echo "(already initialized on a previous run — admin password was only ever printed once; see DefectDojo's own docs to reset it if lost)"
-	@echo "DefectDojo: http://localhost:8080 (user: admin) — generate an API v2 Key under My Account for \`make defectdojo-import\`"
-
-defectdojo-down:  ## Stop the persistent DefectDojo server (keeps its volumes — findings/history survive)
-	cd "$(DEFECTDOJO_DIR)" && docker compose stop
-
-defectdojo-import:  ## Import one scan report into the running `make defectdojo-up` instance (scripts/defectdojo_import.py) — needs DEFECTDOJO_API_KEY (My Account -> API v2 Key in the UI) plus REPORT=<path> SCAN_TYPE="<DefectDojo scan_type string>" [ENGAGEMENT=<name>]. E.g.: `DEFECTDOJO_API_KEY=... make defectdojo-import REPORT=zap_reports/baseline-report.xml SCAN_TYPE="ZAP Scan"` — auto-creates the Product/Engagement on first import, no manual UI setup needed.
-	@test -n "$$DEFECTDOJO_API_KEY" || (echo "DEFECTDOJO_API_KEY is required — generate one in the DefectDojo UI (My Account -> API v2 Key)" && exit 1)
-	@test -n "$$REPORT" || (echo "REPORT=<path to scan report file> is required" && exit 1)
-	@test -n "$$SCAN_TYPE" || (echo 'SCAN_TYPE="<DefectDojo scan_type string>" is required, e.g. SCAN_TYPE="ZAP Scan"' && exit 1)
-	python -m scripts.defectdojo_import --file "$$REPORT" --scan-type "$$SCAN_TYPE" $${ENGAGEMENT:+--engagement-name "$$ENGAGEMENT"}
-
 loadtest-up:  ## The one command to run before `make loadtest-queued`/`-headless`: (re)starts loadtest/fake_llm_server.py as a backgrounded host process (var/fake-llm.log) and points the containerized api/agent-worker*/ingest-worker at it (`loadtest-app-up`). Safe to re-run any time — kills and waits out any already-running fake-llm first, same idempotent-restart idiom as `restart-all`. Counterpart: `make loadtest-down`.
 	pkill -f 'loadtest.fake_llm_server' 2>/dev/null || true
 	for i in $$(seq 1 20); do \
@@ -558,32 +218,16 @@ loadtest-queued-headless:  ## Fixed 20-user, 2-minute headless run of the queued
 		--headless --users 20 --spawn-rate 5 --run-time 2m \
 		--csv loadtest/results-queued/loadtest --html loadtest/results-queued/report.html
 
-# Strix reads neither `.env` nor anything `make` could hand it: a variable reaches it only when it is exported in the shell
-# (or stored in ~/.strix/cli-config.json), so a STRIX_LLM written in `.env` alone gives "STRIX_LLM is not set". Load JUST the
-# names it documents (the model, its key and base URL, and the two optional web-search keys), not the whole file: the file also
-# carries OPENAI_API_BASE (the local LiteLLM proxy), which Strix reads as an alias of LLM_API_BASE and would send the scan's
-# cloud-model calls to, and every other secret in it, which a pentest agent has no use for. The aliases are unset for the
-# same reason, in case the shell exported them. A non-empty value in `.env` wins over one already exported; an empty
-# `NAME=` line is ignored, and the last of two lines wins. The file is READ, never evaluated: a value is taken literally
-# (one pair of matching quotes is stripped; no `$VAR`, no inline `# comment`), so a key with a space or a `;` in it is data
-# and not a command the shell would run.
-STRIX_ENV = for n in STRIX_LLM LLM_API_KEY LLM_API_BASE EXA_API_KEY PERPLEXITY_API_KEY; do v=$$(sed -n -E "s/^$$n=(.+)$$/\1/p" .env 2>/dev/null | tail -n 1); case "$$v" in \"*\") v=$${v\#\"}; v=$${v%\"};; \'*\') v=$${v\#\'}; v=$${v%\'};; esac; [ -n "$$v" ] && export "$$n=$$v"; done; env -u OPENAI_API_BASE -u LITELLM_BASE_URL -u OLLAMA_API_BASE
-
-# make strix ARGS="--instruction 'This is my own repo; I am the owner and authorize a defensive security review of its source.' --max-budget 1"
-strix:  ## Autonomous AI pentest of this repo's SOURCE (static) — needs Docker, `pipx install strix-agent` once (pipx isolates it from this repo's own .venv, the pip-conflict concern `make garak` solves with a second venv instead), and a CLOUD LLM key (STRIX_LLM/LLM_API_KEY, read from .env or your shell — NOT the local Ollama the rest of this app runs on). Only ever point it at a target you own or have written authorization to test. Extra Strix flags go in ARGS: make strix ARGS="--instruction 'This is my own repo; ...'" (or --instruction-file, --max-budget 1)
-	$(STRIX_ENV) strix --target . --scan-mode quick $(ARGS)
-
-strix-app:  ## Same tool, but black-box against the RUNNING app + its OpenAPI spec (needs `make up` + `make serve`/`make up-app`, and `make ingest` for real data to probe) — dynamic testing, not just a source read
-	$(STRIX_ENV) strix --target http://localhost:8000/openapi.json --target http://localhost:8000 --scan-mode quick $(ARGS)
-
-strix-view:  ## Open the local dashboard (findings, repro steps, agent graph) for the most recent `make strix`/`make strix-app` run
-	strix view
-
 logs:  ## Tail logs from all services
 	$(COMPOSE) logs -f
 
 down:  ## Stop all services (keep volumes)
 	$(COMPOSE) down
+
+# `down` skips containers started under a profile; `--profile '*'` reaches them all.
+down-all: mcp-gateway-secrets  ## Stop and remove every container of the dev stack, any profile, plus observability; keeps volumes
+	$(COMPOSE_OBS) down
+	$(GATEWAY_COMPOSE) --profile '*' down
 
 clear-cache:  ## Flush the semantic cache (Redis) only — leaves the agent-worker queue and other volumes intact
 	$(COMPOSE) exec redis sh -c "redis-cli --scan --pattern 'cache:*' | xargs -r redis-cli del"

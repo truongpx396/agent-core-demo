@@ -20,7 +20,8 @@ Read these before changing behavior; they hold the reasoning this file deliberat
 
 ## Commands
 
-The Makefile assumes an activated venv: `source .venv/bin/activate`.
+The Makefile assumes an activated venv: `source .venv/bin/activate`. It holds the stack, tests and lint and includes `make/host.mk` (the app's processes on the host),
+`make/admin.mk` (back-office commands), `make/evals.mk` and `make/security.mk`; target names are the same wherever they live. The env-example test scans `.mk` too.
 
 ```bash
 make lint            # ruff check .          (CI gate)

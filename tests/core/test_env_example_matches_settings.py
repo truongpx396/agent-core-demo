@@ -48,7 +48,7 @@ def _tracked_code_and_config() -> list[Path]:
     tracked = subprocess.run(
         ["git", "ls-files"], cwd=REPO, capture_output=True, text=True, check=True
     ).stdout.splitlines()
-    suffixes = (".py", ".yml", ".yaml", ".toml", ".sh", ".json")
+    suffixes = (".py", ".yml", ".yaml", ".toml", ".sh", ".json", ".mk")  # `.mk`: the targets the Makefile includes (make/*.mk)
     return [
         REPO / name
         for name in tracked
