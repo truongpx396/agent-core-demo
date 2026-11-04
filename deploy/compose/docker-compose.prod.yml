@@ -81,6 +81,9 @@ x-app-env: &app-env
   # NOT the observability droplet directly — it relays on to there over
   # OTLP itself. See that service's own comment and observability/otel-collector/config.agent.yaml.
   OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector-agent:4318
+  # The Pyroscope server on the observability droplet, over the VPC (http://<observability_private_ipv4>:4040, like OBS_COLLECTOR_ENDPOINT).
+  # Blank = no profiling, the default until it has been tried on the droplet (deploy/env/prod.env.example).
+  PYROSCOPE_SERVER_ADDRESS: ${PYROSCOPE_SERVER_ADDRESS:-}
   CRAWL4AI_SERVER_URL: ${CRAWL4AI_SERVER_URL:-}
   CRAWL4AI_API_TOKEN: ${CRAWL4AI_API_TOKEN:-}
   SERPER_API_KEY: ${SERPER_API_KEY:-}

@@ -53,6 +53,7 @@ from app.core.config import (
 )
 from app.core.internal_identity import check_settings
 from app.core.logging_config import configure_logging
+from app.core.profiling import start_profiling
 from app.core.telemetry import configure_telemetry
 from app.mcp.connection import close_all_connections
 
@@ -79,6 +80,7 @@ async def lifespan(app: FastAPI):
     # win that race instead. Lifespan never runs under this app's test suite
     # (see tests/api/test_api.py), so this is safe here.
     configure_telemetry("agent-core-api")
+    start_profiling("agent-core-api")
     # FIRST, before anything is opened: an API that cannot verify anyone must not come up, and a refusal here leaves no pool to close. Raises
     # `AuthConfigError` naming the variable (AUTHLIMIT_KEYS_URL) when identity mode has no usable address for the front door's keys.
     check_settings(settings)

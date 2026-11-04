@@ -728,6 +728,12 @@ class Settings(BillingSettings):
     # comment).
     otel_exporter_otlp_endpoint: str = "http://localhost:4318"
 
+    # Continuous profiling (app/core/profiling.py): the base URL of a Pyroscope server, e.g. http://localhost:4040. Blank (the default) is off
+    # and the SDK is never imported, so a process without a profiler behaves exactly as before.
+    pyroscope_server_address: str = ""
+    # Samples per second per process. 100 is the SDK's own default; lower it to trade resolution for overhead.
+    pyroscope_sample_rate: int = Field(default=100, ge=1, le=1000)
+
 
 settings = Settings()
 
@@ -802,6 +808,8 @@ INGEST_FIRST_RESPONSE_DEADLINE_SECONDS = settings.ingest_first_response_deadline
 AGENT_WORKER_MAX_CONCURRENCY = settings.agent_worker_max_concurrency
 CHECKPOINTER_POOL_MAX_SIZE = settings.checkpointer_pool_max_size
 APPDATA_POOL_MAX_SIZE = settings.appdata_pool_max_size
+PYROSCOPE_SERVER_ADDRESS = settings.pyroscope_server_address
+PYROSCOPE_SAMPLE_RATE = settings.pyroscope_sample_rate
 INGEST_WORKER_MAX_CONCURRENCY = settings.ingest_worker_max_concurrency
 WORKER_RECLAIM_INTERVAL_SECONDS = settings.worker_reclaim_interval_seconds
 AGENT_WORKER_RECLAIM_IDLE_SECONDS = settings.agent_worker_reclaim_idle_seconds

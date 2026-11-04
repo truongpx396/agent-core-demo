@@ -82,6 +82,29 @@ services:
     ports:
       - "3100:3100"   # Loki push — what the app droplet's promtail pushes to
 
+  # Continuous profiling (specs/022): the app droplet's api and workers push CPU profiles straight here when PYROSCOPE_SERVER_ADDRESS is set
+  # in its .env (deploy/env/prod.env.example), over the VPC like OTLP and Loki; Grafana reads them through the Pyroscope datasource. No
+  # authentication, the same posture as those two: the firewall scopes 4040 to the VPC (infra/terraform digitalocean_firewall.observability)
+  # and the profiles hold function names, never request data. Flags and sizing: docker-compose.observability.yml.
+  pyroscope:
+    image: grafana/pyroscope:2.3.2@sha256:78c3b509f2ad98a6974b38c6f2135d5daf9597809532560e9ca29f9b43aa339e
+    restart: unless-stopped
+    command:
+      - "-config.file=/etc/pyroscope/config.yaml"
+      - "-architecture.storage=v1"
+      - "-write-path=ingester"
+      - "-compactor.blocks-retention-period=168h"
+    init: true
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: ["ALL"]
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m
+    volumes:
+      - pyroscope:/data
+    ports:
+      - "4040:4040"   # the app droplet's push; not routed by caddy
+
   grafana:
     image: grafana/grafana:latest
     restart: unless-stopped
@@ -121,5 +144,6 @@ volumes:
   alertmanager:
   loki:
   grafana:
+  pyroscope:
   caddy_data:
   caddy_config:

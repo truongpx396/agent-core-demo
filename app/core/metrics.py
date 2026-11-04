@@ -832,6 +832,15 @@ agent_team_channel_notify_total = Counter(
     ["sink", "outcome"],
 )  # sink: local | slack — outcome: ok | error
 
+agent_profiling_start_failures_total = Counter(
+    "agent_profiling_start_failures_total",
+    "Times app/core/profiling.py could not start the profiler although PYROSCOPE_SERVER_ADDRESS is set: sdk_missing (the pyroscope-io "
+    "package is not installed) or configure_failed (the SDK raised). The process keeps running without profiles. No alert: a missing "
+    "flame graph leaves no one unaware of committed business state. It cannot see a server that is down or not ready (the native sampler "
+    "drops those pushes silently), so a gap in the Pyroscope UI with this at 0 is the server's side.",
+    ["reason"],
+)  # reason: sdk_missing | configure_failed
+
 
 class MetricsCallbackHandler(BaseCallbackHandler):
     """Records tool-call/tool-error counts AND a structured per-call audit

@@ -81,6 +81,28 @@ services:
     ports:
       - "3100:3100"
 
+  # Continuous profiling (specs/022): the app pushes CPU profiles here (PYROSCOPE_SERVER_ADDRESS in docker-compose.yml's `x-app-env`), Grafana
+  # reads them through the Pyroscope datasource. The two flags keep this 2.x server on the v1 write path, as the 2.0 release notes document:
+  # measured against the 2.x default (dual storage, segment writer), it is ready in 19 s instead of about 3 minutes (pushes before that are
+  # dropped by the SDK without a word) and idles at 38 MiB instead of 97. Seven days of profiles; hardened with one writable volume, /data.
+  pyroscope:
+    image: grafana/pyroscope:2.3.2@sha256:78c3b509f2ad98a6974b38c6f2135d5daf9597809532560e9ca29f9b43aa339e
+    command:
+      - "-config.file=/etc/pyroscope/config.yaml"
+      - "-architecture.storage=v1"
+      - "-write-path=ingester"
+      - "-compactor.blocks-retention-period=168h"
+    init: true
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: ["ALL"]
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m
+    volumes:
+      - pyroscope:/data
+    ports:
+      - "4040:4040"   # what the app containers push to (via host.docker.internal) and a browser can open directly
+
   promtail:
     image: grafana/promtail:latest
     command: ["-config.file=/etc/promtail/promtail-config.yaml"]
@@ -113,3 +135,4 @@ volumes:
   alertmanager:
   loki:
   grafana:
+  pyroscope:

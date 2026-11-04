@@ -72,7 +72,10 @@ resource "digitalocean_droplet" "observability" {
   user_data = templatefile("${path.module}/cloud-init.tpl.yaml", {
     deploy_user           = var.deploy_user
     deploy_ssh_public_key = var.deploy_ssh_public_key
-    ufw_tcp_ports         = [80, 443, 3000, 4318, 3100]
+    # 4040 is Pyroscope's push endpoint (specs/022). cloud-init runs on first boot only (see the app droplet's note above), so on a droplet that
+    # already exists open it by hand instead (infra/README.md) and read `terraform plan` before applying: nobody has planned this change
+    # against real state, and an edited user_data may be shown as drift or as a replacement.
+    ufw_tcp_ports         = [80, 443, 3000, 4318, 3100, 4040]
     app_dir               = "/opt/agent-core-observability"
   })
 
@@ -198,6 +201,14 @@ resource "digitalocean_firewall" "observability" {
   inbound_rule {
     protocol         = "tcp"
     port_range       = "3100"
+    source_addresses = [digitalocean_vpc.this.ip_range]
+  }
+
+  # Pyroscope's push endpoint (specs/022): the app droplet's api and workers send CPU profiles here when PYROSCOPE_SERVER_ADDRESS is set.
+  # Scoped to the VPC like 4318 and 3100, so it is unreachable from anywhere but the app droplet.
+  inbound_rule {
+    protocol         = "tcp"
+    port_range       = "4040"
     source_addresses = [digitalocean_vpc.this.ip_range]
   }
 

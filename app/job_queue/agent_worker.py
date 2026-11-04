@@ -100,6 +100,7 @@ from app.core.errors import (
     internal_error_envelope,
 )
 from app.core.logging_config import bind_request_id, configure_logging
+from app.core.profiling import start_profiling
 from app.core.telemetry import configure_telemetry
 from app.domains.registry import resolve_domain
 from app.job_queue.queue import (
@@ -645,4 +646,5 @@ async def run() -> None:
 if __name__ == "__main__":
     configure_logging()
     configure_telemetry("agent-core-agent-worker")
+    start_profiling("agent-core-agent-worker")
     asyncio.run(run())
