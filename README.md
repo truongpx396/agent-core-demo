@@ -782,14 +782,14 @@ until configured**.
 
 ## 🔧 Make targets
 
-`make help` lists everything. The `Makefile` holds the stack, the tests and the lint gates; it includes four more files, and a target's name is the same wherever it lives: `make/host.mk` (the app's own processes on your machine: `serve`, the workers, `chat`, `telegram`), `make/admin.mk` (back-office operator commands: the sweeps, `credits`, `budget-policy`, the reconcile checks), `make/evals.mk` (`eval`, `model-eval`, `promptfoo`, `deepeval`, `garak`) and `make/security.mk` (Semgrep, Trivy, Checkov, SonarQube, ZAP, Strix, DefectDojo). The ones you will use:
+`make help` lists everything. The `Makefile` holds the stack, tests and lint; the rest is in files it includes, under the same target names: `make/host.mk` (the app's processes on your machine), `make/admin.mk` (back-office operator commands), `make/evals.mk` and `make/security.mk`. The ones you will use:
 
 | Target | Does |
 |---|---|
 | **▶️ Run** | |
 | `make up` · `make down` | Start / stop the dev stack (keeps data) |
 | `make up-app` | `make up` plus the containerized `api`, `agent-worker`s and `ingest-worker` |
-| `make up-all` · `make down-all` | Everything in containers, behind the front door: infra, the app, the MCP gateway (Casdoor, authlimit, Caddy) and observability; the web UI is then https://api.localhost:8443/ (first time: `make mcp-gateway-bootstrap`, `make mcp-gateway-ca`). Not started: the sandbox and SonarQube. `down-all` stops every container whatever profile started it (keeps data) |
+| `make up-all` · `make down-all` | Everything in containers behind the front door (infra, app, MCP gateway, observability; not the sandbox or SonarQube), web UI https://api.localhost:8443/; first time also `make mcp-gateway-bootstrap` and `make mcp-gateway-ca`. `down-all` stops every container, any profile (keeps data) |
 | `make serve` | API + web UI on :8000 |
 | `make chat` · `make chat-hitl` | CLI agent · with approval prompts. Both sign you in at the front door (`python -m app.channels.chat --sign-out` forgets it) and need that domain's worker: `AGENT_DOMAIN` picks it |
 | `make agent-worker[-support\|-ops\|-sales]` · `make ingest-worker` | Queue consumers |
@@ -851,7 +851,7 @@ postgres-init/            numbered SQL schema (fresh volumes only)
 tests/                    mirrors app/; adapters/ (SQL shape, requests), fakes/ (in-memory ports); integration/, live/, deepeval/ are the marked tiers
 packages/billing/         the independent billing package: src, tests, schema, alerts, docs, specs
 promptfoo/ garak/ loadtest/   prompt checks (the repo's only package.json), jailbreak scan, Locust
-make/                     host.mk, admin.mk, evals.mk, security.mk: the targets the Makefile includes (see Make targets)
+make/                     host.mk, admin.mk, evals.mk, security.mk: targets the Makefile includes
 .github/workflows/        ci, deploy, ai-review, terraform-validate, redteam, strix, zap
 ```
 

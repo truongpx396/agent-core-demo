@@ -20,9 +20,8 @@ Read these before changing behavior; they hold the reasoning this file deliberat
 
 ## Commands
 
-The Makefile assumes an activated venv: `source .venv/bin/activate`. It holds the stack, tests and lint; it includes `make/host.mk` (the app's processes on
-the host: serve, workers, chat, telegram), `make/admin.mk` (back-office operator commands), `make/evals.mk` and `make/security.mk`. A target is called the same
-wherever it lives. An `.env.example` entry that only one of these files reads still counts as read (`tests/core/test_env_example_matches_settings.py` scans `.mk` too).
+The Makefile assumes an activated venv: `source .venv/bin/activate`. It holds the stack, tests and lint and includes `make/host.mk` (the app's processes on the host),
+`make/admin.mk` (back-office commands), `make/evals.mk` and `make/security.mk`; target names are the same wherever they live. The env-example test scans `.mk` too.
 
 ```bash
 make lint            # ruff check .          (CI gate)
