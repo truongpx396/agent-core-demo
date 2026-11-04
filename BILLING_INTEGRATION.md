@@ -34,7 +34,7 @@ The package is not in `requirements-lock.txt` (a machine-generated freeze of `re
 | a developer's venv | `-e ./packages/billing` in `requirements-dev.txt` |
 | the Docker image, and any CI job that starts the app | `pip install --no-deps ./packages/billing` after the lock install |
 
-The first row is the trap: `pythonpath` is a setting of the pytest PROCESS, so a uvicorn, agent-worker or script process that a test (or a CI step) starts does not inherit it and dies on `from credit_billing.settings import ...` in `app/core/config.py`. That is how PR C went green locally (where `make` and the dev venv supply the package) and red in CI's `test-integration` and `promptfoo`. Every CI job that installs the lock file and runs the app therefore installs the package before it, and `tests/billing/test_ci_installs_the_package.py` reads the workflows and fails if one does not. `test` and `typecheck` are exempt on purpose, because they are the jobs that prove the first row is enough on its own.
+The first row is the trap: `pythonpath` is a setting of the pytest PROCESS, so a uvicorn, agent-worker or script process that a test (or a CI step) starts does not inherit it and dies on `from credit_billing.settings import ...` in `app/core/config.py`. That is how PR C went green locally (where `make` and the dev venv supply the package) and red in CI's `test-integration` and `promptfoo`. Every CI job that installs the lock file and runs the app therefore installs the package before it. `test` and `typecheck` are exempt on purpose, because they are the jobs that prove the first row is enough on its own.
 
 ## What the app keeps, and the copies it must not let drift
 

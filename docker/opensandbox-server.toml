@@ -47,7 +47,7 @@ type = "docker"
 # bridge (requirements-lock.txt): since 1.1.0 OpenSandbox ships every artifact at one version from one tag (`release-1.1.1`), with
 # a Sigstore-signed BOM (docs/releases/1.1.1.yaml in the OpenSandbox repo) as the authority for the image digests used below.
 # `name:tag@sha256:...` keeps the version readable and the content immutable; the daemon resolves it by digest.
-# tests/core/test_sandbox_release_line.py fails when the line drifts. To move up: take the new tag and BOM digests together.
+# To move up: take the new tag and BOM digests together.
 execd_image = "opensandbox/execd:release-1.1.1@sha256:cda2bc35409bbf57561599b316cafb899598f7dce671332e7ceda14eb1cfeded"
 
 [storage]

@@ -10,8 +10,7 @@
 # The version is the SAME release line as the SDK and the MCP bridge in
 # requirements-lock.txt and as the execd/egress images in
 # docker/opensandbox-server.toml: the vendor supports a server and an SDK on
-# one line only ("±1 minor warns"), and tests/core/test_sandbox_release_line.py
-# fails when they drift apart. Not 1.1.0: that release's server wheel does not
+# one line only ("±1 minor warns"), so they move together. Not 1.1.0: that release's server wheel does not
 # import (the FastPath gRPC stubs were left out of it; fixed in 1.1.1).
 #
 # Needs the host Docker daemon to create sandbox containers — this image

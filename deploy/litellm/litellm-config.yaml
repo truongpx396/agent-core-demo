@@ -111,7 +111,7 @@ model_list:
   # it works with no extra download and no key; it is a placeholder for a hosted model, not a different one, exactly like a production
   # alias whose LLM_MEDIUM_* variables are unset (it then equals `chat`). To attach Gemini, replace this entry's `litellm_params` and
   # `model_info` with the block below. NO `fallbacks` entry names it, on purpose: a gateway fallback would price a call at the model that
-  # did not answer it (the same reason `chat-strong` has none; tests/core/test_model_tiers_config.py).
+  # did not answer it (the same reason `chat-strong` has none).
   #
   #   litellm_params:
   #     model: openai/<a Gemini flash-class model id from https://ai.google.dev/gemini-api/docs/models>
@@ -138,7 +138,7 @@ model_list:
   # model. ALWAYS present so the proxy starts and the alias resolves; INERT until the app is told to use it (STRONG_CHAT_MODEL, ROUTER_MODE,
   # both off by default). In dev it is a bigger LOCAL model, so the whole seam can be exercised with no third party and no key
   # (`make pull-strong-model`, about 9 GB, only needed once the router is on; it is a size up from `chat`, which is what makes escalating mean
-  # something, tests/core/test_gateway_aliases_config.py). To point it at a hosted model, edit this one entry: an
+  # something). To point it at a hosted model, edit this one entry: an
   # OpenAI-compatible endpoint with native tool calls, `stream_options.include_usage`, and a context window of at least 32000. NO `fallbacks`
   # entry names it, on purpose: the app repeats a failed strong call on `chat` itself, so the usage ledger prices the model that answered.
   - model_name: chat-strong

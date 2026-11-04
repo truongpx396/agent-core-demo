@@ -65,7 +65,7 @@ an operator reads the ops server and its incident log; the operator's ops token 
 
 The first compose file wrote `${CASDOOR_DB_PASSWORD:?run make mcp-gateway-up}`. Compose interpolates the **whole file** on every command, profile or not, so every `docker compose` command
 (and so `make up`) failed with "required variable ... is missing a value" for everyone who never starts this stack. `main`'s dev file has no required variable. The passwords now default to empty
-(Postgres refuses to initialise without one), and `tests/core/test_compose_gateway.py` fails on a `${VAR:?` anywhere in the file.
+(Postgres refuses to initialise without one), and a `${VAR:?` anywhere in the file would break `make up`.
 
 ## M7. Claude Code (documentation, https://code.claude.com/docs/en/mcp; not run here)
 

@@ -3,10 +3,10 @@
 # either, so a local scan shows everything.
 #
 # Every entry needs a `statement` (why it is safe to carry) and an `expired_at` (when it comes back and fails
-# the gate again). tests/core/test_trivy_ignore.py fails for an entry with neither.
+# the gate again).
 #
 # No exception is carried today. The list held three Pillow 12.3.0 findings (CVE-2026-112403, -112393, -112900) from
 # 2026-10-22 until 2026-10-28: Pillow fixed them only in 13.0.0 and fastembed declared `pillow<13` in every release
 # up to 0.9.0. fastembed 0.9.1 (2026-10-24) widened the cap to `<14`, the lock moved to Pillow 13.0.0, and the entries
-# were deleted, as their own guard test said to do (ENGINEERING_PATTERNS.md pattern 72).
+# were deleted (ENGINEERING_PATTERNS.md pattern 72).
 vulnerabilities: []

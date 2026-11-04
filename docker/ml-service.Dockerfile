@@ -14,7 +14,7 @@
 # Built like the root Dockerfile, for the same reasons (ENGINEERING_PATTERNS.md pattern 76): the base image and uv are pinned by
 # digest in their own stages, the dependencies are installed by uv into a virtualenv in a throwaway `builder` stage with a cache
 # mount, and the LAST stage, `runtime`, copies that virtualenv in and ships no installer (not uv, not pip). The two digests below
-# are the root Dockerfile's, and tests/core/test_dockerfile_build.py fails if they ever differ. Needs BuildKit.
+# are the root Dockerfile's: bump them together. Needs BuildKit.
 
 # ---- base: the Python image, pinned by digest (see the root Dockerfile for why and how it is bumped) ------------------------
 FROM python:3.13-slim@sha256:57b29a7c050c4e679e4bea572e14b3965cf4b5839de2da49d55e49ffc4024f39 AS base

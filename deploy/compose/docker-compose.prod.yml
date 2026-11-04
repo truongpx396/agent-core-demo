@@ -34,7 +34,7 @@ name: graph-agent-core
 # that really is unhealthy and would restart-loop one under anything that acts on health. The probe is
 # switched off here rather than replaced: whether a worker pool is alive is an application-level fact
 # the `WorkerUnreachable` alert (observability/prometheus/alerts.yml) already watches, a job that no
-# worker takes. tests/core/test_compose_worker_healthcheck.py fails for a worker added without this.
+# worker takes. A worker added without this inherits the API's probe.
 x-worker-healthcheck: &worker-healthcheck
   disable: true
 

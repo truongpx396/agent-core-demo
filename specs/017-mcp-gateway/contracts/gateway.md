@@ -1,6 +1,6 @@
 # Contract: the MCP gateway
 
-What a client, an operator and a reviewer can rely on. Behaviour here is pinned by `tests/mcp/test_gateway*.py`, `tests/core/test_compose_gateway.py` and `make mcp-gateway-smoke`.
+What a client, an operator and a reviewer can rely on. Behaviour here is pinned by `tests/mcp/test_gateway*.py` and `make mcp-gateway-smoke`.
 
 ## Endpoints (origin = `MCP_GATEWAY_PUBLIC_URL`, default `https://mcp.localhost:8443`)
 
