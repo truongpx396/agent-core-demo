@@ -103,8 +103,10 @@ def build_app(inbox: Inbox, linker: LinkFlow | None, *, webhook: bool) -> FastAP
                 return _refused()
             body = (
                 "<h1>Connect this account?</h1>"
+                # nosemgrep: python.django.security.injection.raw-html-format.raw-html-format -- every interpolated value is html.escape'd; tests/channels/test_telegram_server.py::TestTheLinkPages::test_the_confirmation_names_both_sides_and_escapes_what_it_shows feeds each a hostile string
                 f"<p>Telegram user <b>{html.escape(ask.telegram)}</b> will be able to use the assistant as <b>{html.escape(ask.account)}</b>.</p>"
                 "<p>If you did not ask for this in Telegram yourself, close this page: someone may be trying to use your account.</p>"
+                # nosemgrep: python.django.security.injection.raw-html-format.raw-html-format -- the token is html.escape'd with quote=True and CONFIRM_PATH is a constant; same test
                 f"<form method=post action='{CONFIRM_PATH}'><input type=hidden name=token value='{html.escape(ask.token, quote=True)}'>"
                 "<button type=submit>Yes, connect it</button></form>"
             )
