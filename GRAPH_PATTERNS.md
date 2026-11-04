@@ -9,7 +9,7 @@ The numbered patterns (1–89) the agent in `app/agent/` applies, each with the 
 | Tenant security | 12, 17, 25, 30, 32, 78, 82 |
 | Retrieval, memory, caching | 2, 13, 18–20, 22, 24, 33, 41, 67, 79 |
 | Tools and data | 21, 27, 28, 31, 45, 46, 50, 78, 82, 87 |
-| Reliability and scaling | 16, 43, 49, 80, 81, 89, and [exactly-once](#extending-further) |
+| Reliability and scaling | 16, 43, 49, 80, 81, 89, 96, and [exactly-once](#extending-further) |
 | Observability | 11, 14, 37, 38 |
 | Interfaces and extensibility | 23, 29, 42, 44, 47, 89 |
 | Quality gates | 40, 48 |
@@ -304,7 +304,7 @@ A catalog of `SKILL.md` packages (YAML frontmatter + markdown, one directory und
 
 ### 47. Example domains as a load-bearing proof
 `app/domains/support/`, `ops/` and `sales/` turn 23's test-only proof into three runnable products on the same unmodified graph: a Tier-1 support copilot, an internal ops bot (reusing this repo's Prometheus thresholds) and a sales/CRM concierge. Each follows the `core/sql_store.py`/`tools.py` conventions, plus a shared `app/domains/policy.py::ActionAllowlistPolicy`.
-- **Runtime change kept minimal:** `init_graph_async` takes an optional `manifest`/`domain` (default `None`, today's exact behavior): which one domain this process boots as, decided at start from `AGENT_DOMAIN`. Not a multi-domain registry.
+- **Runtime change kept minimal:** `init_graph_async` took an optional `manifest`/`domain`, the one domain a process booted as (`AGENT_DOMAIN`). It now builds a graph per domain name (96).
 - **An unattended cron job can never approve itself.** `post_to_team_channel` is the first real `outward` tool and the gate has no bypass flag; auto-declining would silently make a digest never post. `scripts/ops_digest.py` and `followup_sweep.py` call the domain's `_impl` functions directly: a fixed pipeline that never enters the tool-calling loop.
 
 ### 48. Real-backend testing at every layer
@@ -606,6 +606,16 @@ The channel advanced Telegram's offset only after a message had been answered, i
 - **Gap:** whoever controls a linked Telegram account acts as the person (a stolen phone, a SIM swap): linking moves trust to Telegram's own account security. `/login` is not rate limited by the bot (each call is one short-lived Redis key per Telegram user; the door limits the turns, not the login). Rotation of Casdoor's refresh tokens was NOT measured (both outcomes are handled); the whole flow was exercised against the authorization server's two calls replaced by fakes, not against Casdoor. Losing `TELEGRAM_LINK_KEY` unlinks everyone; leaking it together with Redis exposes the refresh tokens. The callback and confirm routes are public by necessity and are not behind the door's limits.
 - **Use when:** a bot must act for a person's existing account, not for an identity the bot invents.
 
+### 96. One worker serves many domains; a job's domain is the stream it came from
+The four example domains took four containers (or host processes) of one image, each with its own concurrency budget and checkpointer pool, most idle while one was busy. `AGENT_WORKER_DOMAINS` (names, or `all`) lets one process read every named domain's requests stream (49) in a single `XREADGROUP` and run each job on that domain's graph.
+- **The domain is bound for the task, not passed down.** `process_request` wraps the handler in `runtime/core.py::bind_domain` (a `ContextVar`, copied into every task a turn starts); `init_graph_async()` and `upsert_session` read it, so the stream entry points keep their signatures. Unbound it is `DEFAULT_DOMAIN`, so the API's session reads and the tests behave as before. Jobs of different domains overlap in one process and each keeps its own binding.
+- **One checkpointer, a graph per domain.** `PgCheckpointing.open()` makes a new pool on every call, so opening it per graph would orphan all but the last (`close` closes one). The runtime opens it once and builds each domain's graph over it.
+- **The ack, the dead letter and the retry follow the domain.** They name the job's own stream: a support job acked on `agent:requests:ecorp` would stay pending on its own and be reclaimed as lost. The reclaim loop sweeps every served domain's stream with that domain's graph, and one domain's failing pass does not stop the others.
+- **A typo stops the process at boot**, and so does a bad manifest: every graph is built before the first read.
+- **Gap:** the concurrency budget is shared, so a flood on one domain can hold every slot while another waits; split the pools when that matters (WORKER_CONCURRENCY.md). `XREADGROUP`'s COUNT is per stream, so a read asks for `max(1, concurrency // domains)` from each; with more domains than slots it can claim a few more jobs than it can start at once, and they wait for a slot. The unit tests use an in-memory Redis; the integration tier still runs one domain per process, so serving several against real Redis and a real model is untried.
+- **Tests:** `tests/job_queue/test_agent_worker.py` (`TestParseWorkerDomains`, `TestEachJobRunsOnItsOwnDomain`, `TestRunServesEveryConfiguredDomain`, `TestReclaimSweepsEveryDomain`), `tests/agent/runtime/test_runtime_domain.py` (the binding, one checkpointer, a graph per domain), `tests/core/test_compose_layout.py` (the compose worker's default domains exist; references that cross the collectors/observability split agree).
+- **Use when:** domains differ in tools and prompt, not in how they are served.
+
 ## Graph Flow
 
 ```
@@ -741,7 +751,7 @@ Two kinds of duplicate: a **replay** sees the same `tool_call_id` twice; a **re-
 - ~~A Telegram webhook.~~ Built (93); not exercised against the real Telegram.
 - **Real authentication.** 17's `SecurityCtx`/`Policy` is the isolation structure; header extraction isn't authentication.
 - **Per-action authorization within a tenant.** Every principal has the write capability the gate allows at all; a `Policy` reading `ctx["claims"]` would live here.
-- **A multi-domain runtime** (partly done, 49). The API routes per request via `X-Domain`, but one process still builds one graph. Serving several would need a per-domain graph registry (the system prompt is no longer a per-thread concern, so that part is done).
+- ~~A multi-domain runtime.~~ Built (96): one worker serves several domains. The API routes per request via `X-Domain` (49).
 
 ### Known gaps
 

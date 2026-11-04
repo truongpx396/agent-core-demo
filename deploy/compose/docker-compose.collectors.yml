@@ -1,0 +1,124 @@
+# Telemetry collectors (`make collectors-up`): the OTel collector, the exporters, cAdvisor and Promtail that feed the stack in
+# docker-compose.observability.yml. Optional: the app runs the same without them.
+#
+# An overlay on the app stack (docker-compose.yml, same project), not a project of its own: the exporters reach postgres, redis and
+# pgbouncer by service name, so they must share its network. Each publishes a host port instead, which Prometheus (another project)
+# scrapes through host.docker.internal.
+services:
+  # --- Metrics ---
+
+  # What the app pushes its OTel metrics to (OTEL_EXPORTER_OTLP_ENDPOINT in docker-compose.yml's `x-app-env`).
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:latest
+    command: ["--config=/etc/otelcol-contrib/config.yaml"]
+    volumes:
+      - ./observability/otel-collector/config.yaml:/etc/otelcol-contrib/config.yaml:ro
+    ports:
+      - "4317:4317"   # OTLP gRPC (unused by the app; for any other client)
+      - "4318:4318"   # OTLP HTTP: what app/core/telemetry.py pushes to
+      - "8889:8889"   # its Prometheus exporter, scraped by Prometheus
+
+  # Pool and wait metrics for the PgBouncer alerts (observability/prometheus/alerts.yml).
+  pgbouncer-exporter:
+    image: prometheuscommunity/pgbouncer-exporter:v0.12.1@sha256:30f31b6c2efdad3647f8182cc7c1a3a19e42bae5d17387694989f969371c230d
+    restart: unless-stopped
+    init: true
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: ["ALL"]
+    read_only: true
+    environment:
+      PGBOUNCER_EXPORTER_CONNECTION_STRING: postgres://langfuse:langfuse@pgbouncer:6432/pgbouncer?sslmode=disable
+    ports:
+      - "9127:9127"
+    depends_on:
+      pgbouncer:
+        condition: service_healthy
+
+  postgres-exporter:
+    image: prometheuscommunity/postgres-exporter:latest
+    environment:
+      # appdata, not the `postgres` database: --auto-discover-databases does not make the stat_user_tables collectors read other databases
+      # (verified), and appdata holds the app's tables. The other pg_stat_* metrics are cluster-wide either way.
+      DATA_SOURCE_NAME: postgresql://langfuse:langfuse@postgres:5432/appdata?sslmode=disable
+    # Both collectors are opt-in: every distinct query is a series, so stat_statements is capped by `limit` and needs the extension loaded
+    # (the postgres service's shared_preload_libraries) or it reports nothing. stat_user_tables needs no extension.
+    command:
+      - "--collector.stat_user_tables"
+      - "--collector.stat_statements"
+      - "--collector.stat_statements.include_query"
+      - "--collector.stat_statements.limit=25"
+    ports:
+      - "9187:9187"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  redis-exporter:
+    image: oliver006/redis_exporter:latest
+    environment:
+      REDIS_ADDR: redis://redis:6379
+    ports:
+      - "9121:9121"
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  # --- Host and container resources, for the "Docker and system monitoring" dashboard (grafana.com 16310;
+  # observability/grafana/dashboards/docker-system-monitoring.json). On Docker Desktop for Mac both report its hidden Linux VM, not the Mac. ---
+
+  node-exporter:
+    image: prom/node-exporter:latest
+    pid: host
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro
+      - textfile_collector:/textfile-collector:ro
+    command:
+      - "--path.procfs=/host/proc"
+      - "--path.sysfs=/host/sys"
+      - "--path.rootfs=/rootfs"
+      - "--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)"
+      - "--collector.textfile.directory=/textfile-collector"
+    ports:
+      - "9100:9100"
+
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:latest
+    # No /dev/kmsg mount (the usual recipe): the path is absent in Docker Desktop's VM and crash-loops cAdvisor on Mac. The cost is no OOM-event metrics.
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    # Docker Desktop for Mac: cAdvisor 0.54.1+ needs containerd for container names, and Docker Desktop's lives inside its VM
+    # (google/cadvisor#3772, open), so its metrics stay keyed by cgroup id. container-name-mapper supplies id -> name. Native Linux has no gap.
+    ports:
+      - "8081:8080"   # 8080 is open-webui's
+
+  # id -> name for cAdvisor's cgroup-id metrics; the dashboard joins `container_id_name_map` onto them, which also filters its $container selector.
+  container-name-mapper:
+    image: docker:cli
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./observability/textfile-collectors/container-name-map.sh:/container-name-map.sh:ro
+      - textfile_collector:/textfile-collector
+    entrypoint: ["/bin/sh", "/container-name-map.sh"]
+
+  # --- Logs ---
+
+  # Ships the app's container logs to Loki through its published port. The config keeps to this app's services: docker_sd sees every container
+  # on the host, and old logs from an unrelated project made Loki reject whole batches.
+  promtail:
+    image: grafana/promtail:latest
+    command: ["-config.file=/etc/promtail/promtail-config.yaml"]
+    volumes:
+      - ./observability/promtail/promtail-config.yaml:/etc/promtail/promtail-config.yaml:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"   # so the Loki address resolves on native Linux Docker too
+
+volumes:
+  textfile_collector:

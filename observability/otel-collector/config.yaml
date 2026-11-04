@@ -2,7 +2,7 @@
 # (app-core-api, agent-worker, ingest-worker; each replica of the latter
 # two included, GRAPH_PATTERNS.md pattern 43) pushes its metrics to over
 # OTLP, so Prometheus below has exactly ONE scrape target
-# (otel-collector:8889) that covers the whole app regardless of how many
+# (the collector's :8889) that covers the whole app regardless of how many
 # worker replicas are running — a pull-based per-process /metrics endpoint
 # (this app's old design) could never see a worker's metrics at all, since
 # a worker process binds no HTTP port for anything to scrape directly. See

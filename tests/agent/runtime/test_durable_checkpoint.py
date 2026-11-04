@@ -11,7 +11,7 @@ covers the cross-worker container sharing under `pytest -n auto`. Isolation need
 every test scopes its rows by a unique `uuid.uuid4()` thread_id, and old rows accumulate harmlessly in a
 throwaway container.
 
-`app.agent.runtime.core._graph` and `_graph_lock` are module-level singletons (and the checkpointer adapter owns its pool); the `reset_agent_singleton`
+`app.agent.runtime.core._graphs`, `_saver` and `_graph_lock` are module-level singletons (and the checkpointer adapter owns its pool); the `reset_agent_singleton`
 fixture resets them before and after every test so state doesn't leak into other tests or modules (which never
 touch app.agent.runtime.core and would be affected by whichever checkpointer won the singleton race). It also
 points `agent_module.CHECKPOINTER_DATABASE_URL` at the ephemeral container: that is core.py's own `from
@@ -60,7 +60,8 @@ def reset_agent_singleton(monkeypatch):
     # left behind by the last test (bound to a loop that is gone) is never the one this test closes.
     monkeypatch.setattr(pg_checkpointing, "CHECKPOINTER_DATABASE_URL", ensure_postgres()["checkpointer_database_url"])
     monkeypatch.setattr(checkpointing_port.checkpointing, "get", lambda adapter=pg_checkpointing.PgCheckpointing(): adapter)
-    agent_module._graph = None
+    agent_module._graphs = {}
+    agent_module._saver = None
     # A FRESH Lock, not just left alone: _graph_lock is a process-lifetime
     # singleton in production (created once at import time, used on the
     # one persistent event loop a real process holds for its whole life —
@@ -69,13 +70,14 @@ def reset_agent_singleton(monkeypatch):
     # object would otherwise survive across all of them; if any test's
     # task were ever torn down while holding it (a hard test failure, a
     # cancelled gather branch that doesn't unwind cleanly), every LATER
-    # test calling init_graph_async() while _graph is None would hang
+    # test calling init_graph_async() while no graph is built would hang
     # forever waiting on a lock nothing will ever release. A new Lock per
-    # test closes that window the same way resetting _graph
+    # test closes that window the same way resetting _graphs
     # already does for the state it guards.
     agent_module._graph_lock = asyncio.Lock()
     yield
-    agent_module._graph = None
+    agent_module._graphs = {}
+    agent_module._saver = None
     agent_module._graph_lock = asyncio.Lock()
 
 
@@ -108,13 +110,13 @@ class TestInitGraphAsync:
 
     async def test_concurrent_first_callers_only_open_one_checkpointer_pool(self, monkeypatch):
         """Regression guard for the race `_graph_lock` exists to close:
-        `init_graph_async`'s guard (`if _graph is None: ... await ...`) has
+        `init_graph_async`'s guard (`if graph is None: ... await ...`) has
         an await between the check and the write — without the lock, N
         concurrent first-callers (a burst of requests right after a cold
         start, or several agent_worker.py-style tasks all reaching this
         before anything has primed the singleton) could each pass the None
         check, each open their own AsyncConnectionPool via
-        the checkpointer's open(), and each overwrite _graph and the adapter's
+        the checkpointer's open(), and each overwrite the graph and the adapter's
         pool — every loser's pool then leaks. Wraps the real adapter's open()
         to count calls (rather than faking it entirely) so this still
         exercises a real checkpointer/pool open underneath, same "real

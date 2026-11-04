@@ -210,17 +210,17 @@ The same code runs in both; only configuration and the compose file differ.
 | | 💻 Dev: `docker-compose.yml` | 🌍 Prod: `docker-compose.prod.yml` |
 |---|---|---|
 | **LLM** | Native Ollama on the host (`qwen2.5:7b`, `nomic-embed-text`) via `litellm-config.yaml` | Any OpenAI-compatible endpoint via `litellm-config.prod.yaml`: `LLM_API_BASE`, `LLM_API_KEY`, `LLM_CHAT_MODEL`, `LLM_EMBED_MODEL` |
-| **Services** | Full stack: Langfuse, MinIO, open-webui, crawl4ai, exporters, opt-in app/sandbox/quality profiles | `api`, `agent-worker`, `ingest-worker`, Postgres, Redis, Qdrant, LiteLLM, `ml-service`, behind Caddy (TLS) |
+| **Services** | Full stack: Langfuse, MinIO, open-webui, crawl4ai, opt-in app/sandbox/quality profiles; the exporters are the collectors file | `api`, `agent-worker`, `ingest-worker`, Postgres, Redis, Qdrant, LiteLLM, `ml-service`, behind Caddy (TLS) |
 | **Postgres access** | The containers reach `appdata` and `checkpointer` through PgBouncer (`:6432`, transaction mode, at most 18 server connections per database however many replicas run); LiteLLM and Langfuse connect directly; a host process (`make serve`) uses `:5432` unless pointed at `:6432` ([`.env.example`](.env.example)) | The same service, no published port; Postgres's `max_connections` is written down and a test checks the pooler fits inside it ([WORKER_CONCURRENCY.md](WORKER_CONCURRENCY.md)) |
 | **Object storage** | MinIO | DigitalOcean Spaces (any S3-compatible store) |
-| **Observability** | Optional `make obs-up` | Separate droplet, fed by sidecars over the private VPC |
+| **Observability** | Optional `make obs-up` (backends and collectors) | Separate droplet, fed by sidecars over the private VPC |
 | **Config** | `.env` from `.env.example` | `/opt/graph-agent-core/.env` from `deploy/env/prod.env.example`, created once by hand, never touched by CI |
 | **Cost caps** | Local models cost $0 | `MAX_COST_USD_PER_TURN=0.50`, `MAX_COST_USD_PER_TENANT_PER_DAY=20.0`; monthly and per-person limits off at `0` ([COST_GOVERNANCE.md](COST_GOVERNANCE.md)) |
 | **Credits, payments** | Off | Off until `CREDITS_PER_USD` is set (a price is your decision); `BILLING_PROVIDERS` enables a signed webhook ([Credit billing](#credit-billing-optional)) |
 | **Provisioning** | `make up` | Terraform (human-run) + `deploy.yml` (automatic after CI passes on `main`) |
 
 Prod ships no Langfuse, open-webui, MinIO, crawl4ai or OpenSandbox; the tools that need them fail gracefully. It runs one
-`agent-worker` pool, for the default domain; the support/ops/sales pools exist only under the dev compose `app` profile.
+`agent-worker`, serving the Ecorp domain unless `AGENT_WORKER_DOMAINS` names more; the dev `app` profile's serves all four.
 
 * * *
 
@@ -287,8 +287,8 @@ suspecting the app.
 | `summarize these expenses: taxi $23.50, hotel $180, team lunch $64.20` | 🧾 The `expense-summary` skill, available in every domain |
 | `who's the most senior person in Engineering?` | 🕵️ May delegate to the `researcher` subagent: isolated, read-only, no approval (pattern 46) |
 
-**🧑‍💼 Other domains:** pick one in the web UI's domain sidebar, or `AGENT_DOMAIN=<name> make chat`, and run its worker
-(`make agent-worker-support`, `-ops`, `-sales`)
+**🧑‍💼 Other domains:** pick one in the web UI's domain sidebar, or `AGENT_DOMAIN=<name> make chat`, and run a worker that serves it
+(`make agent-worker-all` serves all four)
 
 | Domain | Say | What it shows |
 |---|---|---|
@@ -331,7 +331,7 @@ Interactive docs at `/docs`. The caller is stamped into a `SecurityCtx` that sco
 | `identity` (default) | Only the signed `X-Internal-Identity` the [front door](#front-door-authlimit) adds, checked against its published keys (`AUTHLIMIT_KEYS_URL`, required to start). **Ignores** `X-Tenant-Id` / `X-Principal-Id`. No valid identity is a 401; unconfirmable keys a 503 | Anywhere a stranger can reach the API |
 | `headers` (what `.env.example` selects) | `X-Tenant-Id` and `X-Principal-Id` as sent (422 without them) | Running the API alone on your machine, and the tests. ⚠️ **Never where a stranger can reach it.** Announced at startup, in the gauge `agent_api_auth_mode` and the alert `ApiHeaderAuthMode` |
 
-`X-Domain` is optional (default `ecorp`; unknown is a 422) and routes the turn to that domain's worker pool.
+`X-Domain` is optional (default `ecorp`; unknown is a 422) and puts the turn on that domain's queue; a worker serving it must be running.
 
 ```bash
 # header mode (AUTH_MODE=headers, the .env.example default):
@@ -600,7 +600,7 @@ Each is `store.py` + `tools.py` + `domain.py`. Its `AgentManifest.allowed_tools`
 policy check, is what "sandboxed" means. Skills (`skills/*/SKILL.md`) and subagents (`subagents/*/AGENT.md`) take an optional
 `domains:` tag, so each domain gets its own `skill_search`, `use_skill` and `run_subagent`.
 
-- **One process, one domain.** `AGENT_DOMAIN` picks it at boot (Telegram, workers); the API routes per request by `X-Domain` onto per-domain queues. Several domains in one process is not built.
+- **One worker, many domains.** `AGENT_WORKER_DOMAINS` (names, or `all`) picks the domains a worker serves, each on its own graph under one concurrency budget (pattern 96). `AGENT_DOMAIN` is the domain the CLI and Telegram talk to; the API routes per request by `X-Domain` onto per-domain queues.
 - **Cron scripts never run the agent loop** (the approval gate would pause with no human). `ops_digest.py` and `followup_sweep.py` are fixed pipelines calling the domain's `_impl` functions, with a plain LLM call for the prose.
 - **`scripts/ops_investigate.py`** runs the ops agent once with its full toolset; if the model reaches for a gated write, the run ends with an empty answer rather than a crash.
 
@@ -693,9 +693,10 @@ hand, in order (`psql -U langfuse -d appdata -f postgres-init/NN-….sql`).
 - 🔭 **Traces:** Langfuse, grouped by `thread_id`.
 - 💵 **Cost:** one usage event per model call (tenant- and principal-scoped, with the concrete model behind each alias) is what the dollar caps sum ([COST_GOVERNANCE.md](COST_GOVERNANCE.md), patterns 38, 51).
 
-`make obs-up` starts a separate stack, [`docker-compose.observability.yml`](deploy/compose/docker-compose.observability.yml),
-that nothing in the app depends on (`make obs-down` keeps data, `make obs-clean` drops it; config in
-[`observability/`](observability/); prod runs it on its own droplet, [infra/README.md](infra/README.md)).
+`make obs-up` starts the backends, [`docker-compose.observability.yml`](deploy/compose/docker-compose.observability.yml), and the collectors that
+feed them, [`docker-compose.collectors.yml`](deploy/compose/docker-compose.collectors.yml) (the OTel collector, the exporters, cAdvisor, Promtail;
+`make collectors-up` starts only those, beside `make up`). Nothing in the app depends on either (`make obs-down` keeps data, `make obs-clean`
+drops it; config in [`observability/`](observability/); prod runs the backends on their own droplet, [infra/README.md](infra/README.md)).
 
 | Piece | Role |
 |---|---|
@@ -788,11 +789,11 @@ until configured**.
 |---|---|
 | **▶️ Run** | |
 | `make up` · `make down` | Start / stop the dev stack (keeps data) |
-| `make up-app` | `make up` plus the containerized `api`, `agent-worker`s and `ingest-worker` |
+| `make up-app` | `make up` plus the containerized `api`, `agent-worker` (every domain) and `ingest-worker` |
 | `make up-all` · `make down-all` | Everything in containers behind the front door (infra, app, MCP gateway, observability; not the sandbox or SonarQube), web UI https://api.localhost:8443/; first time also `make mcp-gateway-bootstrap` and `make mcp-gateway-ca`. `down-all` stops every container, any profile (keeps data) |
 | `make serve` | API + web UI on :8000 |
 | `make chat` · `make chat-hitl` | CLI agent · with approval prompts. Both sign you in at the front door (`python -m app.channels.chat --sign-out` forgets it) and need that domain's worker: `AGENT_DOMAIN` picks it |
-| `make agent-worker[-support\|-ops\|-sales]` · `make ingest-worker` | Queue consumers |
+| `make agent-worker` · `make agent-worker-all` · `make ingest-worker` | Queue consumers: one domain (`AGENT_WORKER_DOMAINS=support,ops` picks others) · every domain · ingestion |
 | `make telegram[-support\|-sales]` · `make telegram-person ACTION=add\|disable\|enable TELEGRAM_ID=<id>` | Telegram gateway for a domain (needs `TELEGRAM_BOT_TOKEN`, `TELEGRAM_PERSON_SECRET` or the `TELEGRAM_LINKING` settings, and that domain's worker) · add, disable or re-enable a Telegram person |
 | **📥 Data and models** | |
 | `make pull-models` · `make ingest` · `make index-skills` | Pull Ollama models · seed docs · index skills |
@@ -812,7 +813,7 @@ until configured**.
 | `make ops-digest` · `make followup-sweep` · `make tool-call-dedup-sweep` | The ops digest · the sales follow-up sweep · the dedup-table sweep |
 | **✅ Gates and tools** | |
 | `make lint` · `make typecheck` · `make test` | The CI gates |
-| `make obs-up` · `make obs-down` · `make sandbox-up` | Observability stack · OpenSandbox (opt-in) |
+| `make obs-up` · `make obs-down` · `make collectors-up` · `make sandbox-up` | Observability with its collectors · the collectors alone · OpenSandbox (opt-in) |
 
 ⚠️ `make clean`, `make clear-*`, `make obs-clean` and `make restart-all` delete volumes or kill running processes; don't run them
 casually. The compose files live in `deploy/compose/` but resolve paths and `.env` from the repo root, so a bare
@@ -892,7 +893,7 @@ anyone who sets the right headers.
 |---|---|
 | `make ingest` fails to embed | Run `make up` and `make pull-models` first |
 | No Langfuse traces | Put the keys in `.env`, `docker compose up -d litellm`, restart `make agent-worker` (the worker runs the turn, whichever front door sent it) |
-| `make chat` or Telegram answers "No response … is an agent-worker running for this domain?" | Nothing picked the turn up. Start that domain's worker (`make agent-worker`, or `-support`/`-ops`/`-sales`); the channel's `AGENT_DOMAIN` and the worker's must match |
+| `make chat` or Telegram answers "No response … is an agent-worker running for this domain?" | Nothing picked the turn up. Start a worker that serves that domain (`make agent-worker-all` serves every one); the channel's `AGENT_DOMAIN` must be among the worker's `AGENT_WORKER_DOMAINS` |
 | Telegram never answers and the webhook is set | Look at `channel_telegram_webhook_total`: `forbidden` means the secret Telegram sends is not `TELEGRAM_WEBHOOK_SECRET` (rotate it and re-run the bot, which registers it again); nothing at all means the proxy is not forwarding `/telegram/*` to the bot's listener or asks for a token there |
 | Telegram says "This approval expired or was already handled", or "You have an approval waiting above" | The buttons live `TELEGRAM_APPROVAL_TTL_SECONDS` and decide once. After they expire, write your message again: the old pause is cleared first. `/cancel` drops a waiting one |
 | Turns are slow | `qwen2.5:7b` runs at about 40 tokens/s on an M4 Pro (a cold load adds about 3 s). A smaller model is faster but silently drops tool calls (`make probe-tools` shows how many), so measure before swapping; a bigger one goes in `litellm-config.yaml`. A cold model can exceed `REQUEST_TIMEOUT_SECONDS` (60 s, `app/agent/runtime/core.py`) on the first call: retry |

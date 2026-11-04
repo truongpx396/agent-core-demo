@@ -341,15 +341,14 @@ class Settings(BillingSettings):
     # that necessarily reaches the public internet.
     telegram_bot_token: str = ""
 
-    # Which domain (app/domains/registry.py) a process boots its shared
-    # graph singleton against — read by telegram.py (a generalized gateway,
-    # pattern 23/42) and agent_worker.py (which worker POOL reads which
-    # requests stream; `POST /chat/stream/queued` instead picks the domain
-    # per-request via an X-Domain header). "ecorp" is the default; "support"
-    # and "sales" are the other demo domains, "ops" is registered too though
-    # its own scripts don't need a channel. Unknown name fails loud at
-    # startup (registry.py::resolve_domain).
+    # The domain (app/domains/registry.py) a CLIENT process talks to: the CLI and telegram.py. An unknown name fails at startup.
+    # The API picks per request (X-Domain); a worker serves the domains in `agent_worker_domains` below.
     agent_domain: str = "ecorp"
+
+    # The domains ONE agent_worker.py process serves: comma-separated registry names, or `all`. It reads each one's requests stream
+    # (queue.py::requests_stream_key) and runs the job on that domain's graph, all under `agent_worker_max_concurrency` below.
+    # An unknown name fails at startup.
+    agent_worker_domains: str = "ecorp"
 
     # Ops bot (app/domains/ops/) — queries this repo's own Prometheus
     # (`make obs-up`) via its HTTP query API for the "pull metrics
@@ -776,6 +775,7 @@ REQUEST_TIMEOUT_SECONDS = settings.request_timeout_seconds
 SUBAGENT_TIMEOUT_SECONDS = settings.subagent_timeout_seconds
 TELEGRAM_BOT_TOKEN = settings.telegram_bot_token
 AGENT_DOMAIN = settings.agent_domain
+AGENT_WORKER_DOMAINS = settings.agent_worker_domains
 PROMETHEUS_URL = settings.prometheus_url
 SLACK_WEBHOOK_URL = settings.slack_webhook_url
 MINIO_ENDPOINT = settings.minio_endpoint

@@ -1,15 +1,15 @@
 """Name -> (AgentManifest, DomainPlugin) lookup, consulted two ways:
-- Per-process: agent_worker.py, telegram.py and the CLI (chat.py) read
-  AGENT_DOMAIN once at startup and resolve it here. The worker builds its
-  graph from the result and serves exactly one domain for its life; the two
-  channels only validate the name (a typo fails at startup rather than as a
-  wait for a worker pool that does not exist) and publish their turns to that
-  domain's stream. Neither channel builds a graph.
+- Per-process: telegram.py and the CLI (chat.py) read AGENT_DOMAIN once at
+  startup and only validate the name here (a typo fails at startup rather than
+  as a wait for a worker that does not exist); they publish their turns to that
+  domain's stream and build no graph. agent_worker.py reads AGENT_WORKER_DOMAINS
+  (via the `DomainCatalog` port, backed by this table) and builds one graph per
+  domain it serves.
 - Per-request: app/api/deps.py's `get_domain` validates the caller's
   `X-Domain` header against this registry's keys, and the queued chat
   endpoints (app/api/routers/chat.py) route onto that
   domain's own Redis Stream — which domain a MESSAGE is for, letting one
-  API process serve every domain a worker pool is running.
+  API process serve every domain a worker is serving.
 """
 from app.domains.ecorp.domain import ECORP_DOMAIN_PLUGIN, ECORP_MANIFEST
 from app.domains.ops.domain import OPS_DOMAIN_PLUGIN, OPS_MANIFEST
@@ -28,12 +28,12 @@ DOMAINS: dict[str, tuple[AgentManifest, DomainPlugin]] = {
 def resolve_domain(name: str) -> tuple[AgentManifest, DomainPlugin]:
     """Fail loud on an unknown name rather than silently falling back to
     Ecorp, which would be a confusing way to discover a typo'd
-    AGENT_DOMAIN."""
+    domain name."""
     try:
         return DOMAINS[name]
     except KeyError:
         raise ValueError(
-            f"Unknown AGENT_DOMAIN {name!r} — must be one of: {', '.join(sorted(DOMAINS))}"
+            f"Unknown domain {name!r} — must be one of: {', '.join(sorted(DOMAINS))}"
         ) from None
 
 

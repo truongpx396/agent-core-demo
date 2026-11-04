@@ -1,4 +1,4 @@
-.PHONY: model-eval model-eval-all model-eval-baseline model-eval-data model-eval-verify router-label labelset-calibrate test-billing-package help up up-app sandbox-up sandbox-build pull-models pull-strong-model probe-tools ingest index-skills reembed chat chat-hitl serve mcp-serve mcp-serve-ops mcp-gateway-secrets mcp-gateway-up mcp-gateway-bootstrap mcp-gateway-ca mcp-gateway-smoke mcp-gateway-down authlimit-test authlimit-build authlimit-keys authlimit-keys-ensure authlimit-up authlimit-up-app authlimit-down authlimit-down-app authlimit-smoke authlimit-web-check authlimit-latency authlimit-mutants authlimit-revoke telegram telegram-support telegram-sales telegram-person agent-worker agent-worker-support agent-worker-ops agent-worker-sales restart-all fake-llm ingest-worker ops-digest followup-sweep tool-call-dedup-sweep usage-events-sweep usage-events-carry-over billing-migrate billing-migrate-status billing-inbox-sweep billing-export-worker billing-usage-sweep usage-reconcile usage-reconcile-worker budget-policy litellm-key gateway-check web-search-check test test-integration test-live test-sandbox lint typecheck eval promptfoo promptfoo-redteam deepeval garak garak-full trivy trivy-image semgrep checkov sonar-up sonar-down sonar-scan zap-baseline zap-api-scan zap-view defectdojo-up defectdojo-down defectdojo-import loadtest-queued loadtest-queued-headless strix strix-app strix-view logs down clean clear-cache clear-streams clear-checkpoints clear-langfuse clear-litellm clear-all obs-up obs-down obs-logs obs-clean
+.PHONY: model-eval model-eval-all model-eval-baseline model-eval-data model-eval-verify router-label labelset-calibrate test-billing-package help up up-app sandbox-up sandbox-build pull-models pull-strong-model probe-tools ingest index-skills reembed chat chat-hitl serve mcp-serve mcp-serve-ops mcp-gateway-secrets mcp-gateway-up mcp-gateway-bootstrap mcp-gateway-ca mcp-gateway-smoke mcp-gateway-down authlimit-test authlimit-build authlimit-keys authlimit-keys-ensure authlimit-up authlimit-up-app authlimit-down authlimit-down-app authlimit-smoke authlimit-web-check authlimit-latency authlimit-mutants authlimit-revoke telegram telegram-support telegram-sales telegram-person agent-worker agent-worker-all restart-all fake-llm ingest-worker ops-digest followup-sweep tool-call-dedup-sweep usage-events-sweep usage-events-carry-over billing-migrate billing-migrate-status billing-inbox-sweep billing-export-worker billing-usage-sweep usage-reconcile usage-reconcile-worker budget-policy litellm-key gateway-check web-search-check test test-integration test-live test-sandbox lint typecheck eval promptfoo promptfoo-redteam deepeval garak garak-full trivy trivy-image semgrep checkov sonar-up sonar-down sonar-scan zap-baseline zap-api-scan zap-view defectdojo-up defectdojo-down defectdojo-import loadtest-queued loadtest-queued-headless strix strix-app strix-view logs down clean clear-cache clear-streams clear-checkpoints clear-langfuse clear-litellm clear-all obs-up obs-down obs-logs obs-clean collectors-up collectors-down collectors-logs
 
 # The billing package and the ML service's `ml_service` are found by path, not installed: a path dependency does not belong in the
 # lock file (spec 011 D20). Absolute, so a target that `cd`s into packages/billing still finds them; pytest and mypy do the same.
@@ -19,6 +19,12 @@ AUTHLIMIT_KEYS_DIR := $(AUTHLIMIT_DIR)/keys
 # and breaking `sonar-scan`'s network. It also lets deploy.yml mirror this layout. Consequence: a bare `docker compose up` finds no file.
 COMPOSE     := docker compose --project-directory . -f deploy/compose/docker-compose.yml
 COMPOSE_OBS := docker compose --project-directory . -f deploy/compose/docker-compose.observability.yml
+# The collectors file is an overlay on the app's project (the exporters need its network), not a project of its own. COLLECTORS names its
+# services, so `up --no-deps` and `rm` touch only them.
+COLLECTORS         := otel-collector promtail postgres-exporter redis-exporter pgbouncer-exporter node-exporter cadvisor container-name-mapper
+COMPOSE_COLLECTORS := $(COMPOSE) -f deploy/compose/docker-compose.collectors.yml
+# Its containers belong to the project but not to docker-compose.yml; without this every `make up` warns about them as orphans.
+export COMPOSE_IGNORE_ORPHANS := true
 # The default network is `<project>_default`; with no `name:` the project is the checkout directory's name (lowercased, invalid
 # characters dropped; COMPOSE_PROJECT_NAME wins). Derived so a clone or worktree under any name finds its network.
 COMPOSE_NETWORK := $(or $(COMPOSE_PROJECT_NAME),$(shell basename "$(CURDIR)" | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9_-'))_default
@@ -43,11 +49,11 @@ up:  ## Start all services (litellm, qdrant, langfuse, postgres, minio; talks to
 up-app:  ## Start infra + the containerized app itself (api, agent-worker, ingest-worker; see Dockerfile)
 	$(COMPOSE) --profile app up -d --build
 
-# One compose call over the app and gateway profiles (not sandbox or quality), in identity mode like authlimit-up-app; observability is its own project.
+# One compose call over the app and gateway profiles (not sandbox or quality), in identity mode like authlimit-up-app; observability and its collectors follow.
 up-all: mcp-gateway-secrets authlimit-keys-ensure  ## Start everything in containers: infra, app behind the front door, MCP gateway, observability (not sandbox or SonarQube); web UI https://api.localhost:8443/
 	@curl -sf -o /dev/null http://localhost:11434/api/version || echo "warning: no Ollama on :11434 (start it with: ollama serve)"
 	AUTH_MODE=identity AUTHLIMIT_UPSTREAM=api:8000 $(GATEWAY_COMPOSE) --profile app up -d --build
-	$(COMPOSE_OBS) up -d
+	$(MAKE) obs-up
 	@echo "up. Web UI https://api.localhost:8443/ · Grafana http://localhost:3300 · Langfuse http://localhost:3000"
 	@echo "first time: make mcp-gateway-bootstrap, then make mcp-gateway-ca and trust the CA in your browser"
 
@@ -123,12 +129,12 @@ authlimit-down: mcp-gateway-down  ## Stop the authlimit stack's containers (same
 logs:  ## Tail logs from all services
 	$(COMPOSE) logs -f
 
-down:  ## Stop all services (keep volumes)
-	$(COMPOSE) down
+down:  ## Stop all services (keep volumes), the collectors included
+	$(COMPOSE) down --remove-orphans
 
 # `down` skips containers started under a profile; `--profile '*'` reaches them all.
-down-all: mcp-gateway-secrets  ## Stop and remove every container of the dev stack, any profile, plus observability; keeps volumes
-	$(COMPOSE_OBS) down
+down-all: mcp-gateway-secrets  ## Stop and remove every container of the dev stack, any profile, plus observability and the collectors; keeps volumes
+	$(MAKE) obs-down
 	$(GATEWAY_COMPOSE) --profile '*' down
 
 clear-cache:  ## Flush the semantic cache (Redis) only — leaves the agent-worker queue and other volumes intact
@@ -149,16 +155,28 @@ clear-litellm:  ## Truncate LiteLLM's usage and spend logs (spend, error and aud
 clear-all: clear-cache clear-streams clear-checkpoints clear-langfuse clear-litellm  ## Run every clear-* target (cache, Redis Streams, checkpointer, Langfuse, LiteLLM logs). Leaves appdata and volumes; `make clean` deletes volumes
 
 clean:  ## Stop services and delete volumes (models, vectors, traces)
-	$(COMPOSE) down -v
+	$(COMPOSE) down -v --remove-orphans
 
-obs-up:  ## Start the observability stack (Grafana :3300, Prometheus :9090, Loki, Alertmanager, otel-collector) — independent of `make up`
+obs-up:  ## Start observability (Grafana :3300, Prometheus :9090, Loki, Alertmanager, Pyroscope) and the collectors that feed it; independent of `make up`
 	$(COMPOSE_OBS) up -d
+	$(MAKE) collectors-up
 
-obs-down:  ## Stop the observability stack (keep its volumes)
+obs-down:  ## Stop observability and the collectors (keep volumes)
 	$(COMPOSE_OBS) down
+	$(MAKE) collectors-down
 
 obs-logs:  ## Tail logs from the observability stack
 	$(COMPOSE_OBS) logs -f
 
-obs-clean:  ## Stop the observability stack and delete its volumes (Prometheus/Loki/Grafana data)
+obs-clean:  ## Stop observability and the collectors and delete the observability volumes (Prometheus/Loki/Grafana data)
 	$(COMPOSE_OBS) down -v
+	$(MAKE) collectors-down
+
+collectors-up:  ## Start the telemetry collectors (OTel collector, exporters, cAdvisor, Promtail) beside `make up`; Prometheus and Loki (`make obs-up`) read them
+	$(COMPOSE_COLLECTORS) up -d --no-deps $(COLLECTORS)
+
+collectors-down:  ## Stop and remove the telemetry collectors
+	$(COMPOSE_COLLECTORS) rm -sf $(COLLECTORS)
+
+collectors-logs:  ## Tail logs from the telemetry collectors
+	$(COMPOSE_COLLECTORS) logs -f $(COLLECTORS)

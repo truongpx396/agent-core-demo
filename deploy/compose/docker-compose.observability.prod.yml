@@ -1,24 +1,13 @@
-# Prod counterpart of docker-compose.observability.yml, run on the
-# SEPARATE, smaller observability droplet infra/terraform provisions
-# (digitalocean_droplet.observability) — deliberately not co-located with
-# the app droplet, so a metrics/logs spike can't compete with it for
-# CPU/mem and losing this box never touches the app's own data. Deployed by
-# .github/workflows/deploy.yml's `deploy-observability` job, independently
-# of the app droplet's own deploy job.
+# Prod counterpart of docker-compose.observability.yml, run on the SEPARATE, smaller droplet infra/terraform provisions
+# (digitalocean_droplet.observability), so a metrics or logs spike cannot compete with the app for CPU and memory, and losing this box never touches
+# the app's data. Deployed by .github/workflows/deploy.yml's `deploy-observability` job, independently of the app droplet.
 #
-# Unlike the dev file, nothing here bridges via `host.docker.internal` —
-# the app droplet reaches IN to this droplet instead, over the two ports
-# infra/terraform/main.tf's digitalocean_firewall.observability scopes to
-# the DO VPC's own CIDR: OTLP (4318, from the app droplet's
-# otel-collector-agent) and Loki's push endpoint (3100, from the app
-# droplet's promtail). See docker-compose.prod.yml's own observability
-# sidecars for the other half of this topology.
+# Unlike the dev file, nothing bridges through `host.docker.internal`: the app droplet reaches IN, over the two ports infra/terraform/main.tf's
+# digitalocean_firewall.observability scopes to the VPC's CIDR: OTLP (4318, from its otel-collector-agent) and Loki's push (3100, from its promtail).
+# docker-compose.prod.yml has the other half of the topology.
 #
-# Grafana is the only thing meant for a human browser (fronted by `caddy`
-# below, real auth via GRAFANA_ADMIN_PASSWORD — not the dev file's
-# anonymous-viewer/admin-admin defaults); Prometheus/Alertmanager/Loki
-# publish no host port at all, reached only over this droplet's own
-# internal Docker network.
+# Grafana is the only service meant for a browser (behind `caddy`, with a real login via GRAFANA_ADMIN_PASSWORD, not the dev file's anonymous
+# viewer). Prometheus, Alertmanager and Loki publish no host port beyond the two above.
 name: agent-core-observability
 
 services:
@@ -29,11 +18,9 @@ services:
     volumes:
       - ./observability/otel-collector/config.yaml:/etc/otelcol-contrib/config.yaml:ro
     ports:
-      - "4318:4318"   # OTLP HTTP — what the app droplet's otel-collector-agent forwards to
-    # No 4317 (gRPC)/8889 host-published here (unlike the dev file) — the
-    # app droplet only ever speaks OTLP/HTTP, and 8889 (this collector's own
-    # Prometheus exporter) is only ever scraped by `prometheus` below, over
-    # the internal network.
+      - "4318:4318"   # OTLP HTTP: what the app droplet's otel-collector-agent forwards to
+    # No 4317 (gRPC) or 8889 on the host, unlike the dev file: the app droplet only speaks OTLP/HTTP, and 8889 (this collector's Prometheus
+    # exporter) is scraped only by `prometheus` below, over the internal network.
 
   prometheus:
     image: prom/prometheus:latest
@@ -52,12 +39,10 @@ services:
   alertmanager:
     image: prom/alertmanager:latest
     restart: unless-stopped
-    # alertmanager.PROD.yml, not the receiver-less demo file the dev stack mounts: with that
-    # one nothing is ever delivered and nothing says so (spec 008 A7). Alertmanager does no
-    # environment expansion, so the webhook URL secret is written to the file the config reads
-    # (`api_url_file`) just before it starts. `:?` makes `docker compose up` refuse to run
-    # without it — an observability stack that cannot reach anyone should fail the deploy,
-    # not come up looking healthy. The `$$` is compose's escape: the shell sees `$VAR`.
+    # alertmanager.PROD.yml, not the dev file's receiver-less config: with that one nothing is delivered and nothing says so (spec 008 A7).
+    # Alertmanager does no environment expansion, so the webhook secret is written to the file the config reads (`api_url_file`) just before it
+    # starts. `:?` makes `docker compose up` refuse to run without it: an observability stack that reaches no one should fail the deploy. `$$` is
+    # compose's escape for the shell's `$VAR`.
     volumes:
       - ./observability/alertmanager/alertmanager.prod.yml:/etc/alertmanager/alertmanager.yml:ro
       - alertmanager:/alertmanager
@@ -82,10 +67,10 @@ services:
     ports:
       - "3100:3100"   # Loki push — what the app droplet's promtail pushes to
 
-  # Continuous profiling (specs/022): the app droplet's api and workers push CPU profiles straight here when PYROSCOPE_SERVER_ADDRESS is set
-  # in its .env (deploy/env/prod.env.example), over the VPC like OTLP and Loki; Grafana reads them through the Pyroscope datasource. No
-  # authentication, the same posture as those two: the firewall scopes 4040 to the VPC (infra/terraform digitalocean_firewall.observability)
-  # and the profiles hold function names, never request data. Flags and sizing: docker-compose.observability.yml.
+  # Continuous profiling (specs/022): the app droplet's api and workers push CPU profiles here over the VPC when PYROSCOPE_SERVER_ADDRESS is set in its
+  # .env (deploy/env/prod.env.example), like OTLP and Loki; Grafana reads them through the Pyroscope datasource. No authentication, the same posture as
+  # those two: the firewall scopes 4040 to the VPC (infra/terraform digitalocean_firewall.observability) and profiles hold function names, never request
+  # data. Flags and sizing: docker-compose.observability.yml.
   pyroscope:
     image: grafana/pyroscope:2.3.2@sha256:78c3b509f2ad98a6974b38c6f2135d5daf9597809532560e9ca29f9b43aa339e
     restart: unless-stopped
@@ -111,9 +96,7 @@ services:
     environment:
       GF_SECURITY_ADMIN_USER: admin
       GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD}
-      # No GF_AUTH_ANONYMOUS_ENABLED here (unlike the dev file) — this
-      # instance is reachable from the public internet via `caddy` below,
-      # so anonymous viewing is off; a real login is required.
+      # No GF_AUTH_ANONYMOUS_ENABLED (unlike the dev file): this instance is reachable from the internet through `caddy`, so a login is required.
     volumes:
       - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
       - ./observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
@@ -122,8 +105,7 @@ services:
       - prometheus
       - loki
 
-  # Reverse proxy + TLS termination, fronting Grafana only — same pattern
-  # as docker-compose.prod.yml's own `caddy` service in front of `api`.
+  # Reverse proxy and TLS in front of Grafana only, like docker-compose.prod.yml's `caddy` in front of `api`.
   caddy:
     image: caddy:2-alpine
     restart: unless-stopped

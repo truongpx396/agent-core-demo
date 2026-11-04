@@ -28,6 +28,7 @@ class FakeRedis:
         self.groups: dict[str, set[str]] = {}
         self.expiries: dict[str, int] = {}
         self.acked: list[str] = []
+        self.ack_calls: list[tuple[str, str]] = []  # (stream, entry_id): which stream each ack went to
         self.deleted: list[str] = []
         self.kv: dict[str, str] = {}  # plain SET/GET/DELETE keys — the cancel flag
         self._counter = 0
@@ -97,6 +98,7 @@ class FakeRedis:
 
     async def xack(self, stream, group, entry_id):
         self.acked.append(entry_id)
+        self.ack_calls.append((stream, entry_id))
 
     async def expire(self, key, seconds):
         self.expiries[key] = seconds

@@ -45,7 +45,6 @@ async def test_a_worker_told_to_stop_closes_its_mcp_connections_after_its_in_fli
     async def no_reclaim(*args, **kwargs):
         return None
 
-    monkeypatch.setattr(agent_worker, "resolve_domain", lambda name: (MagicMock(), MagicMock()))
     monkeypatch.setattr(agent_worker, "init_graph_async", AsyncMock())
     monkeypatch.setattr(agent_worker, "get_client", lambda: client)
     monkeypatch.setattr(agent_worker, "ensure_consumer_group", AsyncMock())

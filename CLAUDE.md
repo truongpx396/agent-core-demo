@@ -35,7 +35,7 @@ make test-live         # real Ollama + full stack + Playwright — needs Docker
 make up                # docker-compose infra (needs a native Ollama on the host, see README)
 make serve             # FastAPI on :8000 (web UI at /)
 make reembed COLLECTION_NAME=docs   # rebuild a vector collection under the current embedding identity, swap atomically (ARGS=--dry-run first)
-make agent-worker      # queue consumer for the Ecorp domain (also agent-worker-{support,ops,sales})
+make agent-worker      # queue consumer for the Ecorp domain (AGENT_WORKER_DOMAINS=support,ops picks others; agent-worker-all serves every domain)
 make chat              # CLI agent; chat-hitl adds approval prompts (turns go through the queue: run `make agent-worker` too)
 ```
 
@@ -66,7 +66,7 @@ they delete volumes or kill running processes.
 - `app/domains/{ecorp,support,ops,sales}/` — each is `store.py` + `tools.py` + `domain.py`, and
   `registry.py` looks them up by name. Ecorp is the default but has no standing in the graph: `build_graph`
   requires a manifest and a domain. A new use case follows that shape; it never forks `build_graph()`.
-- `deploy/` — `compose/` (every `docker-compose*.yml`), `caddy/`, `litellm/` (configs + `patches/`).
+- `deploy/` — `compose/` (every `docker-compose*.yml`: the stack, `.collectors` the exporters/OTel collector/Promtail overlay, `.observability` the backends), `caddy/`, `litellm/` (configs + `patches/`).
   Compose resolves paths and `.env` from the repo root, so run it via the Makefile's `COMPOSE` or
   with `--project-directory .`; a bare `docker compose up` finds no file. `Dockerfile` stays at the
   root (build context), `docker/` holds the auxiliary image builds.

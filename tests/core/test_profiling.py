@@ -53,6 +53,16 @@ def test_with_an_address_it_configures_the_sdk_once_with_the_service_the_server_
     ]
 
 
+def test_a_process_serving_several_domains_tags_them_all_instead_of_the_client_default(monkeypatch):
+    monkeypatch.setattr(profiling, "PYROSCOPE_SERVER_ADDRESS", "http://pyroscope:4040")
+    calls = []
+    _sdk(monkeypatch, lambda **kw: calls.append(kw))
+
+    profiling.start_profiling("agent-core-agent-worker", domain="ecorp+support")
+
+    assert calls[0]["tags"]["domain"] == "ecorp+support"
+
+
 def test_profiles_carry_no_tenant_principal_or_thread(monkeypatch):
     """Every distinct tag value is a new series in the profile store, and a tenant id would put customer names in a UI engineers browse."""
     monkeypatch.setattr(profiling, "PYROSCOPE_SERVER_ADDRESS", "http://pyroscope:4040")
@@ -99,7 +109,7 @@ def test_the_entrypoints_start_it_right_after_telemetry_and_a_short_lived_job_do
         ("app/ingestion/ingest_worker.py", "agent-core-ingest-worker"),
     ):
         source = (repo / relative).read_text()
-        telemetry, start = f'configure_telemetry("{service}")', f'start_profiling("{service}")'
+        telemetry, start = f'configure_telemetry("{service}")', f'start_profiling("{service}"'
         assert telemetry in source and start in source, relative
         assert source.index(telemetry) < source.index(start), f"{relative}: start_profiling must follow configure_telemetry"
     assert "start_profiling" not in (repo / "app/core/job_runtime.py").read_text()
