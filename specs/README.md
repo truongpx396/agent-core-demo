@@ -1,6 +1,6 @@
 # Specs
 
-Spec Kit features, one directory each (`/speckit-specify` numbers the next from the highest `NNN-*` found here: 021). 001-009 and 014-021 are the agent app's; 010-013 are the billing
+Spec Kit features, one directory each (`/speckit-specify` numbers the next from the highest `NNN-*` found here: 022). 001-009 and 014-022 are the agent app's; 010-013 are the billing
 package's and live in [`packages/billing/specs/`](../packages/billing/specs/), with a one-file pointer left here so their numbers stay taken.
 
 ## Reading an older spec: paths have moved

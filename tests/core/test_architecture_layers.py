@@ -38,12 +38,12 @@ REPO = Path(__file__).resolve().parents[2]
 # Infrastructure clients: importing one means the module talks to a concrete system.
 INFRASTRUCTURE = frozenset({
     "psycopg", "psycopg_pool", "redis", "qdrant_client", "openai", "langchain_openai", "httpx", "minio", "fastembed",
-    "crawl4ai", "mcp", "fastapi", "starlette", "uvicorn", "jwt", "limits", "langgraph.checkpoint.postgres",
+    "crawl4ai", "mcp", "fastapi", "starlette", "uvicorn", "jwt", "limits", "langgraph.checkpoint.postgres", "pyroscope",
 })
 
 # Modules that live in `app/core` but are adapters or process plumbing, not kernel.
 PLATFORM_CORE = frozenset({
-    "sql_store", "internal_identity", "telemetry", "logging_config", "job_runtime",
+    "sql_store", "internal_identity", "telemetry", "logging_config", "job_runtime", "profiling",
 })
 
 # Application-ring files that are adapters by convention.

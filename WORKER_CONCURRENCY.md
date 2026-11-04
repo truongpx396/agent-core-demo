@@ -63,11 +63,19 @@ Neither comes from a formula:
 
 ## Postgres connection budget
 
-Scaling replicas multiplies Postgres connections, and nothing enforces the ceiling. Every process that runs the graph (each `agent-worker` replica **and** the API, via `init_graph_async()` in its lifespan) can hold two pools: the appdata pool (`app/core/sql_store.py`, `max_size=10`, not configurable today) and the checkpointer pool (`CHECKPOINTER_POOL_MAX_SIZE`, default `10`). Worst case:
+Every process that runs the graph (each `agent-worker` replica **and** the API, via `init_graph_async()` in its lifespan) holds two client-side pools: the appdata pool (`app/core/sql_store.py`, `APPDATA_POOL_MAX_SIZE`, default `10`) and the checkpointer pool (`CHECKPOINTER_POOL_MAX_SIZE`, default `10`). Direct to Postgres, scaling replicas multiplied that, and nothing enforced the ceiling:
 
     20 × (agent-worker replicas + API replicas)  ≤  max_connections − reserved
 
-Postgres's default `max_connections` is `100` (3 reserved for superusers), which fits only about four such processes before counting anything else on the server. `docker-compose.prod.yml` doesn't set it, and that Postgres also serves LiteLLM and Langfuse, so a scaled-out deploy should raise it (or put PgBouncer in front) rather than discover the limit under load.
+Postgres's default `max_connections` is `100` (3 reserved for superusers), which fits only about four such processes before counting anything else on the server (LiteLLM and Langfuse share it).
+
+**PgBouncer takes replicas out of that sum** (specs/022). The containers reach `appdata` and `checkpointer` through the `pgbouncer` service in transaction mode, where a server connection is held for one transaction, so the client-side pools above are cheap (a few KB each in the pooler) and Postgres sees only the pooler's own pool:
+
+    2 databases × MAX_DB_CONNECTIONS (15 pool + 3 reserve = 18)  +  direct clients (LiteLLM, Langfuse, exporters, an operator's psql)  ≤  max_connections
+
+That is 36 + 30 headroom ≤ 100, written into both compose files and checked by `tests/core/test_compose_pooler.py`, so raising `DEFAULT_POOL_SIZE` past the budget fails the build instead of the first busy afternoon. Scaling `--scale agent-worker=N` no longer moves it. What replaced the old failure is **waiting**: past 15 simultaneous transactions per database a client queues for a server connection (alert `PgBouncerClientsWaiting` at 5 minutes, `PgBouncerMaxWait` at 10 s; `QUERY_WAIT_TIMEOUT` gives up at 30 s). Transactions here last milliseconds, so queueing means a transaction is being held open (look for `idle in transaction` first; `IDLE_TRANSACTION_TIMEOUT` cuts one at 60 s), not that the pool is too small.
+
+What the pooler costs the code: **no prepared statements and no session state.** Every pool passes `prepare_threshold=None` (`POOLER_SAFE_CONNECTION_KWARGS`; psycopg's `0` means "prepare on the first run", the opposite), and a scan (`tests/core/test_pooler_safe_sql.py`) fails the build on a `SET` that is not `SET LOCAL`, a session advisory lock, `LISTEN`, a temp table and the like, because a pooled server connection is lent to a different tenant's transaction next. `tests/integration/test_pgbouncer.py` runs the app's own pools against a real PgBouncer that refuses prepared statements, and shows the previous settings failing. `make billing-migrate` takes only transaction-scoped locks (`pg_advisory_xact_lock`, `SET LOCAL`) and was run twice through the pooler by hand (it applied, then found everything current; not in CI), so the pooled address works for it too; an interactive `psql` that wants a session `SET`, and the init scripts, use Postgres on `:5432`.
 
 **What exhaustion looks like:** pool checkouts fail with `FATAL: sorry, too many clients already`, turns fail *inside* an already-open SSE stream, and the client sees HTTP 200 with no answer text. That exact failure took down `tests/integration/test_worker_scaling.py`'s 250-turn test (245 of 250 empty) until `tests/containers.py::ensure_postgres` got `max_connections=300` (5 workers + the API alone is 6 × 20 = 120 potential connections).
 

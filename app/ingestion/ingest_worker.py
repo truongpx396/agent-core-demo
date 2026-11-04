@@ -45,6 +45,7 @@ from app.core.config import (
     WORKER_RECLAIM_INTERVAL_SECONDS,
 )
 from app.core.logging_config import bind_request_id, configure_logging
+from app.core.profiling import start_profiling
 from app.core.telemetry import configure_telemetry
 from app.ingestion import ingestor, object_store
 from app.ingestion.extractors import EXTRACTORS_BY_SUFFIX, ExtractionFailed
@@ -337,4 +338,5 @@ async def run() -> None:
 if __name__ == "__main__":
     configure_logging()
     configure_telemetry("agent-core-ingest-worker")
+    start_profiling("agent-core-ingest-worker")
     asyncio.run(run())

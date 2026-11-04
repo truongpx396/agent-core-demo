@@ -281,6 +281,54 @@ def _setup_checkpointer_schema_once(checkpointer_url: str) -> None:
         loop.close()
 
 
+def ensure_pgbouncer() -> dict[str, str]:
+    """A real PgBouncer in front of `ensure_postgres()`'s server, started from the SHIPPED service definition in `docker-compose.yml` (the
+    image by digest, every setting, the hardening flags and the one tmpfs it needs) so the test runs what ships, with three exceptions that make
+    the test STRICTER than production: `MAX_PREPARED_STATEMENTS=0` (production leaves PgBouncer's own backstop on; a client that prepares a
+    statement fails here instead of working by luck), and a pool of 3 server connections with no reserve (so 30 client connections have to
+    share, which is what makes a prepared statement land on the wrong server connection). Returns the pooled URLs and the direct one.
+
+    The pooler reaches Postgres at the Postgres container's bridge address, which works the same on Docker Desktop and on a Linux runner.
+    """
+    _require_docker("a real PgBouncer")
+    postgres = ensure_postgres()
+
+    def _start() -> dict[str, Any]:
+        import yaml
+        from testcontainers.core.container import DockerContainer
+        from testcontainers.core.docker_client import DockerClient
+
+        service = yaml.safe_load((_REPO_ROOT / "deploy" / "compose" / "docker-compose.yml").read_text())["services"]["pgbouncer"]
+        postgres_ip = DockerClient().bridge_ip(postgres["container_id"])
+        env = dict(service["environment"])
+        env["DATABASE_URLS"] = ",".join(f"postgresql://langfuse:langfuse@{postgres_ip}:5432/{name}" for name in ("appdata", "checkpointer"))
+        env.update(MAX_PREPARED_STATEMENTS="0", DEFAULT_POOL_SIZE="3", RESERVE_POOL_SIZE="0", MAX_DB_CONNECTIONS="3")
+        container = DockerContainer(service["image"]).with_exposed_ports(6432).with_kwargs(
+            init=True, read_only=True, cap_drop=["ALL"], security_opt=["no-new-privileges:true"], tmpfs={"/etc/pgbouncer": "size=1m,uid=70,gid=70,mode=0700"}
+        )
+        for key, value in env.items():
+            container.with_env(key, value)
+        container.start()
+        host, port = container.get_container_host_ip(), int(container.get_exposed_port(6432))
+        url = f"postgresql://langfuse:langfuse@{host}:{port}"
+        for attempt in range(30):
+            try:
+                with psycopg.connect(f"{url}/appdata", connect_timeout=2):
+                    break
+            except Exception:  # noqa: BLE001 - retry until the timeout below
+                if attempt == 29:
+                    raise
+                time.sleep(1)
+        return {
+            "container_id": container.get_wrapped_container().id,
+            "appdata_database_url": f"{url}/appdata",
+            "checkpointer_database_url": f"{url}/checkpointer",
+            "direct_appdata_database_url": postgres["appdata_database_url"],
+        }
+
+    return _acquire("pgbouncer", _start)
+
+
 def ensure_redis() -> dict[str, str]:
     """Real Redis Stack (same image docker-compose.yml's `redis` service
     uses — plain `redis:*` doesn't ship RediSearch, which the semantic cache

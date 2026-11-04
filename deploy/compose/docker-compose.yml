@@ -34,8 +34,10 @@ x-app-env: &app-env
   OPENAI_API_KEY: ${LITELLM_APP_KEY:-sk-anything}
   QDRANT_URL: http://qdrant:6333
   ML_SERVICE_URL: http://ml-service:80
-  CHECKPOINTER_DATABASE_URL: postgresql://langfuse:langfuse@postgres:5432/checkpointer
-  APPDATA_DATABASE_URL: postgresql://langfuse:langfuse@postgres:5432/appdata
+  # Through PgBouncer (the `pgbouncer` service below), not to Postgres: the server-side connection count is the pooler's pool size, not
+  # these processes' pools times their replicas. LiteLLM, Langfuse and the exporters stay on `postgres:5432` (specs/022).
+  CHECKPOINTER_DATABASE_URL: postgresql://langfuse:langfuse@pgbouncer:6432/checkpointer
+  APPDATA_DATABASE_URL: postgresql://langfuse:langfuse@pgbouncer:6432/appdata
   REDIS_URL: redis://redis:6379
   MINIO_ENDPOINT: minio:9000
   LANGFUSE_HOST: http://langfuse-web:3000
@@ -63,6 +65,9 @@ x-app-env: &app-env
   # the OTLP exporter; see app/core/telemetry.py and that compose file's
   # own header for the full reasoning).
   OTEL_EXPORTER_OTLP_ENDPOINT: http://host.docker.internal:4318
+  # The same relationship for profiles: the Pyroscope server is in the optional observability stack (`make obs-up`), and a push to a
+  # server that is not there is dropped by the SDK without a delay (specs/022 research.md). Blank it to turn profiling off.
+  PYROSCOPE_SERVER_ADDRESS: ${PYROSCOPE_SERVER_ADDRESS-http://host.docker.internal:4040}
 
 # Build target for every service that builds the root Dockerfile: the stage that ships, NAMED, so a reordered Dockerfile cannot
 # silently make the builder stage (which has uv in it) the thing that runs (ENGINEERING_PATTERNS.md pattern 76).
@@ -290,6 +295,71 @@ services:
       interval: 10s
       timeout: 5s
       retries: 10
+
+  # --- PgBouncer in front of the app's two databases (specs/022). Transaction pooling: a server connection is held for one transaction, so
+  # the connections Postgres sees are default_pool_size + reserve per database however many processes and client connections there are
+  # (WORKER_CONCURRENCY.md, "Postgres connection budget"). Only `appdata` and `checkpointer` are listed: LiteLLM and Langfuse (Prisma) and the
+  # exporters keep a direct connection, and migrations and postgres-init talk to Postgres itself. The app's pools disable prepared statements
+  # (app/core/sql_store.py), the one thing a transaction pooler cannot carry from one server connection to the next.
+  # Hardened like the app roles (tests/core/test_compose_pooler.py): the image runs as uid 70 and writes only the config its entrypoint
+  # generates from these variables, so one tmpfs is the whole write path (measured, specs/022 research.md).
+  pgbouncer:
+    image: edoburu/pgbouncer:v1.26.1-p0@sha256:488422e38cff912895d0d65d8963fcd306e6ac589a724398b6eb8e294e94d624
+    restart: unless-stopped
+    init: true
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: ["ALL"]
+    read_only: true
+    tmpfs:
+      - /etc/pgbouncer:size=1m,uid=70,gid=70,mode=0700
+    environment:
+      DATABASE_URLS: postgresql://langfuse:langfuse@postgres:5432/appdata,postgresql://langfuse:langfuse@postgres:5432/checkpointer
+      LISTEN_PORT: "6432"
+      AUTH_TYPE: scram-sha-256
+      POOL_MODE: transaction
+      # 15 + 3 reserve = at most 18 server connections per database (MAX_DB_CONNECTIONS is the hard cap, reserve included): 36 of
+      # Postgres's 100, leaving the rest to LiteLLM, Langfuse and the exporters. A test keeps that sum honest.
+      DEFAULT_POOL_SIZE: "15"
+      RESERVE_POOL_SIZE: "3"
+      RESERVE_POOL_TIMEOUT: "3"
+      MAX_DB_CONNECTIONS: "18"
+      MAX_CLIENT_CONN: "500"
+      # A client that cannot get a server connection in 30 s gets an error instead of waiting for ever; PgBouncerClientsWaiting fires first.
+      QUERY_WAIT_TIMEOUT: "30"
+      # A transaction left open holds a server connection while it does nothing; nothing here keeps one open for a minute.
+      IDLE_TRANSACTION_TIMEOUT: "60"
+      IGNORE_STARTUP_PARAMETERS: extra_float_digits,options
+      # SHOW commands only (the exporter's login); there is no admin user.
+      STATS_USERS: langfuse
+      LOG_CONNECTIONS: "0"
+      LOG_DISCONNECTIONS: "0"
+    ports:
+      - "127.0.0.1:6432:6432"   # so a host process (`make serve`) can be pointed at the pooler too; the default there is Postgres directly
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -p 6432 -U langfuse -d appdata"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # Pool and wait metrics for the three alerts in observability/prometheus/alerts.yml (PgBouncerDown, PgBouncerClientsWaiting,
+  # PgBouncerMaxWait). Publishes its port like postgres-exporter below, for the optional observability stack.
+  pgbouncer-exporter:
+    image: prometheuscommunity/pgbouncer-exporter:v0.12.1@sha256:30f31b6c2efdad3647f8182cc7c1a3a19e42bae5d17387694989f969371c230d
+    restart: unless-stopped
+    init: true
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: ["ALL"]
+    read_only: true
+    environment:
+      PGBOUNCER_EXPORTER_CONNECTION_STRING: postgres://langfuse:langfuse@pgbouncer:6432/pgbouncer?sslmode=disable
+    ports:
+      - "9127:9127"
+    depends_on:
+      pgbouncer:
+        condition: service_healthy
 
   # --- Prometheus exporters for postgres/redis above — co-located here
   # (not in docker-compose.observability.yml) since they need those
@@ -578,7 +648,7 @@ services:
     # Only what the two published tools read: the app database and Prometheus, plus the gateway's own settings. Not the LLM keys, not
     # Redis, not the sandbox key: this process is reachable by anyone holding a token and holds nothing it does not use.
     environment:
-      APPDATA_DATABASE_URL: postgresql://langfuse:langfuse@postgres:5432/appdata
+      APPDATA_DATABASE_URL: postgresql://langfuse:langfuse@pgbouncer:6432/appdata
       PROMETHEUS_URL: ${MCP_GATEWAY_PROMETHEUS_URL:-http://host.docker.internal:9090}
       OTEL_EXPORTER_OTLP_ENDPOINT: ${MCP_GATEWAY_OTLP_ENDPOINT-http://host.docker.internal:4318}
       MCP_GATEWAY_PUBLIC_URL: ${MCP_GATEWAY_PUBLIC_URL:-https://mcp.localhost:8443}
@@ -596,7 +666,7 @@ services:
       start_period: 10s
       retries: 5
     depends_on:
-      postgres:
+      pgbouncer:
         condition: service_healthy
       casdoor:
         condition: service_healthy
@@ -808,7 +878,7 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"   # so OTEL_EXPORTER_OTLP_ENDPOINT resolves on native Linux Docker too
     depends_on:
-      postgres:
+      pgbouncer:
         condition: service_healthy
       redis:
         condition: service_healthy
@@ -824,7 +894,7 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:
-      postgres:
+      pgbouncer:
         condition: service_healthy
       redis:
         condition: service_healthy
@@ -855,7 +925,7 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:
-      postgres:
+      pgbouncer:
         condition: service_healthy
       redis:
         condition: service_healthy
@@ -873,7 +943,7 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:
-      postgres:
+      pgbouncer:
         condition: service_healthy
       redis:
         condition: service_healthy
@@ -891,7 +961,7 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:
-      postgres:
+      pgbouncer:
         condition: service_healthy
       redis:
         condition: service_healthy
@@ -907,7 +977,7 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:
-      postgres:
+      pgbouncer:
         condition: service_healthy
       redis:
         condition: service_healthy

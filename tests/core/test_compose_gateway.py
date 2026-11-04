@@ -113,7 +113,8 @@ def test_the_gateway_waits_for_what_it_needs_and_the_proxy_waits_for_the_gateway
     services = _services()
 
     assert services["mcp-gateway"]["depends_on"]["casdoor"]["condition"] == "service_healthy"
-    assert services["mcp-gateway"]["depends_on"]["postgres"]["condition"] == "service_healthy"
+    # Through the pooler (specs/022), which itself waits for Postgres.
+    assert services["mcp-gateway"]["depends_on"]["pgbouncer"]["condition"] == "service_healthy"
     assert services["caddy-gateway"]["depends_on"]["mcp-gateway"]["condition"] == "service_healthy"
     assert services["casdoor"]["depends_on"]["casdoor-db"]["condition"] == "service_healthy"
 

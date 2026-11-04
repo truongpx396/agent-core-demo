@@ -453,6 +453,11 @@ class Settings(BillingSettings):
     # agent_worker_max_concurrency so the two numbers don't drift apart.
     checkpointer_pool_max_size: int = 10
 
+    # app/core/sql_store.py's AsyncConnectionPool size: the connections ONE process may hold for the application's own tables (the stores, the
+    # meter, the idempotency guard). It was a literal 10. Behind PgBouncer a client connection costs the pooler a few KB, not Postgres a
+    # backend, so the server-side bound is the pooler's pool size and not this number times the replicas (WORKER_CONCURRENCY.md).
+    appdata_pool_max_size: int = Field(default=10, ge=1)
+
     # Concurrent ingest jobs ONE ingest_worker.py process runs at once, same
     # asyncio.Semaphore shape as agent_worker_max_concurrency. Blocking
     # stages (MinIO download, PDF/DOCX extraction) run via asyncio.to_thread,
@@ -723,6 +728,12 @@ class Settings(BillingSettings):
     # comment).
     otel_exporter_otlp_endpoint: str = "http://localhost:4318"
 
+    # Continuous profiling (app/core/profiling.py): the base URL of a Pyroscope server, e.g. http://localhost:4040. Blank (the default) is off
+    # and the SDK is never imported, so a process without a profiler behaves exactly as before.
+    pyroscope_server_address: str = ""
+    # Samples per second per process. 100 is the SDK's own default; lower it to trade resolution for overhead.
+    pyroscope_sample_rate: int = Field(default=100, ge=1, le=1000)
+
 
 settings = Settings()
 
@@ -796,6 +807,9 @@ CHAT_FIRST_RESPONSE_DEADLINE_SECONDS = settings.chat_first_response_deadline_sec
 INGEST_FIRST_RESPONSE_DEADLINE_SECONDS = settings.ingest_first_response_deadline_seconds
 AGENT_WORKER_MAX_CONCURRENCY = settings.agent_worker_max_concurrency
 CHECKPOINTER_POOL_MAX_SIZE = settings.checkpointer_pool_max_size
+APPDATA_POOL_MAX_SIZE = settings.appdata_pool_max_size
+PYROSCOPE_SERVER_ADDRESS = settings.pyroscope_server_address
+PYROSCOPE_SAMPLE_RATE = settings.pyroscope_sample_rate
 INGEST_WORKER_MAX_CONCURRENCY = settings.ingest_worker_max_concurrency
 WORKER_RECLAIM_INTERVAL_SECONDS = settings.worker_reclaim_interval_seconds
 AGENT_WORKER_RECLAIM_IDLE_SECONDS = settings.agent_worker_reclaim_idle_seconds

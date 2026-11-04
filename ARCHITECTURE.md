@@ -26,7 +26,7 @@ when an import crosses the line the wrong way (`tests/core/test_architecture_lay
 | **ports** | `app/ports/` | the standard library, `pydantic`, the kernel, other ports |
 | **kernel** | `app/core/*.py` except the platform modules | the kernel and the ports. No infrastructure client, nothing above it |
 | **application** | `app/agent/`, `app/domains/` (except the adapter files below) | the kernel, the ports, LangGraph and LangChain core, OpenTelemetry/Langfuse/structlog. Never an infrastructure client, an adapter, an inbound adapter, or (from `app/agent`) a domain |
-| **adapters** | `app/adapters/`, `app/retrieval/`, `app/ingestion/`, `app/mcp/`, `app/job_queue/`, `app/api/`, `app/channels/`, `app/bootstrap.py`, the platform modules in `app/core/` (`sql_store`, `internal_identity`, `telemetry`, `logging_config`, `job_runtime`), and a domain's `store.py`, `metrics_client.py` and `registry.py` | anything inward of them |
+| **adapters** | `app/adapters/`, `app/retrieval/`, `app/ingestion/`, `app/mcp/`, `app/job_queue/`, `app/api/`, `app/channels/`, `app/bootstrap.py`, the platform modules in `app/core/` (`sql_store`, `internal_identity`, `telemetry`, `profiling`, `logging_config`, `job_runtime`), and a domain's `store.py`, `metrics_client.py` and `registry.py` | anything inward of them |
 
 "Infrastructure client" is a fixed list: `psycopg`, `psycopg_pool`, `redis`, `qdrant_client`, `openai`, `langchain_openai`, `httpx`, `minio`,
 `fastembed`, `crawl4ai`, `mcp`, `fastapi`, `starlette`, `uvicorn`, `jwt`, `limits`, and the LangGraph Postgres saver

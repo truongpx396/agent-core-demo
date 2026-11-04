@@ -21,3 +21,12 @@ datasources:
     access: proxy
     url: http://loki:3100
     editable: true
+
+  # Flame graphs (specs/022): Explore -> Pyroscope, application `agent-core-api` / `agent-core-agent-worker` / `agent-core-ingest-worker`,
+  # profile type process_cpu, filtered by the `domain` and `replica` tags. Nothing else in this stack depends on it being up.
+  - name: Pyroscope
+    uid: pyroscope
+    type: grafana-pyroscope-datasource
+    access: proxy
+    url: http://pyroscope:4040
+    editable: true

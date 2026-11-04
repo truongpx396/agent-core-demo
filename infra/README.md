@@ -150,6 +150,13 @@ provisioned before this change, either taint+recreate it, or just run `ssh
 deploy@<reserved_ip> sudo ufw delete allow 8000/tcp` once by hand; the
 latter touches no app data.
 
+**Profiling (specs/022)**: the observability droplet now runs Pyroscope, which the app droplet's api and workers push to on port 4040. The
+cloud firewall rule is in `main.tf` (scoped to the VPC, like 4318 and 3100) and `ufw_tcp_ports` lists the port for a droplet provisioned
+from now on. On an observability droplet that already exists, open it by hand (`ssh deploy@<observability_ip> sudo ufw allow from
+<vpc_cidr> to any port 4040 proto tcp`), run `terraform plan` before applying (an edited `user_data` may be shown as a replacement; this
+has not been planned against real state), then set `PYROSCOPE_SERVER_ADDRESS=http://<observability_private_ipv4>:4040` in the app droplet's
+`.env` and redeploy. It is empty by default: profiling stays off until you do.
+
 ### 6. Mint the app's gateway key
 
 Until you do this the app sends LiteLLM's **master key**, which is gateway admin and cannot carry a

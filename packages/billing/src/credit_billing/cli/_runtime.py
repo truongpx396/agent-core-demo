@@ -79,7 +79,9 @@ def _where(url: str) -> str:
 async def wired_pool(url: str | None = None) -> AsyncIterator[AsyncConnectionPool]:
     """A pool for the length of the block, with the core wired to it. Raises `DatabaseUnavailable` if it cannot connect in time."""
     target = url or RuntimeSettings().appdata_database_url
-    pool = AsyncConnectionPool(target, min_size=1, max_size=10, open=False)
+    # prepare_threshold=None: APPDATA_DATABASE_URL may point at a transaction pooler, which cannot carry a prepared statement from one server
+    # connection to the next. The package imports nothing from the app, so this repeats app/core/sql_store.py's reasoning, not its constant.
+    pool = AsyncConnectionPool(target, min_size=1, max_size=10, kwargs={"prepare_threshold": None}, open=False)
     try:
         await pool.open(wait=True, timeout=CONNECT_TIMEOUT_SECONDS)
     except PoolTimeout as exc:

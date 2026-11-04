@@ -51,8 +51,10 @@ x-app-env: &app-env
   EMBED_MODEL: embed
   QDRANT_URL: http://qdrant:6333
   ML_SERVICE_URL: http://ml-service:80
-  CHECKPOINTER_DATABASE_URL: postgresql://langfuse:${POSTGRES_PASSWORD}@postgres:5432/checkpointer
-  APPDATA_DATABASE_URL: postgresql://langfuse:${POSTGRES_PASSWORD}@postgres:5432/appdata
+  # Through PgBouncer (the `pgbouncer` service below), not to Postgres: the server-side connection count is the pooler's pool size, not these
+  # processes' pools times `--scale agent-worker=N`. LiteLLM keeps a direct connection (specs/022).
+  CHECKPOINTER_DATABASE_URL: postgresql://langfuse:${POSTGRES_PASSWORD}@pgbouncer:6432/checkpointer
+  APPDATA_DATABASE_URL: postgresql://langfuse:${POSTGRES_PASSWORD}@pgbouncer:6432/appdata
   REDIS_URL: redis://redis:6379
   # S3-compatible object storage — DigitalOcean Spaces by default in prod
   # (no self-hosted MinIO container here; see this file's header). Works
@@ -79,6 +81,9 @@ x-app-env: &app-env
   # NOT the observability droplet directly — it relays on to there over
   # OTLP itself. See that service's own comment and observability/otel-collector/config.agent.yaml.
   OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector-agent:4318
+  # The Pyroscope server on the observability droplet, over the VPC (http://<observability_private_ipv4>:4040, like OBS_COLLECTOR_ENDPOINT).
+  # Blank = no profiling, the default until it has been tried on the droplet (deploy/env/prod.env.example).
+  PYROSCOPE_SERVER_ADDRESS: ${PYROSCOPE_SERVER_ADDRESS:-}
   CRAWL4AI_SERVER_URL: ${CRAWL4AI_SERVER_URL:-}
   CRAWL4AI_API_TOKEN: ${CRAWL4AI_API_TOKEN:-}
   SERPER_API_KEY: ${SERPER_API_KEY:-}
@@ -124,7 +129,9 @@ services:
     # (docker-compose.observability.prod.yml) show real usage.
     cpus: "0.3"
     mem_limit: 768m
-    command: ["postgres", "-c", "shared_preload_libraries=pg_stat_statements"]
+    # max_connections is written down (it is Postgres's default) so the budget is a number a test can read: the pooler below may hold 2 x 18
+    # server connections (tests/core/test_compose_pooler.py keeps 2 x MAX_DB_CONNECTIONS + 30 <= this), LiteLLM and the admin tools the rest.
+    command: ["postgres", "-c", "shared_preload_libraries=pg_stat_statements", "-c", "max_connections=100"]
     environment:
       # Username stays "langfuse" to match postgres-init/*.sql's hardcoded
       # `OWNER langfuse` clauses unmodified (those scripts are shared
@@ -142,6 +149,62 @@ services:
       interval: 10s
       timeout: 5s
       retries: 10
+
+  # PgBouncer in front of the app's two databases (specs/022): the same image, settings and hardening as docker-compose.yml, which says why.
+  # No host port: only the api and the workers on this network reach it. Postgres's connections from the app are now at most
+  # 2 x MAX_DB_CONNECTIONS however many `--scale agent-worker=N` replicas there are. LiteLLM keeps its direct connection.
+  pgbouncer:
+    image: edoburu/pgbouncer:v1.26.1-p0@sha256:488422e38cff912895d0d65d8963fcd306e6ac589a724398b6eb8e294e94d624
+    restart: unless-stopped
+    cpus: "0.2"
+    mem_limit: 128m
+    init: true
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: ["ALL"]
+    read_only: true
+    tmpfs:
+      - /etc/pgbouncer:size=1m,uid=70,gid=70,mode=0700
+    environment:
+      DATABASE_URLS: postgresql://langfuse:${POSTGRES_PASSWORD}@postgres:5432/appdata,postgresql://langfuse:${POSTGRES_PASSWORD}@postgres:5432/checkpointer
+      LISTEN_PORT: "6432"
+      AUTH_TYPE: scram-sha-256
+      POOL_MODE: transaction
+      DEFAULT_POOL_SIZE: "15"
+      RESERVE_POOL_SIZE: "3"
+      RESERVE_POOL_TIMEOUT: "3"
+      MAX_DB_CONNECTIONS: "18"
+      MAX_CLIENT_CONN: "500"
+      QUERY_WAIT_TIMEOUT: "30"
+      IDLE_TRANSACTION_TIMEOUT: "60"
+      IGNORE_STARTUP_PARAMETERS: extra_float_digits,options
+      STATS_USERS: langfuse
+      LOG_CONNECTIONS: "0"
+      LOG_DISCONNECTIONS: "0"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -p 6432 -U langfuse -d appdata"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # Scraped by `otel-collector-agent` (observability/otel-collector/config.agent.yaml) and relayed to the observability droplet, where the
+  # PgBouncer alerts evaluate. No host port.
+  pgbouncer-exporter:
+    image: prometheuscommunity/pgbouncer-exporter:v0.12.1@sha256:30f31b6c2efdad3647f8182cc7c1a3a19e42bae5d17387694989f969371c230d
+    restart: unless-stopped
+    cpus: "0.1"
+    mem_limit: 64m
+    init: true
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: ["ALL"]
+    read_only: true
+    environment:
+      PGBOUNCER_EXPORTER_CONNECTION_STRING: postgres://langfuse:${POSTGRES_PASSWORD}@pgbouncer:6432/pgbouncer?sslmode=disable
+    depends_on:
+      pgbouncer:
+        condition: service_healthy
 
   redis:
     image: redis/redis-stack-server:latest
@@ -269,7 +332,7 @@ services:
     # infra/README.md).
     environment: *app-env
     depends_on:
-      postgres:
+      pgbouncer:
         condition: service_healthy
       redis:
         condition: service_healthy
@@ -285,7 +348,7 @@ services:
     healthcheck: *worker-healthcheck
     environment: *app-env
     depends_on:
-      postgres:
+      pgbouncer:
         condition: service_healthy
       redis:
         condition: service_healthy
@@ -303,7 +366,7 @@ services:
     healthcheck: *worker-healthcheck
     environment: *app-env
     depends_on:
-      postgres:
+      pgbouncer:
         condition: service_healthy
       redis:
         condition: service_healthy
