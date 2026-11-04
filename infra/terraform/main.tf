@@ -75,8 +75,8 @@ resource "digitalocean_droplet" "observability" {
     # 4040 is Pyroscope's push endpoint (specs/022). cloud-init runs on first boot only (see the app droplet's note above), so on a droplet that
     # already exists open it by hand instead (infra/README.md) and read `terraform plan` before applying: nobody has planned this change
     # against real state, and an edited user_data may be shown as drift or as a replacement.
-    ufw_tcp_ports         = [80, 443, 3000, 4318, 3100, 4040]
-    app_dir               = "/opt/agent-core-observability"
+    ufw_tcp_ports = [80, 443, 3000, 4318, 3100, 4040]
+    app_dir       = "/opt/agent-core-observability"
   })
 
   lifecycle {
