@@ -70,6 +70,12 @@ scrape_configs:
     static_configs:
       - targets: ["host.docker.internal:9121"]
 
+  # pgbouncer-exporter (docker-compose.yml): the pool and wait gauges the PgBouncer alerts read. In production the same job name comes
+  # through the app droplet's otel-collector-agent (observability/otel-collector/config.agent.yaml).
+  - job_name: pgbouncer
+    static_configs:
+      - targets: ["host.docker.internal:9127"]
+
   # node-exporter / cadvisor — also co-located in docker-compose.yml (main
   # stack). The imported community dashboard (grafana.com id 893, "Docker
   # and system monitoring") that consumes these resolves its own $server

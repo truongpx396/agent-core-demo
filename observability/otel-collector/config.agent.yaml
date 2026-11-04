@@ -47,6 +47,12 @@ receivers:
           scrape_interval: 15s
           static_configs:
             - targets: ["ml-service:80"]
+        # PgBouncer's pool and wait gauges (the exporter service in docker-compose.prod.yml). The app talks to Postgres only through it, so
+        # PgBouncerDown / PgBouncerClientsWaiting / PgBouncerMaxWait are the first sign of a database path that is closed or saturated.
+        - job_name: pgbouncer
+          scrape_interval: 15s
+          static_configs:
+            - targets: ["pgbouncer-exporter:9127"]
 
 processors:
   batch:

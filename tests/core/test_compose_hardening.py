@@ -25,6 +25,9 @@ GO_HARDENED = {
     DEV: ["authlimit", "authlimit-echo"],
     PROD: [],
 }
+# Third-party images whose write paths were checked by running them read-only (specs/022): the connection pooler and its exporter. Their flags
+# are asserted in tests/core/test_compose_pooler.py, so this file only has to know they are meant to have them.
+THIRD_PARTY_HARDENED = ["pgbouncer", "pgbouncer-exporter"]
 
 
 def _services(path: Path) -> dict:
@@ -47,7 +50,7 @@ def test_the_flags_do_not_spread_to_services_nobody_has_checked_the_write_paths_
     piece of work. The anchor is merged service by service, never applied to all."""
     for path, names in HARDENED.items():
         for name, service in _services(path).items():
-            if name not in names and name not in GO_HARDENED[path]:
+            if name not in names and name not in GO_HARDENED[path] and name not in THIRD_PARTY_HARDENED:
                 assert not service.get("read_only") and not service.get("cap_drop"), f"{path.name} {name} was hardened without being listed here"
 
 

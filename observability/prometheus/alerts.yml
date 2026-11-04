@@ -747,3 +747,43 @@ groups:
             More than half of the routed turns for 15m found no usable label (agent_model_route_total outcomes label_none, label_timeout,
             label_error, label_unknown). GET /health/models on the ML service names why: a label set refused or pending, a model not ready, or a
             set whose labels the app's table does not know.
+
+      # The app reaches its two databases only through PgBouncer (specs/022), so a pooler that cannot reach Postgres is every turn failing
+      # at once. `pgbouncer_up` is the exporter's own login to the pooler; when the exporter or the pooler is gone entirely the series
+      # vanishes and ScrapeTargetDown (job="pgbouncer") is what fires, so this rule is for "up, but cannot answer".
+      - alert: PgBouncerDown
+        expr: pgbouncer_up == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "PgBouncer is not answering"
+          description: >-
+            pgbouncer_up has been 0 for 2m: the app's database path is closed, so turns fail and /health/ready returns 503.
+            `docker compose logs pgbouncer`; then check that Postgres itself is up.
+
+      # Clients queueing for a server connection: the pool (DEFAULT_POOL_SIZE 15 + 3 reserve per database) is smaller than the load, or a
+      # transaction is being held open. Nothing fails yet, which is why this is a warning and not a page.
+      - alert: PgBouncerClientsWaiting
+        expr: max by (database) (pgbouncer_pools_client_waiting_connections{database!="pgbouncer"}) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Clients are waiting for a {{ $labels.database }} connection"
+          description: >-
+            pgbouncer_pools_client_waiting_connections{database="{{ $labels.database }}"} has been above 0 for 5m. Look for a long
+            transaction (pg_stat_activity, state 'idle in transaction') before raising DEFAULT_POOL_SIZE: it must stay inside
+            MAX_DB_CONNECTIONS and Postgres's max_connections (tests/core/test_compose_pooler.py).
+
+      # QUERY_WAIT_TIMEOUT is 30 s: a client that has waited this long is close to an error the person sees as an empty answer.
+      - alert: PgBouncerMaxWait
+        expr: max by (database) (pgbouncer_pools_client_maxwait_seconds{database!="pgbouncer"}) > 10
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "A {{ $labels.database }} client has waited over 10 s for a connection"
+          description: >-
+            pgbouncer_pools_client_maxwait_seconds{database="{{ $labels.database }}"} has been above 10s for 2m; the pooler gives up on a
+            waiting client at 30s (QUERY_WAIT_TIMEOUT). The same checks as PgBouncerClientsWaiting, now urgent.
