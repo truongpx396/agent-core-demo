@@ -495,7 +495,7 @@ them (a remote agent, Claude Code, several replicas).
 
 ```bash
 make mcp-gateway-up           # Casdoor + gateway + Caddy (generates the passwords once, outside the repo)
-make mcp-gateway-bootstrap    # organizations, applications, scopes, demo users; prints the `claude mcp add` commands
+make mcp-gateway-bootstrap    # organizations, applications, scopes, demo users; prints the `claude mcp add` commands (the user is `ethan`; ARGS="--demo-user <name>" changes it)
 make mcp-gateway-ca           # export Caddy's root certificate; prints the NODE_EXTRA_CA_CERTS line
 make mcp-gateway-smoke        # the OAuth + MCP end-to-end check as a client does it
 ```
