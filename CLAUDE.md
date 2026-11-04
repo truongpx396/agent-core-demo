@@ -85,7 +85,10 @@ they delete volumes or kill running processes.
   metrics, errors, scrubbing, resilience, `gateway.py` (the identity the gateway is told) and `moderation.py`, and what every
   tool runs through: `tool_runtime.py` (timeout, scrub, fail-closed ctx) and `tool_idempotency.py` (the exactly-once guard). A
   module belongs here when it imports nothing from `agent`, `domains`, `api` or an adapter, and no infrastructure client. The
-  platform modules (`sql_store.py`, `internal_identity.py`, `telemetry.py`, `logging_config.py`, `job_runtime.py`) live here but are adapter-side.
+  platform modules (`sql_store.py`, `internal_identity.py`, `telemetry.py`, `profiling.py`, `logging_config.py`, `job_runtime.py`) live here but are adapter-side.
+  The containers reach the app's two databases through PgBouncer in transaction mode (specs/022, `WORKER_CONCURRENCY.md`): every pool passes
+  `POOLER_SAFE_CONNECTION_KWARGS` (no prepared statements), and no SQL may keep state on a session (`tests/core/test_pooler_safe_sql.py`).
+  `profiling.py` pushes CPU profiles to Pyroscope when `PYROSCOPE_SERVER_ADDRESS` is set (off otherwise, never raises).
 - `packages/billing/` — the credit wallet, payment webhooks, the billing half of a usage meter (rate, record,
   debit, export), the credit gate and operator CLIs as an independent package (`credit_billing`, src layout,
   own pyproject/tests/schema/alerts/docs/specs). It imports nothing from `app`; the app reaches it only through
@@ -175,4 +178,4 @@ story. Amend the constitution only through `/speckit-constitution` and a PR.
 Path-scoped guidance loads automatically from `.claude/rules/`: `side-effect-tools.md`,
 `runtime-reliability.md`, `testing.md`.
 
-The billing package's own specs (010-013) live in `packages/billing/specs/`; `specs/` keeps a one-file pointer for each, so Spec Kit still counts the numbers as taken (014 is the model-serving and evaluation-harness spec, 015 builds on it with label sets on the ML service and tiered model routing, 016 puts that behind a decision interface shaped like the hosted Jev one, 017 is the MCP gateway, 018 is the edge authentication and rate-limit service, 019 is the hexagonal restructuring: ports, adapters and a composition root, 020 puts the CLI and the Telegram channel behind the front door, and 021 gives the Telegram channel approvals by button, parallel chats, a webhook and account linking; the next is 022).
+The billing package's own specs (010-013) live in `packages/billing/specs/`; `specs/` keeps a one-file pointer for each, so Spec Kit still counts the numbers as taken (014 is the model-serving and evaluation-harness spec, 015 builds on it with label sets on the ML service and tiered model routing, 016 puts that behind a decision interface shaped like the hosted Jev one, 017 is the MCP gateway, 018 is the edge authentication and rate-limit service, 019 is the hexagonal restructuring: ports, adapters and a composition root, 020 puts the CLI and the Telegram channel behind the front door, 021 gives the Telegram channel approvals by button, parallel chats, a webhook and account linking, and 022 puts PgBouncer in front of the app's databases and adds Pyroscope profiling; the next is 023).

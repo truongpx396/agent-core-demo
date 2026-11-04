@@ -211,6 +211,7 @@ The same code runs in both; only configuration and the compose file differ.
 |---|---|---|
 | **LLM** | Native Ollama on the host (`qwen2.5:7b`, `nomic-embed-text`) via `litellm-config.yaml` | Any OpenAI-compatible endpoint via `litellm-config.prod.yaml`: `LLM_API_BASE`, `LLM_API_KEY`, `LLM_CHAT_MODEL`, `LLM_EMBED_MODEL` |
 | **Services** | Full stack: Langfuse, MinIO, open-webui, crawl4ai, exporters, opt-in app/sandbox/quality profiles | `api`, `agent-worker`, `ingest-worker`, Postgres, Redis, Qdrant, LiteLLM, `ml-service`, behind Caddy (TLS) |
+| **Postgres access** | The containers reach `appdata` and `checkpointer` through PgBouncer (`:6432`, transaction mode, at most 18 server connections per database however many replicas run); LiteLLM and Langfuse connect directly; a host process (`make serve`) uses `:5432` unless pointed at `:6432` ([`.env.example`](.env.example)) | The same service, no published port; Postgres's `max_connections` is written down and a test checks the pooler fits inside it ([WORKER_CONCURRENCY.md](WORKER_CONCURRENCY.md)) |
 | **Object storage** | MinIO | DigitalOcean Spaces (any S3-compatible store) |
 | **Observability** | Optional `make obs-up` | Separate droplet, fed by sidecars over the private VPC |
 | **Config** | `.env` from `.env.example` | `/opt/graph-agent-core/.env` from `deploy/env/prod.env.example`, created once by hand, never touched by CI |
@@ -256,10 +257,11 @@ running) · 📊 `make obs-up` for Grafana and friends ([Observability](#-observ
 |---|---|---|---|
 | FastAPI + web UI | :8000 | LiteLLM | :4000 |
 | Langfuse | :3000 | Qdrant | :6333 |
-| Postgres | :5432 | Redis Stack | :6379 |
+| Postgres / PgBouncer | :5432 / :6432 | Redis Stack | :6379 |
 | MinIO API / console | :9000 / :9001 | ml-service | :8083 |
 | Ollama (native) | :11434 | crawl4ai | :11235 |
 | Grafana (`obs-up`, `admin`/`admin`) | :3300 | Prometheus / Alertmanager / Loki | :9090 / :9093 / :3100 |
+| Pyroscope (`obs-up`) | :4040 | pgbouncer-exporter | :9127 |
 
 </details>
 
@@ -698,7 +700,8 @@ that nothing in the app depends on (`make obs-down` keeps data, `make obs-clean`
 | Piece | Role |
 |---|---|
 | otel-collector | Receives every process's OTLP push; one Prometheus scrape target (`:8889`) |
-| Prometheus | Scrapes the collector, Qdrant, LiteLLM and the Postgres/Redis exporters |
+| Prometheus | Scrapes the collector, Qdrant, LiteLLM and the Postgres/Redis/PgBouncer exporters (three PgBouncer alerts: down, clients waiting, a client waiting over 10 s) |
+| Pyroscope | Continuous CPU profiles pushed by the API and each worker (`PYROSCOPE_SERVER_ADDRESS`, [`app/core/profiling.py`](app/core/profiling.py)); flame graphs in Grafana, Explore, Pyroscope, tagged by `domain` and `replica`. On in dev, **off in production until tried on the droplet** |
 | Alertmanager | Routes [`alerts.yml`](observability/prometheus/alerts.yml) (error rate, p95 latency, tool errors, tenant budget, moderation and webhook spikes, degradation, checkpoints, unreachable workers). Locally **no notification channel is wired**. Production mounts `alertmanager.prod.yml` (Slack, severity-routed) and **refuses to start** without `ALERTMANAGER_SLACK_WEBHOOK_URL`, so a deployment can't be quietly alert-deaf |
 | Loki + Promtail | Ship the app containers' JSON logs |
 | Grafana | Seven provisioned dashboards: **Agent Core Overview**, **Infra**, **Logs**, **Credit Billing**, Docker/host, Postgres, Redis |
@@ -892,7 +895,9 @@ anyone who sets the right headers.
 | Telegram says "This approval expired or was already handled", or "You have an approval waiting above" | The buttons live `TELEGRAM_APPROVAL_TTL_SECONDS` and decide once. After they expire, write your message again: the old pause is cleared first. `/cancel` drops a waiting one |
 | Turns are slow | `qwen2.5:7b` runs at about 40 tokens/s on an M4 Pro (a cold load adds about 3 s). A smaller model is faster but silently drops tool calls (`make probe-tools` shows how many), so measure before swapping; a bigger one goes in `litellm-config.yaml`. A cold model can exceed `REQUEST_TIMEOUT_SECONDS` (60 s, `app/agent/runtime/core.py`) on the first call: retry |
 | No Grafana data, or a Prometheus target is down | `make obs-up` and `make up` are independent; both must run. Check http://localhost:9090/targets; a target that predates a LiteLLM config change needs `docker compose up -d litellm` |
-| Readiness returns 503 | The body names the failing dependency, e.g. `ml-service` still downloading its models on first start |
+| Readiness returns 503 | The body names the failing dependency, e.g. `ml-service` still downloading its models on first start; `postgres` or `checkpointer` means the pooler or Postgres behind it (`docker compose logs pgbouncer`) |
+| Turns fail with `prepared statement "_pg3_N" does not exist`, or clients wait for a database connection | A connection that prepares statements is going through PgBouncer: every pool must pass `prepare_threshold=None` (`tests/core/test_pool_settings.py` finds the one that does not). Waiting clients: alert `PgBouncerClientsWaiting`, look for an `idle in transaction` session before raising `DEFAULT_POOL_SIZE` ([ENGINEERING_PATTERNS.md](ENGINEERING_PATTERNS.md) 95) |
+| The Pyroscope UI is empty | Pushes before the server reports ready (`curl :4040/ready`) are dropped without a trace; check `agent_profiling_start_failures_total` and that `PYROSCOPE_SERVER_ADDRESS` is set in the container |
 | A prod dashboard is empty | Check the app droplet's relay: `dc logs otel-collector-agent promtail` (the `dc` alias is defined there; [infra/README.md](infra/README.md)) |
 
 * * *
