@@ -15,7 +15,6 @@ from app.agent.graph.messages import (
     WITHHELD_MESSAGE,
     current_turn_messages,
     human_text,
-    is_legacy_prompt,
     is_retry_artifact,
     is_user_message,
     last_human_message,
@@ -134,20 +133,16 @@ def make_agent_node(
         messages = list(state["messages"])
         anchor = state.get("context_anchor_index")
         history_summary = state.get("history_summary", "")
-        # History the model must not see. (1) A prompt persisted in the thread by an older build
-        # (`is_legacy_prompt`): the current one is prepended below instead, and replaying the old
-        # one would give the model two, possibly contradicting. (2) Earlier turns' retry artifacts
-        # (a rejected answer and the feedback it drew, see messages.RETRY_ARTIFACT_KEY): replayed,
-        # the feedback reads as something the person said. THIS turn's artifacts stay, because the
-        # retry in progress needs them. Dropping shifts indexes, so `anchor` is re-located by
-        # identity (the anchored message is the turn's own question, never one of these).
+        # History the model must not see: earlier turns' retry artifacts (a rejected answer and the
+        # feedback it drew, see messages.RETRY_ARTIFACT_KEY): replayed, the feedback reads as
+        # something the person said. THIS turn's artifacts stay, because the retry in progress
+        # needs them. Dropping shifts indexes, so `anchor` is re-located by identity (the anchored
+        # message is the turn's own question, never one of these).
         turn_start = next(
             (i for i in range(len(messages) - 1, -1, -1) if is_user_message(messages[i])), None
         )
 
         def droppable(i: int, m) -> bool:
-            if is_legacy_prompt(m):
-                return True
             return turn_start is not None and i < turn_start and is_retry_artifact(m)
 
         if any(droppable(i, m) for i, m in enumerate(messages)):

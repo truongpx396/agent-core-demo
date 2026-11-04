@@ -14,7 +14,7 @@ Constitution Principle VII applies. The default suite must stay hermetic and fas
   marked tier by default; an explicit `-m` on the command line overrides it (it does not AND).
 - `tests/conftest.py` has these autouse guards: `mock_search_docs`, `mock_semantic_cache`,
   `mock_ml_moderation`, `mock_appdata_postgres`, `no_real_tracing`, `fixed_embedding_identity`, `no_real_qdrant`,
-  `mock_classification` (the model router's /v1/decide call), `no_real_web_search` (an empty `SERPER_API_KEY`, so `web_search` never spends a credit whatever the developer's `.env` says), and `header_auth_mode` (the API's default is identity mode; the hermetic suite says header mode once, and a test of identity mode asks for `identity_mode`; it patches the pytest process only, so a fixture that starts the API as a SUBPROCESS puts `AUTH_MODE=headers` in the child's own environment, which `tests/core/test_api_launches_name_the_auth_mode.py` enforces). A test's result must not depend on which
+  `mock_classification` (the model router's /v1/decide call), `no_real_web_search` (an empty `SERPER_API_KEY`, so `web_search` never spends a credit whatever the developer's `.env` says), and `header_auth_mode` (the API's default is identity mode; the hermetic suite says header mode once, and a test of identity mode asks for `identity_mode`; it patches the pytest process only, so a fixture that starts the API as a SUBPROCESS puts `AUTH_MODE=headers` in the child's own environment). A test's result must not depend on which
   containers happen to be running. If you add a live-service call on the turn path, add an
   autouse mock for it there. Inject a specific fake with `GraphDeps(search_docs=fake)` or the
   node-level `make_*_node(fake)` factories — that bypasses the default mock.
@@ -23,6 +23,11 @@ Constitution Principle VII applies. The default suite must stay hermetic and fas
 - `asyncio_mode = "auto"`: write `async def test_...` and `await` directly. Don't wrap bodies in
   `asyncio.run(...)`.
 - `tests/core/test_doc_references.py` fails when a repo doc (or a rules file) names a file, or a function in it, that is gone. Update the reference; if it is MEANT to point at something retired, add it to that test's `INTENTIONAL` set with the reason.
+- Don't write a test that only reads a Dockerfile, compose file, workflow, alert file or doc and compares strings (a pin, a
+  hardening flag, a digest, an action SHA, a marker list): it fails on an edit, not on a regression. Trivy's misconfiguration
+  scan, `amtool`, CI's `docker-build` job, Dependabot and review already read those files. A check that an artifact agrees with
+  CODE stays (an alert names a metric `app/core/metrics.py` defines, `.env.example` matches `Settings`, the route table matches
+  the API's routes), and so does arithmetic across files that nothing else adds up (the pooler's connection budget).
 - Name tests as sentences describing the behavior, e.g.
   `test_add_comment_a_repeated_tool_call_id_is_a_no_op_not_a_duplicate`.
 - A bug fix needs a regression test that fails without the fix.
@@ -55,4 +60,4 @@ Constitution Principle VII applies. The default suite must stay hermetic and fas
 - The same goes for an e2e test that needs the small local model to CHAIN several tool calls
   (a skill, a subagent delegation): mark it `@pytest.mark.advisory` and CI runs it in the
   non-blocking `e2e and advisory` step instead of the gate. Don't mark a single-hop test
-  advisory to silence a failure; `tests/core/test_live_e2e_gate_split.py` lists the tests that are.
+  advisory to silence a failure; the marker on a test is the list of the ones that are.

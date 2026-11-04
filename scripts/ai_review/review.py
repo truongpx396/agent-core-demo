@@ -8,8 +8,7 @@ compat endpoint, or a reachable vLLM/LiteLLM/Ollama). Nothing is vendor-specific
 `max_tokens` (they want `max_completion_tokens`), so every optional knob is a way to break someone's provider.
 
 Why a script and not a marketplace Action: this job holds an LLM key and a token that can write to the PR, so
-every third-party component is a supply-chain input (.github/dependabot.yml and
-tests/core/test_workflow_action_pins.py exist for the same reason). Stdlib only also means nothing to install.
+every third-party component is a supply-chain input (.github/dependabot.yml pins the actions for the same reason). Stdlib only also means nothing to install.
 
 Not obvious from the code:
 - ADVISORY, always. Every failure path prints a `::warning::` and exits 0: a flaky provider must never turn a

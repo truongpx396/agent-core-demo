@@ -21,7 +21,7 @@
 # `docker build .` produces, is what ships: the base, the OS package the app needs, that virtualenv copied in, and the app.
 # Nothing that installs software is in the shipped image: not uv, not pip. Needs BuildKit (the default builder since Docker 23):
 # `RUN --mount` is BuildKit's. docker/ml-service.Dockerfile, the other image production runs, is built the same way and pinned
-# to the same two digests (tests/core/test_dockerfile_build.py keeps them equal).
+# to the same two digests (bump them together).
 
 # ---- base: the Python image, pinned by digest -------------------------------------------------------------------------------
 # The multi-architecture INDEX of python:3.13-slim (linux/amd64 and linux/arm64, read with `docker manifest inspect`) as of
@@ -105,7 +105,7 @@ WORKDIR /app
 # scan reads as a second certifi that the lock cannot touch (GHSA-6q48-6c7w-9gw2 was exactly that); this Dockerfile used to
 # upgrade pip to get a fresh bundled copy. Nothing in the running app installs anything (the sandbox prompts tell the model NOT to
 # pip install), and the virtualenv below is made by uv and has no pip of its own, so the shipped image simply carries none: the
-# vendored certifi, and any future pip finding, are gone with it. tests/core/test_trivy_ignore.py pins this.
+# vendored certifi, and any future pip finding, are gone with it.
 RUN python -m pip uninstall -y pip setuptools wheel
 
 # The dependencies, as built above. The same path in both stages (a virtualenv's scripts name their interpreter by absolute
@@ -133,9 +133,8 @@ COPY app/ ./app/
 #       than a hand-picked list that would drift the next time one is added.
 #       (`load_sandbox_tools()` needs no file from here any more: it runs the
 #       installed `opensandbox_mcp` package, `python -m opensandbox_mcp`.)
-# tests/test_dockerfile_runtime_files.py fails if one of these stops being copied
-# (or is dropped by .dockerignore); CI's `docker-build` job runs the built image
-# to prove they actually landed.
+# CI's `docker-build` job runs the built image to prove they actually landed
+# (a file .dockerignore drops would not).
 COPY skills/ ./skills/
 COPY subagents/ ./subagents/
 COPY scripts/ ./scripts/

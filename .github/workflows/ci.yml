@@ -105,9 +105,8 @@ jobs:
       - run: ruff check .
 
   # The production Alertmanager config is validated by Alertmanager itself, not just parsed:
-  # tests/core/test_alertmanager_config.py checks the structure (a receiver that actually
-  # notifies, a secret file the compose writes), but only `amtool` knows whether the config
-  # loads — and a config that fails to load is an Alertmanager that never starts (spec 008 A7).
+  # only `amtool` knows whether the config loads — and a config that fails to load is an Alertmanager that
+  # never starts (spec 008 A7).
   alertmanager-config:
     runs-on: ubuntu-latest
     steps:
@@ -138,7 +137,7 @@ jobs:
         with:
           python-version: "3.13"
       # pyarrow and prometheus-client are not in the lock file (they are dev/aux-image dependencies, specs/014), so the hermetic suite
-      # that imports them needs them named here; tests/core/test_ci_installs_the_model_eval_dependencies.py keeps the pins in step.
+      # that imports them needs them named here (keep the pins equal to requirements-dev.txt and docker/ml-service).
       - run: pip install -r requirements-lock.txt pytest-xdist==3.8.0 pyarrow==26.0.0 prometheus-client==0.26.0
       - run: pytest -n auto -q
 
@@ -217,7 +216,6 @@ jobs:
       # the lock file does not carry the package (it is a freeze of requirements.txt). Without this step those processes die on
       # `import credit_billing` (the first PR C run failed test-integration and promptfoo exactly so). The `test` and `typecheck` jobs
       # deliberately do not install it: they are the ones that prove `pythonpath` and `mypy_path` are enough.
-      # tests/billing/test_ci_installs_the_package.py keeps this honest.
       - run: pip install --no-deps ./packages/billing
       # --dist=loadgroup: tests/integration/test_worker_scaling.py's own
       # xdist_group marker needs this to actually take effect (plain `load`
@@ -737,9 +735,7 @@ jobs:
       # built green for weeks while containing no skills, no subagents and no
       # sandbox bridge — all three degrade to "empty" instead of failing, so the
       # API and workers booted healthy and simply lacked the features. Running
-      # the image is the only check that sees what actually landed (a text test
-      # of the Dockerfile, tests/core/test_dockerfile_runtime_files.py, only
-      # catches the cause earlier and without Docker). Run as the image's own
+      # the image is the only check that sees what actually landed. Run as the image's own
       # interpreter and working directory, exactly as a container would.
       - name: The image contains what the app reads at runtime
         run: |

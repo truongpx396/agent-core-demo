@@ -8,7 +8,7 @@ from pydantic import ValidationError
 from app.core.config import Settings
 
 ROUTER_VARIABLES = (
-    "ROUTER_MODE", "ROUTER_ENABLED", "ROUTER_THRESHOLD", "ROUTER_MAX_TIER", "ROUTER_LABELS", "ROUTER_LONG_PROMPT_CHARS", "ROUTER_TIMEOUT_SECONDS",
+    "ROUTER_MODE", "ROUTER_MAX_TIER", "ROUTER_LABELS", "ROUTER_LONG_PROMPT_CHARS", "ROUTER_TIMEOUT_SECONDS",
     "MEDIUM_CHAT_MODEL", "STRONG_CHAT_MODEL", "CHAT_MODEL",
 )
 
@@ -65,24 +65,6 @@ def test_a_mode_other_than_the_three_is_rejected():
     for mode in ("true", "enabled", "ON", ""):
         with pytest.raises(ValidationError):
             Settings(_env_file=None, router_mode=mode)
-
-
-@pytest.mark.parametrize("value", ["true", "TRUE", "1", "yes", "on", " true "])
-def test_a_leftover_router_enabled_that_is_true_is_refused_and_names_its_replacement(monkeypatch, value):
-    monkeypatch.setenv("ROUTER_ENABLED", value)
-
-    with pytest.raises(ValidationError) as refused:
-        Settings(_env_file=None)
-
-    assert "ROUTER_ENABLED was replaced by ROUTER_MODE" in str(refused.value)
-
-
-@pytest.mark.parametrize("value", ["false", "0", "no", "off", ""])
-def test_a_leftover_router_enabled_that_is_false_changes_nothing_and_is_ignored(monkeypatch, value):
-    monkeypatch.setenv("ROUTER_ENABLED", value)
-    monkeypatch.setenv("ROUTER_THRESHOLD", "0.8")  # meant nothing without the switch
-
-    assert Settings(_env_file=None).router_mode == "off"
 
 
 @pytest.mark.parametrize("tier", ["local", "medium", "strong"])

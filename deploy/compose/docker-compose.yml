@@ -12,7 +12,7 @@
 # that really is unhealthy and would restart-loop one under anything that acts on health. The probe is
 # switched off here rather than replaced: whether a worker pool is alive is an application-level fact
 # the `WorkerUnreachable` alert (observability/prometheus/alerts.yml) already watches, a job that no
-# worker takes. tests/core/test_compose_worker_healthcheck.py fails for a worker added without this.
+# worker takes. A worker added without this inherits the API's probe.
 x-worker-healthcheck: &worker-healthcheck
   disable: true
 
@@ -113,7 +113,7 @@ services:
     # status changed from 400 to 429 between releases, and a LiteLLM release on PyPI was compromised in March 2026). The digest is the
     # linux/amd64 + linux/arm64 index of what `main-stable` resolved to on 2026-07-30 (LiteLLM 1.94.1), the image the checks in
     # COST_GOVERNANCE.md ran against. The tag stays for the reader and is ignored by Docker while a digest is present. To move it, see
-    # infra/README.md ("Bumping the LiteLLM image"); docker-compose.prod.yml must carry the same digest (tests/core/test_compose_litellm_pinned.py).
+    # infra/README.md ("Bumping the LiteLLM image"); docker-compose.prod.yml must carry the same digest.
     image: ghcr.io/berriai/litellm:main-stable@sha256:28b10a635296730007097390939b55f8696ece548530d4ddda3e31c708b4dc81
     command: ["--config", "/app/config.yaml", "--port", "4000"]
     ports:

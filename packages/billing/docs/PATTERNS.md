@@ -20,7 +20,7 @@ live now (spec 013 moved them out of the app, so those four entries describe cod
 | 53 | `CREDITS_PER_USD`, `MARKUP`, `CREDITS_ENFORCEMENT`, `CREDIT_CHECK_FAILURE_POLICY` | `settings.py` (same variable names; the credits live in `billing_usage_events`, `sql/24-`) |
 | 55 | the usage export outbox, its worker, backoff and age limit | `export.py`, `credit-billing-export-worker`, `billing_export_outbox` (`sql/25-`) |
 | 56 | wallet half of the reconciliation: was every usage charged? | `reconcile.py`, `credit-billing-reconcile` |
-| 56, 61 | gateway half: the events against the LLM gateway's spend log | **not the package's**: the agent's `app/agent/cost/usage_reconcile.py` (`USAGE_RECONCILE_*`; the old `CREDIT_RECONCILE_*` names still work) |
+| 56, 61 | gateway half: the events against the LLM gateway's spend log | **not the package's**: the agent's `app/agent/cost/usage_reconcile.py` (`USAGE_RECONCILE_*`) |
 | 55 | retention that never deletes an unexported event | `retention.py`, `credit-billing-usage-sweep` |
 
 ## Patterns

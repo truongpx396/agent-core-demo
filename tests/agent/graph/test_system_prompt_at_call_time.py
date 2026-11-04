@@ -14,7 +14,7 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langgraph.checkpoint.memory import MemorySaver
 
 from app.agent.graph.build import GraphDeps
-from app.agent.graph.messages import COMPACTION_MARKER_KEY
+from app.agent.graph.messages import COMPACTION_MARKER_KEY, RETRY_ARTIFACT_KEY
 from app.ports.domains import AgentManifest
 from tests.agent.fakes import call, cfg, queue_llm, scripted_llm
 from tests.ecorp import build_graph
@@ -75,22 +75,7 @@ async def test_editing_the_prompt_reaches_an_existing_thread_with_nothing_to_mig
     assert _system_texts((await g2.aget_state(cfg(thread))).values["messages"]) == []
 
 
-async def test_a_thread_that_still_holds_prompts_from_an_older_build_is_sent_exactly_one():
-    """Threads created before this change hold the seeded prompt as their first message, and after a prompt edit
-    under the old seeding, a second one mid-thread.
-    """
-    saver, thread = MemorySaver(), str(uuid.uuid4())
-    seen = []
-    g = _graph("You are the CURRENT prompt.", scripted_llm(lambda _m: LONG_ANSWER, seen), saver)
-    await g.aupdate_state(cfg(thread), {"messages": [SystemMessage(content="You are an OLD prompt.")]})
-    await g.ainvoke({"messages": [HumanMessage(content="first question here")]}, config=cfg(thread))
-    await g.aupdate_state(cfg(thread), {"messages": [SystemMessage(content="You are ANOTHER old prompt.")]})
-    await g.ainvoke({"messages": [HumanMessage(content="second question here")]}, config=cfg(thread))
-
-    assert [_system_texts(call_) for call_ in seen] == [["You are the CURRENT prompt."]] * 2
-
-
-async def test_a_compaction_breadcrumb_is_not_mistaken_for_a_legacy_prompt():
+async def test_a_compaction_breadcrumb_reaches_the_model_after_the_prompt():
     saver, thread = MemorySaver(), str(uuid.uuid4())
     seen = []
     g = _graph("You are the CURRENT prompt.", scripted_llm(lambda _m: LONG_ANSWER, seen), saver)
@@ -103,9 +88,9 @@ async def test_a_compaction_breadcrumb_is_not_mistaken_for_a_legacy_prompt():
     assert _system_texts(seen[0]) == ["You are the CURRENT prompt.", breadcrumb.content]
 
 
-async def test_dropping_a_legacy_prompt_does_not_move_the_context_off_the_question():
-    """Retrieved context rides on the turn's question, which is found by an index recorded before the
-    call is built. Removing messages ahead of it shifts that index, so it is re-located."""
+async def test_an_earlier_turns_retry_artifacts_are_not_sent_and_the_context_still_rides_on_the_question():
+    """Retrieved context rides on the turn's question. The artifacts ahead of it are dropped from the call, which shifts the
+    question's index, so the anchor is re-located."""
     saver, thread = MemorySaver(), str(uuid.uuid4())
     seen = []
 
@@ -114,10 +99,18 @@ async def test_dropping_a_legacy_prompt_does_not_move_the_context_off_the_questi
 
     llm = scripted_llm(lambda _m: AIMessage(content="The refund policy text says so, as cited [1]."), seen)
     g = _graph("You are the CURRENT prompt.", llm, saver, search_docs=search)
-    await g.aupdate_state(cfg(thread), {"messages": [SystemMessage(content="You are an OLD prompt.")]})
+    artifact = {RETRY_ARTIFACT_KEY: True}
+    earlier_turn = [
+        HumanMessage(content="an earlier question"),
+        AIMessage(content="short", additional_kwargs=artifact),
+        HumanMessage(content="That answer was too short.", additional_kwargs=artifact),
+        AIMessage(content="The earlier answer, long enough to stand."),
+    ]
+    await g.aupdate_state(cfg(thread), {"messages": earlier_turn})
     await g.ainvoke({"messages": [HumanMessage(content="what is the refund policy")]}, config=cfg(thread))
 
     call_ = seen[0]
-    question = next(m for m in call_ if isinstance(m, HumanMessage))
+    question = next(m for m in reversed(call_) if isinstance(m, HumanMessage))
     assert call_[0].content == "You are the CURRENT prompt."
+    assert [m.content for m in call_ if m.additional_kwargs.get(RETRY_ARTIFACT_KEY)] == []
     assert "REFUND POLICY TEXT" in question.content and question.content.index("REFUND POLICY TEXT") < question.content.index("what is the refund policy")

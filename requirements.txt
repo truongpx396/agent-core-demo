@@ -93,7 +93,7 @@ redis>=5.0,<9
 # connection.py (the client that consumes a remote server's tools, on `ClientSession`). The 2.x line: 1.x is in maintenance
 # (security fixes only) and 2.x is where the protocol is going (the 2026-07-28 revision). It was held on 1.x while the sandbox
 # bridge below imported `mcp.server.fastmcp`, which 2.x removed; opensandbox-mcp 1.1 moved to `MCPServer` and requires
-# `mcp[cli]>=2,<3`, so nothing holds it back now. tests/core/test_mcp_sdk_pin.py fails if that stops being true.
+# `mcp[cli]>=2,<3`, so nothing holds it back now.
 mcp[cli]==2.3.0
 
 # Per-tenant HTTP rate limiting (app/rate_limit.py) — Redis-backed sliding

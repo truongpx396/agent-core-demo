@@ -13,8 +13,8 @@
 # is not being recorded, a daily allowance that is not being enforced, a total worker
 # outage — repeat hourly and notify fast; everything else repeats every 4 hours. To add
 # a pager (PagerDuty, Opsgenie), add a receiver with its own *_configs block and route
-# `severity="critical"` to it; the structural test in tests/core/test_alertmanager_config.py
-# only requires that every receiver actually notifies somewhere.
+# `severity="critical"` to it; every receiver must actually notify somewhere (CI's
+# `alertmanager-config` job runs `amtool check-config` on this file).
 global:
   resolve_timeout: 5m
 

@@ -598,19 +598,21 @@ def test_a_non_finite_example_vector_is_refused_at_build_time():
 
 # ---- no text in a log; the metric names a set it knows ----------------------------------------------------------------------------
 def test_no_request_text_reaches_a_log_even_when_a_model_fails(tmp_path, sets, caplog):
-    secret = "the customer's secret sentence 4711"
+    # The canary is letters, not digits: the rendering below includes every record's timestamps and ids, and "4711" matched a
+    # `relativeCreated` of 47112.7 (a CI run that reached this test 47 s in).
+    secret = "the customer's secret sentence xyzzy"
     services = {PRIMARY: FakeLabelText(PRIMARY), FALLBACK: FakeLabelText(FALLBACK)}
     client, _ = client_for(tmp_path, sets, services=services)
     caplog.set_level(logging.DEBUG)
     with client:
-        decide(client, secret)  # 35 characters, under the test limit of 40, so it reaches the model
+        decide(client, secret)  # 36 characters, under the test limit of 40, so it reaches the model
         services[PRIMARY].mode = "raise"
         decide(client, secret)
         services[PRIMARY].mode = "hang"
         decide(client, secret)
 
     rendered = " ".join(f"{r.getMessage()} {r.__dict__}" for r in caplog.records)
-    assert "secret sentence" not in rendered and "4711" not in rendered
+    assert "secret sentence" not in rendered and "xyzzy" not in rendered
 
 
 def test_the_request_counter_is_labelled_by_set_and_answerer_and_an_unknown_name_adds_no_series(tmp_path, sets):

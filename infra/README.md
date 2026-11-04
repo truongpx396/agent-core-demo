@@ -218,8 +218,8 @@ dc exec -e LITELLM_MASTER_KEY api python -m scripts.litellm_key person-budget in
   OpenAI-compatible routes); re-run that check whenever the image is bumped (below). If you created the
   earlier `tenant-default` budget, it is no longer referenced: delete it in LiteLLM's UI or with `/budget/delete`.
 
-**Bumping the LiteLLM image.** Both compose files pin `ghcr.io/berriai/litellm:main-stable` by digest, and
-`tests/core/test_compose_litellm_pinned.py` fails if they differ. To move it deliberately:
+**Bumping the LiteLLM image.** Both compose files pin `ghcr.io/berriai/litellm:main-stable` by digest, and the two must
+stay equal. To move it deliberately:
 
 ```
 docker pull ghcr.io/berriai/litellm:main-stable
