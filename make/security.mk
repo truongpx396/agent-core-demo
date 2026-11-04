@@ -45,7 +45,7 @@ sonar-scan:  ## Scan against the `make sonar-up` server (needs SONAR_TOKEN: My A
 
 # --- Dynamic and AI pentest (only systems you own or may test) ---
 
-zap-baseline:  ## OWASP ZAP baseline scan (spider + passive rules only) of a running target, default the local API (`make serve` or `make up-app`); ZAP_TARGET=<url> overrides. Reports in zap_reports/ (HTML + the XML `make defectdojo-import` expects)
+zap-baseline:  ## OWASP ZAP baseline scan (spider + passive rules only) of a running target, default the local API; ZAP_TARGET=<url> overrides. Reports in zap_reports/ (HTML + the XML `make defectdojo-import` expects)
 	mkdir -p zap_reports
 	# --add-host: a bare `docker run` is not on the compose network, and native Linux Docker does not map
 	# host.docker.internal (Docker Desktop does), which the `api` service gets through extra_hosts.
@@ -54,7 +54,7 @@ zap-baseline:  ## OWASP ZAP baseline scan (spider + passive rules only) of a run
 		-t $${ZAP_TARGET:-http://host.docker.internal:8000} \
 		-x baseline-report.xml -r baseline-report.html -I
 
-zap-api-scan:  ## OWASP ZAP ACTIVE scan driven by the app's OpenAPI spec (needs `make serve` or `make up-app`): attacks each endpoint's input handling, the standard-scanner counterpart of `make strix-app`. Only against a target you own or may test
+zap-api-scan:  ## OWASP ZAP ACTIVE scan driven by the app's OpenAPI spec (needs `make serve` or `make up-app`), the standard-scanner counterpart of `make strix-app`. Only against a target you own or may test
 	mkdir -p zap_reports
 	docker run --rm --add-host=host.docker.internal:host-gateway \
 		-v $(PWD)/zap_reports:/zap/wrk:rw -t zaproxy/zap-stable zap-api-scan.py \
@@ -64,14 +64,12 @@ zap-api-scan:  ## OWASP ZAP ACTIVE scan driven by the app's OpenAPI spec (needs 
 zap-view:  ## Open the newest ZAP HTML report (from `make zap-baseline` / `make zap-api-scan`)
 	open "$$(ls -t zap_reports/*.html | head -1)" 2>/dev/null || xdg-open "$$(ls -t zap_reports/*.html | head -1)"
 
-# Strix reads neither `.env` nor anything `make` could hand it: only variables exported in the shell (or in ~/.strix/cli-config.json).
-# Load just the five names it documents from `.env`, never the whole file: it also holds OPENAI_API_BASE (the local LiteLLM proxy, which
-# Strix reads as an alias of LLM_API_BASE and would send its cloud-model calls to) and secrets a pentest agent has no use for; those
-# aliases are unset too. A non-empty `.env` value beats an exported one; the last line wins. The file is read, never evaluated: values
-# are literal (one pair of quotes stripped), so a key containing a space or `;` stays data.
+# Strix reads neither `.env` nor anything `make` can hand it, only the shell's exports. Load just its five documented names from `.env`,
+# not the whole file (it also holds OPENAI_API_BASE, which Strix would take as LLM_API_BASE, and secrets it has no use for; those aliases
+# are unset too). A non-empty `.env` value beats an exported one; values are read literally (one pair of quotes stripped), never evaluated.
 STRIX_ENV = for n in STRIX_LLM LLM_API_KEY LLM_API_BASE EXA_API_KEY PERPLEXITY_API_KEY; do v=$$(sed -n -E "s/^$$n=(.+)$$/\1/p" .env 2>/dev/null | tail -n 1); case "$$v" in \"*\") v=$${v\#\"}; v=$${v%\"};; \'*\') v=$${v\#\'}; v=$${v%\'};; esac; [ -n "$$v" ] && export "$$n=$$v"; done; env -u OPENAI_API_BASE -u LITELLM_BASE_URL -u OLLAMA_API_BASE
 
-strix:  ## Autonomous AI pentest of this repo's SOURCE. Needs Docker, `pipx install strix-agent` once, and a CLOUD LLM key (STRIX_LLM / LLM_API_KEY from .env or the shell). Only against a target you own or may test. Extra flags: ARGS="--instruction '...' --max-budget 1"
+strix:  ## Autonomous AI pentest of this repo's SOURCE. Needs Docker, `pipx install strix-agent` and a CLOUD LLM key (STRIX_LLM / LLM_API_KEY in .env or the shell). Only against a target you own or may test; extra flags via ARGS="--instruction '...'"
 	$(STRIX_ENV) strix --target . --scan-mode quick $(ARGS)
 
 strix-app:  ## The same tool, black-box against the RUNNING app and its OpenAPI spec (needs `make up`, `make serve` or `make up-app`, and `make ingest` for data to probe)
@@ -87,7 +85,7 @@ strix-view:  ## Open the local dashboard (findings, repro steps) for the last `m
 DEFECTDOJO_VERSION := 3.3.100
 DEFECTDOJO_DIR := $(HOME)/.cache/graph-agent-core-defectdojo
 
-defectdojo-up:  ## Start a persistent DefectDojo (http://localhost:8080) for `make defectdojo-import`, to dedupe and track findings across runs. The first run clones the pinned release into ~/.cache/graph-agent-core-defectdojo and prints the one-time admin password (user: admin): save it
+defectdojo-up:  ## Start a persistent DefectDojo (http://localhost:8080) for `make defectdojo-import`. The first run clones the pinned release into ~/.cache/graph-agent-core-defectdojo and prints the one-time admin password (user: admin): save it
 	@mkdir -p $(HOME)/.cache
 	@test -d "$(DEFECTDOJO_DIR)" || git clone --branch $(DEFECTDOJO_VERSION) --depth 1 https://github.com/DefectDojo/django-DefectDojo.git "$(DEFECTDOJO_DIR)"
 	cd "$(DEFECTDOJO_DIR)" && DJANGO_VERSION=$(DEFECTDOJO_VERSION) NGINX_VERSION=$(DEFECTDOJO_VERSION) docker compose up -d
@@ -102,7 +100,7 @@ defectdojo-up:  ## Start a persistent DefectDojo (http://localhost:8080) for `ma
 defectdojo-down:  ## Stop the persistent DefectDojo (volumes and findings kept)
 	cd "$(DEFECTDOJO_DIR)" && docker compose stop
 
-defectdojo-import:  ## Import a scan report into `make defectdojo-up`: DEFECTDOJO_API_KEY=... make defectdojo-import REPORT=<path> SCAN_TYPE="<scan_type>" [ENGAGEMENT=<name>] (key: My Account -> API v2 Key; e.g. REPORT=zap_reports/baseline-report.xml SCAN_TYPE="ZAP Scan")
+defectdojo-import:  ## Import a scan report into `make defectdojo-up`: DEFECTDOJO_API_KEY=... make defectdojo-import REPORT=<path> SCAN_TYPE="<scan_type>" [ENGAGEMENT=<name>] (key: My Account -> API v2 Key; e.g. SCAN_TYPE="ZAP Scan")
 	@test -n "$$DEFECTDOJO_API_KEY" || (echo "DEFECTDOJO_API_KEY is required — generate one in the DefectDojo UI (My Account -> API v2 Key)" && exit 1)
 	@test -n "$$REPORT" || (echo "REPORT=<path to scan report file> is required" && exit 1)
 	@test -n "$$SCAN_TYPE" || (echo 'SCAN_TYPE="<DefectDojo scan_type string>" is required, e.g. SCAN_TYPE="ZAP Scan"' && exit 1)

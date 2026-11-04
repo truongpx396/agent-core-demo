@@ -27,11 +27,11 @@ labelset-calibrate:  ## Choose a label set's "none of these" cutoff for ONE mode
 	@test -n "$(CANDIDATE)" || { echo "usage: make labelset-calibrate CANDIDATE=<a classifier candidate with source.model, e.g. labelset-bge-small-en-v1.5>"; exit 2; }
 	python -m scripts.model_eval labelset-calibrate --candidate $(CANDIDATE) $(if $(LABELSET),--labelset $(LABELSET)) $(if $(KEEP),--keep $(KEEP))
 
-router-label:  ## Score the route prompts' answers from the local and strong model with a judge (minutes per prompt; needs the gateway): make router-label JUDGE=<alias> [LOCAL=chat] [STRONG=chat-strong] [DEADLINE=<s>] [LIMIT=<n>]; resumable
+router-label:  ## Score the route prompts' answers from the local and strong model with a judge (slow, needs the gateway): make router-label JUDGE=<alias> [LOCAL=chat] [STRONG=chat-strong] [DEADLINE=<s>] [LIMIT=<n>]; resumable
 	@test -n "$(JUDGE)" || { echo "usage: make router-label JUDGE=<gateway alias that scores the answers>"; exit 2; }
 	python -m scripts.model_eval route-label --judge $(JUDGE) $(if $(LOCAL),--local $(LOCAL)) $(if $(STRONG),--strong $(STRONG)) $(if $(STRONG_ID),--strong-id $(STRONG_ID)) $(if $(DEADLINE),--deadline $(DEADLINE)) $(if $(LIMIT),--limit $(LIMIT))
 
-probe-tools:  ## Does the chat model emit usable tool calls? 25 labelled prompts plus 4 that must not loop, ~2 min on native Ollama (ARGS=--no-loops: quick half; ARGS="--alias chat-strong"). Run after ANY change to a chat alias's model or repeat_penalty (GRAPH_PATTERNS.md 73)
+probe-tools:  ## Does the chat model emit usable tool calls? 25 labelled prompts plus 4 that must not loop, ~2 min on native Ollama (ARGS=--no-loops: quick half). Run after ANY change to a chat alias's model or repeat_penalty (GRAPH_PATTERNS.md 73)
 	python -m scripts.toolcall_probe $(ARGS)
 
 # --- Prompt checks and LLM-judged quality ---
@@ -43,7 +43,7 @@ promptfoo:  ## Prompt regression checks for the domain system prompts against a 
 		npx promptfoo eval --config $$domain.yaml || exit 1; \
 	done
 
-deepeval:  ## LLM-judged RAG quality, conversation simulation and tool-call correctness on the real graph (needs Docker, GOOGLE_API_KEY, GROQ_API_KEY). Read the reasons, not just pass/fail (GRAPH_PATTERNS.md 48); CI's `deepeval` job runs it too, never failing on a score
+deepeval:  ## LLM-judged RAG quality, conversation simulation and tool-call checks on the real graph (needs Docker, GOOGLE_API_KEY, GROQ_API_KEY). Read the reasons, not just pass/fail (GRAPH_PATTERNS.md 48); CI never fails on a score
 	DEEPEVAL_TELEMETRY_OPT_OUT=1 pytest -m deepeval -q -s --reruns 2 --reruns-delay 10 --only-rerun "(ServerError|UNAVAILABLE|RESOURCE_EXHAUSTED|DEADLINE_EXCEEDED|RateLimitError|APITimeoutError|APIConnectionError|InternalServerError)" tests/deepeval
 
 # --- Red team ---
