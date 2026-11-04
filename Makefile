@@ -99,6 +99,9 @@ mcp-gateway-secrets:  # internal: create the generated passwords once (never ove
 	@mkdir -p $(GATEWAY_DIR) && chmod 700 $(GATEWAY_DIR)
 	@test -f $(GATEWAY_SECRETS) || { ( umask 077; printf 'CASDOOR_DB_PASSWORD=%s\nCASDOOR_ADMIN_PASSWORD=%s\n' "$$(openssl rand -hex 16)" "$$(openssl rand -hex 16)" > $(GATEWAY_SECRETS) ) && echo "created $(GATEWAY_SECRETS) (the Casdoor admin password is in it)"; }
 
+authlimit-keys-ensure:  # internal: create the first signing key if there is none (never replaces one)
+	@test -f $(AUTHLIMIT_KEYS_DIR)/keyset.json || $(MAKE) --no-print-directory authlimit-keys
+
 mcp-gateway-up: mcp-gateway-secrets authlimit-keys-ensure  ## Start the MCP gateway stack (specs/017): Casdoor + its Postgres, the OAuth-protected gateway and a Caddy with local TLS on https://mcp.localhost:8443. Needs `make up` (the app database). Then `make mcp-gateway-bootstrap`
 	$(GATEWAY_COMPOSE) up -d --build --no-deps casdoor-db casdoor mcp-gateway authlimit authlimit-echo caddy-gateway
 
@@ -124,9 +127,6 @@ authlimit-build:  ## Build the authlimit service image (distroless, non-root, no
 authlimit-keys: authlimit-build  ## Manage the internal signing keys outside the repo. ARGS="init" (default, once) | "rotate --overlap 10m" | "list". Runs as you, so the files are yours (mode 600) and the container, which runs as you too, can read them
 	@mkdir -p $(AUTHLIMIT_DIR) && chmod 700 $(AUTHLIMIT_DIR)
 	@docker run --rm --user "$$(id -u):$$(id -g)" -v $(AUTHLIMIT_DIR):/work authlimit:dev keys $(or $(ARGS),init) --dir /work/keys
-
-authlimit-keys-ensure:  # internal: create the first signing key if there is none (never replaces one)
-	@test -f $(AUTHLIMIT_KEYS_DIR)/keyset.json || $(MAKE) --no-print-directory authlimit-keys
 
 authlimit-up: mcp-gateway-up  ## The authlimit stack: same as mcp-gateway-up (the MCP routes always go through authlimit) - Casdoor, authlimit x2, the MCP gateway, a stub upstream and Caddy on https://{api,mcp,auth}.localhost:8443. Needs `make up` (Redis, Postgres); then `make mcp-gateway-bootstrap`
 
