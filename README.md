@@ -789,6 +789,7 @@ until configured**.
 | **▶️ Run** | |
 | `make up` · `make down` | Start / stop the dev stack (keeps data) |
 | `make up-app` | `make up` plus the containerized `api`, `agent-worker`s and `ingest-worker` |
+| `make up-all` · `make down-all` | Everything in containers, behind the front door: infra, the app, the MCP gateway (Casdoor, authlimit, Caddy) and observability; the web UI is then https://api.localhost:8443/ (first time: `make mcp-gateway-bootstrap`, `make mcp-gateway-ca`). Not started: the sandbox and SonarQube. `down-all` stops every container whatever profile started it (keeps data) |
 | `make serve` | API + web UI on :8000 |
 | `make chat` · `make chat-hitl` | CLI agent · with approval prompts. Both sign you in at the front door (`python -m app.channels.chat --sign-out` forgets it) and need that domain's worker: `AGENT_DOMAIN` picks it |
 | `make agent-worker[-support\|-ops\|-sales]` · `make ingest-worker` | Queue consumers |

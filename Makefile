@@ -59,6 +59,16 @@ up:  ## Start all services (litellm, qdrant, langfuse, postgres, minio; talks to
 up-app:  ## Start infra + the containerized app itself (api, agent-worker, ingest-worker; see Dockerfile)
 	$(COMPOSE) --profile app up -d --build
 
+# One compose project, every profile but `sandbox` (it needs OPENSANDBOX_API_KEY and mounts the Docker socket: `make sandbox-up`) and `quality` (SonarQube): infra, the
+# app (api, every domain's agent worker, ingest worker) behind the front door in identity mode, the gateway profile (Casdoor, authlimit x2, Caddy), then the observability
+# stack, which is its own compose project. The same overrides as authlimit-up-app, for the same reason: the compose file defaults to AUTH_MODE=headers and a Caddy upstream of the echo stub.
+up-all: mcp-gateway-secrets authlimit-keys-ensure  ## Start EVERYTHING in containers: infra, the app behind the front door, the MCP gateway and observability (not the sandbox or SonarQube). Needs a native Ollama. Web UI: https://api.localhost:8443/ (in this mode the API refuses calls that skip the door). First time: `make mcp-gateway-bootstrap`, then `make mcp-gateway-ca`
+	@curl -sf -o /dev/null http://localhost:11434/api/version || echo "warning: nothing answers on localhost:11434: start the native Ollama (ollama serve), the models are served from the host"
+	AUTH_MODE=identity AUTHLIMIT_UPSTREAM=api:8000 $(GATEWAY_COMPOSE) --profile app up -d --build
+	$(COMPOSE_OBS) up -d
+	@echo "up. Web UI https://api.localhost:8443/ · Grafana http://localhost:3300 · Langfuse http://localhost:3000"
+	@echo "first time only: make mcp-gateway-bootstrap, then make mcp-gateway-ca and trust the CA in your browser (README, Front door)"
+
 sandbox-up: sandbox-build  ## Start the containerized, authenticated OpenSandbox server (docker/opensandbox-server.{Dockerfile,toml}) that the ops/support/sales domains' sandbox tools execute against — opt-in `sandbox` profile like `up-app`'s `app` profile, not part of plain `make up`, since it bind-mounts the host Docker socket to create sibling sandbox containers. Needs OPENSANDBOX_API_KEY set in .env first (see .env.example) — the server refuses to start without one.
 	$(COMPOSE) --profile sandbox up -d --build
 
@@ -584,6 +594,11 @@ logs:  ## Tail logs from all services
 
 down:  ## Stop all services (keep volumes)
 	$(COMPOSE) down
+
+# `down` leaves every container a profile started (app, gateway, sandbox, quality) running, and then cannot remove the network; `--profile '*'` names them all.
+down-all: mcp-gateway-secrets  ## Stop and remove EVERY container of the dev stack, whatever profile started it (infra, app, gateway, sandbox, SonarQube), and the observability stack. Keeps volumes (`make clean` deletes them). Host processes (`make serve`, `agent-worker`, `telegram`) are not containers and keep running
+	$(COMPOSE_OBS) down
+	$(GATEWAY_COMPOSE) --profile '*' down
 
 clear-cache:  ## Flush the semantic cache (Redis) only — leaves the agent-worker queue and other volumes intact
 	$(COMPOSE) exec redis sh -c "redis-cli --scan --pattern 'cache:*' | xargs -r redis-cli del"
