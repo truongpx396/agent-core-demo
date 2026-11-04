@@ -4,12 +4,11 @@ Values are read from the environment / .env. A single `Settings` instance is
 created and its fields are also re-exported as module constants so existing
 imports (`from app.core.config import QDRANT_URL`) keep working.
 """
-import os
 from decimal import Decimal
 from typing import Literal
 
 from dotenv import load_dotenv
-from pydantic import AliasChoices, Field, model_validator
+from pydantic import Field, model_validator
 from pydantic_settings import SettingsConfigDict
 
 from app.core.routing_policy import DEFAULT_LONG_PROMPT_CHARS
@@ -40,8 +39,7 @@ class Settings(BillingSettings):
     # option), and a settings error is printed at import time, to a terminal or a container log, so a key pasted into the
     # wrong variable (or a malformed BILLING_WEBHOOK_SECRETS) would be echoed whole. The error still names the field and
     # the rule; it just no longer repeats the value.
-    # `populate_by_name`: a field with an alias (the reconciliation's, below) can still be set by its own name, as every other field is.
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore", hide_input_in_errors=True, populate_by_name=True)
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore", hide_input_in_errors=True)
 
     # LLM proxy (OpenAI-compatible LiteLLM endpoint)
     openai_api_base: str = "http://localhost:4000/v1"
@@ -132,10 +130,6 @@ class Settings(BillingSettings):
     @model_validator(mode="after")
     def _the_router_is_configured_to_do_something_it_can(self) -> "Settings":
         # Messages name the variables, never their values: a settings error is printed at import time to a terminal or a container log.
-        # ROUTER_ENABLED was the two-valued seam's switch. Ignoring it silently would turn a router someone believed was on into one that is off,
-        # so a truthy leftover is refused; a false one (and ROUTER_THRESHOLD, which meant nothing without it) changes nothing and is ignored.
-        if os.environ.get("ROUTER_ENABLED", "").strip().lower() in ("1", "true", "yes", "on"):
-            raise ValueError("ROUTER_ENABLED was replaced by ROUTER_MODE=off|shadow|on (specs/015); refusing to start rather than ignore it")
         aliases = {"CHAT_MODEL": self.chat_model, "MEDIUM_CHAT_MODEL": self.medium_chat_model, "STRONG_CHAT_MODEL": self.strong_chat_model}
         named = [(name, alias) for name, alias in aliases.items() if alias]
         if len({alias for _name, alias in named}) != len(named):
@@ -270,33 +264,20 @@ class Settings(BillingSettings):
     # Reconciliation of the meter with the LLM gateway (specs/010 PR 6, app/agent/cost/usage_reconcile.py, `make usage-reconcile`): the app's events against the
     # gateway's spend log. A difference is drift only above the LARGER of the two tolerances: the fixed one stops a tenant that spent a cent
     # from being reported over rounding, the percentage stops a busy tenant's rounding (the gateway and the events round differently) from
-    # being reported as a gap. SC-001's "stated tolerance". They were `CREDIT_RECONCILE_*` while the same job also checked the wallet; the wallet
-    # check is the billing package's now (`credit-billing-reconcile`, which keeps those names for its own window), and these accept the old
-    # names so an existing `.env` keeps working.
-    usage_reconcile_tolerance_usd: Decimal = Field(
-        default=Decimal("0.01"), ge=0, validation_alias=AliasChoices("USAGE_RECONCILE_TOLERANCE_USD", "CREDIT_RECONCILE_TOLERANCE_USD")
-    )
-    usage_reconcile_tolerance_pct: Decimal = Field(
-        default=Decimal("1"), ge=0, le=100, validation_alias=AliasChoices("USAGE_RECONCILE_TOLERANCE_PCT", "CREDIT_RECONCILE_TOLERANCE_PCT")
-    )
+    # being reported as a gap. SC-001's "stated tolerance". The wallet check is the billing package's (`credit-billing-reconcile`,
+    # `CREDIT_RECONCILE_*`).
+    usage_reconcile_tolerance_usd: Decimal = Field(default=Decimal("0.01"), ge=0)
+    usage_reconcile_tolerance_pct: Decimal = Field(default=Decimal("1"), ge=0, le=100)
     # The newest minutes are left out: the gateway writes its spend log in batches, so comparing the very latest traffic reports drift that is
     # only latency. Keep it above request_timeout_seconds plus the gateway's batch interval.
-    usage_reconcile_settle_seconds: int = Field(
-        default=900, ge=0, validation_alias=AliasChoices("USAGE_RECONCILE_SETTLE_SECONDS", "CREDIT_RECONCILE_SETTLE_SECONDS")
-    )
+    usage_reconcile_settle_seconds: int = Field(default=900, ge=0)
     # How many whole UTC days back each run looks. Short on purpose: a run that re-reads a year of spend logs every few hours is a load on the
     # gateway database, and a gap older than this was already reported by every run since it appeared.
-    usage_reconcile_lookback_days: int = Field(
-        default=2, ge=1, le=35, validation_alias=AliasChoices("USAGE_RECONCILE_LOOKBACK_DAYS", "CREDIT_RECONCILE_LOOKBACK_DAYS")
-    )
-    usage_reconcile_interval_seconds: int = Field(
-        default=6 * 3600, ge=60, validation_alias=AliasChoices("USAGE_RECONCILE_INTERVAL_SECONDS", "CREDIT_RECONCILE_INTERVAL_SECONDS")
-    )
+    usage_reconcile_lookback_days: int = Field(default=2, ge=1, le=35)
+    usage_reconcile_interval_seconds: int = Field(default=6 * 3600, ge=60)
     # The ceiling on gateway pages (1000 rows each) read per run. A window with more spend-log rows than this is reported as INCOMPLETE rather
     # than compared as if it were whole: a truncated sum would show every tenant as under-metered.
-    usage_reconcile_gateway_max_pages: int = Field(
-        default=200, ge=1, validation_alias=AliasChoices("USAGE_RECONCILE_GATEWAY_MAX_PAGES", "CREDIT_RECONCILE_GATEWAY_MAX_PAGES")
-    )
+    usage_reconcile_gateway_max_pages: int = Field(default=200, ge=1)
 
     @model_validator(mode="after")
     def _usage_events_are_the_spend_the_caps_read(self) -> "Settings":

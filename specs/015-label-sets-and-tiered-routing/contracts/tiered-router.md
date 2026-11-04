@@ -30,8 +30,7 @@ code that only knows `local` and `strong` reads `medium` as "not strong", i.e. l
 | `ROUTER_TIMEOUT_SECONDS` | `0.5` | the label call's deadline; a miss leaves the rules to decide |
 
 **Fail fast at import.** `ROUTER_MODE` other than the three values; `shadow` or `on` with neither a medium nor a strong alias; two tiers sharing an
-alias (the local one included); a leftover `ROUTER_ENABLED=true` (the old switch; the message names `ROUTER_MODE`, because a switch that is silently ignored would turn a router
-someone believed was on into one that is off). `ROUTER_ENABLED=false` and `ROUTER_THRESHOLD` changed nothing without it and are ignored. Messages
+alias (the local one included). Messages
 name variables, never their values.
 
 ## The decision (`app/core/routing_policy.py`: pure, imports nothing from the app)

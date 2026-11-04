@@ -19,10 +19,8 @@ import re
 from typing import TypeGuard
 
 from langchain_core.messages import (
-    AIMessage,
     BaseMessage,
     HumanMessage,
-    SystemMessage,
     ToolMessage,
 )
 
@@ -54,31 +52,18 @@ RETRY_ARTIFACT_KEY = "retry_artifact"
 
 # Tags a compaction breadcrumb SystemMessage so
 # runtime/stream.py::get_session_messages can pick it out — every OTHER
-# SystemMessage in a thread (only a legacy persisted prompt, see
-# is_legacy_prompt) stays hidden from transcript replay as always. A
+# SystemMessage stays hidden from transcript replay. A
 # SystemMessage specifically: _messages_to_trim already excludes all
 # SystemMessages from both token count and removal candidates, so this
 # breadcrumb is free and never itself gets trimmed later — unlike
 # history_summary (replaced each compaction) or the context/summary
 # SystemMessages agent() synthesizes per-call and never persists. The agent
-# node passes it to the model; a legacy prompt it does not. See
-# GRAPH_PATTERNS.md pattern 41.
+# node passes it to the model. See GRAPH_PATTERNS.md pattern 41.
 COMPACTION_MARKER_KEY = "compaction_marker"
 
 
 def is_compaction_marker(message: BaseMessage) -> bool:
     return bool((getattr(message, "additional_kwargs", None) or {}).get(COMPACTION_MARKER_KEY))
-
-
-def is_legacy_prompt(message: BaseMessage) -> bool:
-    """A SystemMessage persisted in a thread's history that is not a compaction breadcrumb.
-
-    Today nothing writes one: the agent node prepends the domain's CURRENT system prompt on every
-    call (`graph/agent_node.py`), so a prompt edit reaches every thread with no migration. Threads
-    created before that hold the prompt (sometimes two, after a prompt edit) as their first
-    message; those are ignored when the call is built, never shown to the model, and left in the
-    checkpoint (they are skipped by trimming and by the transcript replay too)."""
-    return isinstance(message, SystemMessage) and not is_compaction_marker(message)
 
 
 def is_retry_artifact(message: BaseMessage) -> bool:
@@ -88,67 +73,6 @@ def is_retry_artifact(message: BaseMessage) -> bool:
 def is_user_message(message: BaseMessage) -> TypeGuard[HumanMessage]:
     """A HumanMessage the person sent, not retry feedback the graph wrote."""
     return isinstance(message, HumanMessage) and not is_retry_artifact(message)
-
-
-# The corrective feedback `retry_output` wrote BEFORE it tagged anything (#168): untagged HumanMessages
-# that read, in every thread that had a retry, as something the person said. Seven fixed sentences
-# (their wording has not changed since they were introduced), each with the parts that identify it.
-# Anything else is left alone: only a message that starts like one of these, has its fixed
-# middle, and sits right after an answer the graph rejected is treated as feedback.
-_LEGACY_RETRY_FEEDBACK = (
-    ("That answer repeated internal system instructions.", ()),
-    ("That answer was too short — please give a fuller answer.", ()),
-    ("That answer showed a script and its output as if a real tool had run it", ()),
-    ("The skill you loaded said to use ", (" for this — you computed a number by hand",)),
-    ("You described using a tool instead of actually calling it", ()),
-    ("That answer uses facts from source(s) ", (" without citing them. Do not call any tools",)),
-    ("That answer cites ", (", but its content does not actually support what you wrote",)),
-)
-
-
-def _is_legacy_retry_feedback(text: str) -> bool:
-    return any(
-        text.startswith(start) and all(part in text for part in parts)
-        for start, parts in _LEGACY_RETRY_FEEDBACK
-    )
-
-
-def legacy_retry_artifact_ids(messages: list[BaseMessage]) -> set[str]:
-    """Ids of the retry artifacts an older build left in a thread untagged: the feedback, and the
-    answer it rejected (the message right before it, with no tool calls).
-
-    A heuristic by construction, since nothing marked them: the text must be one of the old
-    feedback sentences AND directly follow an untagged answer. The cost of a false match is one
-    message hidden from the model and the transcript, and it needs a person to type one of
-    these sentences, in full, as their reply to an answer."""
-    ids: set[str] = set()
-    for i in range(1, len(messages)):
-        feedback, answer = messages[i], messages[i - 1]
-        if (
-            isinstance(feedback, HumanMessage)
-            and not is_retry_artifact(feedback)
-            and feedback.id is not None
-            and isinstance(feedback.content, str)
-            and _is_legacy_retry_feedback(feedback.content)
-            and isinstance(answer, AIMessage)
-            and not answer.tool_calls
-            and not is_retry_artifact(answer)
-        ):
-            ids.add(feedback.id)
-            if answer.id is not None:
-                ids.add(answer.id)
-    return ids
-
-
-def heal_legacy_retry_artifacts(messages: list[BaseMessage]) -> list[BaseMessage]:
-    """Tagged copies of the legacy retry artifacts in `messages`, to return from a node: they keep
-    their ids, so `add_messages` replaces them in the thread rather than appending."""
-    ids = legacy_retry_artifact_ids(messages)
-    return [
-        m.model_copy(update={"additional_kwargs": {**m.additional_kwargs, RETRY_ARTIFACT_KEY: True}})
-        for m in messages
-        if m.id in ids
-    ]
 
 
 def last_human_message(messages: list[BaseMessage]) -> HumanMessage | None:

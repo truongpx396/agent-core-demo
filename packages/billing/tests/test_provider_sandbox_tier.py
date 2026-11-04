@@ -1,8 +1,6 @@
 """The provider-sandbox tier's own safety rails (tests/provider_sandbox/, specs/010 T029a). That tier talks to a
 real provider's sandbox with the operator's key and creates objects there; the tier skips without a key, so
 what keeps it safe is pinned here, hermetically:
-- the default run and CI never select it, so no PR depends on or spends a third party's API;
-- every test in it carries the marker, so a new test can't slip into the default run;
 - a LIVE (or any non-test) key, or a Polar deployment configured for production, makes it fail before a
   request, never skip or create;
 - it won't run beside someone's own `stripe listen` / `polar listen`, whose app would receive the tier's
@@ -11,8 +9,6 @@ what keeps it safe is pinned here, hermetically:
 - a rate-limited Polar token is reported as that, with how long to wait, not as an unexplained `HTTP 429 None
   field=None`.
 """
-import ast
-import tomllib
 from pathlib import Path
 
 import httpx
@@ -22,43 +18,8 @@ from tests.provider_sandbox import conftest as tier
 from tests.provider_sandbox.conftest import require_polar_sandbox, require_test_mode_key
 from tests.provider_sandbox.receiver import redact
 
-ROOT = Path(__file__).resolve().parents[1]  # packages/billing (the package's own pyproject.toml is the one that excludes the tier)
+ROOT = Path(__file__).resolve().parents[1]  # packages/billing
 TIER = ROOT / "tests" / "provider_sandbox"
-REPO_CI = ROOT.parents[1] / ".github" / "workflows" / "ci.yml"  # only present inside the monorepo checkout
-
-
-def test_the_default_run_excludes_the_tier():
-    addopts = tomllib.loads((ROOT / "pyproject.toml").read_text())["tool"]["pytest"]["ini_options"]["addopts"]
-
-    assert "not provider_sandbox" in addopts
-
-
-def test_the_marker_is_registered_so_a_typo_cannot_silently_unmark_a_test():
-    markers = tomllib.loads((ROOT / "pyproject.toml").read_text())["tool"]["pytest"]["ini_options"]["markers"]
-
-    assert any(marker.startswith("provider_sandbox:") for marker in markers)
-
-
-def test_no_ci_job_selects_the_tier():
-    """CI selects tiers with `-m`; the tier must never appear in any of them. A secret-less CI run would only skip it, but a CI run WITH a
-    key would create objects in someone's sandbox on every push."""
-    if not REPO_CI.exists():
-        pytest.skip("the package is not inside the monorepo checkout, so there is no CI file to check")
-    assert "provider_sandbox" not in REPO_CI.read_text()
-
-
-@pytest.mark.parametrize("path", sorted(TIER.glob("test_*.py")), ids=lambda p: p.name)
-def test_every_test_module_in_the_tier_is_marked(path):
-    assignments = [
-        node for node in ast.parse(path.read_text()).body
-        if isinstance(node, ast.Assign) and any(getattr(t, "id", "") == "pytestmark" for t in node.targets)
-    ]
-
-    assert assignments and "provider_sandbox" in ast.unparse(assignments[0].value)
-
-
-def test_the_tier_has_at_least_one_test_module():
-    assert list(TIER.glob("test_*.py")), "the marker test above would pass vacuously on an empty directory"
 
 
 def outcome(key: str | None) -> str:

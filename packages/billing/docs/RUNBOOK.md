@@ -131,7 +131,7 @@ Spec 013 moved the billing half of the meter out of the agent app and into this 
 
 - The agent's old `usage_events.credits*` columns and its `usage_export_outbox` table stay in an existing database, unused; a fresh volume no longer creates them (`21-` and `23-` are gone). Usage before the cutover is not copied into the package's record.
 - **If a usage-billing provider was ever enabled**, drain the old outbox BEFORE deploying (with the old version's `make billing-export-worker ARGS=--once`, until `SELECT status, count(*) FROM usage_export_outbox GROUP BY 1` shows nothing `pending`), because `credit-billing-export-worker` reads `billing_export_outbox` only and the new version no longer contains the old worker.
-- `make usage-reconcile` replaces the gateway half of what `make credit-reconcile` used to do (`CREDIT_RECONCILE_*` is still accepted for it as `USAGE_RECONCILE_*`); `make credit-reconcile` is now the wallet check alone.
+- `make usage-reconcile` replaces the gateway half of what `make credit-reconcile` used to do (its settings are `USAGE_RECONCILE_*`); `make credit-reconcile` is now the wallet check alone.
 
 ## Dashboard and alerts
 
