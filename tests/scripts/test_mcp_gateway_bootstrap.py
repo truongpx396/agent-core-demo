@@ -156,6 +156,41 @@ def test_without_the_admin_password_nothing_is_attempted(monkeypatch):
     assert FakeCasdoor.instances == []
 
 
+# --- the demo users' names are options, not constants ---------------------------------------------------------------------------------
+# The name was `alice` and `oncall` in the code: renaming the user in Casdoor and re-running the script created the old one again, and a
+# different name meant editing the script.
+
+
+def test_the_demo_users_default_to_ethan_and_oncall_one_per_organization(casdoor):
+    assert casdoor(["--tenant", "ecorp", "--tenant", "other-co"]).users == [("ecorp", "ethan"), ("other-co", "ethan"), ("ops-team", "oncall")]
+
+
+def test_the_options_choose_the_names_and_the_old_default_is_not_created(casdoor):
+    fake = casdoor(["--tenant", "ecorp", "--tenant", "other-co", "--demo-user", "priya", "--ops-user", "sre.on-call"])
+
+    assert fake.users == [("ecorp", "priya"), ("other-co", "priya"), ("ops-team", "sre.on-call")]
+
+
+def test_the_output_names_the_users_it_created(casdoor, capsys):
+    casdoor(["--tenant", "ecorp", "--demo-user", "priya", "--ops-user", "sre"])
+
+    out = capsys.readouterr().out
+    assert "log in as ecorp/priya  password: generated-password" in out
+    assert "log in as ops-team/sre  password: generated-password" in out
+    assert "sign in as <tenant>/priya" in out, "the line that says who to sign in as at the chat page"
+    assert "alice" not in out and "oncall" not in out
+
+
+@pytest.mark.parametrize("name", ["", "a/b", "ecorp/ethan", "a b", "a@b", "-ethan", ".ethan", "ethan\n"])
+@pytest.mark.parametrize("option", ["--demo-user", "--ops-user"])
+def test_a_name_that_would_break_the_lookup_id_or_the_email_is_refused_before_anything_is_created(casdoor, option, name):
+    with pytest.raises(SystemExit) as stop:
+        casdoor([f"{option}={name}"])  # one argument: argparse would take a leading '-' for an option and refuse it before the script looks
+
+    assert option in str(stop.value)
+    assert FakeCasdoor.instances == [], "nothing may be created when the arguments are wrong"
+
+
 # --- the record the REAL class sends --------------------------------------------------------------------------------------------------
 
 
@@ -224,3 +259,32 @@ def test_the_telegram_bots_login_return_is_registered_only_when_asked_and_is_the
     uris = by_name(casdoor(["--telegram-link-url", "https://bot.example.com/"]))["api-ecorp"]["redirect_uris"]
 
     assert uris[-1] == "https://bot.example.com/telegram/link/callback"
+
+
+class UsersById(RecordingCasdoor):
+    """The real `ensure_user`, looking a user up by the id it builds (`<organization>/<name>`)."""
+
+    def __init__(self, existing: set[str]) -> None:  # noqa: D107 - see RecordingCasdoor
+        super().__init__()
+        self.known = existing
+
+    def read(self, path: str, **params: str):
+        return {"name": params["id"]} if params["id"] in self.known else None
+
+
+def test_the_real_user_record_carries_the_chosen_name_and_an_address_built_from_it():
+    casdoor = UsersById(set())
+
+    password = casdoor.ensure_user("ecorp", "priya")
+
+    path, body = casdoor.writes[0]
+    assert path == "/api/add-user" and password == body["password"] and len(password) >= 20
+    assert (body["owner"], body["name"], body["displayName"], body["email"]) == ("ecorp", "priya", "priya", "priya@ecorp.localhost")
+
+
+def test_a_user_is_found_by_its_name_so_a_renamed_one_is_created_again_under_the_old_name():
+    # `ecorp/alice` was renamed to `ecorp/ethan` in Casdoor: the script given `ethan` leaves it alone, given `alice` it adds a second user.
+    casdoor = UsersById({"ecorp/ethan"})
+
+    assert casdoor.ensure_user("ecorp", "ethan") is None and casdoor.writes == [], "an existing user is left alone and no password is shown"
+    assert casdoor.ensure_user("ecorp", "alice") is not None and [b["name"] for _, b in casdoor.writes] == ["alice"]
