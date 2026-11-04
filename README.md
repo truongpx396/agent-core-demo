@@ -782,7 +782,7 @@ until configured**.
 
 ## 🔧 Make targets
 
-`make help` lists everything. The ones you will use:
+`make help` lists everything. The `Makefile` holds the stack, the tests and the lint gates; it includes four more files, and a target's name is the same wherever it lives: `make/host.mk` (the app's own processes on your machine: `serve`, the workers, `chat`, `telegram`), `make/admin.mk` (back-office operator commands: the sweeps, `credits`, `budget-policy`, the reconcile checks), `make/evals.mk` (`eval`, `model-eval`, `promptfoo`, `deepeval`, `garak`) and `make/security.mk` (Semgrep, Trivy, Checkov, SonarQube, ZAP, Strix, DefectDojo). The ones you will use:
 
 | Target | Does |
 |---|---|
@@ -851,6 +851,7 @@ postgres-init/            numbered SQL schema (fresh volumes only)
 tests/                    mirrors app/; adapters/ (SQL shape, requests), fakes/ (in-memory ports); integration/, live/, deepeval/ are the marked tiers
 packages/billing/         the independent billing package: src, tests, schema, alerts, docs, specs
 promptfoo/ garak/ loadtest/   prompt checks (the repo's only package.json), jailbreak scan, Locust
+make/                     host.mk, admin.mk, evals.mk, security.mk: the targets the Makefile includes (see Make targets)
 .github/workflows/        ci, deploy, ai-review, terraform-validate, redteam, strix, zap
 ```
 
