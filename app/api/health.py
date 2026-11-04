@@ -41,9 +41,10 @@ async def _check_checkpointer_postgres() -> None:
     # A separate, throwaway connection — not the graph's own AsyncPostgresSaver
     # (app/agent/runtime/core.py), which may not be open on THIS event loop yet
     # (it's bound to whichever loop calls it). Readiness only cares whether
-    # the database itself is reachable, not whether the singleton is initialized.
+    # the database itself is reachable, not whether the singleton is initialized. It goes through the same address as the graph's pool, so
+    # with PgBouncer in front, a dead pooler is a failed readiness check and not a pass that the first turn then contradicts.
     async with await psycopg.AsyncConnection.connect(
-        CHECKPOINTER_DATABASE_URL, connect_timeout=2
+        CHECKPOINTER_DATABASE_URL, connect_timeout=2, prepare_threshold=None
     ) as conn:
         await conn.execute("SELECT 1")
 

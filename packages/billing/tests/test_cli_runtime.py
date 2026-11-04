@@ -328,3 +328,28 @@ def test_the_job_bootstrap_installs_the_json_formatter_unless_logging_is_already
     finally:
         root.handlers[:] = keep_handlers
         root.setLevel(keep_level)
+
+
+async def test_the_cli_pool_does_not_use_prepared_statements_because_its_url_may_be_a_transaction_pooler(monkeypatch):
+    """APPDATA_DATABASE_URL is the pooled address inside the containers. psycopg prepares a statement after five runs on one connection, and a
+    transaction pooler hands the next transaction a different server connection, where that statement does not exist. The app's own pools
+    say the same (tests/core/test_pool_settings.py); this package imports nothing from the app, so it says it itself."""
+    seen: dict = {}
+
+    class FakePool:
+        def __init__(self, conninfo, **kwargs):
+            seen.update(kwargs)
+            self.connection = object()
+
+        async def open(self, **_):
+            pass
+
+        async def close(self):
+            pass
+
+    monkeypatch.setattr(_runtime, "AsyncConnectionPool", FakePool)
+
+    async with _runtime.wired_pool("postgresql://u:p@pooler:6432/appdata"):
+        pass
+
+    assert seen["kwargs"] == {"prepare_threshold": None}

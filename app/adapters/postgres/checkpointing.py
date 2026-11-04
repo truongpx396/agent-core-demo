@@ -23,6 +23,7 @@ from psycopg.rows import dict_row
 from psycopg_pool import AsyncConnectionPool
 
 from app.core.config import CHECKPOINTER_DATABASE_URL, CHECKPOINTER_POOL_MAX_SIZE
+from app.core.sql_store import POOLER_SAFE_CONNECTION_KWARGS
 
 
 class PgCheckpointing:
@@ -34,7 +35,8 @@ class PgCheckpointing:
             CHECKPOINTER_DATABASE_URL,
             min_size=1,
             max_size=CHECKPOINTER_POOL_MAX_SIZE,
-            kwargs={"autocommit": True, "prepare_threshold": 0, "row_factory": dict_row},
+            # Was prepare_threshold=0, which prepares every statement on its first run: the opposite of what a transaction pooler needs.
+            kwargs={"autocommit": True, "row_factory": dict_row, **POOLER_SAFE_CONNECTION_KWARGS},
             open=False,
         )
         await pool.open(wait=True)

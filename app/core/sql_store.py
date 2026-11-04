@@ -15,7 +15,14 @@ from contextlib import asynccontextmanager
 
 from psycopg_pool import AsyncConnectionPool
 
-from app.core.config import APPDATA_DATABASE_URL
+from app.core.config import APPDATA_DATABASE_URL, APPDATA_POOL_MAX_SIZE
+
+# What every pool this app opens passes to its connections. psycopg prepares a statement once it has run `prepare_threshold` times on one
+# connection: 5 by default, and 0 means "on the first run" (only None means never). Behind a transaction pooler the next transaction runs
+# on a different server connection, where that prepared statement does not exist: `prepared statement "_pg3_1" does not exist`, at random,
+# under load (ENGINEERING_PATTERNS.md 95). None works with any PgBouncer version and setting; `tests/integration/test_pgbouncer.py` runs
+# the pools through a real one that refuses prepared statements.
+POOLER_SAFE_CONNECTION_KWARGS = {"prepare_threshold": None}
 
 # One pool for the process lifetime, shared by every caller via
 # get_connection() rather than a fresh TCP+auth handshake per call. Opened
@@ -54,7 +61,9 @@ async def _get_pool() -> AsyncConnectionPool:
         return _pool
     async with _pool_lock:
         if _pool is None:  # re-check: another caller may have finished while this one waited for the lock
-            pool = AsyncConnectionPool(APPDATA_DATABASE_URL, min_size=1, max_size=10, open=False)
+            pool = AsyncConnectionPool(
+                APPDATA_DATABASE_URL, min_size=1, max_size=APPDATA_POOL_MAX_SIZE, kwargs=dict(POOLER_SAFE_CONNECTION_KWARGS), open=False
+            )
             await pool.open(wait=True)
             _pool = pool
     return _pool

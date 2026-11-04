@@ -453,6 +453,11 @@ class Settings(BillingSettings):
     # agent_worker_max_concurrency so the two numbers don't drift apart.
     checkpointer_pool_max_size: int = 10
 
+    # app/core/sql_store.py's AsyncConnectionPool size: the connections ONE process may hold for the application's own tables (the stores, the
+    # meter, the idempotency guard). It was a literal 10. Behind PgBouncer a client connection costs the pooler a few KB, not Postgres a
+    # backend, so the server-side bound is the pooler's pool size and not this number times the replicas (WORKER_CONCURRENCY.md).
+    appdata_pool_max_size: int = Field(default=10, ge=1)
+
     # Concurrent ingest jobs ONE ingest_worker.py process runs at once, same
     # asyncio.Semaphore shape as agent_worker_max_concurrency. Blocking
     # stages (MinIO download, PDF/DOCX extraction) run via asyncio.to_thread,
@@ -796,6 +801,7 @@ CHAT_FIRST_RESPONSE_DEADLINE_SECONDS = settings.chat_first_response_deadline_sec
 INGEST_FIRST_RESPONSE_DEADLINE_SECONDS = settings.ingest_first_response_deadline_seconds
 AGENT_WORKER_MAX_CONCURRENCY = settings.agent_worker_max_concurrency
 CHECKPOINTER_POOL_MAX_SIZE = settings.checkpointer_pool_max_size
+APPDATA_POOL_MAX_SIZE = settings.appdata_pool_max_size
 INGEST_WORKER_MAX_CONCURRENCY = settings.ingest_worker_max_concurrency
 WORKER_RECLAIM_INTERVAL_SECONDS = settings.worker_reclaim_interval_seconds
 AGENT_WORKER_RECLAIM_IDLE_SECONDS = settings.agent_worker_reclaim_idle_seconds
