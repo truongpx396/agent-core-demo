@@ -187,7 +187,7 @@ cannot be judged or safely changed later.
   semantic cache), MinIO (uploads).
   Appdata access goes through `app/core/sql_store.py`'s pooled `get_connection()`; the only
   other direct psycopg users are the checkpointer pool (`app/agent/runtime/core.py`) and the health
-  probe (`app/api/health.py`). A self-contained package opens no pool of its own: it receives that
+  probe (`app/adapters/inbound/api/health.py`). A self-contained package opens no pool of its own: it receives that
   connection by injection from the host (`credit_billing.db.configure`) and refuses (fails
   closed) when none was supplied.
 - **Schema changes**: add a new numbered `postgres-init/NN-*.sql` that continues the sequence.
@@ -221,7 +221,7 @@ cannot be judged or safely changed later.
   `packages/billing/`, imported as `credit_billing`, reached by the app through
   `app/billing_integration/`) follows these rules.
   - It imports only itself and third-party libraries, never the host (`app.agent`, `app.core`,
-    `app.api`, and so on). The host reaches it only through one integration package, and what the
+    `app.adapters.inbound.api`, and so on). The host reaches it only through one integration package, and what the
     package needs from the host arrives by injection (its connection) or is defined in it (its
     settings, its metrics).
   - The boundary is enforced in both directions by a test that fails the build, not by convention
@@ -295,4 +295,4 @@ states the intent and the conflicting document MUST be corrected.
 - **Runtime guidance**: day-to-day development guidance for agents and contributors lives in
   `CLAUDE.md` and `.claude/rules/`; those files MUST NOT contradict this constitution.
 
-**Version**: 1.4.1 | **Ratified**: 2026-10-01 | **Last Amended**: 2026-11-01
+**Version**: 1.4.2 | **Ratified**: 2026-10-01 | **Last Amended**: 2026-11-05
