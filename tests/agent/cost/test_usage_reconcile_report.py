@@ -10,7 +10,7 @@ from decimal import Decimal as D
 import httpx
 import pytest
 
-from app.adapters.litellm.spend_logs import HttpGatewaySpendLog
+from app.adapters.outbound.litellm.spend_logs import HttpGatewaySpendLog
 from app.agent.cost import usage_reconcile as reconcile
 from app.agent.cost.usage_reconcile import Report, Tolerance
 from app.core import metrics

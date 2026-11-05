@@ -1,7 +1,7 @@
 """Add, disable or re-enable a Telegram person at the authorization server (specs/020; `make telegram-person`).
 
 A Telegram user is a person `telegram-<id>` of one tenant, and the bot signs in as them with a password it DERIVES from TELEGRAM_PERSON_SECRET
-(app/channels/telegram_people.py). This tool is how an operator creates that person without the bot ever holding a credential that can: it logs in
+(app/adapters/inbound/channels/telegram_people.py). This tool is how an operator creates that person without the bot ever holding a credential that can: it logs in
 to Casdoor as the administrator (the generated password in the secrets file `make mcp-gateway-secrets` keeps outside the repo) and writes the user
 with the same derived password. It never prints the password.
 
@@ -17,7 +17,11 @@ import sys
 
 import httpx
 
-from app.channels.telegram_people import MIN_SECRET_CHARS, person_name, person_password
+from app.adapters.inbound.channels.telegram_people import (
+    MIN_SECRET_CHARS,
+    person_name,
+    person_password,
+)
 from app.core.config import settings
 from scripts.mcp_gateway_bootstrap import Casdoor, CasdoorError
 

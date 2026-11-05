@@ -1,6 +1,6 @@
 """/rerank and /prompt-guard behind the real app, lifespan and registry, with fake models (no download).
 
-The wire contracts are the ones the old single-file service had; app/retrieval/embeddings.py::rerank and app/core/moderation.py read
+The wire contracts are the ones the old single-file service had; app/adapters/outbound/embeddings/embeddings.py::rerank and app/core/moderation.py read
 exactly these shapes, so a change here is a change to the app.
 """
 import numpy as np

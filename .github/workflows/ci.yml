@@ -57,7 +57,7 @@ name: CI
 # given a commit, cheap enough to gate every push rather than needing a
 # human to trigger them. Each hard-gates on any finding — both were run
 # against this exact repo state before being wired up here (not guessed):
-# semgrep found one real, since-annotated finding (app/api/main.py's
+# semgrep found one real, since-annotated finding (app/adapters/inbound/api/main.py's
 # env-gated CORS wildcard — see its own `nosemgrep` comment for why it's a
 # deliberate false positive, not a fix); checkov's only finding
 # (CKV_DIO_2, "droplet specifies an SSH key") is a verified static-analysis
@@ -637,18 +637,18 @@ jobs:
       # still COLLECTS (imports) every file under `testpaths = ["tests"]`
       # before filtering by marker, and `tests/api/test_api.py`/
       # `test_health.py`/`test_rate_limit.py`/`tests/agent/graph/test_multimodal.py`
-      # import `app.api.main` at module level — which calls
+      # import `app.adapters.inbound.api.main` at module level — which calls
       # `configure_logging()` UNCONDITIONALLY at import time (unlike
-      # `app/job_queue/agent_worker.py`'s/`app/channels/telegram.py`'s own
+      # `app/adapters/inbound/workers/agent_worker.py`'s/`app/adapters/inbound/channels/telegram.py`'s own
       # `if __name__ == "__main__":`-gated calls, deliberately different
-      # since uvicorn imports `app.api.main:app` without ever hitting
+      # since uvicorn imports `app.adapters.inbound.api.main:app` without ever hitting
       # `__main__` — see that module's own comment). That installs a real
       # INFO-level structlog JSON handler on the ROOT logger for the rest
       # of this single, non-`-n auto` process — verified directly: `import
-      # app.api.main` alone in a fresh interpreter flips
+      # app.adapters.inbound.api.main` alone in a fresh interpreter flips
       # `logging.getLogger().handlers` from `[]` to a live handler and the
       # level from WARNING to INFO, with zero such effect from importing
-      # only `app.agent.graph.build`/`app.ingestion.web_crawler`/
+      # only `app.agent.graph.build`/`app.adapters.outbound.crawl4ai.web_crawler`/
       # `tests.conftest` (everything the deepeval tests themselves actually
       # need). With `-s` disabling capture, every one of this app's own
       # per-node `logger.info(...)` calls (and the `openai` SDK's own
@@ -745,7 +745,7 @@ jobs:
 
           from app.agent.tools import skill_catalog as skills
           from app.agent.tools import subagent_catalog as subagents
-          from app.adapters.mcp import sandbox_tools
+          from app.adapters.outbound.mcp import sandbox_tools
 
           problems = []
           if not skills.load_skills():

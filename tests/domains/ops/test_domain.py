@@ -20,7 +20,7 @@ from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.types import Command
 
-from app.adapters.notify import team_channel as notify
+from app.adapters.outbound.notify import team_channel as notify
 from app.agent.graph.build import GraphDeps
 from app.domains.ops.domain import OPS_DOMAIN_PLUGIN, OPS_MANIFEST
 from tests.conftest import TEST_CTX

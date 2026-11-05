@@ -17,7 +17,7 @@ func defaultTable(t *testing.T) *Table {
 }
 
 func TestEveryRouteTheAPIServesIsInTheDefaultTable(t *testing.T) {
-	// The routes the chat API serves today (app/api/routers/*), with the class each must have. PR 2 adds a Python test that walks the
+	// The routes the chat API serves today (app/adapters/inbound/api/routers/*), with the class each must have. PR 2 adds a Python test that walks the
 	// real FastAPI routes against this same file; this one pins the intent.
 	tbl := defaultTable(t)
 	tests := []struct {

@@ -13,7 +13,7 @@ from contextlib import asynccontextmanager
 
 import pytest
 
-from app.adapters.postgres import tool_idempotency as pg_tool_idempotency
+from app.adapters.outbound.postgres import tool_idempotency as pg_tool_idempotency
 from app.core import metrics, tool_idempotency
 from tests.conftest import TEST_CTX
 from tests.conftest import metric_value as _count

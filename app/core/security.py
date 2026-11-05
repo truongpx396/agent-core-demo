@@ -3,7 +3,7 @@ GRAPH_PATTERNS.md's "Multi-Tenant Isolation" pattern).
 
 Scope: this is *authorization/isolation* — enforced as a store-level
 pre-filter — not *authentication*. Nothing here verifies a password, JWT,
-or session; `app/api/deps.py` reads tenant/principal from trusted headers
+or session; `app/adapters/inbound/api/deps.py` reads tenant/principal from trusted headers
 as the seam a real auth middleware replaces later, so that swap is a
 gateway config change, not a rewrite.
 
@@ -22,8 +22,8 @@ from app.core.config import MEMORY_RETENTION_DAYS
 
 
 class SecurityCtx(TypedDict):
-    """Stamped ONCE at the trusted boundary (app/api/deps.py's header
-    extraction, or a local entry point like app/channels/chat.py) — never by
+    """Stamped ONCE at the trusted boundary (app/adapters/inbound/api/deps.py's header
+    extraction, or a local entry point like app/adapters/inbound/channels/chat.py) — never by
     a graph node, never derived from message content or tool output. A ctx a
     caller could influence via the request body or conversation would be a
     privilege-escalation primitive, not a parameter."""
@@ -37,7 +37,7 @@ class SecurityCtx(TypedDict):
 class AccessScope:
     """What a ctx may see in a store, in store-neutral terms: the output of `Policy.lower` and the one thing a store is handed to
     isolate tenants. The store MUST apply it INSIDE the query as a pre-filter (the Qdrant adapter turns it into one,
-    `app/retrieval/qdrant_store.py::scope_filter`), never as a Python post-filter over an unscoped result.
+    `app/adapters/outbound/qdrant/qdrant_store.py::scope_filter`), never as a Python post-filter over an unscoped result.
 
     `tenant` is always set. `owner` narrows a memory to the person who wrote it. `created_after` is the retention cutoff for memories,
     enforced at read time: a record with no creation time does not satisfy it, so it is invisible rather than visible forever."""
@@ -63,7 +63,7 @@ class Policy(Protocol):
     def lower(self, ctx: SecurityCtx, target: str) -> AccessScope:
         """Lower ctx into the scope of `target` ("documents" | "memories", sharing one
         collection). The store MUST apply it INSIDE the query as a pre-filter
-        (app/retrieval/qdrant_store.py) — post-filtering in Python is a correctness bug even
+        (app/adapters/outbound/qdrant/qdrant_store.py) — post-filtering in Python is a correctness bug even
         if the output looks identical, since the store already returned rows this
         principal may not see."""
         ...
@@ -95,7 +95,7 @@ class TenantIsolationPolicy:
             raise ValueError(f"unknown lowering target: {target!r}")
         if target == "documents":
             return AccessScope(tenant=ctx["tenant"], kind="document")
-        # Retention enforced AT RECALL TIME, not just by a background sweep (app/retrieval/memory.py::delete_memories, pattern 33) — a
+        # Retention enforced AT RECALL TIME, not just by a background sweep (app/adapters/outbound/qdrant/memory.py::delete_memories, pattern 33) — a
         # memory past MEMORY_RETENTION_DAYS is invisible on the next read even if unswept. A memory with no `created_at` (written before
         # the field existed) does not satisfy the cutoff either: invisible until re-written, not just a future-only guarantee.
         return AccessScope(

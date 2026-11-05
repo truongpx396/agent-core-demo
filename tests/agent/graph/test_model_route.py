@@ -392,8 +392,8 @@ async def test_the_router_runs_without_the_optional_stages_too(monkeypatch):
 
 async def test_the_decision_is_made_once_per_turn_and_survives_an_approval_pause(monkeypatch):
     # contract invariant 8: a resumed turn re-enters inside human_approval, so the router is not asked again and the route stays
+    from app.adapters.outbound.qdrant import qdrant_store
     from app.domains.ecorp import store as ecorp_store
-    from app.retrieval import qdrant_store
 
     async def fake_embed(text):
         return [0.0]

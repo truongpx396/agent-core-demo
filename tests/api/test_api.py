@@ -1,4 +1,4 @@
-"""Tests for the plain, dependency-free route handlers behind app/api/main.py (app/api/routers/, app/api/deps.py).
+"""Tests for the plain, dependency-free route handlers behind app/adapters/inbound/api/main.py (app/adapters/inbound/api/routers/, app/adapters/inbound/api/deps.py).
 
 Deliberately NOT using FastAPI's TestClient here: exercising the app
 through it would trigger the real `lifespan` (a real durable checkpointer
@@ -15,17 +15,16 @@ from decimal import Decimal
 import pytest
 from fastapi import HTTPException, Response
 
+from app.adapters.inbound.api import deps
+from app.adapters.inbound.api.routers import chat as chat_router
+from app.adapters.inbound.api.routers import ingest as ingest_router
+from app.adapters.inbound.api.routers import system as system_router
+from app.adapters.inbound.api.routers import usage as usage_router
+from app.adapters.inbound.api.routers.system import ui
+from app.adapters.inbound.api.schemas import CancelRequest, ChatRequest, ResumeRequest
+from app.adapters.outbound.redis import ingest_queue, queue
 from app.agent.runtime import sessions
-from app.api import deps
-from app.api.routers import chat as chat_router
-from app.api.routers import ingest as ingest_router
-from app.api.routers import system as system_router
-from app.api.routers import usage as usage_router
-from app.api.routers.system import ui
-from app.api.schemas import CancelRequest, ChatRequest, ResumeRequest
 from app.core import metrics
-from app.ingestion import ingest_queue
-from app.job_queue import queue
 from credit_billing import credits
 from tests.conftest import TEST_CTX
 from tests.conftest import metric_value as _count
@@ -66,7 +65,7 @@ def ownership(monkeypatch):
 
 
 class TestHealthReady:
-    """GET /health/ready — see app/api/health.py's own tests for
+    """GET /health/ready — see app/adapters/inbound/api/health.py's own tests for
     check_dependencies() itself; this just checks the HTTP-shape mapping
     (status code + body) on top of it."""
 
@@ -259,14 +258,14 @@ class TestUi:
     def test_sends_the_trusted_identity_headers(self):
         """The UI must send X-Tenant-Id/X-Principal-Id itself — POST
         /chat/stream/queued fails closed (422) without both (see
-        app/api/deps.py's get_ctx)."""
+        app/adapters/inbound/api/deps.py's get_ctx)."""
         html = ui()
         assert "X-Tenant-Id" in html
         assert "X-Principal-Id" in html
 
     def test_sends_a_domain_selector_for_the_queued_endpoints(self):
         """The page must send X-Domain on the queued path — see
-        app/api/deps.py's get_domain, which the three queued endpoints
+        app/adapters/inbound/api/deps.py's get_domain, which the three queued endpoints
         (chat_stream_queued/chat_resume/chat_cancel) depend on."""
         html = ui()
         assert "X-Domain" in html
@@ -285,7 +284,7 @@ class TestUi:
 
 
 class TestGetDomain:
-    """app/api/deps.py::get_domain's own runtime branch: an unknown domain name must fail loud, the same
+    """app/adapters/inbound/api/deps.py::get_domain's own runtime branch: an unknown domain name must fail loud, the same
     discipline app/domains/registry.py::resolve_domain already applies at process start, just surfaced as a
     422 here since this is a per-request value rather than a per-process one.
     """
@@ -327,7 +326,7 @@ class TestChatStreamQueued:
             assert payload["ctx"] == TEST_CTX
             request_id = payload["request_id"]
 
-            # Simulate app/job_queue/agent_worker.py publishing this turn's events.
+            # Simulate app/adapters/inbound/workers/agent_worker.py publishing this turn's events.
             await queue.publish_result(client, request_id, {"type": "token", "content": "hi"})
             await queue.publish_result(client, request_id, {"type": "done"})
 
@@ -368,7 +367,7 @@ class TestChatStreamQueued:
 
     async def test_publishes_attached_images_onto_the_request(self, monkeypatch):
         """GRAPH_PATTERNS.md pattern 44 — images ride the same request
-        payload all the way to app/job_queue/agent_worker.py."""
+        payload all the way to app/adapters/inbound/workers/agent_worker.py."""
         client = FakeRedis()
         monkeypatch.setattr(queue, "get_client", lambda: client)
 
@@ -390,8 +389,8 @@ class TestChatStreamQueued:
     async def test_a_non_ecorp_domain_publishes_onto_its_own_stream(self, monkeypatch):
         """The whole point of threading `domain` through — an X-Domain:
         support turn must land where ONLY an `AGENT_DOMAIN=support`
-        app/job_queue/agent_worker.py pool is listening, never on Ecorp's own
-        stream (see app/job_queue/queue.py::publish_request's own docstring)."""
+        app/adapters/inbound/workers/agent_worker.py pool is listening, never on Ecorp's own
+        stream (see app/adapters/outbound/redis/queue.py::publish_request's own docstring)."""
         client = FakeRedis()
         monkeypatch.setattr(queue, "get_client", lambda: client)
 
@@ -561,8 +560,8 @@ class TestChatStreamQueuedPublishFailure:
 
 class TestChatResume:
     """POST /chat/resume — publishes a `"resume"` job onto the SAME
-    Redis Stream a new turn uses (app/job_queue/queue.py::publish_resume_request),
-    not a separate queue; app/job_queue/agent_worker.py dispatches on
+    Redis Stream a new turn uses (app/adapters/outbound/redis/queue.py::publish_resume_request),
+    not a separate queue; app/adapters/inbound/workers/agent_worker.py dispatches on
     `payload["kind"]`."""
 
     async def test_publishes_a_resume_job_with_approved_and_thread_id(self, monkeypatch, ownership):
@@ -605,7 +604,7 @@ class TestChatResume:
 
 class TestChatCancel:
     """POST /chat/cancel — two independent mechanisms fired unconditionally
-    (app/api/routers/chat.py's `chat_cancel` docstring): a Redis cancel-flag AND a `"cancel"` job
+    (app/adapters/inbound/api/routers/chat.py's `chat_cancel` docstring): a Redis cancel-flag AND a `"cancel"` job
     published onto the same queue."""
 
     async def test_sets_the_cancel_flag_and_publishes_a_cancel_job(self, monkeypatch, ownership):
@@ -1020,7 +1019,7 @@ def _upload_file(filename, data, content_type):
 
 class TestIngestUpload:
     """POST /ingest/upload — MinIO upload + a job published onto
-    app/ingestion/ingest_queue.py's SEPARATE queue from chat turns. Both
+    app/adapters/outbound/redis/ingest_queue.py's SEPARATE queue from chat turns. Both
     object_store.upload_bytes and ingest_queue.publish_ingest_request are
     monkeypatched, matching this file's "test the function, not live
     services" convention."""
@@ -1186,7 +1185,7 @@ class TestIngestUpload:
 
     async def test_too_many_files_in_one_request_is_rejected_before_any_upload(self, monkeypatch):
         """MAX_UPLOAD_FILES_PER_REQUEST (app/core/config.py) — a per-request
-        batch-size guard, distinct from app/ingestion/ingest_worker.py's own
+        batch-size guard, distinct from app/adapters/inbound/workers/ingest_worker.py's own
         concurrency setting (see WORKER_CONCURRENCY.md): this caps how many
         jobs ONE submission may create, checked before any file in the
         batch is touched, so a 6th file never reaches MinIO just because
@@ -1208,7 +1207,7 @@ class TestIngestUpload:
         assert uploaded == []  # never reached MinIO, not even the first two
 
     async def test_a_file_over_the_size_cap_is_reported_per_file_not_raised(self, monkeypatch):
-        """_read_bounded (app/api/routers/ingest.py) checks the running total WHILE reading, not after — this
+        """_read_bounded (app/adapters/inbound/api/routers/ingest.py) checks the running total WHILE reading, not after — this
         only has to prove the outcome (never reaches MinIO, reported as this file's own error), not the
         memory-bounding mechanism itself.
         """

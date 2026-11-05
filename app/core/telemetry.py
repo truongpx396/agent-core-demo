@@ -6,7 +6,7 @@ pattern 43) pushes metrics via OTLP to a shared otel-collector, which exposes on
 target. The old pull-based /metrics on the API alone could never see a worker's metrics; nothing scrapes a
 worker.
 
-Call `configure_telemetry(service_name)` once, at real process startup (app/api/main.py's `lifespan`, or a
+Call `configure_telemetry(service_name)` once, at real process startup (app/adapters/inbound/api/main.py's `lifespan`, or a
 worker/channel's `__main__`), NEVER at import time. Unlike `logging_config.configure_logging()` (freely
 re-callable), OTel's `set_meter_provider` is call-once; a second call just warns and is ignored. Keeping it
 inside `lifespan` (never entered under pytest, see tests/api/test_api.py) stops a real network-bound

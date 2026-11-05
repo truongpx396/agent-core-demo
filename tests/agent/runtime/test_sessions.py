@@ -12,7 +12,7 @@ async code from a plain `def test_...`.
 """
 from contextlib import asynccontextmanager
 
-from app.adapters.postgres import sessions as pg_sessions
+from app.adapters.outbound.postgres import sessions as pg_sessions
 from app.agent.runtime import sessions
 
 TEST_CTX = {"tenant": "ecorp", "principal": "p1", "claims": {}}

@@ -53,8 +53,8 @@ async def test_an_explicit_llm_wins_over_the_factory():
 async def test_an_injected_interrupt_decides_a_mandatory_approval_without_pausing(monkeypatch):
     """`add_note` is `mutating`, so the mandatory gate sends it to `human_approval`. With a stand-in
     for `interrupt` the node gets its decision immediately, and the graph runs on to the tool."""
+    from app.adapters.outbound.qdrant import qdrant_store
     from app.domains.ecorp import store as ecorp_store
-    from app.retrieval import qdrant_store
 
     upserts = []
 

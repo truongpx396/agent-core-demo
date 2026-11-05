@@ -21,7 +21,7 @@ import httpx
 import numpy as np
 import pytest
 
-from app.adapters.mlservice import classification
+from app.adapters.outbound.mlservice import classification
 from app.agent.graph import model_route
 from app.core import routing_policy
 

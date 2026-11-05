@@ -1,4 +1,4 @@
-"""A channel's sign-in at the authorization server (app/channels/oauth.py), against a fake that behaves as Casdoor 4.24.0 was measured to
+"""A channel's sign-in at the authorization server (app/adapters/inbound/channels/oauth.py), against a fake that behaves as Casdoor 4.24.0 was measured to
 (tests/channels/fake_casdoor.py; specs/020 research R1). Each case is a way the real thing differs from what one would assume."""
 import base64
 import hashlib
@@ -7,8 +7,8 @@ import urllib.parse
 import httpx
 import pytest
 
-from app.channels import oauth
-from app.channels.oauth import SignInRefused, Tokens
+from app.adapters.inbound.channels import oauth
+from app.adapters.inbound.channels.oauth import SignInRefused, Tokens
 from tests.channels.fake_casdoor import AUDIENCE, ISSUER, SCOPE, FakeCasdoor, make_jwt
 
 REDIRECT = "http://localhost:33420/callback"

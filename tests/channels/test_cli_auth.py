@@ -1,4 +1,4 @@
-"""The CLI's sign-in (app/channels/cli_auth.py): one sign-in kept in a file only its owner can read, renewed before it expires, and a real loopback
+"""The CLI's sign-in (app/adapters/inbound/channels/cli_auth.py): one sign-in kept in a file only its owner can read, renewed before it expires, and a real loopback
 listener that catches the redirect. The authorization server is the fake of tests/channels/fake_casdoor.py; the listener and the file are real."""
 import asyncio
 import os
@@ -10,9 +10,9 @@ import urllib.parse
 import httpx
 import pytest
 
-from app.channels import cli_auth, oauth
-from app.channels.cli_auth import CliAuth, SessionStore
-from app.channels.oauth import SignInRefused, Tokens
+from app.adapters.inbound.channels import cli_auth, oauth
+from app.adapters.inbound.channels.cli_auth import CliAuth, SessionStore
+from app.adapters.inbound.channels.oauth import SignInRefused, Tokens
 from app.core.config import settings
 from tests.channels.fake_casdoor import AUDIENCE, ISSUER, SCOPE, FakeCasdoor
 

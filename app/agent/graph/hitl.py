@@ -85,7 +85,7 @@ async def paused_approval_async(graph, config: dict) -> dict | None:
       forever (verified on a real paused thread). `resumable=True` means "safe to auto-cancel via `cancel_run`
       first"; `False` means the checkpoint is schema-incompatible, so even cancelling can't cleanly resume
       into it.
-    - `GET /chat/sessions/{thread_id}/pending_approval` (app/api/routers/chat.py), when the session switcher
+    - `GET /chat/sessions/{thread_id}/pending_approval` (app/adapters/inbound/api/routers/chat.py), when the session switcher
       loads a thread, so returning to a paused conversation re-shows the approve/reject UI instead of looking
       idle (the web UI's `activeTurn` is in-memory JS state that a reload never repopulates).
 

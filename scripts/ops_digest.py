@@ -2,7 +2,7 @@
 and post to the team channel. It bypasses the ops domain's agent loop (app/domains/ops/domain.py): fetch and
 post are fixed, deterministic operations, and through build_graph() they would hit should_continue's mandatory
 human_approval gate (GRAPH_PATTERNS.md pattern 15), which an unattended cron run can't satisfy, and
-auto-declining (as app/channels/telegram.py does) would silently make "post the digest" never happen. So it
+auto-declining (as app/adapters/inbound/channels/telegram.py does) would silently make "post the digest" never happen. So it
 calls the ops `_impl` functions directly, reserving the LLM for turning numbers into prose. Contrast
 scripts/ops_investigate.py, where a human asks an ad-hoc question and the agent loop is right.
 

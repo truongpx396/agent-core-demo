@@ -115,7 +115,7 @@ flowchart TB
     Authlimit -. signing keys .-> Casdoor
     Authlimit --> LimitState
     Caddy -- signed identity --> Queued
-    Caddy -- bearer token --> MCPGateway["MCP gateway<br/>(app/mcp/gateway.py)"]
+    Caddy -- bearer token --> MCPGateway["MCP gateway<br/>(app/adapters/inbound/mcp/gateway.py)"]
     MCPGateway -. response .-> Caddy
     Caddy -. response .-> ExtMCP
     CLI -->|"HTTPS, signed in as the person"| Caddy
@@ -375,7 +375,7 @@ race between validation and fetch). Production uploads (`POST /ingest/upload`) g
 ### Embedding models, and swapping them
 
 A **question** and a **stored passage** are embedded as two operations (`embed_query`, `embed_document(s)` in
-`app/retrieval/embeddings.py`), because task-prefixed models place them differently on purpose. `EMBED_QUERY_PREFIX` /
+`app/adapters/outbound/embeddings/embeddings.py`), because task-prefixed models place them differently on purpose. `EMBED_QUERY_PREFIX` /
 `EMBED_DOCUMENT_PREFIX` default to empty, exactly what the app sent before; whether nomic-embed-text's `search_query: ` /
 `search_document: ` prefixes pay is a measurement (`make model-eval`), not a default.
 
@@ -473,7 +473,7 @@ if answer.outcome == "labelled" and answer.label == "send_email":       # label 
 
 `make mcp-serve` and `make mcp-serve-ops` expose `query_employees` and the ops domain's metrics/incidents. MCP has no header
 seam, so the identity is the **launcher's**, never a tool argument: set `MCP_TENANT` and `MCP_PRINCIPAL` (the ops server needs
-only the principal) in `.env` or in the client's server entry, which runs `python -m app.mcp.server` from the repo root:
+only the principal) in `.env` or in the client's server entry, which runs `python -m app.adapters.inbound.mcp.server` from the repo root:
 
 ```json
 "env": { "PYTHONPATH": "/path/to/graph-agent-core/packages/billing/src", "MCP_TENANT": "ecorp", "MCP_PRINCIPAL": "alice" }
@@ -488,7 +488,7 @@ policy applies, but nothing authenticates whoever starts the process, and there 
 The same two servers over **Streamable HTTP behind OAuth 2.1**, for clients that aren't a child process of the person using
 them (a remote agent, Claude Code, several replicas).
 
-- A **resource server only** (`app/mcp/gateway.py`): each request carries a bearer token whose audience is that endpoint's URL (`/ecorp/mcp`, scope `ecorp:read`; `/ops/mcp`, scope `ops:read`, operator tenants only). The tenant and principal a tool acts for are the token's `owner` and `sub` claims, never an argument or `MCP_TENANT`.
+- A **resource server only** (`app/adapters/inbound/mcp/gateway.py`): each request carries a bearer token whose audience is that endpoint's URL (`/ecorp/mcp`, scope `ecorp:read`; `/ops/mcp`, scope `ops:read`, operator tenants only). The tenant and principal a tool acts for are the token's `owner` and `sub` claims, never an argument or `MCP_TENANT`.
 - **Stateless**, so `--scale mcp-gateway=N` behind Caddy load-balances. The `gateway` compose profile is a local stack (Casdoor on its own Postgres, the gateway, Caddy with local TLS on `https://mcp.localhost:8443`) and needs `make up` for the app database.
 - **Nothing that writes is behind it**: both tools are read-only, and the sandbox is deliberately unreachable (an outside caller doesn't pass through the approval gate).
 - ❌ Not built: production DNS/TLS and an identity provider. Contract and gaps: `specs/017-mcp-gateway/`.
@@ -535,7 +535,7 @@ the chat API or the MCP routes.
 
 Both are clients of the chat API, signed in as a person, so they get the same limits, signed identity and revocation as the web UI (spec 020, patterns 89 and 91).
 
-- 💻 **CLI:** `make chat` opens your browser at the authorization server the first time (the address is also printed), catches the redirect on a fixed loopback port (`CHANNEL_CLI_CALLBACK_PORT`, registered by `make mcp-gateway-bootstrap`), and keeps the session in a file only you can read (`~/.config/graph-agent-core/channel-session.json`), renewed before it expires. Point it at the door with `CHANNEL_API_URL` (and `CHANNEL_CA_FILE` for Caddy's local CA, `make mcp-gateway-ca`); `python -m app.channels.chat --sign-out` forgets the session. With `AUTH_MODE=headers` (development, announced loudly by the API) nothing is signed in and the API is reached directly.
+- 💻 **CLI:** `make chat` opens your browser at the authorization server the first time (the address is also printed), catches the redirect on a fixed loopback port (`CHANNEL_CLI_CALLBACK_PORT`, registered by `make mcp-gateway-bootstrap`), and keeps the session in a file only you can read (`~/.config/graph-agent-core/channel-session.json`), renewed before it expires. Point it at the door with `CHANNEL_API_URL` (and `CHANNEL_CA_FILE` for Caddy's local CA, `make mcp-gateway-ca`); `python -m app.adapters.inbound.channels.chat --sign-out` forgets the session. With `AUTH_MODE=headers` (development, announced loudly by the API) nothing is signed in and the API is reached directly.
 - 📱 **Telegram:** each Telegram user is a person `telegram-<id>` of one tenant (`TELEGRAM_TENANT`, default `DEFAULT_TENANT`); the bot signs in as them with a password it **derives** from `TELEGRAM_PERSON_SECRET` (`openssl rand -hex 32`), so it stores nothing per person. By default an operator adds a person (`make telegram-person ACTION=add TELEGRAM_ID=<id>`) and an unregistered user is told to ask an administrator. `make telegram-person ACTION=disable` ends their sign-in at once (the command prints the `make authlimit-revoke` line that voids a token already issued). Each person has their own conversation per chat, named `telegram:<person>:<chat>`; in a group chat that means one per person.
 - ⚠️ **`TELEGRAM_AUTO_PROVISION=true` lets the bot create the person on a first message, and puts a tenant-wide credential in its environment.** Measured on Casdoor 4.24.0: an application's client id and secret are an administrator's of the whole organization (they reset any person's password). Leave it off, or give the bot a tenant of its own. A leak of `TELEGRAM_PERSON_SECRET` exposes the Telegram people and nobody else, but a Telegram person's password also signs in at the web page.
 - 🔒 **Not changed:** an unattended Telegram turn (`TELEGRAM_APPROVALS=false`) declines an approval pause and never approves it, and with buttons (below) only a tap approves; a redelivered update is one turn; the worker's lock, reclaim and dead letters cover all three clients. Until the production Caddyfile is wired to the door (spec 018, T069), production has no limits for any client.
@@ -553,9 +553,9 @@ Spec 021 (patterns 92 to 94). All of it is settings of the bot; `.env.example` h
 
 ### MCP client, crawling, search and the sandbox
 
-- 🔗 **MCP client** (`app/mcp/client.py::load_remote_tools`) binds an external server's tools into the graph. A remote tool not named in `capability_overrides` defaults to `outward`; the remote's own annotations are never trusted. What the remote says is input: a catalog can be pinned by a hash of what the model is shown (the sandbox bridge is: 5 of its 19 tools), and replies are scrubbed and cut to `MCP_TOOL_OUTPUT_MAX_CHARS` (head and tail kept). One long-lived connection per server (`app/mcp/connection.py`) replaces a process per call, and a call that may have reached the server is never sent twice (pattern 78).
-- 🕸️ **Web crawling:** [crawl4ai](https://github.com/unclecode/crawl4ai) renders JS-heavy pages (`app/ingestion/web_crawler.py`; needs the `crawl4ai` container and `CRAWL4AI_API_TOKEN`). Three `outward` tools use it: `enrich_lead_from_website` (sales), `fetch_external_reference` (support), `check_vendor_status_page` (ops).
-- 🔍 **Web search:** [serper.dev](https://serper.dev) finds the addresses those tools then read (`app/adapters/web/serper.py` the client, `app/domains/web_search.py` the tool; optional, off without `SERPER_API_KEY`). `web_search` is `outward` in support, ops and sales: each call waits for a human to approve the query, which goes to Serper and Google and spends one credit. Ecorp has none. Results are third-party text, framed as data and never numbered like a citation. Not built: metering the spend against the agent's caps; only `organic` results are read (GRAPH_PATTERNS.md pattern 87). `make web-search-check` spends one credit to test the key; `WebSearchProviderRefusing` fires when the provider refuses it.
+- 🔗 **MCP client** (`app/adapters/outbound/mcp/client.py::load_remote_tools`) binds an external server's tools into the graph. A remote tool not named in `capability_overrides` defaults to `outward`; the remote's own annotations are never trusted. What the remote says is input: a catalog can be pinned by a hash of what the model is shown (the sandbox bridge is: 5 of its 19 tools), and replies are scrubbed and cut to `MCP_TOOL_OUTPUT_MAX_CHARS` (head and tail kept). One long-lived connection per server (`app/adapters/outbound/mcp/connection.py`) replaces a process per call, and a call that may have reached the server is never sent twice (pattern 78).
+- 🕸️ **Web crawling:** [crawl4ai](https://github.com/unclecode/crawl4ai) renders JS-heavy pages (`app/adapters/outbound/crawl4ai/web_crawler.py`; needs the `crawl4ai` container and `CRAWL4AI_API_TOKEN`). Three `outward` tools use it: `enrich_lead_from_website` (sales), `fetch_external_reference` (support), `check_vendor_status_page` (ops).
+- 🔍 **Web search:** [serper.dev](https://serper.dev) finds the addresses those tools then read (`app/adapters/outbound/web/serper.py` the client, `app/domains/web_search.py` the tool; optional, off without `SERPER_API_KEY`). `web_search` is `outward` in support, ops and sales: each call waits for a human to approve the query, which goes to Serper and Google and spends one credit. Ecorp has none. Results are third-party text, framed as data and never numbered like a citation. Not built: metering the spend against the agent's caps; only `organic` results are read (GRAPH_PATTERNS.md pattern 87). `make web-search-check` spends one credit to test the key; `WebSearchProviderRefusing` fires when the provider refuses it.
 - 📦 **Sandbox:** [OpenSandbox](https://github.com/opensandbox-group/OpenSandbox) over MCP gives every domain isolated code execution (`make sandbox-up`, needs `OPENSANDBOX_API_KEY`), per tenant and conversation. The model never sees its raw ~19-tool API: `app/domains/sandbox_session.py` wraps it as four flat tools (`run_command_in_sandbox`, `run_python_in_sandbox`, `read_sandbox_file`, `write_sandbox_file`), because the raw catalog made a small model hallucinate sandbox ids (pattern 50).
 - ☣️ **Crawled text is untrusted.** `app/core/untrusted.py::frame_untrusted` wraps it in `<retrieved_document>` delimiters the system prompt calls data, not instructions, and a closing tag inside the page can't end the frame. Framing marks the boundary; the approval gate stops a model that follows it anyway (pattern 12).
 
@@ -792,7 +792,7 @@ until configured**.
 | `make up-app` | `make up` plus the containerized `api`, `agent-worker` (every domain) and `ingest-worker` |
 | `make up-all` · `make down-all` | Everything in containers behind the front door (infra, app, MCP gateway, observability; not the sandbox or SonarQube), web UI https://api.localhost:8443/; first time also `make mcp-gateway-bootstrap` and `make mcp-gateway-ca`. `down-all` stops every container, any profile (keeps data) |
 | `make serve` | API + web UI on :8000 |
-| `make chat` · `make chat-hitl` | CLI agent · with approval prompts. Both sign you in at the front door (`python -m app.channels.chat --sign-out` forgets it) and need that domain's worker: `AGENT_DOMAIN` picks it |
+| `make chat` · `make chat-hitl` | CLI agent · with approval prompts. Both sign you in at the front door (`python -m app.adapters.inbound.channels.chat --sign-out` forgets it) and need that domain's worker: `AGENT_DOMAIN` picks it |
 | `make agent-worker` · `make agent-worker-all` · `make ingest-worker` | Queue consumers: one domain (`AGENT_WORKER_DOMAINS=support,ops` picks others) · every domain · ingestion |
 | `make telegram[-support\|-sales]` · `make telegram-person ACTION=add\|disable\|enable TELEGRAM_ID=<id>` | Telegram gateway for a domain (needs `TELEGRAM_BOT_TOKEN`, `TELEGRAM_PERSON_SECRET` or the `TELEGRAM_LINKING` settings, and that domain's worker) · add, disable or re-enable a Telegram person |
 | **📥 Data and models** | |

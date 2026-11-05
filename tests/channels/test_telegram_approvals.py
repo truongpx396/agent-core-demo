@@ -1,10 +1,10 @@
-"""The state and words behind the Telegram approval buttons (app/channels/telegram_approvals.py, specs/021 FR-001). The flow that uses them, and the
+"""The state and words behind the Telegram approval buttons (app/adapters/inbound/channels/telegram_approvals.py, specs/021 FR-001). The flow that uses them, and the
 cases where a tap must do nothing, are in test_telegram_channel.py."""
 import json
 
 import pytest
 
-from app.channels.telegram_approvals import (
+from app.adapters.inbound.channels.telegram_approvals import (
     ApprovalStore,
     Pending,
     callback_data,

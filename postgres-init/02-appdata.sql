@@ -8,7 +8,7 @@ CREATE DATABASE appdata OWNER langfuse;
 
 -- Fixed, typed schema for app/agent/tools/builtin.py::query_employees — a *fixed tool*,
 -- never a text-to-SQL surface (GRAPH_PATTERNS.md pattern 21). `tenant`
--- mirrors the same column app/retrieval/qdrant_store.py's payloads carry, enforced
+-- mirrors the same column app/adapters/outbound/qdrant/qdrant_store.py's payloads carry, enforced
 -- the same way: every query app/core/sql_store.py issues is parameterized and
 -- always includes `WHERE tenant = %s`, never a value the model supplies.
 CREATE TABLE employees (

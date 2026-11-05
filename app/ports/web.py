@@ -2,7 +2,7 @@
 
 Both are outward calls to a third party the app does not run, and both are made only from a human-approved tool. The tools (`app/domains/web_search.py`,
 the page-reading tools of the support, ops and sales domains) own what to do with the answer (frame it as untrusted, scrub it, bound it); the adapters
-own how the answer is obtained (`app/adapters/web/serper.py` for Google results through serper.dev, `app/ingestion/web_crawler.py` for a rendered
+own how the answer is obtained (`app/adapters/outbound/web/serper.py` for Google results through serper.dev, `app/adapters/outbound/crawl4ai/web_crawler.py` for a rendered
 page through a crawl4ai server) and the guards that belong to the transport: the SSRF check on a URL, a retry only for a call that never landed, a
 circuit breaker.
 """

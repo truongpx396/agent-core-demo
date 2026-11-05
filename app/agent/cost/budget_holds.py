@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 # spend — see postgres-init/16-tenant-budget-holds.sql for why each turn's hold
 # carries its own timestamp instead of one running total per tenant. Generous
 # relative to REQUEST_TIMEOUT_SECONDS (60s default) for the same reason
-# app/job_queue/queue.py's THREAD_LOCK_TTL_SECONDS is: a "resume" job's own
+# app/adapters/outbound/redis/queue.py's THREAD_LOCK_TTL_SECONDS is: a "resume" job's own
 # turn isn't wrapped in that same timeout, so a legitimate hold can outlive it.
 # A turn that really runs longer simply stops being counted — the fail-open
 # direction this module takes everywhere.
@@ -41,14 +41,14 @@ async def reserve_budget(ctx: SecurityCtx | None, amount_usd: float) -> str | No
     Closes the gap between "checked" and "recorded": this turn's remaining calls aren't events yet, so without
     a hold a sibling turn racing the same tenant reads nearly the same "spent so far" and passes too. Always
     paired with `release_budget_reservation` in a `finally`, as with
-    `app/job_queue/queue.py::acquire_thread_lock`.
+    `app/adapters/outbound/redis/queue.py::acquire_thread_lock`.
 
     Returns the hold id, or None if nothing was reserved (invalid ctx, non-positive amount, write failed).
     Best-effort and fail-open like every write here: a failure just leaves this turn unprotected against a
     concurrent sibling.
 
     The sweep of this tenant's abandoned holds shares the insert's transaction (the adapter's, see
-    `app/adapters/postgres/budget_holds.py`). It is housekeeping, not correctness: the read already ignores stale holds.
+    `app/adapters/outbound/postgres/budget_holds.py`). It is housekeeping, not correctness: the read already ignores stale holds.
     """
     if not valid_ctx(ctx) or amount_usd <= 0:
         return None

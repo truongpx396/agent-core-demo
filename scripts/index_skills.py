@@ -13,11 +13,15 @@ written to Qdrant (disk stays the source of truth; see app/agent/tools/skill_cat
 import asyncio
 import uuid
 
+from app.adapters.outbound.embeddings.embeddings import (
+    embed_document,
+    embed_sparse,
+    embedding_dim,
+)
+from app.adapters.outbound.qdrant import qdrant_store
 from app.agent.tools import skill_catalog as skills_module
 from app.bootstrap import wire
 from app.core.config import SKILLS_COLLECTION
-from app.retrieval import qdrant_store
-from app.retrieval.embeddings import embed_document, embed_sparse, embedding_dim
 
 
 async def main() -> None:

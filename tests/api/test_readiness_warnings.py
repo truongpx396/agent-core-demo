@@ -13,9 +13,9 @@ from pathlib import Path
 import pytest
 from fastapi import Response
 
-from app.api import health
-from app.api.routers import system
-from app.retrieval import qdrant_store
+from app.adapters.inbound.api import health
+from app.adapters.inbound.api.routers import system
+from app.adapters.outbound.qdrant import qdrant_store
 
 
 class _Cursor:

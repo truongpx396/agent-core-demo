@@ -18,16 +18,15 @@ REPO = Path(__file__).resolve().parents[2]
 
 # Importing one of these means the module reaches a port, directly or through what it calls.
 APPLICATION_PACKAGES = (
-    "app.agent", "app.domains", "app.ports", "app.adapters", "app.retrieval", "app.ingestion", "app.job_queue", "app.channels", "app.api",
-    "app.mcp",
+    "app.agent", "app.domains", "app.ports", "app.adapters", "app.ingestion",
 )
 
 # (entrypoint, why it needs no wiring)
 EXEMPT = {
     "scripts/telegram_person.py": "an operator tool over the authorization server's HTTP API; it imports two pure helpers from a channel module and calls no port",
-    "app/channels/chat.py": "a client of the chat API through the front door (specs/020): plain HTTP, it reaches no port and never touches the queue or the graph",
-    "app/channels/telegram.py": "a client of the chat API through the front door (specs/020): plain HTTP, it reaches no port and never touches the graph; its Redis state is its own small keys (offset, inbox, approvals, links) and its listener serves only the webhook and the link pages (specs/021)",
-    "app/channels/telegram_server.py": "the Telegram channel's own listener, run inside app/channels/telegram.py's process (exempt above for the same reason): it serves the webhook and the link pages and reaches no port",
+    "app/adapters/inbound/channels/chat.py": "a client of the chat API through the front door (specs/020): plain HTTP, it reaches no port and never touches the queue or the graph",
+    "app/adapters/inbound/channels/telegram.py": "a client of the chat API through the front door (specs/020): plain HTTP, it reaches no port and never touches the graph; its Redis state is its own small keys (offset, inbox, approvals, links) and its listener serves only the webhook and the link pages (specs/021)",
+    "app/adapters/inbound/channels/telegram_server.py": "the Telegram channel's own listener, run inside app/adapters/inbound/channels/telegram.py's process (exempt above for the same reason): it serves the webhook and the link pages and reaches no port",
     "scripts/litellm_key.py": "mints a gateway key over HTTP; it imports one pure helper (`admin_base_url`) from an adapter module and calls no port",
 }
 
@@ -100,7 +99,7 @@ def test_scheduled_job_wires_for_the_one_shot_jobs_that_run_inside_it():
         ('from app.agent import cost\nfrom app.bootstrap import wire\nif __name__ == "__main__":\n    wire()\n    cost.run()\n', False),
         ('from app.agent import cost\nfrom app import bootstrap\ndef main():\n    bootstrap.wire()\nif __name__ == "__main__":\n    main()\n', False),
         ('from app.core.job_runtime import scheduled_job\nfrom app.domains import notify\nif __name__ == "__main__":\n    with scheduled_job("x"):\n        pass\n', False),
-        ('from app.mcp import server\nif __name__ == "__main__":\n    server.main()\n', True),
+        ('from app.adapters.inbound.mcp import server\nif __name__ == "__main__":\n    server.main()\n', True),
         # not an entrypoint, or reaches nothing that needs a port
         ('from app.agent import cost\ndef helper():\n    cost.run()\n', False),
         ('import json\nfrom app.core.config import settings\nif __name__ == "__main__":\n    print(json.dumps({}))\n', False),

@@ -3,7 +3,7 @@
 
 The policy (what a window is, which limit applies, what a failed read means, what is counted when a write fails) stays in
 `app/agent/cost/`. What these ports hide is where the numbers live: Postgres for the events, the holds and the overrides
-(`app/adapters/postgres/`), LiteLLM for the spend log (`app/adapters/litellm/`).
+(`app/adapters/outbound/postgres/`), LiteLLM for the spend log (`app/adapters/outbound/litellm/`).
 
 Two conventions every adapter keeps, because the application's fail-open and fail-closed choices are written against them:
 - a read or write that cannot reach its system RAISES. The application decides what that means (`budgets.check` applies the failure

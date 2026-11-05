@@ -9,15 +9,15 @@ from pathlib import Path
 
 import pytest
 
+from app.adapters.outbound.embeddings import embeddings as emb
+from app.adapters.outbound.redis import semantic_cache
 from app.core.config import Settings
-from app.retrieval import embeddings as emb
-from app.retrieval import semantic_cache
 
 REPO = Path(__file__).resolve().parents[2]
 SCANNED = ["app", "scripts"]
 # The evaluation harness drives the app's own embedding client directly, on purpose: it applies a CANDIDATE's declared prefixes so a
 # prefix A/B is two candidates over one alias (specs/014 research.md, T039). Nothing else may.
-ALLOWED_DIRECT_CLIENT_USERS = {"app/retrieval/embeddings.py"}
+ALLOWED_DIRECT_CLIENT_USERS = {"app/adapters/outbound/embeddings/embeddings.py"}
 ALLOWED_DIRECT_CLIENT_DIRS = ("scripts/model_eval/",)
 OLD_NAMES = {"embed_text", "embed_texts"}
 RAW_CLIENT_METHODS = {"aembed_query", "aembed_documents", "embed_query", "embed_documents"}
@@ -80,7 +80,7 @@ def test_only_the_embeddings_module_and_the_harness_call_the_raw_embedding_clien
         for node in ast.walk(ast.parse(path.read_text())):
             if isinstance(node, ast.Attribute) and node.attr in {"aembed_query", "aembed_documents"}:
                 offenders.append(f"{rel}:{node.lineno}")
-    assert offenders == [], f"call app.retrieval.embeddings.embed_query / embed_document(s) instead: {offenders}"
+    assert offenders == [], f"call app.adapters.outbound.embeddings.embeddings.embed_query / embed_document(s) instead: {offenders}"
 
 
 # ---- the prefixes reach the text the model sees ---------------------------------------------------------------------------------

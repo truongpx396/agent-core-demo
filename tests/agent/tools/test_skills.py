@@ -111,7 +111,7 @@ class TestLoadSkills:
     def test_a_malformed_skill_is_skipped_not_fatal_to_the_whole_catalog(self, tmp_path):
         """One bad SKILL.md must not take down every other skill — the
         same 'degrade a single failing leg, not the whole call' posture
-        app/retrieval/qdrant_store.py already applies to hybrid_search."""
+        app/adapters/outbound/qdrant/qdrant_store.py already applies to hybrid_search."""
         _write_skill(tmp_path, "good-skill", _VALID.replace("expense-summary", "good-skill"))
         _write_skill(tmp_path, "bad-skill", "no frontmatter here at all")
 

@@ -16,6 +16,7 @@ import pytest
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, SystemMessage
 
+from app.adapters.outbound.qdrant import qdrant_store
 from app.agent.tools import builtin as tools
 from app.agent.tools import run_subagent as subagent_tools
 from app.agent.tools import skill_catalog as skills_module
@@ -52,7 +53,6 @@ from app.domains.ecorp.tools import (
     query_employees,
     remember,
 )
-from app.retrieval import qdrant_store
 from tests.conftest import TEST_CTX, metric_value
 from tests.ecorp import (
     ECORP_DOMAIN_PLUGIN,
@@ -111,7 +111,7 @@ class TestAddNoteImpl:
         monkeypatch.setattr(ecorp_store, "embed_document", fake_embed_text)
         monkeypatch.setattr(ecorp_store, "embed_sparse", lambda text: ([1, 2], [0.5, 0.5]))
         # `tools.qdrant_store` is the same module object as the `qdrant_store`
-        # imported above (app/agent/tools/builtin.py does `from app.retrieval import qdrant_store`) —
+        # imported above (app/agent/tools/builtin.py does `from app.adapters.outbound.qdrant import qdrant_store`) —
         # this patches the one `.upsert` attribute both names resolve to.
         monkeypatch.setattr(qdrant_store, "upsert", fake_upsert)
 
@@ -312,7 +312,7 @@ class TestSearchDocsCtx:
         """The concrete manifestation of tenant isolation at the query
         layer: two tenants never produce the same scope (and so the same server-side predicate),
         so one tenant's search can't be satisfied by another's data —
-        this is what "pre-filter, not post-filter" (app/retrieval/qdrant_store.py)
+        this is what "pre-filter, not post-filter" (app/adapters/outbound/qdrant/qdrant_store.py)
         actually buys."""
         seen_filters = []
 
@@ -349,7 +349,7 @@ class TestSearchDocsCtx:
 
         assert captured["doc_ids"] == ["abc", "def"]
         # The scope is passed through UNCHANGED alongside doc_ids
-        # — _build_filter (app/retrieval/qdrant_store.py) is what ANDs them
+        # — _build_filter (app/adapters/outbound/qdrant/qdrant_store.py) is what ANDs them
         # together server-side, not search_docs replacing one with the other.
         assert captured["scope"].tenant == TEST_CTX["tenant"]
 

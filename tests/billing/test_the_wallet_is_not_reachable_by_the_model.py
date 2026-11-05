@@ -17,7 +17,8 @@ REPO = Path(__file__).resolve().parents[2]
 # Everything that defines, wraps or serves a tool the model can call.
 TOOL_MODULES = [
     *sorted((REPO / "app" / "domains").rglob("*.py")),
-    *sorted((REPO / "app" / "mcp").rglob("*.py")),
+    *sorted((REPO / "app" / "adapters" / "inbound" / "mcp").rglob("*.py")),
+    *sorted((REPO / "app" / "adapters" / "outbound" / "mcp").rglob("*.py")),
     *sorted((REPO / "app" / "agent" / "tools").rglob("*.py")),
 ]
 

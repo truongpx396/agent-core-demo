@@ -13,7 +13,7 @@ import asyncio
 
 import pytest
 
-from app.adapters.notify import team_channel as team_channel_adapter
+from app.adapters.outbound.notify import team_channel as team_channel_adapter
 from app.core import gateway
 from scripts import followup_sweep
 

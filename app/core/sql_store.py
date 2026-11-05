@@ -31,7 +31,7 @@ POOLER_SAFE_CONNECTION_KWARGS = {"prepare_threshold": None}
 # qdrant_store.py/semantic_cache.py's own lazy clients).
 #
 # `AsyncConnectionPool`, same loop-affinity constraint as
-# app/adapters/postgres/checkpointing.py::PgCheckpointing.open's pool: bound to whichever loop was
+# app/adapters/outbound/postgres/checkpointing.py::PgCheckpointing.open's pool: bound to whichever loop was
 # running at first open, and every later get_connection() must be awaited
 # from that SAME loop. Fine for every real long-lived process here (each
 # holds one loop for its lifetime). No explicit init_*_async() call wired
@@ -94,7 +94,7 @@ async def get_connection():
 
 async def close_pool() -> None:
     """Shut the pool down cleanly — an unclosed pool leaves background
-    asyncio tasks running at process exit. `app/api/main.py`'s `lifespan`
+    asyncio tasks running at process exit. `app/adapters/inbound/api/main.py`'s `lifespan`
     calls this on shutdown; a no-op if the pool was never opened."""
     global _pool
     if _pool is not None:

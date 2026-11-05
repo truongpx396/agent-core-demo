@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 from qdrant_client.models import PointStruct, SparseVector
 
-from app.retrieval import qdrant_store
+from app.adapters.outbound.qdrant import qdrant_store
 from scripts import reembed
 from scripts.reembed import ReembedError
 from tests.conftest import TEST_EMBEDDING_IDENTITY

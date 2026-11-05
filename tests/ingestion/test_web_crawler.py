@@ -1,4 +1,4 @@
-"""Tests for app/ingestion/web_crawler.py. Two boundaries are mocked, per this suite's "mock the boundary, not
+"""Tests for app/adapters/outbound/crawl4ai/web_crawler.py. Two boundaries are mocked, per this suite's "mock the boundary, not
 the whole library" convention (e.g. tests/mcp/test_mcp_client.py mocks
 `_list_remote_tools`/`_call_remote_tool`, not the stdio transport beneath them):
 
@@ -19,9 +19,9 @@ backoff.
 
 import pytest
 
+from app.adapters.outbound.crawl4ai import web_crawler
 from app.core.resilience import CircuitBreaker
 from app.core.url_safety import UnsafeURLError
-from app.ingestion import web_crawler
 
 
 class _FakeResult:

@@ -3,7 +3,7 @@
     make web-search-check        # spends ONE serper.dev credit; not part of `make test`
 
 Run it after setting or rotating the key, and after the `WebSearchProviderRefusing` alert fires: the alert says the provider is refusing,
-this says whether the fix took. It goes through `app/adapters/web/serper.py` (not a hand-built request), so a pass means the tool's own path works,
+this says whether the fix took. It goes through `app/adapters/outbound/web/serper.py` (not a hand-built request), so a pass means the tool's own path works,
 including the header, the response parsing and the result cap. It prints the outcome and the first result, never the key.
 
 Exit 0 = results came back, 1 = the provider or the network refused or failed it, 2 = no key is configured.
@@ -12,7 +12,7 @@ import asyncio
 import sys
 
 from app import bootstrap
-from app.adapters.web import serper
+from app.adapters.outbound.web import serper
 
 QUERY = "serper.dev google search api"
 

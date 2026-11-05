@@ -1,6 +1,6 @@
 """The `MetricsReader` adapter (`app/ports/ops.py`): pulls this app's own operational metrics from the Prometheus this repo already ships
 (`docker-compose.observability.yml`, `make obs-up`) — not a new data source, and not a new dependency (`httpx` is already used elsewhere, e.g.
-app/channels/telegram.py, app/ingestion/ingestor.py).
+app/adapters/inbound/channels/telegram.py, app/ingestion/ingestor.py).
 
 Which checks exist, and what makes a reading an anomaly, is the domain's (`metric_checks.py`).
 """

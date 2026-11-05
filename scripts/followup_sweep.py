@@ -8,7 +8,7 @@ an unattended cron run can never satisfy should_continue's mandatory
 human_approval gate, so this never calls schedule_followup/
 handoff_to_human/log_lead_interaction through the real agent loop — those
 are for the interactive sales domain (a human actually present, via
-app/channels/telegram.py). This script only drafts; the human stays in the
+app/adapters/inbound/channels/telegram.py). This script only drafts; the human stays in the
 loop for both sending and any handoff decision.
 
 Meant to be wired to real cron, e.g.:

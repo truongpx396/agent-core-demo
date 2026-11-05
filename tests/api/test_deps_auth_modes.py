@@ -12,8 +12,8 @@ import pytest
 from fastapi import Depends, FastAPI
 from fastapi.testclient import TestClient
 
-from app.api import deps, identity
-from app.api import main as api
+from app.adapters.inbound.api import deps, identity
+from app.adapters.inbound.api import main as api
 from app.core import metrics
 from app.core.errors import AUTH_ERRORS, ErrorCode
 from app.core.internal_identity import InternalIdentityVerifier, InternalKeys

@@ -18,7 +18,7 @@ here; it is still safe (the fallback verifies and limits it), only unclassified.
 import json
 from pathlib import Path
 
-from app.api import main as api
+from app.adapters.inbound.api import main as api
 from credit_billing import http as billing_http
 
 TABLE = json.loads((Path(__file__).resolve().parents[2] / "services" / "authlimit" / "routes.json").read_text())

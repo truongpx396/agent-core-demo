@@ -20,7 +20,7 @@ import string
 
 import pytest
 
-from app.retrieval import semantic_cache
+from app.adapters.outbound.redis import semantic_cache
 
 # Everything an ASCII-punctuation or whitespace character could be, minus the one
 # the TAG grammar treats as part of a word.

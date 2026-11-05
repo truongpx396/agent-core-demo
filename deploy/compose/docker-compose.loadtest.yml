@@ -11,7 +11,7 @@ services:
     environment:
       OPENAI_API_BASE: http://host.docker.internal:9009/v1
       # Raised from the defaults (10/10, app/core/config.py) on this one replica, to test whether checkpoint-lock contention (the saver's
-      # per-instance lock, app/adapters/postgres/checkpointing.py) caps in-process throughput even with both knobs open.
+      # per-instance lock, app/adapters/outbound/postgres/checkpointing.py) caps in-process throughput even with both knobs open.
       AGENT_WORKER_MAX_CONCURRENCY: "50"
       CHECKPOINTER_POOL_MAX_SIZE: "50"
 

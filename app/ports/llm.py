@@ -1,13 +1,13 @@
 """The chat model, as the agent uses it: a client to call, and a way to read why a call failed.
 
-`ChatModels.build` returns a LangChain chat model bound to the domain's tools, pointed at the LiteLLM gateway (`app/adapters/litellm/chat_model.py`).
+`ChatModels.build` returns a LangChain chat model bound to the domain's tools, pointed at the LiteLLM gateway (`app/adapters/outbound/litellm/chat_model.py`).
 The graph, the compaction and follow-up calls and the nested subagent runs all build theirs through it, and a test hands the graph its own
 (`GraphDeps.llm`, `GraphDeps.llm_factory`) without touching it. Which alias to call, whether the tool schemas are strict and what a turn may spend
 are the application's (`app/agent/graph/utils.py::make_llm`, `app/agent/cost/`).
 
 `LlmFailures` reads a failure raised by that client. What the application does with it (never retry a budget stop, answer a guardrail refusal
 instead of failing, fall back to the local model when the routed one is unreachable) is policy in the graph and `app/core/gateway.py`; what
-the SDK's exceptions LOOK like is the adapter's (`app/adapters/litellm/failures.py`), so no SDK class is named outside it.
+the SDK's exceptions LOOK like is the adapter's (`app/adapters/outbound/litellm/failures.py`), so no SDK class is named outside it.
 """
 from __future__ import annotations
 

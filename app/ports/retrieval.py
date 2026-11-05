@@ -2,14 +2,14 @@
 
 `DocumentIndex` is hybrid search over tenant-scoped documents and per-person memories, plus lookups in the catalog collections (skills,
 subagents) that hold no tenant data. The ranking pipeline (dense + sparse, fused, reranked, degrading at each stage) is the adapter's
-(`app/retrieval/qdrant_store.py`); what the application owns is WHAT may be seen: every search of tenant data carries an `AccessScope`
+(`app/adapters/outbound/qdrant/qdrant_store.py`); what the application owns is WHAT may be seen: every search of tenant data carries an `AccessScope`
 (`app/core/security.py`), and the adapter MUST apply it as a pre-filter inside the query (constitution Principle I).
 
 The two search methods are separate on purpose. `search` cannot be called without a scope, so a tenant-data search that forgets its scope is a
 `TypeError`, not a cross-tenant read. `search_catalog` names the unscoped case, so every place that reads without a tenant is one grep away.
 
 `AnswerCache` is the semantic cache of finished answers, keyed by the caller's tenant and person so one never serves another
-(`app/retrieval/semantic_cache.py`). It fails open: a miss and an unreachable cache look the same to the graph.
+(`app/adapters/outbound/redis/semantic_cache.py`). It fails open: a miss and an unreachable cache look the same to the graph.
 """
 from __future__ import annotations
 

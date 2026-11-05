@@ -1,5 +1,5 @@
 # One image, three roles — the API service and both queue workers
-# (app/job_queue/agent_worker.py, app/ingestion/ingest_worker.py) are the same codebase and the
+# (app/adapters/inbound/workers/agent_worker.py, app/adapters/inbound/workers/ingest_worker.py) are the same codebase and the
 # same dependency set, just a different entrypoint command. docker-compose.yml
 # builds this once and overrides `command:` per service rather than
 # maintaining three near-identical Dockerfiles.
@@ -83,7 +83,7 @@ FROM base AS runtime
 # psycopg[binary]/lxml/pillow all ship manylinux wheels for this base
 # image's platform. No headless-browser install here — crawl4ai now runs
 # in its own dockerized server (docker-compose.yml's `crawl4ai` service,
-# GRAPH_PATTERNS.md pattern 50); app/ingestion/web_crawler.py talks to it
+# GRAPH_PATTERNS.md pattern 50); app/adapters/outbound/crawl4ai/web_crawler.py talks to it
 # over HTTP, so this image never launches a browser itself.
 #
 # `apt-get upgrade -y` before the install: pulls security patches for
@@ -138,10 +138,10 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/health/ready', timeout=3)" || exit 1
 
 # The API service is the default role; agent-worker/ingest-worker override
-# this in docker-compose.yml (`command: ["python", "-m", "app.job_queue.agent_worker"]`
-# / `app.ingestion.ingest_worker`) — neither of those binds a port, so EXPOSE/
+# this in docker-compose.yml (`command: ["python", "-m", "app.adapters.inbound.workers.agent_worker"]`
+# / `app.adapters.inbound.workers.ingest_worker`) — neither of those binds a port, so EXPOSE/
 # HEALTHCHECK above are meaningful for this default role only. A compose service
 # inherits the image's HEALTHCHECK unless it says otherwise, so each worker also sets
 # `healthcheck: *worker-healthcheck` (disabled) in both compose files; without it every
 # worker reports `unhealthy` for a port it never opens.
-CMD ["uvicorn", "app.api.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uvicorn", "app.adapters.inbound.api.main:app", "--host", "0.0.0.0", "--port", "8000"]

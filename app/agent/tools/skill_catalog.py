@@ -19,7 +19,7 @@ The OWNER folder says who may see the skill: a domain name (`app/domains/registr
 this module only carries the fact.
 
 This is the DISK side only, the source of truth for a skill's full body. `builtin.py::use_skill` reads the
-`body` from here by exact `name`, never from Qdrant: the `skills` collection (`app/retrieval/qdrant_store.py`,
+`body` from here by exact `name`, never from Qdrant: the `skills` collection (`app/adapters/outbound/qdrant/qdrant_store.py`,
 built by `scripts/index_skills.py`) holds only `{name, description}`, just enough for `skill_search` to find
 the right name. Keeping "searchable" (Qdrant) and "authoritative" (this module) as two systems means a skill's
 instructions can't drift from what's on disk.
@@ -77,7 +77,7 @@ _skills_cache: dict[str, SkillRecord] | None = None
 
 def get_skills() -> dict[str, SkillRecord]:
     """Lazy-loaded, process-wide catalog — same lazy-singleton shape as
-    `app/retrieval/embeddings.py`'s `_get_sparse_model()`/`_get_reranker()`,
+    `app/adapters/outbound/embeddings/embeddings.py`'s `_get_sparse_model()`/`_get_reranker()`,
     so a small, rarely-changing on-disk catalog isn't re-parsed on every
     single `use_skill` call. See `reload_skills` to force a re-scan."""
     global _skills_cache

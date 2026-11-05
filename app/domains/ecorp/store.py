@@ -8,9 +8,9 @@ returned to the model are the use cases' (`usecases.py`).
 import asyncio
 from datetime import datetime
 
+from app.adapters.outbound.embeddings.embeddings import embed_document, embed_sparse
+from app.adapters.outbound.qdrant import qdrant_store
 from app.core import sql_store
-from app.retrieval import qdrant_store
-from app.retrieval.embeddings import embed_document, embed_sparse
 
 
 async def sparse_vector_or_none(text: str) -> tuple[list[int], list[float]] | None:
@@ -20,7 +20,7 @@ async def sparse_vector_or_none(text: str) -> tuple[list[int], list[float]] | No
     rather than blocking a write on a hybrid-search quality concern — same
     degrade-don't-block posture as hybrid_search's read side.
 
-    `embed_sparse` is local ONNX/CPU compute (`app/retrieval/embeddings.py`),
+    `embed_sparse` is local ONNX/CPU compute (`app/adapters/outbound/embeddings/embeddings.py`),
     so it's dispatched via `asyncio.to_thread` here too, same as
     `qdrant_store.py::hybrid_search`'s read-side call — a bare sync call
     would otherwise block every OTHER turn sharing this process's event

@@ -1,11 +1,11 @@
-"""The bot's HTTP listener (app/channels/telegram_server.py, specs/021 FR-007, FR-008): the webhook is authenticated by the secret Telegram was given, puts
+"""The bot's HTTP listener (app/adapters/inbound/channels/telegram_server.py, specs/021 FR-007, FR-008): the webhook is authenticated by the secret Telegram was given, puts
 the update on the inbox before it answers 200, and the link pages escape what they show and are not cacheable or frameable."""
 import httpx
 import pytest
 
-from app.channels import telegram_server
-from app.channels.telegram_inbox import Inbox
-from app.channels.telegram_link import ToConfirm
+from app.adapters.inbound.channels import telegram_server
+from app.adapters.inbound.channels.telegram_inbox import Inbox
+from app.adapters.inbound.channels.telegram_link import ToConfirm
 from app.core import metrics
 from app.core.config import settings
 from tests.channels.telegram_fakes import FakeRedis, message

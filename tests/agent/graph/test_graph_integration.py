@@ -729,8 +729,8 @@ class TestMandatoryCapabilityGate:
         # (embedding + Qdrant upsert) the same way test_tools.py does, so
         # this stays a hermetic graph test rather than needing live
         # services just because the *approved* path runs a real tool.
+        from app.adapters.outbound.qdrant import qdrant_store
         from app.domains.ecorp import store as ecorp_store
-        from app.retrieval import qdrant_store
 
         async def fake_embed_text(text):
             return [0.0]

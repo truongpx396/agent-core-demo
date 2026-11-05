@@ -1,4 +1,4 @@
-"""Tests for app/ingestion/ingest_worker.py's process_job — the production
+"""Tests for app/adapters/inbound/workers/ingest_worker.py's process_job — the production
 ingestion pipeline's queue consumer. object_store.download_bytes and the
 extractors are monkeypatched so these never touch a real MinIO/PDF/DOCX;
 ingestor.ingest_text is monkeypatched too, so these test the
@@ -11,8 +11,9 @@ import json
 import threading
 import time
 
-from app.ingestion import ingest_queue, ingest_worker
-from app.job_queue.queue import dead_letter_stream_key
+from app.adapters.inbound.workers import ingest_worker
+from app.adapters.outbound.redis import ingest_queue
+from app.adapters.outbound.redis.queue import dead_letter_stream_key
 from tests.conftest import metric_value as _count
 from tests.job_queue.test_queue import FakeRedis
 

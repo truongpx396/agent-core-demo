@@ -16,7 +16,7 @@ from app.core.routing_policy import DEFAULT_LONG_PROMPT_CHARS
 # The billing package's own settings (specs/011-billing-module-boundary, specs/013-billing-owns-the-meter): every billing variable (providers,
 # webhooks, credentials, the rate, the gate, the export, the wallet reconciliation) is defined in the package, with its validators. `Settings`
 # inherits the class, so the environment variables, defaults and bounds are exactly what they were. The agent app itself reads only the webhook
-# route's rate limit from here (a host middleware, `app/api/rate_limit.py`); everything else billing is read by the package.
+# route's rate limit from here (a host middleware, `app/adapters/inbound/api/rate_limit.py`); everything else billing is read by the package.
 from credit_billing.settings import (  # noqa: F401 - re-export: the host's webhook rate-limit middleware reads the limit from here
     BILLING_WEBHOOK_RATE_LIMIT_PER_MINUTE,
     BillingSettings,
@@ -50,11 +50,11 @@ class Settings(BillingSettings):
     # instruction prefix" (`search_query: ` for a question, `search_document: ` for a stored passage); until these settings existed the
     # app sent the same raw text for both, because one function (`embed_text`) served both roles. Both default to EMPTY so behavior is
     # unchanged: a prefix changes the embedding space even though the model does not, so turning one on needs `make reembed` for every
-    # collection, which the embedding identity (app/retrieval/embedding_identity.py) makes impossible to forget. The A/B that says whether
+    # collection, which the embedding identity (app/adapters/outbound/embeddings/embedding_identity.py) makes impossible to forget. The A/B that says whether
     # it is worth it is `make model-eval` (specs/014 User Story 1), not an assumption.
     embed_query_prefix: str = ""
     embed_document_prefix: str = ""
-    # An operator label folded into the embedding identity. The alias resolver (app/adapters/litellm/model_catalog.py) sees which model an alias
+    # An operator label folded into the embedding identity. The alias resolver (app/adapters/outbound/litellm/model_catalog.py) sees which model an alias
     # points at, but not that the same name was re-pulled to different weights in place (an Ollama tag moved); bump this when that
     # happens so the identity changes and the guard demands a re-embed.
     embed_model_revision: str = ""
@@ -87,7 +87,7 @@ class Settings(BillingSettings):
     # degrade gracefully when unreachable (see test_durable_checkpoint.py).
     checkpointer_database_url: str = "postgresql://langfuse:langfuse@localhost:5432/checkpointer"
 
-    # Hybrid retrieval (app/retrieval/embeddings.py, qdrant_store.py) — sparse
+    # Hybrid retrieval (app/adapters/outbound/embeddings/embeddings.py, qdrant_store.py) — sparse
     # (BM25) + dense, fused server-side, then cross-encoder reranked. See
     # GRAPH_PATTERNS.md pattern 20.
     #
@@ -176,14 +176,14 @@ class Settings(BillingSettings):
     # the same Postgres as LiteLLM/Langfuse, not sharing their schema.
     appdata_database_url: str = "postgresql://langfuse:langfuse@localhost:5432/appdata"
 
-    # Semantic cache (app/retrieval/semantic_cache.py) — Redis Stack
+    # Semantic cache (app/adapters/outbound/redis/semantic_cache.py) — Redis Stack
     # (RediSearch, for vector KNN), not plain Redis.
     redis_url: str = "redis://localhost:6379"
     semantic_cache_similarity_threshold: float = 0.95  # cosine; a query must
     # be nearly identical in meaning to reuse a cached answer, not just topically close
     semantic_cache_ttl_seconds: int = 3600
 
-    # Cross-session memory retention (app/core/security.py, app/retrieval/memory.py)
+    # Cross-session memory retention (app/core/security.py, app/adapters/outbound/qdrant/memory.py)
     # — a memory older than this is invisible at RECALL time (Policy.lower),
     # not just eventually removed by delete_memories (pattern 33).
     memory_retention_days: int = 365
@@ -325,7 +325,7 @@ class Settings(BillingSettings):
     # outer widening never helped the one timeout actually firing.
     subagent_timeout_seconds: int = 45
 
-    # Object storage for uploaded documents (app/ingestion/object_store.py) —
+    # Object storage for uploaded documents (app/adapters/outbound/minio/object_store.py) —
     # MinIO, self-hosted S3-compatible (docker-compose's `minio` service).
     # Defaults match that service's own MINIO_ROOT_USER/MINIO_ROOT_PASSWORD.
     minio_endpoint: str = "localhost:9000"
@@ -334,7 +334,7 @@ class Settings(BillingSettings):
     minio_bucket: str = "ingest-uploads"
     minio_secure: bool = False  # plain http:// for local docker-compose; a real deployment sets this True
 
-    # Telegram channel (app/channels/telegram.py, pattern 42) — empty by
+    # Telegram channel (app/adapters/inbound/channels/telegram.py, pattern 42) — empty by
     # default so the bot refuses to start rather than run with no way to
     # authenticate. Create a bot via @BotFather. The one surface in this app
     # that necessarily reaches the public internet.
@@ -367,7 +367,7 @@ class Settings(BillingSettings):
     sandbox_ttl_seconds: int = 1800  # 30 min — enough for several human-approval
     # pauses, short enough that an abandoned sandbox doesn't linger.
 
-    # Team-channel notifications (app/adapters/notify/team_channel.py) — used by the ops
+    # Team-channel notifications (app/adapters/outbound/notify/team_channel.py) — used by the ops
     # bot's post_to_team_channel and support/sales's escalate/handoff tools.
     # Empty by default: degrades to a local file+log sink rather than
     # refusing to start (opposite posture from TELEGRAM_BOT_TOKEN) — a demo
@@ -375,7 +375,7 @@ class Settings(BillingSettings):
     slack_webhook_url: str = ""
 
     # How long POST /chat/stream/queued's own submission-dedup window stays
-    # open (app/job_queue/queue.py::claim_or_get_existing_submission) — an
+    # open (app/adapters/outbound/redis/queue.py::claim_or_get_existing_submission) — an
     # identical (thread_id, text, images) resubmission within this window
     # reuses the first attempt's request_id instead of publishing a second,
     # independent turn (see that function's own docstring for the gap this
@@ -388,13 +388,13 @@ class Settings(BillingSettings):
     chat_submit_dedup_ttl_seconds: int = 10
 
     # Bounds ONLY the wait for the FIRST event ever published to a
-    # queued chat job's own results stream (app/job_queue/queue.py::
+    # queued chat job's own results stream (app/adapters/outbound/redis/queue.py::
     # read_results's `first_event_deadline_seconds`) — not the whole
     # turn. Closes a real hang: nothing previously distinguished "a
     # worker is genuinely still working on this" from "nobody is
     # listening at all" (no agent-worker process running for this
     # domain, or a submission-dedup claim left pointing at a request_id
-    # whose publish then failed — see app/api/routers/chat.py's own compensating
+    # whose publish then failed — see app/adapters/inbound/api/routers/chat.py's own compensating
     # delete for that case); `if not response: continue` loops forever
     # in either. Once ANY real event has arrived the job is known alive,
     # and this bound stops applying — a legitimately slow turn is still
@@ -404,7 +404,7 @@ class Settings(BillingSettings):
     chat_first_response_deadline_seconds: int = 30
 
     # Same idea as chat_first_response_deadline_seconds above, against
-    # app/ingestion/ingest_queue.py's own results stream — but ingest jobs
+    # app/adapters/outbound/redis/ingest_queue.py's own results stream — but ingest jobs
     # publish a `started` event almost immediately after picking up a job
     # (well before extraction/embedding, which CAN legitimately run for
     # minutes on a large PDF — see ingest_worker_reclaim_idle_seconds's
@@ -421,7 +421,7 @@ class Settings(BillingSettings):
     # `-np 1` ceiling vs a genuinely concurrent backend).
     agent_worker_max_concurrency: int = 10
 
-    # app/adapters/postgres/checkpointing.py::PgCheckpointing.open's AsyncConnectionPool size.
+    # app/adapters/outbound/postgres/checkpointing.py::PgCheckpointing.open's AsyncConnectionPool size.
     # Raising this ALONE won't raise checkpoint throughput past one
     # connection's worth: AsyncPostgresSaver wraps every checkpoint I/O in
     # one `asyncio.Lock()` per saver instance guarding pool.connection()
@@ -486,7 +486,7 @@ class Settings(BillingSettings):
     max_auto_reclaim_retries: int = 1
 
     # app/agent/runtime/stream.py::astream_events_turn_unattended — how many
-    # times an UNATTENDED caller (app/channels/telegram.py: no approve/reject UX)
+    # times an UNATTENDED caller (app/adapters/inbound/channels/telegram.py: no approve/reject UX)
     # auto-declines a pause on one turn before giving up and CANCELLING the run.
     # The model can re-request a declined write; each re-request pauses the
     # conversation again, and an unattended channel can never resolve a pause —
@@ -497,7 +497,7 @@ class Settings(BillingSettings):
     # rather than looping. Bounded, never unbounded (constitution Principle V).
     unattended_max_decline_rounds: int = 3
 
-    # Cap on app/job_queue/queue.py::get_client()'s connection pool —
+    # Cap on app/adapters/outbound/redis/queue.py::get_client()'s connection pool —
     # redis-py's default (100) is easy to blow through since every
     # POST /chat/stream/queued SSE connection holds a pooled connection for
     # its turn's full blocking-read duration (XREAD BLOCK), not a quick
@@ -512,7 +512,7 @@ class Settings(BillingSettings):
     # A real multi-origin deployment narrows this (see deploy/env/prod.env.example).
     cors_allowed_origins: str = "*"
 
-    # How the API learns WHO is calling (app/api/deps.py::get_ctx; specs/018). In `identity` mode (the default) it trusts one thing: the
+    # How the API learns WHO is calling (app/adapters/inbound/api/deps.py::get_ctx; specs/018). In `identity` mode (the default) it trusts one thing: the
     # short-lived signed identity the front door (the authlimit service) puts on a request it has verified, checked against the front
     # door's published public keys (app/core/internal_identity.py). The client's own X-Tenant-Id / X-Principal-Id are ignored. In `headers`
     # mode it trusts those two headers as it always did: for the hermetic tests and for running the API directly with no front door, and
@@ -529,14 +529,14 @@ class Settings(BillingSettings):
     # failed refresh is an outage). The cost of waiting is that a key withdrawn for compromise stays trusted for this long; the benefit is that
     # one dead authlimit replica behind a round-robin name does not turn every request into a 503. Past it the API refuses (503), never guesses.
     authlimit_keys_stale_grace_seconds: int = Field(default=600, ge=0, le=3600)
-    # The built-in web page's sign-in (app/api/static/auth.js; identity mode only): where the authorization server is (the `iss` a token carries),
+    # The built-in web page's sign-in (app/adapters/inbound/api/static/auth.js; identity mode only): where the authorization server is (the `iss` a token carries),
     # the audience the page asks the token for (RFC 8707 `resource`; the front door refuses a token for any other), and the scope. They must be
     # what the front door was started with (AUTHLIMIT_ISSUER, AUTHLIMIT_AUDIENCE, AUTHLIMIT_REQUIRED_SCOPE); the defaults are the local stack's.
     web_auth_issuer: str = "https://auth.localhost:8443"
     web_auth_audience: str = "https://api.localhost:8443"
     web_auth_scope: str = "api:chat"
 
-    # The CLI and the Telegram channel are clients of the chat API through the front door (specs/020; app/channels/door.py). Where they
+    # The CLI and the Telegram channel are clients of the chat API through the front door (specs/020; app/adapters/inbound/channels/door.py). Where they
     # send a turn: the front door's address (`https://api.localhost:8443` on the local stack), or the API itself in header mode. They sign in
     # at `web_auth_issuer` for `web_auth_audience` and `web_auth_scope`, as the web page does. `channel_ca_file` is the PEM of the CA that
     # signed the door's certificate when it is not in the system store (`make mcp-gateway-ca` exports Caddy's local root); empty = system store.
@@ -600,7 +600,7 @@ class Settings(BillingSettings):
     # just changes how many files one submission may batch.
     max_upload_files_per_request: int = 5
 
-    # OpenSandbox MCP bridge (app/adapters/mcp/sandbox_tools.py, pattern 50) —
+    # OpenSandbox MCP bridge (app/adapters/outbound/mcp/sandbox_tools.py, pattern 50) —
     # `--domain` passed to the `opensandbox-mcp` stdio bridge process
     # (mcp/client.py::load_remote_tools spawns it), i.e. the host:port
     # `opensandbox-server` listens on. Localhost:PORT since the bridge is
@@ -614,15 +614,15 @@ class Settings(BillingSettings):
     # from a real error. `make sandbox-up` publishes this exact port.
     opensandbox_mcp_domain: str = "localhost:8090"
 
-    # Who a PUBLISHED MCP server (app/mcp/server.py, ops_server.py) acts for — set by whoever
+    # Who a PUBLISHED MCP server (app/adapters/inbound/mcp/server.py, ops_server.py) acts for — set by whoever
     # launches it (the `env` block of Claude Desktop's / Cursor's server entry, or this file for
     # `make mcp-serve`), never by a tool argument the connected model would fill in
-    # (app/mcp/identity.py, GRAPH_PATTERNS.md pattern 21). Empty means the server refuses to start.
+    # (app/adapters/inbound/mcp/identity.py, GRAPH_PATTERNS.md pattern 21). Empty means the server refuses to start.
     # The operations server's data is not tenant-scoped, so it needs only the principal.
     mcp_tenant: str = ""
     mcp_principal: str = ""
 
-    # The MCP gateway (app/mcp/gateway.py, specs/017): the two published servers over Streamable HTTP, for clients that are not a child
+    # The MCP gateway (app/adapters/inbound/mcp/gateway.py, specs/017): the two published servers over Streamable HTTP, for clients that are not a child
     # process of the person using them, with the identity taken from a verified OAuth 2.1 access token on EVERY request instead of
     # from the launcher's environment. The service is a resource server only; the tokens come from an authorization server it is
     # pointed at (Casdoor in deploy/compose/docker-compose.yml's `gateway` profile, any OIDC provider that signs RS256 would do).
@@ -644,9 +644,9 @@ class Settings(BillingSettings):
     # How long the signing keys are cached. A key the authorization server rotates is picked up on the next unknown `kid` regardless.
     mcp_gateway_jwks_cache_seconds: int = Field(default=300, ge=30)
 
-    # The most text one remote MCP tool call (app/mcp/client.py) or one sandbox result (app/domains/sandbox_session.py) may hand
+    # The most text one remote MCP tool call (app/adapters/outbound/mcp/client.py) or one sandbox result (app/domains/sandbox_session.py) may hand
     # the model; the middle of anything longer is replaced by a marker that says how much (app/core/output_limits.py, specs/009
-    # A3). 20,000 is the page reader's own cap (app/ingestion/web_crawler.py), so no tool returns more than a crawled page can.
+    # A3). 20,000 is the page reader's own cap (app/adapters/outbound/crawl4ai/web_crawler.py), so no tool returns more than a crawled page can.
     mcp_tool_output_max_chars: int = Field(default=20_000, ge=200)
 
     # The longest `command`, `script`, `path` or file `content` the model may send a sandbox tool. A validation error names the
@@ -662,7 +662,7 @@ class Settings(BillingSettings):
     # sandbox executor is a meaningfully worse default.
     opensandbox_api_key: str = ""
 
-    # crawl4ai's dockerized server (app/ingestion/web_crawler.py,
+    # crawl4ai's dockerized server (app/adapters/outbound/crawl4ai/web_crawler.py,
     # docker-compose.yml's default-profile `crawl4ai` service). 11235 is the
     # image's real listen port (not Crawl4aiDockerClient's stale
     # localhost:8000 constructor default).
@@ -675,7 +675,7 @@ class Settings(BillingSettings):
     crawl4ai_api_token: str = ""
 
     # API key for serper.dev (a Google Search API), the backend of the `web_search` tool
-    # (app/adapters/web/serper.py, app/domains/web_search.py). Optional and OFF when empty, like Langfuse and the
+    # (app/adapters/outbound/web/serper.py, app/domains/web_search.py). Optional and OFF when empty, like Langfuse and the
     # Slack webhook: the core runs fully offline, and with no key the tool is still declared (the tool list
     # must not change between deploys, or a thread paused on an approval for it could not resume) but
     # answers that web search is not configured, without a network call. Every search spends one of the
@@ -696,7 +696,7 @@ class Settings(BillingSettings):
     # (configure_telemetry's own short-circuit) — tests/live/conftest.py
     # and tests/integration/test_worker_scaling.py both set this, since
     # their real uvicorn/agent_worker SUBPROCESSES genuinely enter
-    # app/api/main.py's lifespan (unlike the fast test suite's in-process
+    # app/adapters/inbound/api/main.py's lifespan (unlike the fast test suite's in-process
     # ASGI client) with no otel-collector sidecar anywhere nearby to
     # receive anything — real CI noise, caught live: every ~15s for each
     # subprocess's entire lifetime, "Transient error ... Connection

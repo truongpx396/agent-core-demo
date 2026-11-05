@@ -32,8 +32,8 @@ import signal
 import httpx
 
 from app import bootstrap
-from app.adapters.litellm.model_catalog import admin_base_url
-from app.adapters.litellm.spend_logs import HttpGatewaySpendLog
+from app.adapters.outbound.litellm.model_catalog import admin_base_url
+from app.adapters.outbound.litellm.spend_logs import HttpGatewaySpendLog
 from app.agent.cost import usage_reconcile as reconcile
 from app.core import sql_store
 from app.core.config import (

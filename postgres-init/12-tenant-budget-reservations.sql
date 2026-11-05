@@ -15,7 +15,7 @@
 -- `updated_at` is read back in in_flight_reservation to ignore a stale
 -- reservation (a worker that died mid-turn without releasing) rather than
 -- letting it permanently inflate a tenant's apparent spend — the same
--- self-healing-via-staleness idea app/job_queue/queue.py's THREAD_LOCK_TTL_SECONDS
+-- self-healing-via-staleness idea app/adapters/outbound/redis/queue.py's THREAD_LOCK_TTL_SECONDS
 -- uses for a crashed worker's lock, applied here without Redis's native
 -- TTL since this lives in Postgres alongside the ledger it complements.
 \connect appdata

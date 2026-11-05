@@ -1,7 +1,7 @@
 """Generate the shared token vectors in testdata/auth-vectors/ (spec 018, FR-034, tasks T011).
 
 Two verifiers in two languages must agree on what a valid token is: the Go service (`services/authlimit`) and the MCP
-gateway's Python verifier (`app/mcp/gateway_auth.py`). Agreement checked by hand drifts, so both run ONE file of tokens
+gateway's Python verifier (`app/adapters/inbound/mcp/gateway_auth.py`). Agreement checked by hand drifts, so both run ONE file of tokens
 with the outcome each must reach. This script makes that file.
 
 How the tokens are made, and why no secret is committed:

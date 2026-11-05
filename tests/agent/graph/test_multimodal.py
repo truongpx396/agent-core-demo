@@ -182,13 +182,13 @@ class TestSemanticCacheAndRetrievalUseTextOnly:
 
 class TestChatRequestImagesField:
     def test_defaults_to_an_empty_list(self):
-        from app.api.schemas import ChatRequest
+        from app.adapters.inbound.api.schemas import ChatRequest
 
         req = ChatRequest(message="hi")
         assert req.images == []
 
     def test_accepts_a_list_of_urls(self):
-        from app.api.schemas import ChatRequest
+        from app.adapters.inbound.api.schemas import ChatRequest
 
         req = ChatRequest(message="hi", images=["https://example.com/cat.png"])
         assert req.images == ["https://example.com/cat.png"]

@@ -17,8 +17,8 @@ import socket
 import httpx
 import pytest
 
+from app.adapters.outbound.qdrant import qdrant_store
 from app.ingestion import ingestor
-from app.retrieval import qdrant_store
 from tests.conftest import TEST_CTX, metric_value
 
 

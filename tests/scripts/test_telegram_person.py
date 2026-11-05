@@ -3,7 +3,7 @@ credential that can (specs/020). The authorization server is a fake; what is pin
 person that is not an administrator, and a disable that says how to void the token already issued."""
 import pytest
 
-from app.channels.telegram_people import person_password
+from app.adapters.inbound.channels.telegram_people import person_password
 from app.core.config import settings
 from scripts import telegram_person
 

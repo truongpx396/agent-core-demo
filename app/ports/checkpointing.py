@@ -2,7 +2,7 @@
 
 A paused `human_approval` gate is only a real safety control if it survives a redeploy, so the graph is compiled with a saver that persists
 (`app/agent/runtime/core.py::init_graph_async`). LangGraph's `BaseCheckpointSaver` is the contract the graph speaks; this port is how the
-runtime obtains one and releases what backs it, without naming Postgres or its connection pool (`app/adapters/postgres/checkpointing.py`).
+runtime obtains one and releases what backs it, without naming Postgres or its connection pool (`app/adapters/outbound/postgres/checkpointing.py`).
 
 Two properties belong to the contract, not to one adapter:
 - `open` is called on the event loop that will drive the graph. A saver may bind a lock to the loop that created it (the Postgres one does:

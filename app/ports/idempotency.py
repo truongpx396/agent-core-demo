@@ -1,7 +1,7 @@
 """The exactly-once ledger for mutating and outward tool calls (constitution Principle IV).
 
 `app/core/tool_idempotency.py` holds the decision (run the tool at most once per `tool_call_id`, fail open when the ledger is down, steer the
-agent to verify after a timeout). This is where the claims live (`app/adapters/postgres/tool_idempotency.py`, the `tool_call_dedup` table).
+agent to verify after a timeout). This is where the claims live (`app/adapters/outbound/postgres/tool_idempotency.py`, the `tool_call_dedup` table).
 
 The claim must be ATOMIC at the store: of two callers presenting the same `tool_call_id`, exactly one is told it won. A fake that cannot
 promise that is not a fake of this port, which is why the real-Postgres test (tests/integration/test_tool_idempotency_real_postgres.py) is the

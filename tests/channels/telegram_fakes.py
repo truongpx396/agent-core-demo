@@ -6,8 +6,8 @@ documented behaviour, not Redis itself (testing.md: a fake proves statement shap
 """
 import asyncio
 
-from app.channels.door import DoorRefused
-from app.channels.oauth import SignInRefused
+from app.adapters.inbound.channels.door import DoorRefused
+from app.adapters.inbound.channels.oauth import SignInRefused
 
 
 class FakeRedis:

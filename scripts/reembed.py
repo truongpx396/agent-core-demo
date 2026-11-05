@@ -37,9 +37,10 @@ from typing import Any
 
 from qdrant_client.models import PointStruct
 
+from app.adapters.outbound.embeddings import embedding_identity, embeddings
+from app.adapters.outbound.qdrant import qdrant_store
 from app.bootstrap import wire
 from app.core.config import COLLECTION, SKILLS_COLLECTION
-from app.retrieval import embedding_identity, embeddings, qdrant_store
 
 logger = logging.getLogger("reembed")
 

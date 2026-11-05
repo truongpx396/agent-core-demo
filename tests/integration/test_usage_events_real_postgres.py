@@ -26,7 +26,7 @@ from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, HumanMessage
 from psycopg import errors as pg_errors
 
-from app.adapters.postgres import usage_events as pg_usage_events
+from app.adapters.outbound.postgres import usage_events as pg_usage_events
 from app.agent.cost import metering, usage_events
 from tests.containers import ensure_postgres
 from tests.integration.postgres_adapters import use_real_postgres

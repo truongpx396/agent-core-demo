@@ -104,9 +104,9 @@ def test_the_entrypoints_start_it_right_after_telemetry_and_a_short_lived_job_do
 
     repo = Path(__file__).resolve().parents[2]
     for relative, service in (
-        ("app/api/main.py", "agent-core-api"),
-        ("app/job_queue/agent_worker.py", "agent-core-agent-worker"),
-        ("app/ingestion/ingest_worker.py", "agent-core-ingest-worker"),
+        ("app/adapters/inbound/api/main.py", "agent-core-api"),
+        ("app/adapters/inbound/workers/agent_worker.py", "agent-core-agent-worker"),
+        ("app/adapters/inbound/workers/ingest_worker.py", "agent-core-ingest-worker"),
     ):
         source = (repo / relative).read_text()
         telemetry, start = f'configure_telemetry("{service}")', f'start_profiling("{service}"'

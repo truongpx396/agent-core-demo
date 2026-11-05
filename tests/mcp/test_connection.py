@@ -1,4 +1,4 @@
-"""app/mcp/connection.py against a REAL stdio server (tests/mcp/echo_server.py): one process serves many calls, and what happens
+"""app/adapters/outbound/mcp/connection.py against a REAL stdio server (tests/mcp/echo_server.py): one process serves many calls, and what happens
 when it dies is the behaviour measured while designing this, not assumed.
 
 The server is a few lines of MCPServer that imports nothing from the app, so each test spawns it for real in a fraction of a second.
@@ -14,9 +14,13 @@ import pytest
 from mcp import MCPError, types
 from mcp.client.stdio import StdioServerParameters
 
+from app.adapters.outbound.mcp import connection as mcp_connection
+from app.adapters.outbound.mcp.connection import (
+    McpConnection,
+    close_all_connections,
+    connection_for,
+)
 from app.core import metrics
-from app.mcp import connection as mcp_connection
-from app.mcp.connection import McpConnection, close_all_connections, connection_for
 from tests.conftest import metric_value
 
 SERVER = str(Path(__file__).with_name("echo_server.py"))
@@ -203,7 +207,7 @@ class TestStartingAndStopping:
         script = (
             "import asyncio, sys\n"
             "from mcp.client.stdio import StdioServerParameters\n"
-            "from app.mcp.connection import connection_for\n"
+            "from app.adapters.outbound.mcp.connection import connection_for\n"
             "async def main():\n"
             f"    conn = connection_for(StdioServerParameters(command=sys.executable, args=[{SERVER!r}]), 'script')\n"
             f"    open({str(pidfile)!r}, 'w').write(str((await conn.call_tool('pid', {{}})).content[0].text))\n"

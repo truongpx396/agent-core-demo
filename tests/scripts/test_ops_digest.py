@@ -15,7 +15,7 @@ import asyncio
 
 import pytest
 
-from app.adapters.notify import team_channel as team_channel_adapter
+from app.adapters.outbound.notify import team_channel as team_channel_adapter
 from app.core import gateway
 from app.domains.ops import metric_checks, metrics_client
 from scripts import ops_digest

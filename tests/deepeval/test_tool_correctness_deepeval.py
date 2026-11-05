@@ -36,7 +36,7 @@ import uuid
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage
 
-from app.ingestion import web_crawler
+from app.adapters.outbound.crawl4ai import web_crawler
 from tests.conftest import TEST_CTX
 from tests.ecorp import build_graph
 from tests.ollama import ollama_deps
@@ -260,7 +260,7 @@ async def test_subagent_delegation_is_correct_and_well_argued(deepeval_ollama, d
 def _use_crawl4ai_server(monkeypatch, crawl4ai_server):
     """NOT autouse: only `test_fetch_external_reference_tool_call_is_correct_and_well_argued` below needs it.
     `crawl4ai_server` (tests/deepeval/conftest.py, `tests/containers.py::ensure_crawl4ai()`) starts its own
-    ephemeral container, and this fixture points `app.ingestion.web_crawler`'s
+    ephemeral container, and this fixture points `app.adapters.outbound.crawl4ai.web_crawler`'s
     `CRAWL4AI_SERVER_URL`/`CRAWL4AI_API_TOKEN` module globals at it (a monkeypatch, not an env var; see that
     helper's docstring).
     """

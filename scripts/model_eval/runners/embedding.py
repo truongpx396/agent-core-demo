@@ -91,9 +91,9 @@ class GatewayEmbedding:
         self._candidate = candidate
         try:
             from app import bootstrap
+            from app.adapters.outbound.embeddings import embeddings as app_embeddings
             from app.core.config import EMBED_MODEL
             from app.ports import models as model_ports
-            from app.retrieval import embeddings as app_embeddings
         except Exception as exc:  # noqa: BLE001 - importing the app needs its settings; any failure means the gateway path is unavailable
             raise PrerequisiteMissing(f"cannot import the app's embedding client ({type(exc).__name__}: {exc})") from exc
         bootstrap.wire()

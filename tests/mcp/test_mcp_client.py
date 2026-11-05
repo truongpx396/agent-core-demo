@@ -1,7 +1,7 @@
-"""Tests for app/mcp/client.py — mocks the two async boundary functions
+"""Tests for app/adapters/outbound/mcp/client.py — mocks the two async boundary functions
 (_list_remote_tools, _call_remote_tool) that actually talk to a remote MCP
 server over stdio, so these stay hermetic (no live subprocess) like the
-rest of the suite. The real stdio round trip against app/mcp/server.py was
+rest of the suite. The real stdio round trip against app/adapters/inbound/mcp/server.py was
 verified empirically before writing this module — see its docstring — and
 again here in TestRealRoundTrip, gated so it only runs when explicitly
 requested (a live subprocess is a slower, heavier check than this file's
@@ -10,7 +10,7 @@ otherwise-hermetic tests).
 `load_remote_tools` is `async def` now (awaits `_list_remote_tools`
 directly, no more inner `asyncio.run(...)` bridge), and every wrapped
 remote tool is `coroutine`-only — no sync `func` — since this module's one
-real caller (app/adapters/mcp/sandbox_tools.py::load_sandbox_tools) is `async
+real caller (app/adapters/outbound/mcp/sandbox_tools.py::load_sandbox_tools) is `async
 def` too now, with nothing left calling `.invoke()` synchronously. No
 pytest-asyncio in this project (see tests/agent/runtime/test_durable_checkpoint.py)
 — every call below wraps in asyncio.run(), same pattern used there.
@@ -20,8 +20,8 @@ import json
 
 from mcp import types
 
+from app.adapters.outbound.mcp import client as mcp_client
 from app.core import metrics
-from app.mcp import client as mcp_client
 from tests.conftest import metric_value
 
 

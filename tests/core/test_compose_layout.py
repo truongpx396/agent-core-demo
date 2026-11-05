@@ -10,8 +10,8 @@ from pathlib import Path
 import pytest
 import yaml
 
+from app.adapters.inbound.workers.agent_worker import parse_worker_domains
 from app.domains.registry import DOMAINS
-from app.job_queue.agent_worker import parse_worker_domains
 
 REPO = Path(__file__).resolve().parents[2]
 COMPOSE = REPO / "deploy" / "compose"

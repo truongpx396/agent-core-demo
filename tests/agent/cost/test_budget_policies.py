@@ -13,7 +13,7 @@ from contextlib import asynccontextmanager
 import pytest
 from psycopg import errors as pg_errors
 
-from app.adapters.postgres import budget_policies as pg_budget_policies
+from app.adapters.outbound.postgres import budget_policies as pg_budget_policies
 from app.agent.cost import budget_policies, budgets
 from app.agent.runtime import core as runtime_module
 from app.core import errors, metrics

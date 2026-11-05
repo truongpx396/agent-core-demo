@@ -20,11 +20,13 @@ import httpx
 import pytest
 from qdrant_client.models import PointStruct, SparseVector
 
-from app.retrieval import embedding_identity, embeddings, qdrant_store, semantic_cache
-from app.retrieval.embedding_identity import (
+from app.adapters.outbound.embeddings import embedding_identity, embeddings
+from app.adapters.outbound.embeddings.embedding_identity import (
     EmbeddingIdentity,
     EmbeddingIdentityMismatch,
 )
+from app.adapters.outbound.qdrant import qdrant_store
+from app.adapters.outbound.redis import semantic_cache
 from scripts import reembed
 from scripts.reembed import ReembedError
 from tests.conftest import TEST_EMBEDDING_IDENTITY

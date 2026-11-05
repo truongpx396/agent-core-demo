@@ -1,5 +1,5 @@
-"""Tests for app/job_queue/queue.py — the Redis Streams queue mechanics between the
-SSE-serving process and app/job_queue/agent_worker.py's agent workers
+"""Tests for app/adapters/outbound/redis/queue.py — the Redis Streams queue mechanics between the
+SSE-serving process and app/adapters/inbound/workers/agent_worker.py's agent workers
 (GRAPH_PATTERNS.md pattern 43). A hand-rolled in-memory fake stands in for
 a real Redis Stream (no live Redis needed), matching the rest of this
 suite's hermetic discipline.
@@ -12,7 +12,7 @@ import json
 
 from redis.exceptions import ResponseError
 
-from app.job_queue import queue
+from app.adapters.outbound.redis import queue
 
 
 def _id_gt(a: str, b: str) -> bool:
@@ -21,7 +21,7 @@ def _id_gt(a: str, b: str) -> bool:
 
 class FakeRedis:
     """An in-memory stand-in for redis.asyncio.Redis covering exactly the
-    Streams commands app/job_queue/queue.py/app/job_queue/agent_worker.py actually use."""
+    Streams commands app/adapters/outbound/redis/queue.py/app/adapters/inbound/workers/agent_worker.py actually use."""
 
     def __init__(self):
         self.streams: dict[str, list[tuple[str, dict]]] = {}
@@ -248,7 +248,7 @@ class TestPublishRequest:
 class TestPublishResumeRequest:
     async def test_enqueues_a_resume_job_onto_the_same_stream(self):
         """Same domain's requests stream as a new turn — one consumer
-        group, one dispatch-by-kind in app/job_queue/agent_worker.py, not a
+        group, one dispatch-by-kind in app/adapters/inbound/workers/agent_worker.py, not a
         second queue."""
         client = FakeRedis()
         await queue.publish_resume_request(
@@ -293,7 +293,7 @@ class TestPublishCancelRequest:
 class TestCancelFlag:
     """The separate, per-thread (not per-request) mechanism POST
     /chat/cancel uses to stop an ACTIVELY STREAMING turn — see
-    app/job_queue/agent_worker.py's cancel_check wiring."""
+    app/adapters/inbound/workers/agent_worker.py's cancel_check wiring."""
 
     async def test_is_cancelled_false_before_anything_is_set(self):
         client = FakeRedis()
@@ -482,8 +482,8 @@ class TestDeleteResultsStream:
 
 class TestReclaimStaleEntries:
     """queue.py's crash-recovery primitive: finds entries a dead worker
-    claimed but never acked. See app/job_queue/agent_worker.py's/
-    app/ingestion/ingest_worker.py's own `_reclaim_loop` for the policy
+    claimed but never acked. See app/adapters/inbound/workers/agent_worker.py's/
+    app/adapters/inbound/workers/ingest_worker.py's own `_reclaim_loop` for the policy
     built on top of this (never blindly redeliver — surface + dead-letter);
     this only tests the Streams mechanics."""
 
@@ -572,7 +572,7 @@ class TestPublishDeadLetter:
 
 class TestRepublishJob:
     """The recovery half of a reclaim decided safe to retry — see
-    app/job_queue/agent_worker.py::_handle_reclaimed_job for the safety
+    app/adapters/inbound/workers/agent_worker.py::_handle_reclaimed_job for the safety
     decision this is only the mechanics for."""
 
     async def test_publishes_a_fresh_entry_with_the_same_payload(self):

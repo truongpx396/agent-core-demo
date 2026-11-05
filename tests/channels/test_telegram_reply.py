@@ -1,6 +1,6 @@
-"""The growing reply (app/channels/telegram_reply.py, specs/021 FR-005): paced edits, and a last word that always lands."""
-from app.channels.telegram_api import MESSAGE_CHAR_LIMIT
-from app.channels.telegram_reply import ReplySink
+"""The growing reply (app/adapters/inbound/channels/telegram_reply.py, specs/021 FR-005): paced edits, and a last word that always lands."""
+from app.adapters.inbound.channels.telegram_api import MESSAGE_CHAR_LIMIT
+from app.adapters.inbound.channels.telegram_reply import ReplySink
 from tests.channels.telegram_fakes import FakeApi
 
 

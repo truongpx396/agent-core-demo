@@ -18,8 +18,8 @@ import uuid
 
 import pytest
 
-from app.retrieval import semantic_cache
-from app.retrieval.embedding_identity import EmbeddingIdentity
+from app.adapters.outbound.embeddings.embedding_identity import EmbeddingIdentity
+from app.adapters.outbound.redis import semantic_cache
 from tests.containers import ensure_redis
 
 pytestmark = pytest.mark.integration

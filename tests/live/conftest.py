@@ -17,7 +17,7 @@ what made it live-shaped; it has no LLM/graph dependency, unlike this one, which
 a `human_approval` interrupt.
 
 `real_stack`: the full backing stack (Postgres + Redis + Qdrant + Ollama) PLUS a real `uvicorn
-app.api.main:app` and one real `python -m app.job_queue.agent_worker` as subprocesses. Only test_chat_ui.py's
+app.adapters.inbound.api.main:app` and one real `python -m app.adapters.inbound.workers.agent_worker` as subprocesses. Only test_chat_ui.py's
 Playwright test uses it: the web UI calls `POST /chat/stream/queued` and `/chat/resume`, which work end to end
 only through the real Redis queue and a real worker.
 
@@ -73,7 +73,7 @@ def ollama_endpoint() -> dict[str, str]:
 @pytest.fixture(scope="session")
 def crawl4ai_server() -> dict[str, str]:
     """`tests/containers.py::ensure_crawl4ai()` (2026-09-17) — used by test_domain_crawl_tools_live.py, which
-    monkeypatches this fixture's `crawl4ai_server_url`/`crawl4ai_api_token` into `app.ingestion.web_crawler`'s
+    monkeypatches this fixture's `crawl4ai_server_url`/`crawl4ai_api_token` into `app.adapters.outbound.crawl4ai.web_crawler`'s
     own module globals itself (see that helper's own docstring for why this fixture only returns connection
     info rather than doing the monkeypatching itself — same division of labor `ollama_endpoint` above and the
     deepeval files' `real_ollama_chat_model` fixtures already use).
@@ -100,7 +100,7 @@ def _build_app_env(
         "REDIS_URL": redis["redis_url"],
         "QDRANT_URL": qdrant["qdrant_url"],
         # Real, purely to satisfy /health/ready's own `ml_service` check
-        # (app/api/health.py) — added once that endpoint started checking
+        # (app/adapters/inbound/api/health.py) — added once that endpoint started checking
         # it; neither test using this fixture depends on real reranking/
         # prompt-guard output (see tests/containers.py::ensure_ml_service).
         "ML_SERVICE_URL": ml_service["ml_service_url"],
@@ -155,13 +155,13 @@ def _build_app_env(
         "SUBAGENT_TIMEOUT_SECONDS": "240",
         # Disables OTel metrics export (app/core/telemetry.py's own
         # blank-endpoint short-circuit) — this subprocess genuinely enters
-        # app/api/main.py's lifespan, so it WOULD otherwise retry a real
+        # app/adapters/inbound/api/main.py's lifespan, so it WOULD otherwise retry a real
         # OTLP export every ~15s for its entire lifetime against a
         # collector that doesn't exist anywhere in this fixture, pure
         # guaranteed-to-fail noise (and a little real overhead) for as
         # long as this session-scoped fixture stays alive.
         "OTEL_EXPORTER_OTLP_ENDPOINT": "",
-        # The API's default is identity mode (AUTH_MODE, app/api/deps.py): it trusts only a signed identity from the front door, and its lifespan
+        # The API's default is identity mode (AUTH_MODE, app/adapters/inbound/api/deps.py): it trusts only a signed identity from the front door, and its lifespan
         # refuses to start without AUTHLIMIT_KEYS_URL. This fixture talks to the API directly, with X-Tenant-Id / X-Principal-Id, and has no front
         # door, so it says header mode out loud. Without this line the subprocess exits with code 3 before it is ready (CI, #208).
         "AUTH_MODE": "headers",
@@ -179,14 +179,14 @@ def _start_app_processes(env: dict[str, str]) -> Iterator[str]:
     base_url = f"http://127.0.0.1:{port}"
     api_proc = subprocess.Popen(
         [
-            sys.executable, "-m", "uvicorn", "app.api.main:app",
+            sys.executable, "-m", "uvicorn", "app.adapters.inbound.api.main:app",
             "--host", "127.0.0.1", "--port", str(port),
         ],
         env=env,
         cwd=str(_REPO_ROOT),
     )
     worker_proc = subprocess.Popen(
-        [sys.executable, "-m", "app.job_queue.agent_worker"],
+        [sys.executable, "-m", "app.adapters.inbound.workers.agent_worker"],
         env=env,
         cwd=str(_REPO_ROOT),
     )
@@ -237,7 +237,7 @@ def _seed_retrieval_data(env: dict[str, str]) -> None:
     """Populates Qdrant's docs + skills collections the same way a real deployment does (`make ingest`/`make
     index-skills`) — run as subprocesses against `env` (pointed at THIS fixture's own Qdrant/Ollama
     containers), not called in-process, so this never needs to monkeypatch this test process's own
-    already-imported `app.retrieval.embeddings`/ `qdrant_store` module state (tests/live/test_qdrant_real.py's
+    already-imported `app.adapters.outbound.embeddings.embeddings`/ `qdrant_store` module state (tests/live/test_qdrant_real.py's
     own fixture does that instead, for a different, in-process use case).
     """
     for module in ("scripts.seed", "scripts.index_skills"):
@@ -330,7 +330,7 @@ def _a_test_leaves_no_memories_behind(request: pytest.FixtureRequest) -> Iterato
         return
     from qdrant_client import QdrantClient
 
-    from app.retrieval.qdrant_store import live_name
+    from app.adapters.outbound.qdrant.qdrant_store import live_name
     from tests.live.memories import forget_memories_not_in, memory_ids
 
     # The ALIAS, not the logical name: the stack's collection is the physical `docs-<identity hash>` reached through `docs-live`
@@ -343,7 +343,7 @@ def _a_test_leaves_no_memories_behind(request: pytest.FixtureRequest) -> Iterato
 
 
 def _wait_until_ready(base_url: str, api_proc: subprocess.Popen, timeout: float = 120.0) -> None:
-    """Polls `GET /health/ready` (app/api/health.py) — the same real
+    """Polls `GET /health/ready` (app/adapters/inbound/api/health.py) — the same real
     dependency check a deployment's own orchestrator would use — rather
     than a fixed sleep, and separately fails fast if the process exited on
     its own (a real config/startup error, which a poll loop alone would

@@ -1,11 +1,11 @@
-"""The Telegram inbox and its dispatcher (app/channels/telegram_inbox.py, specs/021 FR-006): updates are made durable before they are acknowledged, run in
+"""The Telegram inbox and its dispatcher (app/adapters/inbound/channels/telegram_inbox.py, specs/021 FR-006): updates are made durable before they are acknowledged, run in
 parallel across chats and in order within one, survive a crash, and `/cancel` is never stuck behind the turn it is meant to stop."""
 import asyncio
 import json
 
 import pytest
 
-from app.channels.telegram_inbox import (
+from app.adapters.inbound.channels.telegram_inbox import (
     MAX_ATTEMPTS,
     Dispatcher,
     Inbox,

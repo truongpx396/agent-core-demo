@@ -2,12 +2,11 @@
 paths:
   - "app/agent/graph/**/*.py"
   - "app/agent/runtime/**/*.py"
-  - "app/job_queue/**/*.py"
-  - "app/ingestion/ingest_queue.py"
-  - "app/ingestion/ingest_worker.py"
-  - "app/api/main.py"
-  - "app/api/deps.py"
-  - "app/api/routers/**/*.py"
+  - "app/adapters/outbound/redis/**/*.py"
+  - "app/adapters/inbound/workers/**/*.py"
+  - "app/adapters/inbound/api/main.py"
+  - "app/adapters/inbound/api/deps.py"
+  - "app/adapters/inbound/api/routers/**/*.py"
   - "app/core/metrics.py"
   - "app/core/resilience.py"
   - "deploy/litellm/patches/**"
@@ -50,7 +49,7 @@ session; `GRAPH_PATTERNS.md` has the full story under the pattern number given.
 
 - A loop over `astream_events_*` or `_run_graph_stream` that can leave early (an exception, a `return`, a `break`) uses `contextlib.aclosing`. A bare `async for` does not close the generator when it is left, so the turn's own cleanup (the trace, the abandoned-turn metrics, the budget hold) runs a loop turn late, after the failure was handled. A close mid-turn is `GeneratorExit` in `_run_graph_stream` and is recorded as the `abandoned` outcome (pattern 36).
 
-## Queue and workers (`job_queue/`, `ingest_*`)
+## Queue and workers (`outbound/redis/`, `inbound/workers/`)
 
 - Delivery is at-least-once: ACK only after `process_request` finishes, so every handler MUST be
   safe under redelivery.

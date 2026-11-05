@@ -15,9 +15,8 @@ Only the expiry counts: a job that was picked up, however slow, is not "unreacha
 """
 import pytest
 
+from app.adapters.outbound.redis import ingest_queue, queue
 from app.core import metrics
-from app.ingestion import ingest_queue
-from app.job_queue import queue
 from tests.conftest import metric_value
 from tests.job_queue.test_queue import FakeRedis
 

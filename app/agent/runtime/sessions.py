@@ -7,7 +7,7 @@ Every row is tenant+principal scoped (SecurityCtx) and, since pattern 49,
 domain-scoped too: a session belongs to whichever domain actually ran on
 it, since resuming under a DIFFERENT domain would run that domain's
 tools/prompt against history never built around them (see
-`job_queue/queue.py::publish_request` for the same hazard). `domain`
+`adapters/outbound/redis/queue.py::publish_request` for the same hazard). `domain`
 defaults to `"ecorp"` and is set ONLY on first insert — immutable after,
 like `title`.
 """
@@ -20,9 +20,9 @@ logger = logging.getLogger(__name__)
 
 TITLE_MAX_CHARS = 60
 
-# Thread ids the Telegram channel derives itself (`app/channels/telegram.py::
+# Thread ids the Telegram channel derives itself (`app/adapters/inbound/channels/telegram.py::
 # _thread_id` — `telegram:<person>:<chat id>`, the person being the caller's own id).
-# Reserved: a caller may claim one only if it names THEM (app/api/routers/chat.py::
+# Reserved: a caller may claim one only if it names THEM (app/adapters/inbound/api/routers/chat.py::
 # _require_conversation_owner), or they could squat a real chat user's conversation
 # before that user's first message.
 TELEGRAM_THREAD_PREFIX = "telegram:"

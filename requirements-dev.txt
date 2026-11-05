@@ -33,7 +33,7 @@ testcontainers[postgres,redis,ollama]==4.9.0
 # same one-resolve conflict a single combined install (what CI actually
 # runs) does.
 
-# Browser E2E against app/api/static/index.html (tests/live/test_chat_ui.py).
+# Browser E2E against app/adapters/inbound/api/static/index.html (tests/live/test_chat_ui.py).
 # Python bindings, not the Node @playwright/test runner: this suite's E2E
 # test shares one pytest session (and its testcontainers-backed services)
 # with tests/live/'s Python-level Ollama tests — see GRAPH_PATTERNS.md

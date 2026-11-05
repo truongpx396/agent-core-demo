@@ -19,7 +19,7 @@ from contextlib import asynccontextmanager
 import psycopg
 import pytest
 
-from app.adapters.postgres import sessions as pg_sessions
+from app.adapters.outbound.postgres import sessions as pg_sessions
 from app.agent.runtime import sessions
 from tests.containers import ensure_postgres
 

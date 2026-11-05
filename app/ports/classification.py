@@ -6,7 +6,7 @@ found the text near none of them, and, when offered, how near and how sure. What
 
 The shape follows the TypeSafe "System One" / Jev decision interface (`{state, questions}` in, `{model, answers, usage}` out), on purpose: the
 ML service is one local implementation, a hosted one another, and pointing the app at the hosted one changes only the adapter
-(`app/adapters/mlservice/classification.py`: URL, `Authorization` header, `model` field). `Choice` carries what the hosted one needs and the
+(`app/adapters/outbound/mlservice/classification.py`: URL, `Authorization` header, `model` field). `Choice` carries what the hosted one needs and the
 local one ignores (instructions, option descriptions).
 
 `choose` NEVER RAISES; a failure is a value. A classifier that is down, slow, wrong-shaped or has nothing to say is an `outcome` the caller turns

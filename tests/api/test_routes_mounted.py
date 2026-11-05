@@ -1,4 +1,4 @@
-"""The set of routes `app/api/main.py` actually serves.
+"""The set of routes `app/adapters/inbound/api/main.py` actually serves.
 
 The suite calls handlers as plain functions, so a router that is defined but never passed to
 `include_router` leaves every handler test green while the endpoint answers 404. OpenAPI is built
@@ -7,7 +7,7 @@ EXPECTED here on purpose: it is the one place the whole HTTP surface is listed.
 """
 from fastapi.testclient import TestClient
 
-from app.api import main as api
+from app.adapters.inbound.api import main as api
 from credit_billing import metrics
 from tests.conftest import metric_value
 

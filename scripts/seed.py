@@ -11,12 +11,12 @@ Each sample doc is short enough to become one parent chunk with one child
 """
 import asyncio
 
+from app.adapters.outbound.embeddings.embeddings import embedding_dim
+from app.adapters.outbound.qdrant import qdrant_store
 from app.bootstrap import wire
 from app.core.config import DEFAULT_TENANT
 from app.core.security import SecurityCtx
 from app.ingestion import ingestor
-from app.retrieval import qdrant_store
-from app.retrieval.embeddings import embedding_dim
 from scripts.sample_docs import DOCS
 
 # Ingestion needs a real SecurityCtx — `ingest_text` refuses without one

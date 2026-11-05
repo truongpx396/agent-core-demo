@@ -1,8 +1,8 @@
-"""`app/adapters/litellm/chat_model.py`: what the real `ChatModels` adapter builds."""
+"""`app/adapters/outbound/litellm/chat_model.py`: what the real `ChatModels` adapter builds."""
 from langchain_core.tools import tool
 from langchain_openai import ChatOpenAI
 
-from app.adapters.litellm.chat_model import OpenAiChatModels
+from app.adapters.outbound.litellm.chat_model import OpenAiChatModels
 
 
 @tool

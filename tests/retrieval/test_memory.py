@@ -1,4 +1,4 @@
-"""Tests for app/retrieval/memory.py::delete_memories — mocks qdrant_store's
+"""Tests for app/adapters/outbound/qdrant/memory.py::delete_memories — mocks qdrant_store's
 count_by_filter/delete_by_filter (same boundary tests/agent/tools/test_tools.py mocks
 qdrant_store.upsert/hybrid_search at) so these stay hermetic.
 
@@ -10,7 +10,7 @@ pattern for exercising async code from a plain `def test_...`.
 
 import pytest
 
-from app.retrieval import memory, qdrant_store
+from app.adapters.outbound.qdrant import memory, qdrant_store
 from tests.conftest import TEST_CTX
 
 

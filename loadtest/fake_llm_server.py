@@ -399,7 +399,7 @@ FAKE_EMBED_DIM = 768  # callers that create a Qdrant collection against this
 # server (tests/integration/test_worker_scaling.py's own
 # qdrant_store.ensure_collection(dim=...)) must use this same value — it
 # imports this constant rather than hardcoding its own, so changing it here
-# is safe on its own. 768 specifically because app/retrieval/semantic_cache.py's
+# is safe on its own. 768 specifically because app/adapters/outbound/redis/semantic_cache.py's
 # Redis index is a HARD schema match, not a hint: FT.SEARCH rejects a query
 # vector of the wrong byte length outright ("Invalid vector length"), and
 # that index's own dim=768 (verified directly via `redis-cli FT.INFO

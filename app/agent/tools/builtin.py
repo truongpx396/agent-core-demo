@@ -70,7 +70,7 @@ _OPS: dict[type, Callable[..., float]] = {
 # of an answer unrelated to what [3] said. hybrid_search's RRF/dense
 # ordering only says "most relevant of what came back," never "relevant
 # enough" — so this is a floor on the cross-encoder's raw logit score
-# (app/retrieval/embeddings.py's rerank(), unbounded, NOT a 0-1 similarity).
+# (app/adapters/outbound/embeddings/embeddings.py's rerank(), unbounded, NOT a 0-1 similarity).
 # Calibrated against live scores: irrelevant ~-11, on-topic +6.7,
 # same-topic-but-not-quite -5.9. -8.0 sits between "wrong" and "plausibly
 # related." Re-verified after switching reranker backends (TEI/bge-reranker-

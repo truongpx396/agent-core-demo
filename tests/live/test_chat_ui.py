@@ -1,4 +1,4 @@
-"""Browser E2E against the built-in web UI (app/api/static/index.html), the one client this app ships that a
+"""Browser E2E against the built-in web UI (app/adapters/inbound/api/static/index.html), the one client this app ships that a
 Python-level test can't drive, since its job is a real browser's `fetch()`-based SSE parsing. Needs
 `real_stack` (tests/live/conftest.py): the page calls `POST /chat/stream/queued` and `POST /chat/resume`,
 which work only through the real Redis queue and a real agent-worker.
@@ -57,7 +57,7 @@ MULTI_STEP_RESPONSE_TIMEOUT_MS = 600_000
 SETTLE_MS = 10_000
 
 # The page's own two ways of saying "this turn is over": `finishTurn()` re-enables Send (done or error), and a
-# pause for approval renders the Approve/Reject box (app/api/static/index.html: `send()` disables Send
+# pause for approval renders the Approve/Reject box (app/adapters/inbound/api/static/index.html: `send()` disables Send
 # synchronously, so right after a click "enabled" really means "finished", not "not started yet").
 _TURN_IS_OVER = "() => !document.getElementById('send').disabled || document.querySelector('.approval') !== null"
 
@@ -145,7 +145,7 @@ def test_a_read_only_tool_call_returns_real_data(page: Page, real_stack: str):
 def test_a_grounded_answer_shows_a_real_citation(page: Page, real_stack_with_retrieval: str):
     """search_docs against a REAL embedding + a REAL seeded Qdrant (real_stack_with_retrieval, backed by
     scripts/seed.py's sample docs) — proves retrieval and the citations UI (`renderCitations`,
-    app/api/static/index.html) work end to end, not just that search_docs returns SOMETHING.
+    app/adapters/inbound/api/static/index.html) work end to end, not just that search_docs returns SOMETHING.
     """
     page.goto(real_stack_with_retrieval)
 

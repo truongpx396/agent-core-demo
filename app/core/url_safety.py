@@ -1,5 +1,5 @@
 """Shared SSRF guard for anything fetching a caller- or agent-supplied URL: app/ingestion/ingestor.py::ingest_url
-and app/ingestion/web_crawler.py's crawl4ai-backed render. One implementation so the two can't drift.
+and app/adapters/outbound/crawl4ai/web_crawler.py's crawl4ai-backed render. One implementation so the two can't drift.
 
 https only. Every A/AAAA record the hostname resolves to must be a globally routable address, checked against
 ALL of them so a mixed public+private set is still refused. It is an allow-list (`ipaddress.is_global`), not a

@@ -245,7 +245,7 @@ services:
   api:
     <<: *hardened
     image: ${APP_IMAGE}:${IMAGE_TAG:-latest}
-    # The one role that takes uploads (up to 5 x 25 MB, app/api/routers/ingest.py): the multipart parser spools to /tmp before the handler runs, so
+    # The one role that takes uploads (up to 5 x 25 MB, app/adapters/inbound/api/routers/ingest.py): the multipart parser spools to /tmp before the handler runs, so
     # /tmp is a disk-backed volume (a tmpfs would fill RAM at the second large upload). Only $HOME is tmpfs.
     tmpfs:
       - /home/appuser:size=64m,uid=1000,gid=1000
@@ -273,11 +273,11 @@ services:
     cpus: "0.5"
     mem_limit: 768m
     stop_grace_period: 90s # let an in-flight agent turn (LLM calls, tool use) finish rather than being killed mid-turn
-    command: ["python", "-m", "app.job_queue.agent_worker"]
+    command: ["python", "-m", "app.adapters.inbound.workers.agent_worker"]
     healthcheck: *worker-healthcheck
     environment:
       <<: *app-env
-      # The domains this worker serves: comma-separated names or `all` (app/job_queue/agent_worker.py). Ecorp only by default; the others are demo domains.
+      # The domains this worker serves: comma-separated names or `all` (app/adapters/inbound/workers/agent_worker.py). Ecorp only by default; the others are demo domains.
       AGENT_WORKER_DOMAINS: ${AGENT_WORKER_DOMAINS:-ecorp}
     depends_on:
       pgbouncer:
@@ -293,7 +293,7 @@ services:
     cpus: "0.3"
     mem_limit: 768m
     stop_grace_period: 90s # let an in-flight document parse/embed job finish rather than being killed mid-job
-    command: ["python", "-m", "app.ingestion.ingest_worker"]
+    command: ["python", "-m", "app.adapters.inbound.workers.ingest_worker"]
     healthcheck: *worker-healthcheck
     environment: *app-env
     depends_on:

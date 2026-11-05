@@ -254,7 +254,7 @@ def ensure_postgres() -> dict[str, str]:
 
 def _setup_checkpointer_schema_once(checkpointer_url: str) -> None:
     """Runs `AsyncPostgresSaver.setup()` exactly ONCE, inside `ensure_postgres`'s cross-worker lock, before any
-    test can call it again concurrently. It is the same call `app/adapters/postgres/checkpointing.py::PgCheckpointing.open`
+    test can call it again concurrently. It is the same call `app/adapters/outbound/postgres/checkpointing.py::PgCheckpointing.open`
     makes on every real process start ("idempotently, on every process including each independently-scaled
     agent_worker.py instance", per postgres-init/05-checkpointer-db.sql).
     """
@@ -397,7 +397,7 @@ CRAWL_TARGET_HEADING = "Example Domains"
 
 def ensure_crawl4ai() -> dict[str, str]:
     """Real crawl4ai server (the image docker-compose.yml's `crawl4ai` service uses): the headless-Chromium
-    rendering backend behind `app/ingestion/web_crawler.py` (GRAPH_PATTERNS.md pattern 50). Driven through the
+    rendering backend behind `app/adapters/outbound/crawl4ai/web_crawler.py` (GRAPH_PATTERNS.md pattern 50). Driven through the
     generic `DockerContainer` API like `ensure_qdrant()` above (there is no first-party testcontainers module
     for it either).
 
@@ -410,7 +410,7 @@ def ensure_crawl4ai() -> dict[str, str]:
     budgeted to 60s: the margin `.github/workflows/ci.yml`'s earlier `docker run` + `timeout 60 ... curl`
     sidecar steps used (crawl4ai's docs only promise "up to 40s").
 
-    Callers monkeypatch the result into `app.ingestion.web_crawler`'s
+    Callers monkeypatch the result into `app.adapters.outbound.crawl4ai.web_crawler`'s
     `CRAWL4AI_SERVER_URL`/`CRAWL4AI_API_TOKEN` module globals (the `monkeypatch.setattr(some_module,
     "SOME_CONSTANT", ...)` shape `tests/live/conftest.py`'s `real_ollama_chat_model`-style fixtures use for
     `graph_module.CHAT_MODEL`) rather than exporting an env var: the token is only known at container start,
@@ -481,7 +481,7 @@ def ensure_ml_service() -> dict[str, str]:
     """Real reranker + prompt-injection-classifier service — the same
     image docker-compose.yml's own `ml-service` builds from
     services/ml-service/Dockerfile. Needed purely to satisfy
-    `GET /health/ready`'s `ml_service` check (app/api/health.py), added
+    `GET /health/ready`'s `ml_service` check (app/adapters/inbound/api/health.py), added
     once that endpoint started checking it: the same "a real instance, not
     a stub, even though this test's own assertions don't depend on it"
     reasoning `ensure_qdrant()` above already documents for retrieval

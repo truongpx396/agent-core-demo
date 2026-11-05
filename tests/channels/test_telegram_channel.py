@@ -1,5 +1,5 @@
-"""Tests for app/channels/telegram.py — the bot's turn flow, its approval buttons, its commands and its start-up checks. Telegram's API, the door
-(`app/channels/door.py`) and Redis are replaced by the fakes in tests/channels/telegram_fakes.py, so these never touch a network, a queue, a worker or
+"""Tests for app/adapters/inbound/channels/telegram.py — the bot's turn flow, its approval buttons, its commands and its start-up checks. Telegram's API, the door
+(`app/adapters/inbound/channels/door.py`) and Redis are replaced by the fakes in tests/channels/telegram_fakes.py, so these never touch a network, a queue, a worker or
 a model. What the door and the sign-in do with real HTTP is tested in test_door.py, test_oauth.py and test_telegram_people.py; the inbox, the webhook
 server, linking and the Bot API client have their own files.
 """
@@ -7,12 +7,15 @@ import asyncio
 
 import pytest
 
-from app.channels import telegram as telegram_channel
-from app.channels.door import SIGNIN_MESSAGES
-from app.channels.oauth import SignInRefused
-from app.channels.telegram import Bot
-from app.channels.telegram_approvals import ApprovalStore, parse_callback
-from app.channels.telegram_inbox import Inbox
+from app.adapters.inbound.channels import telegram as telegram_channel
+from app.adapters.inbound.channels.door import SIGNIN_MESSAGES
+from app.adapters.inbound.channels.oauth import SignInRefused
+from app.adapters.inbound.channels.telegram import Bot
+from app.adapters.inbound.channels.telegram_approvals import (
+    ApprovalStore,
+    parse_callback,
+)
+from app.adapters.inbound.channels.telegram_inbox import Inbox
 from app.core import metrics
 from app.core.config import settings
 from tests.channels.telegram_fakes import (
@@ -74,7 +77,7 @@ class TestThreadId:
         assert telegram_channel._thread_id("p-1", 5) != telegram_channel._thread_id("p-2", 5)
 
     def test_it_names_its_owner_inside_the_reserved_namespace(self):
-        """The API lets a caller claim a `telegram:` id only if it names them (app/api/routers/chat.py)."""
+        """The API lets a caller claim a `telegram:` id only if it names them (app/adapters/inbound/api/routers/chat.py)."""
         assert telegram_channel._thread_id("abc-123", 7) == "telegram:abc-123:7"
 
 

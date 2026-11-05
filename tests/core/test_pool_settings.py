@@ -84,7 +84,7 @@ def test_every_connection_site_in_the_app_and_the_billing_package_turns_prepared
                 flagged[str(path.relative_to(REPO))] = bad
             found[str(path.relative_to(REPO))] = bad
     # Not vacuous: the four sites this was written for are all in the scan.
-    for expected in ("app/core/sql_store.py", "app/adapters/postgres/checkpointing.py", "app/api/health.py", "packages/billing/src/credit_billing/cli/_runtime.py"):
+    for expected in ("app/core/sql_store.py", "app/adapters/outbound/postgres/checkpointing.py", "app/adapters/inbound/api/health.py", "packages/billing/src/credit_billing/cli/_runtime.py"):
         assert expected in found, f"{expected} is not scanned"
     assert not flagged, f"connection sites that would break behind a transaction pooler (pass prepare_threshold=None): {flagged}"
 
@@ -117,7 +117,7 @@ async def test_the_appdata_pool_is_sized_by_the_setting_and_does_not_prepare_sta
 
 
 async def test_the_checkpointer_pool_does_not_prepare_statements_and_keeps_its_other_settings(monkeypatch):
-    from app.adapters.postgres import checkpointing
+    from app.adapters.outbound.postgres import checkpointing
 
     class FakeSaver:
         def __init__(self, conn):

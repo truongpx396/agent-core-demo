@@ -1,5 +1,5 @@
-"""Tests for app/ingestion/ingest_queue.py — the production ingestion pipeline's
-own Redis Streams queue, deliberately separate from app/job_queue/queue.py's
+"""Tests for app/adapters/outbound/redis/ingest_queue.py — the production ingestion pipeline's
+own Redis Streams queue, deliberately separate from app/adapters/outbound/redis/queue.py's
 chat-turn queue (see its module docstring for why). Reuses
 tests/job_queue/test_queue.py's FakeRedis — the same in-memory Streams stand-in
 works unchanged since ingest_queue.py talks to Redis the same way
@@ -7,7 +7,7 @@ queue.py does, just against different stream/group names.
 """
 import json
 
-from app.ingestion import ingest_queue
+from app.adapters.outbound.redis import ingest_queue
 from tests.job_queue.test_queue import FakeRedis
 
 
@@ -25,7 +25,7 @@ class TestEnsureConsumerGroup:
     def test_uses_a_separate_stream_and_group_from_the_chat_queue(self):
         """The whole point of this module existing separately — verified
         directly, not just asserted by convention."""
-        from app.job_queue import queue
+        from app.adapters.outbound.redis import queue
 
         assert ingest_queue.INGEST_REQUESTS_STREAM != queue.requests_stream_key()
         assert ingest_queue.INGEST_CONSUMER_GROUP != queue.CONSUMER_GROUP
@@ -100,7 +100,7 @@ class TestPublishResultAndReadResults:
         )
 
     async def test_a_first_event_deadline_yields_one_error_event_and_stops(self):
-        """Same fix as app/job_queue/queue.py::read_results — a job_id no
+        """Same fix as app/adapters/outbound/redis/queue.py::read_results — a job_id no
         ingest-worker ever picks up must not hang GET /ingest/stream/{job_id}
         forever."""
         client = FakeRedis()  # nothing ever published to "j1"

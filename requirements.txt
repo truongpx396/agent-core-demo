@@ -47,7 +47,7 @@ pydantic>=2.5,<3
 pydantic-settings>=2.0,<3
 fastapi>=0.110,<1
 uvicorn>=0.29,<1
-# Seals the refresh token a linked Telegram account keeps in Redis (app/channels/telegram_link.py); pinned in the lock file already as a transitive dependency.
+# Seals the refresh token a linked Telegram account keeps in Redis (app/adapters/inbound/channels/telegram_link.py); pinned in the lock file already as a transitive dependency.
 cryptography>=43,<51
 
 # Dev/test — graph unit + integration tests (fake LLM, no live services)
@@ -89,7 +89,7 @@ psycopg[binary,pool]>=3.1,<4
 # redis-py has bundled async support since 4.2.
 redis>=5.0,<9
 
-# MCP: app/mcp/server.py + ops_server.py (servers this app publishes, on `mcp.server.MCPServer`) AND app/mcp/client.py +
+# MCP: app/adapters/inbound/mcp/server.py + ops_server.py (servers this app publishes, on `mcp.server.MCPServer`) AND app/adapters/outbound/mcp/client.py +
 # connection.py (the client that consumes a remote server's tools, on `ClientSession`). The 2.x line: 1.x is in maintenance
 # (security fixes only) and 2.x is where the protocol is going (the 2026-07-28 revision). It was held on 1.x while the sandbox
 # bridge below imported `mcp.server.fastmcp`, which 2.x removed; opensandbox-mcp 1.1 moved to `MCPServer` and requires
@@ -129,13 +129,13 @@ python-multipart>=0.0.9,<1
 # first-class dependency, not an implicit one (same reasoning as httpx above).
 pyyaml>=6.0,<7
 
-# Live web rendering (app/ingestion/web_crawler.py, GRAPH_PATTERNS.md
+# Live web rendering (app/adapters/outbound/crawl4ai/web_crawler.py, GRAPH_PATTERNS.md
 # pattern 50) — a real headless-Chromium render for sales/support/ops
 # domain tools that need a JS-rendered page, not just the bare HTTP GET
 # app/ingestion/ingestor.py's ingest_url already does. Pinned to an exact
 # version, not a range: crawl4ai has broken its own public API across
 # point releases (its own changelog documents this repeatedly), and the
-# app/ingestion/web_crawler.py wrapper above was written and verified
+# app/adapters/outbound/crawl4ai/web_crawler.py wrapper above was written and verified
 # against this EXACT version's result shape (result.markdown is a
 # str-compatible StringCompatibleMarkdown, result.success/error_message
 # are the fields checked on failure) — a version bump needs the same
@@ -144,10 +144,10 @@ pyyaml>=6.0,<7
 # its headless browser — see Dockerfile for the containerized equivalent.
 crawl4ai==0.9.3
 
-# OpenSandbox MCP bridge (app/adapters/mcp/sandbox_tools.py, GRAPH_PATTERNS.md
+# OpenSandbox MCP bridge (app/adapters/outbound/mcp/sandbox_tools.py, GRAPH_PATTERNS.md
 # pattern 50) — a real stdio MCP SERVER (not a library this app calls
-# directly) that app/mcp/client.py::load_remote_tools spawns as a
-# subprocess (`python -m opensandbox_mcp`) and keeps one connection to (app/mcp/connection.py). Bridges to a separately-run
+# directly) that app/adapters/outbound/mcp/client.py::load_remote_tools spawns as a
+# subprocess (`python -m opensandbox_mcp`) and keeps one connection to (app/adapters/outbound/mcp/connection.py). Bridges to a separately-run
 # `opensandbox-server` (see `make sandbox-up`, README) — this pin is the bridge
 # itself and the opensandbox SDK it brings (`opensandbox>=1.1.1`); the sandbox server and the Docker daemon it
 # drives are operational prerequisites, not Python dependencies.

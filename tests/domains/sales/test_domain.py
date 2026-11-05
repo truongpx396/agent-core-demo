@@ -273,7 +273,7 @@ async def test_handoff_to_human_notifies_the_team_channel(monkeypatch):
     """handoff_to_human's own side effect (app/domains/sales/tools.py) —
     unit-level, same shape as
     tests/domains/support/test_domain.py::test_escalate_to_human_notifies_the_team_channel."""
-    from app.adapters.notify import team_channel as notify
+    from app.adapters.outbound.notify import team_channel as notify
     from app.domains.sales.tools import _handoff_to_human_impl
 
     async def fake_set_lead_status(tenant, contact, status):

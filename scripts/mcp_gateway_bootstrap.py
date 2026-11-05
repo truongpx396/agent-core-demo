@@ -46,7 +46,7 @@ USER_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 REFRESH_HOURS = 168
 # The smoke check (scripts/authlimit_smoke.py) signs in as a public client with this callback; the web page signs in with its own root URL.
 API_SMOKE_CALLBACK = "http://localhost:33419/callback"
-# Where the Telegram bot's browser returns after a login (app/channels/telegram_link.py::CALLBACK_PATH; a test holds the two equal: this script imports nothing from app/).
+# Where the Telegram bot's browser returns after a login (app/adapters/inbound/channels/telegram_link.py::CALLBACK_PATH; a test holds the two equal: this script imports nothing from app/).
 TELEGRAM_LINK_CALLBACK_PATH = "/telegram/link/callback"
 
 
@@ -130,7 +130,7 @@ class Casdoor:
 
         Normally the id is generated once and KEPT on a re-run, so a client already registered with it still works. When the caller NAMES an id
         (`client_id`, used for the chat API's applications) that id is the one the application has, created or changed to it: the built-in web
-        page finds a tenant's client by the rule `api-<tenant>` (app/api/web_auth.py) instead of being told every tenant's random id, and a
+        page finds a tenant's client by the rule `api-<tenant>` (app/adapters/inbound/api/web_auth.py) instead of being told every tenant's random id, and a
         client id is not a secret."""
         existing = self.read("/api/get-application", id=f"admin/{name}")
         record = {
@@ -223,7 +223,7 @@ def main(argv: list[str] | None = None) -> None:
                 [f"{api_public}/", API_SMOKE_CALLBACK, cli_callback, *link_callbacks],  # the page, the smoke check, `make chat`, and the Telegram bot's login return
                 args.token_hours,
                 kind="API",
-                client_id=f"api-{tenant}",  # the rule the web page uses to find a tenant's client (app/api/web_auth.py::CLIENT_ID_PREFIX)
+                client_id=f"api-{tenant}",  # the rule the web page uses to find a tenant's client (app/adapters/inbound/api/web_auth.py::CLIENT_ID_PREFIX)
             )
             api_clients.append((tenant, api_client_id))
         casdoor.ensure_organization(args.ops_org)

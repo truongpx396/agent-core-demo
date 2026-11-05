@@ -1,4 +1,4 @@
-"""Test doubles for the API's check of the front door's identity (app/core/internal_identity.py, app/api/identity.py): a signing key, the
+"""Test doubles for the API's check of the front door's identity (app/core/internal_identity.py, app/adapters/inbound/api/identity.py): a signing key, the
 identities it would sign, and the key endpoint that publishes it.
 
 Nothing here touches a network. `InternalKeys` is handed an `httpx.AsyncClient` over a `MockTransport`, so a test exercises the real verifier,

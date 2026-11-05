@@ -40,8 +40,8 @@ def _stub_add_note_io(monkeypatch):
     is about — stub it the same way tests/agent/graph/test_graph_integration.py's
     TestMandatoryCapabilityGate does, so a real APPROVED add_note call can
     actually run inside ToolNode without needing a live Qdrant."""
+    from app.adapters.outbound.qdrant import qdrant_store
     from app.domains.ecorp import store as ecorp_store
-    from app.retrieval import qdrant_store
 
     async def fake_embed_text(text):
         return [0.0]

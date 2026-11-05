@@ -1,5 +1,5 @@
 """Hermetic tests for the answer cache's tenant/principal scoping in
-app/retrieval/semantic_cache.py — the part that is easiest to get wrong and
+app/adapters/outbound/redis/semantic_cache.py — the part that is easiest to get wrong and
 costs most when wrong (a cached answer can carry citations to one principal's
 own memories).
 
@@ -12,7 +12,7 @@ with its own fix, in test_semantic_cache_tag_escaping.py.)
 """
 import pytest
 
-from app.retrieval import semantic_cache
+from app.adapters.outbound.redis import semantic_cache
 
 
 class TestEscapeTag:

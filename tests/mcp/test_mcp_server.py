@@ -1,4 +1,4 @@
-"""Tests for app/mcp/server.py — the MCP-exposed counterpart to
+"""Tests for app/adapters/inbound/mcp/server.py — the MCP-exposed counterpart to
 app/agent/tools/builtin.py's query_employees, reached over MCPServer's in-process
 list_tools/call_tool. The same server over a real stdio subprocess is in
 tests/mcp/test_published_servers_over_stdio.py. These stay hermetic by mocking
@@ -15,8 +15,8 @@ tenant there is a tenant a prompt injection can name.
 """
 import logging
 
+from app.adapters.inbound.mcp import server as mcp_server
 from app.core import sql_store
-from app.mcp import server as mcp_server
 
 
 async def _call(name, arguments=None):
@@ -132,7 +132,7 @@ async def test_every_call_leaves_an_audit_line_naming_who_but_never_what_was_ask
 
     monkeypatch.setattr(sql_store, "query_employees", fake_query_employees)
 
-    with caplog.at_level(logging.INFO, logger="app.mcp.audit"):
+    with caplog.at_level(logging.INFO, logger="app.adapters.inbound.mcp.audit"):
         await _call("query_employees", {"name_contains": "Margaret Hamilton"})
         await _call("query_employees", {"department": "NotADept"})
 
@@ -147,7 +147,7 @@ async def test_every_call_leaves_an_audit_line_naming_who_but_never_what_was_ask
 
 
 async def test_a_refusal_is_audited_too(caplog):
-    with caplog.at_level(logging.INFO, logger="app.mcp.audit"):
+    with caplog.at_level(logging.INFO, logger="app.adapters.inbound.mcp.audit"):
         await _call("query_employees")
 
     (record,) = [r for r in caplog.records if r.message == "mcp_tool_call"]
