@@ -67,7 +67,7 @@ they delete volumes or kill running processes.
   `registry.py` looks them up by name. Ecorp is the default but has no standing in the graph: `build_graph`
   requires a manifest and a domain. A new use case follows that shape; it never forks `build_graph()`. A domain's skills and subagents are
   its `skills/<name>/SKILL.md` and `subagents/<name>/AGENT.md` (the agent's own catalogs, not Claude Code's): the folder is the owner, there is no
-  `domains:` tag, and `app/domains/shared/skills/` holds the skills every domain may use (a subagent always belongs to one domain).
+  `domains:` tag, and `app/domains/shared/skills/` would hold a skill every domain can follow (none today: each skill needs a tool only some domains have, and `tests/domains/test_skills_name_only_tools_their_domain_has.py` checks it); a subagent always belongs to one domain.
 - `deploy/` — what runs the processes: `compose/` (every `docker-compose*.yml`: the stack, `.collectors` the exporters/OTel collector/Promtail overlay, `.observability` the backends), `caddy/`, `litellm/` (configs + `patches/`),
   `images/` (the sandbox image builds), `terraform/` (the droplets; `deploy/README.md` is the runbook), `env/`.
   Compose resolves paths and `.env` from the repo root, so run it via the Makefile's `COMPOSE` or

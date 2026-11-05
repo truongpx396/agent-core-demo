@@ -833,7 +833,7 @@ app/
   billing_integration/  the app's one seam to the billing package (port.py)
   bootstrap.py binds every port to its adapter; each entrypoint calls wire() first
   core/        the kernel: config, security (SecurityCtx/Policy/AccessScope), metrics, errors, scrubbing, the gateway identity, tool timeout and the exactly-once guard (plus the SQL pool and other platform modules)
-  domains/     ecorp/, support/, ops/, sales/ (store = the domain's adapter + tools + domain, and its skills/ and subagents/), shared/skills/ (for every domain), registry, shared sandbox session
+  domains/     ecorp/, support/, ops/, sales/ (store = the domain's adapter + tools + domain, and its skills/ and subagents/), shared/skills/ (for a skill every domain can follow; none today), registry, shared sandbox session
   ingestion/   the ingest pipeline: chunking, extractors, ingestor (over the Embedder, DocumentWriter and PageFetcher ports)
   ports/outbound/  the Protocols the application needs (cost, models, llm, sessions, retrieval, web, sandbox, a repository per domain, ...) and Slot, the typed seam
 scripts/       jobs/ (scheduled one-shots), checks/ (smokes, probes, eval), tools/ (operator CLIs); model_eval/ and ai_review/ (the PR-review tool) are packages

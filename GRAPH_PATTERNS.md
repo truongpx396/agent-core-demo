@@ -288,7 +288,7 @@ The only HTTP chat path. `POST /chat/stream/queued` publishes a turn to a Redis 
 - **Two scope boundaries:** moderation screens words, not pixels (an image-only message passes); retrieval and caching stay text-only. Verify vision **and** tool-calling support before assuming an alias swap is enough.
 
 ### 45. Skill packages with progressive disclosure
-A catalog of `SKILL.md` packages (YAML frontmatter + markdown, one directory under a domain's `skills/` folder, or under `app/domains/shared/skills/` for every domain) discovered by meaning. `skill_search` hybrid-searches `{name, description}`; `use_skill(name)` loads one matched skill's full body. A turn that needs no skill pays for two tool schemas, not the size of the catalog (`app/agent/tools/skill_catalog.py`, `scripts/tools/index_skills.py`).
+A catalog of `SKILL.md` packages (YAML frontmatter + markdown, one directory under a domain's `skills/` folder, or under `app/domains/shared/skills/` for one every domain can follow, none today) discovered by meaning. `skill_search` hybrid-searches `{name, description}`; `use_skill(name)` loads one matched skill's full body. A turn that needs no skill pays for two tool schemas, not the size of the catalog (`app/agent/tools/skill_catalog.py`, `scripts/tools/index_skills.py`).
 - Reuses `hybrid_search` via an optional `collection` parameter; no forked fusion logic. **Disk is content truth, Qdrant only the index:** `use_skill` reads the body from an on-disk registry, so the index can't disagree with the file.
 - Skills are a shared bundled catalog (no `SecurityCtx`, like `calculator`); a tenant-authored catalog is a larger extension not attempted. The folder a skill sits in scopes it: a domain's own, or `shared` (there is no `domains:` field).
 
