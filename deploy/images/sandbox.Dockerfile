@@ -1,4 +1,4 @@
-# Base image for every domain's sandbox tools (app/domains/sandbox_session.py,
+# Base image for every domain's sandbox tools (app/domains/shared/sandbox_session.py,
 # GRAPH_PATTERNS.md pattern 50) — referenced by SANDBOX_IMAGE
 # (app/core/config.py). The sandbox has NO network access by design
 # (run_command_in_sandbox's own tool description) — a real security

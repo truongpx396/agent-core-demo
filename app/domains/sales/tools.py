@@ -23,11 +23,11 @@ from app.core.tool_idempotency import idempotent
 from app.core.tool_runtime import arun_with_timeout
 from app.core.tool_schema import ToolArgs
 from app.core.untrusted import frame_untrusted
-from app.domains import sandbox_session
-from app.domains.policy import ActionAllowlistPolicy
-from app.domains.web_search import make_web_search_tool
+from app.domains.sales.ports import lead_store
+from app.domains.shared import sandbox_session
+from app.domains.shared.policy import ActionAllowlistPolicy
+from app.domains.shared.web_search import make_web_search_tool
 from app.ports.outbound.notify import team_channel
-from app.ports.outbound.sales import lead_store
 from app.ports.outbound.web import CRAWL_TOOL_TIMEOUT_SECONDS, page_renderer
 
 NO_CTX_REFUSAL = (
@@ -399,7 +399,7 @@ async def enrich_lead_from_website(
     )
 
 
-# The discovery half of enrich_lead_from_website: finds the company site it then reads (app/domains/web_search.py says why).
+# The discovery half of enrich_lead_from_website: finds the company site it then reads (app/domains/shared/web_search.py says why).
 web_search = make_web_search_tool(SALES_POLICY, then_read_with="enrich_lead_from_website")
 
 

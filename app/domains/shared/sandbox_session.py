@@ -26,7 +26,7 @@ fresh opensandbox-mcp subprocess per call (app/adapters/outbound/mcp/client.py),
 later calls would 404.
 
 Response shapes (confirmed against a real opensandbox-server, `make sandbox-up`;
-tests/domains/test_sandbox_session.py): sandbox_create `{"sandbox_id", "info"}`; sandbox_list
+tests/domains/shared/test_sandbox_session.py): sandbox_create `{"sandbox_id", "info"}`; sandbox_list
 `{"sandbox_infos": [{"id", "status": {"state"}, "metadata"}], "pagination"}`; command_run `{"exit_code":
 int|None, "logs": {"stdout": [{"text"}], "stderr": [{"text"}]}}`; file_read `{"path", "content"}`; file_write
 `{"status": "written"}`.

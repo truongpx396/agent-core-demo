@@ -23,11 +23,11 @@ from app.core.tool_idempotency import idempotent
 from app.core.tool_runtime import arun_with_timeout
 from app.core.tool_schema import ToolArgs
 from app.core.untrusted import frame_untrusted
-from app.domains import sandbox_session
-from app.domains.policy import ActionAllowlistPolicy
-from app.domains.web_search import make_web_search_tool
+from app.domains.shared import sandbox_session
+from app.domains.shared.policy import ActionAllowlistPolicy
+from app.domains.shared.web_search import make_web_search_tool
+from app.domains.support.ports import ticket_store
 from app.ports.outbound.notify import team_channel
-from app.ports.outbound.support import ticket_store
 from app.ports.outbound.web import CRAWL_TOOL_TIMEOUT_SECONDS, page_renderer
 
 NO_CTX_REFUSAL = (
@@ -308,7 +308,7 @@ async def fetch_external_reference(
     )
 
 
-# The discovery half of fetch_external_reference: finds the page it then reads (app/domains/web_search.py says why this domain has it).
+# The discovery half of fetch_external_reference: finds the page it then reads (app/domains/shared/web_search.py says why this domain has it).
 web_search = make_web_search_tool(SUPPORT_POLICY, then_read_with="fetch_external_reference")
 
 

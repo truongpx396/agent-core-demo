@@ -6,7 +6,7 @@ network, so it is cheap and safe to call twice. `verify_wired()` is the startup 
 binding stops the process at boot instead of failing the first request that happens to need it.
 
 Adding a port is three edits, and `tests/core/test_bootstrap.py` fails on the first one without the other two:
-1. the Protocol and its `Slot` in `app/ports/outbound/<capability>.py`;
+1. the Protocol and its `Slot` in `app/ports/outbound/<capability>.py` (a business module's own repository: `app/domains/<module>/ports.py`);
 2. the adapter in `app/adapters/<technology>/`;
 3. one entry in `adapters()` here.
 
@@ -41,31 +41,31 @@ from app.adapters.outbound.redis.semantic_cache import RedisAnswerCache
 from app.adapters.outbound.web.page_fetch import HttpxPageFetcher
 from app.adapters.outbound.web.serper import SerperWebSearch
 from app.core.errors import register_store_error
+from app.domains.ecorp import ports as ecorp_ports
 from app.domains.ecorp import store as ecorp_store
 from app.domains.ops import metrics_client as ops_metrics_client
+from app.domains.ops import ports as ops_ports
 from app.domains.ops import store as ops_store
 from app.domains.registry import RegistryDomainCatalog
+from app.domains.sales import ports as sales_ports
 from app.domains.sales import store as sales_store
+from app.domains.support import ports as support_ports
 from app.domains.support import store as support_store
 from app.ports.outbound import (
     checkpointing,
     classification,
     cost,
     domains,
-    ecorp,
     idempotency,
     jobs,
     llm,
     models,
     notify,
-    ops,
     retrieval,
-    sales,
     sandbox,
     screening,
     sessions,
     storage,
-    support,
     web,
 )
 from app.ports.slot import PortNotBound, Slot, unbound
@@ -100,12 +100,12 @@ def adapters() -> dict[Slot, object]:
         jobs.ingest_queue: RedisIngestQueue(),
         sandbox.sandbox_catalog: OpenSandboxCatalog(),
         # A domain's `store.py` is its adapter: the MODULE is bound (its functions are looked up at call time, which is how the module's tests patch them).
-        support.ticket_store: support_store,
-        sales.lead_store: sales_store,
-        ops.incident_store: ops_store,
-        ops.metrics_reader: ops_metrics_client.PrometheusMetricsReader(),
-        ecorp.knowledge_base: ecorp_store,
-        ecorp.employee_directory: ecorp_store,
+        support_ports.ticket_store: support_store,
+        sales_ports.lead_store: sales_store,
+        ops_ports.incident_store: ops_store,
+        ops_ports.metrics_reader: ops_metrics_client.PrometheusMetricsReader(),
+        ecorp_ports.knowledge_base: ecorp_store,
+        ecorp_ports.employee_directory: ecorp_store,
     }
 
 

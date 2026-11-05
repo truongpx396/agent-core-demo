@@ -8,7 +8,8 @@ scanner itself, because a guard that cannot fail proves nothing.
 
 The rings, inside out:
 
-- ports       `app/ports/**`. Protocols and plain data. Imports the standard library, `pydantic`, the kernel and other ports.
+- ports       `app/ports/**` and each business module's own `app/domains/<module>/ports.py`. Protocols and plain data. Imports the standard
+              library, `pydantic`, the kernel and other ports.
 - kernel      `app/core/*.py` except the platform modules below. Security context, errors, scrubbing, the tool wrapper, metrics, settings.
               Imports no infrastructure client and nothing outside the kernel and the ports.
 - application `app/agent/**`, `app/domains/**` and `app/ingestion/**` except the adapter files below (a domain's `store.py`, and the registry that names every domain). The graph, the runtime, the cost policy, the tools, the ingest pipeline.
@@ -62,7 +63,7 @@ LEDGER: frozenset[tuple[str, str]] = frozenset({
 
 def ring_of(rel: str) -> str:
     """The ring a repo-relative path belongs to."""
-    if rel.startswith("app/ports/"):
+    if rel.startswith("app/ports/") or fnmatch.fnmatch(rel, "app/domains/*/ports.py"):
         return "ports"
     if any(fnmatch.fnmatch(rel, glob) for glob in ADAPTER_FILE_GLOBS):
         return "adapter"
@@ -263,7 +264,7 @@ FRAMEWORK_FREE = (
     "app/core/security.py", "app/core/errors.py", "app/core/scrubbing.py", "app/core/untrusted.py", "app/core/routing_policy.py",
     "app/core/url_safety.py", "app/core/output_limits.py", "app/core/resilience.py", "app/core/moderation.py",
     "app/agent/cost/budgets.py", "app/agent/cost/pricing.py", "app/agent/cost/metering.py", "app/agent/cost/usage_events.py",
-    "app/agent/cost/budget_holds.py", "app/agent/graph/citations.py", "app/agent/graph/links.py", "app/domains/policy.py",
+    "app/agent/cost/budget_holds.py", "app/agent/graph/citations.py", "app/agent/graph/links.py", "app/domains/shared/policy.py",
     "app/agent/runtime/sessions.py",
 )
 
@@ -281,6 +282,129 @@ def test_the_framework_scanner_can_fail():
     assert framework_imports("from langchain_core.messages import AIMessage") == {"langchain_core.messages", "langchain_core.messages.AIMessage"}
     assert framework_imports("import langgraph.graph") == {"langgraph.graph"}
     assert framework_imports("from app.core import metrics\nimport json") == set()
+
+
+# --- the modular monolith: business modules, a shared kernel, and what may reach into what --------------------------------------
+#
+# `app/domains/<module>/` is a business module (ecorp, ops, sales, support): its tools, its use cases, its port (`ports.py`), its adapter (`store.py`),
+# its skills and subagents, and its plugin (`domain.py`). `app/domains/shared/` is what the modules have in common (policy, the sandbox tools, web search).
+# A module reaches no other module; the rest of the code reaches a module only through what it publishes.
+
+MODULES = tuple(sorted(p.parent.name for p in (REPO / "app/domains").glob("*/domain.py")))
+
+# What any other code may import from a module: its plugin (the registry builds the catalog from it) and the use cases a driving adapter calls.
+PUBLISHED = frozenset({"domain", "usecases"})
+# The composition root also names the module's port and the adapter that implements it, which is its whole job.
+COMPOSITION_ROOT = "app/bootstrap.py"
+COMPOSED = PUBLISHED | {"ports", "store", "metrics_client"}
+
+# Reaches into a module's internals that remain, as (file, module reached). Like `LEDGER`, it may only shrink; each is a use case the module has not published.
+MODULE_LEDGER: frozenset[tuple[str, str]] = frozenset({
+    ("app/adapters/inbound/mcp/ops_server.py", "app.domains.ops.tools"),  # the two read-only tools of the published ops server
+    ("scripts/jobs/ops_digest.py", "app.domains.ops.metric_checks"),  # the thresholds the digest flags
+    ("scripts/jobs/ops_digest.py", "app.domains.ops.ports"),  # the metrics reader
+    ("scripts/jobs/followup_sweep.py", "app.domains.sales.store"),  # the sweep queries the lead table
+})
+
+
+def _domain_imports(source: str) -> set[tuple[str, ...]]:
+    """The parts after `app.domains` of every import that names something under it (`("ops", "tools")` for `from app.domains.ops import tools`)."""
+    return {tuple(name.split(".")[2:]) for name in _imports(ast.parse(source)) if _is(name, "app.domains") and name != "app.domains"}
+
+
+def other_parts_reached(rel: str, source: str) -> set[str]:
+    """For a file inside a module (or the shared kernel): the `app.domains.<x>` it imports that is neither its own module nor `shared`.
+    The shared kernel may import no module at all, and no module may import the registry that names them."""
+    own = rel.split("/")[2]
+    allowed = {"shared"} if own != "shared" else set()
+    allowed |= {own}
+    return {f"app.domains.{parts[0]}" for parts in _domain_imports(source) if parts[0] not in allowed}
+
+
+def module_internals_reached(rel: str, source: str, *, allowed: frozenset[str] = PUBLISHED) -> set[str]:
+    """For a file outside `app/domains/`: the `app.domains.<module>.<internal>` modules it imports that the module does not publish."""
+    reached: set[str] = set()
+    for parts in _domain_imports(source):
+        if len(parts) >= 2 and parts[0] in MODULES and parts[1] not in allowed and (REPO / "app/domains" / parts[0] / f"{parts[1]}.py").exists():
+            reached.add(f"app.domains.{parts[0]}.{parts[1]}")
+    return reached
+
+
+def _inside_a_module(rel: str) -> bool:
+    return rel.startswith("app/domains/") and rel.count("/") >= 3  # app/domains/<x>/<file>: not registry.py, not the package root
+
+
+def _module_rule_violations() -> tuple[set[tuple[str, str]], set[tuple[str, str]]]:
+    crossing: set[tuple[str, str]] = set()
+    reaching: set[tuple[str, str]] = set()
+    for base in ("app", "scripts"):
+        for path in sorted((REPO / base).rglob("*.py")):
+            rel = path.relative_to(REPO).as_posix()
+            source = path.read_text()
+            if _inside_a_module(rel):
+                crossing |= {(rel, target) for target in other_parts_reached(rel, source)}
+            elif not rel.startswith("app/domains/"):
+                allowed = COMPOSED if rel == COMPOSITION_ROOT else PUBLISHED
+                reaching |= {(rel, target) for target in module_internals_reached(rel, source, allowed=allowed)}
+    return crossing, reaching
+
+
+def test_there_are_modules_for_these_rules_to_be_about():
+    assert MODULES == ("ecorp", "ops", "sales", "support"), "a floor against a vacuous pass: a module was added or the plugin file moved"
+
+
+def test_a_module_imports_no_other_module_nor_the_registry():
+    crossing, _ = _module_rule_violations()
+    assert crossing == set(), (
+        "a business module reaches another module (or the registry that names them): what two modules share goes in app/domains/shared/, "
+        "what one asks of the other is a port in app/ports/outbound/"
+    )
+
+
+def test_the_rest_of_the_code_imports_only_what_a_module_publishes():
+    _, reaching = _module_rule_violations()
+    new = sorted(reaching - MODULE_LEDGER)
+    assert not new, (
+        f"these reach a module's internals; import its {sorted(PUBLISHED)} (the use cases a driving adapter calls) or publish what is needed\n  "
+        + "\n  ".join(f"{file} imports {module}" for file, module in new)
+    )
+
+
+def test_the_module_ledger_only_shrinks():
+    _, reaching = _module_rule_violations()
+    stale = sorted(MODULE_LEDGER - reaching)
+    assert not stale, "these ledger entries no longer exist: delete them\n  " + "\n  ".join(f"{file} imports {module}" for file, module in stale)
+
+
+@pytest.mark.parametrize(
+    ("rel", "source", "expected"),
+    [
+        ("app/domains/ops/tools.py", "from app.domains.sales import store", {"app.domains.sales"}),
+        ("app/domains/ops/tools.py", "import app.domains.registry", {"app.domains.registry"}),
+        ("app/domains/ops/tools.py", "from app.domains.ops import store\nfrom app.domains.shared import policy", set()),
+        ("app/domains/shared/policy.py", "from app.domains.ops import tools", {"app.domains.ops"}),
+        ("app/domains/shared/web_search.py", "from app.domains.shared import policy", set()),
+    ],
+)
+def test_the_crossing_scanner_flags_exactly_the_other_modules(rel, source, expected):
+    assert other_parts_reached(rel, source) == expected
+
+
+@pytest.mark.parametrize(
+    ("source", "allowed", "expected"),
+    [
+        ("from app.domains.ops.tools import OPS_POLICY", PUBLISHED, {"app.domains.ops.tools"}),
+        ("from app.domains.ops import tools", PUBLISHED, {"app.domains.ops.tools"}),
+        ("import app.domains.ops.store", PUBLISHED, {"app.domains.ops.store"}),
+        ("from app.domains.ecorp.usecases import query_employees_impl", PUBLISHED, set()),
+        ("from app.domains.ecorp.domain import ECORP_DOMAIN_PLUGIN", PUBLISHED, set()),
+        ("from app.domains.registry import resolve_domain\nfrom app.domains.shared import policy", PUBLISHED, set()),
+        ("from app.domains.ops import store", COMPOSED, set()),
+        ("from app.domains.ops import tools", COMPOSED, {"app.domains.ops.tools"}),
+    ],
+)
+def test_the_internals_scanner_flags_exactly_the_unpublished_modules(source, allowed, expected):
+    assert module_internals_reached("app/x.py", source, allowed=allowed) == expected
 
 
 # --- the scanner itself: each rule must be able to fail ---------------------------------------------------------------------
@@ -313,6 +437,9 @@ def test_the_framework_scanner_can_fail():
         ("app/ports/outbound/cost.py", "from app.core.security import SecurityCtx", set()),
         ("app/ports/outbound/cost.py", "import psycopg", {"psycopg"}),
         ("app/ports/outbound/cost.py", "from app.adapters.outbound.qdrant import qdrant_store", {"app.adapters"}),
+        ("app/domains/ecorp/ports.py", "from app.ports.slot import Slot", set()),
+        ("app/domains/ecorp/ports.py", "from app.domains.ecorp import store", {"app.domains"}),
+        ("app/domains/ecorp/ports.py", "import psycopg", {"psycopg"}),
         # adapters may import anything
         ("app/adapters/outbound/postgres/x.py", "import psycopg\nfrom app.agent.cost import budgets", set()),
         ("app/domains/support/store.py", "from app.core.sql_store import get_connection", set()),

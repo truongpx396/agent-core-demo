@@ -1,6 +1,6 @@
 """The code sandbox: an isolated, disposable container the ops, support and sales domains can run commands, Python and file reads and writes in.
 
-The domains' sandbox tools (`app/domains/sandbox_session.py`) own the session semantics: one sandbox per tenant and conversation, found again by
+The domains' sandbox tools (`app/domains/shared/sandbox_session.py`) own the session semantics: one sandbox per tenant and conversation, found again by
 its owner tags, every reply parsed as JSON, output scrubbed and bounded. The adapter (`app/adapters/outbound/mcp/sandbox_tools.py`) owns reaching the
 sandbox: `opensandbox-mcp`, a stdio MCP server bridging to a containerized `opensandbox-server`, consumed through the pinned MCP client
 (`app/adapters/outbound/mcp/client.py`).

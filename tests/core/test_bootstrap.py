@@ -5,6 +5,7 @@ adapters are read from `bootstrap.adapters()` rather than from the slots."""
 import importlib
 import pkgutil
 
+import app.domains
 import app.ports.outbound
 from app import bootstrap
 from app.ports.slot import PortNotBound, Slot, all_slots
@@ -12,8 +13,12 @@ from tests.fakes.conformance import mismatches
 
 
 def _import_every_port_module() -> None:
+    """The platform's ports, and each business module's own (`app/domains/<module>/ports.py`)."""
     for module in pkgutil.iter_modules(app.ports.outbound.__path__):
         importlib.import_module(f"app.ports.outbound.{module.name}")
+    for module in pkgutil.iter_modules(app.domains.__path__):
+        if module.ispkg and module.name != "shared":
+            importlib.import_module(f"app.domains.{module.name}.ports")
 
 
 def test_every_port_has_a_production_adapter_and_no_adapter_is_for_a_port_that_does_not_exist():

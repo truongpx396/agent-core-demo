@@ -5,7 +5,7 @@ tool error rate, moderation-block rate, rate-limit rejections, retrieval degrada
 definition of "something's wrong" that could quietly drift out of sync with what actually pages someone. `detect_anomalies` is deliberately a plain
 threshold comparison, not a learned/statistical model: "anomaly" here literally means "one of this app's own alert rules would be firing right now."
 
-Pure: no I/O. Getting the readings is the `MetricsReader` port (`app/ports/outbound/ops.py`; the adapter is `metrics_client.py`).
+Pure: no I/O. Getting the readings is the `MetricsReader` port (`app/domains/ops/ports.py`; the adapter is `metrics_client.py`).
 """
 from dataclasses import dataclass
 

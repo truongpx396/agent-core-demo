@@ -63,8 +63,9 @@ they delete volumes or kill running processes.
   several domains share, with `SHARED_TOOL_CAPABILITIES`), `idempotency.py`, the skill and subagent catalogs
   (one shared `frontmatter.py` loader) and `run_subagent`. `cost/` is the spend meter and caps
   (`COST_GOVERNANCE.md`). `AgentManifest`/`DomainPlugin` (the plugin contract) are in `app/ports/outbound/domains.py`.
-- `app/domains/{ecorp,support,ops,sales}/` — each is `store.py` + `tools.py` + `domain.py`, and
-  `registry.py` looks them up by name. Ecorp is the default but has no standing in the graph: `build_graph`
+- `app/domains/{ecorp,support,ops,sales}/` — each is a **module** (`ARCHITECTURE.md`, "The business modules"): `domain.py` + `tools.py` + `store.py` + `ports.py` (its repository port), and
+  `registry.py` looks them up by name. A module imports no other module (`app/domains/shared/` holds `policy.py`, `sandbox_session.py` and `web_search.py`, which they share), and code outside
+  `app/domains/` imports only its `domain` and `usecases` (`tests/core/test_architecture_layers.py`). Ecorp is the default but has no standing in the graph: `build_graph`
   requires a manifest and a domain. A new use case follows that shape; it never forks `build_graph()`. A domain's skills and subagents are
   its `skills/<name>/SKILL.md` and `subagents/<name>/AGENT.md` (the agent's own catalogs, not Claude Code's): the folder is the owner, there is no
   `domains:` tag, and `app/domains/shared/skills/` would hold a skill every domain can follow (none today: each skill needs a tool only some domains have, and `tests/domains/test_skills_name_only_tools_their_domain_has.py` checks it); a subagent always belongs to one domain.
@@ -78,7 +79,7 @@ they delete volumes or kill running processes.
 - `app/adapters/outbound/` — the DRIVEN side, one package per technology, each implementing a port: `postgres/`, `litellm/`, `mlservice/` (the client for the ML service), `web/`, `notify/`, `minio/`, `crawl4ai/`, `qdrant/` (the vector store and memory deletion), `redis/` (the answer cache and the producer side of the Streams queues) and `embeddings/` (`embeddings.py` has two roles, `embed_query` and `embed_document(s)`; `embedding_identity.py` is what a collection's vectors were made with, and `qdrant_store.py` refuses to mix two: pattern 67). `mcp/` is the client side: `client.py` consumes a remote catalog (pinned by hash, scrubbed then bounded) over `connection.py`'s one long-lived connection per server, which never replays a call that may have run, and `sandbox_tools.py` is the sandbox bridge. The app is on `mcp` 2.x (servers on `MCPServer`, client on `ClientSession`); the bridge, `opensandbox-mcp` 1.1+, is the first release that supports it. Never imports `inbound/`.
 - `app/ports/`, `app/adapters/`, `app/bootstrap.py` — **ports and adapters** (`ARCHITECTURE.md`). `app/ports/outbound/` holds the
   Protocols the application needs (cost, models, llm, sessions, idempotency, checkpointing, retrieval, classification,
-  screening, web, notify, sandbox, jobs, storage, domains, and a repository per domain), each with a `Slot` the application reads at call
+  screening, web, notify, sandbox, jobs, storage, domains; a domain's own repository port is `app/domains/<d>/ports.py`), each with a `Slot` the application reads at call
   time (`ticket_store.get().get_ticket(...)`; unbound raises `PortNotBound`). `app/adapters/outbound/<technology>/`
   implements them; a domain's `store.py` is the one adapter that stays in its domain.
   `app/bootstrap.py::adapters()` is the one table of port to adapter; every entrypoint calls `wire()` first. In `app/agent` and

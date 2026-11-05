@@ -1,4 +1,4 @@
-"""The `web_search` tool (app/domains/web_search.py) and where it is offered (GRAPH_PATTERNS.md pattern 87).
+"""The `web_search` tool (app/domains/shared/web_search.py) and where it is offered (GRAPH_PATTERNS.md pattern 87).
 
 The three things that make it safe to hand a model a billed call to a third party are pinned here: it refuses without a context, it is `outward` (so a
 human approves every call), and what comes back is framed as data. The client's own behavior is tests/core/test_serper.py. That every
@@ -12,11 +12,11 @@ from pydantic import ValidationError
 
 from app.adapters.outbound.web import serper
 from app.core.untrusted import CLOSE_TAG, OPEN_TAG
-from app.domains import web_search as tool_module
 from app.domains.ecorp.domain import ECORP_DOMAIN_PLUGIN
-from app.domains.policy import ActionAllowlistPolicy
 from app.domains.registry import DOMAINS, resolve_domain
-from app.domains.web_search import (
+from app.domains.shared import web_search as tool_module
+from app.domains.shared.policy import ActionAllowlistPolicy
+from app.domains.shared.web_search import (
     NO_RESULTS,
     WebSearchArgs,
     format_hits,
