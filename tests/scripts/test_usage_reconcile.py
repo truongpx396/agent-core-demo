@@ -1,4 +1,4 @@
-"""The reconciliation command and worker (scripts/usage_reconcile.py): its exit codes, what a failed pass does, the refusal to run without the
+"""The reconciliation command and worker (scripts/jobs/usage_reconcile.py): its exit codes, what a failed pass does, the refusal to run without the
 gateway's key, and the heartbeat that keeps the drift gauge alive between passes (see tests/core/test_gauge_export.py for why)."""
 import asyncio
 import os
@@ -12,7 +12,7 @@ from app.agent.cost import usage_reconcile as reconcile
 from app.agent.cost.usage_reconcile import Finding, Report, Tolerance
 from app.core import metrics
 from app.ports.cost import Window
-from scripts import usage_reconcile
+from scripts.jobs import usage_reconcile
 from tests.conftest import metric_value
 
 WINDOW = Window(datetime(2026, 10, 6, tzinfo=UTC), datetime(2026, 10, 6, 18, tzinfo=UTC))

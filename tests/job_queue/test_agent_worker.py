@@ -1,4 +1,4 @@
-"""Tests for app/job_queue/agent_worker.py's process_request — the Redis Streams
+"""Tests for app/adapters/inbound/workers/agent_worker.py's process_request — the Redis Streams
 consumer side of GRAPH_PATTERNS.md pattern 43, dispatching by
 `payload["kind"]` (`"turn"` | `"turn_continue"` | `"resume"` | `"cancel"`).
 Reuses tests/job_queue/test_queue.py's FakeRedis; the actual graph-running
@@ -17,16 +17,16 @@ from unittest.mock import AsyncMock
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
-from app.agent.graph.messages import RETRY_ARTIFACT_KEY
-from app.agent.runtime.core import current_domain
-from app.core import metrics
-from app.job_queue import agent_worker
-from app.job_queue.queue import (
+from app.adapters.inbound.workers import agent_worker
+from app.adapters.outbound.redis.queue import (
     CONSUMER_GROUP,
     dead_letter_stream_key,
     requests_stream_key,
     results_stream_key,
 )
+from app.agent.graph.messages import RETRY_ARTIFACT_KEY
+from app.agent.runtime.core import current_domain
+from app.core import metrics
 from tests.conftest import metric_value as _count
 from tests.job_queue.test_queue import FakeRedis
 
@@ -133,7 +133,7 @@ class TestProcessRequestTurn:
         """A flag left over from a PRIOR turn on this thread_id (e.g. /chat/cancel raced with that turn already
         finishing on its own) must not spuriously cancel this brand-new one.
         """
-        from app.job_queue.queue import is_cancelled, set_cancel_flag
+        from app.adapters.outbound.redis.queue import is_cancelled, set_cancel_flag
 
         seen_cancelled = []
 
@@ -157,7 +157,7 @@ class TestProcessRequestTurn:
         assert still_cancelled_after is False
 
     async def test_passes_a_working_cancel_check_bound_to_the_thread_id(self, monkeypatch):
-        from app.job_queue.queue import set_cancel_flag
+        from app.adapters.outbound.redis.queue import set_cancel_flag
 
         captured = {}
 
@@ -244,12 +244,12 @@ class TestProcessRequestTurn:
         monkeypatch.setattr(agent_worker, "astream_events_turn", failing_turn)
         entry_id, fields = _entry(request_id="r9")
 
-        with caplog.at_level(logging.WARNING, logger="app.job_queue.agent_worker"):
+        with caplog.at_level(logging.WARNING, logger="app.adapters.inbound.workers.agent_worker"):
             await _process(FakeRedis(), entry_id, fields)
 
         (record,) = [r for r in caplog.records if r.getMessage() == "agent_worker_turn_failed"]
         assert record.error_class == "IndexError"
-        assert record.origin.startswith("app/job_queue/agent_worker.py:")
+        assert record.origin.startswith("app/adapters/inbound/workers/agent_worker.py:")
         assert "internal-db-host" not in record.origin and "out of range" not in record.origin
 
     async def test_a_failure_publishes_an_error_event_and_still_acks(self, monkeypatch):
@@ -470,7 +470,7 @@ class TestProcessRequestResume:
     async def test_passes_a_working_cancel_check_bound_to_the_thread_id(self, monkeypatch):
         """A12: without this, `POST /chat/cancel` after an approval set a flag
         nothing polled — the approved tool and everything after it ran on."""
-        from app.job_queue.queue import set_cancel_flag
+        from app.adapters.outbound.redis.queue import set_cancel_flag
 
         captured = {}
 
@@ -495,7 +495,7 @@ class TestProcessRequestResume:
         pausing on its own) must not cancel the approval the user has since given — the later action is the
         user's intent.
         """
-        from app.job_queue.queue import set_cancel_flag
+        from app.adapters.outbound.redis.queue import set_cancel_flag
 
         seen_cancelled = []
 
@@ -659,7 +659,7 @@ class TestRunLoop:
         monkeypatch.setattr(agent_worker, "get_client", lambda: client)
 
         async def _run_one_iteration():
-            from app.job_queue.queue import ensure_consumer_group
+            from app.adapters.outbound.redis.queue import ensure_consumer_group
 
             await ensure_consumer_group(client)
             entry_id, fields = _entry(request_id="r3")

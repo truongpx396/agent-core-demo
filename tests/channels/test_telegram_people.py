@@ -1,4 +1,4 @@
-"""Telegram people (app/channels/telegram_people.py): every Telegram user is a distinct person the front door can prove, meter and cut off (specs/020).
+"""Telegram people (app/adapters/inbound/channels/telegram_people.py): every Telegram user is a distinct person the front door can prove, meter and cut off (specs/020).
 
 The properties that matter here are the ones whose failure is silent: that two users never share a person, that a restart gives the same
 people, that a DISABLED person is never re-created or re-enabled by the bot, that two simultaneous first messages make ONE person, and that the
@@ -8,9 +8,9 @@ import asyncio
 
 import pytest
 
-from app.channels import oauth, telegram_people
-from app.channels.oauth import SignInRefused
-from app.channels.telegram_people import (
+from app.adapters.inbound.channels import oauth, telegram_people
+from app.adapters.inbound.channels.oauth import SignInRefused
+from app.adapters.inbound.channels.telegram_people import (
     PersonAuth,
     TelegramPeople,
     person_name,

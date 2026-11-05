@@ -1,10 +1,10 @@
-"""The Bot API client (app/channels/telegram_api.py). The request shapes are the ones the Bot API documents (read 2026-11-02, see the module's docstring);
+"""The Bot API client (app/adapters/inbound/channels/telegram_api.py). The request shapes are the ones the Bot API documents (read 2026-11-02, see the module's docstring);
 nothing here reaches Telegram."""
 import logging
 
 import pytest
 
-from app.channels.telegram_api import (
+from app.adapters.inbound.channels.telegram_api import (
     CALLBACK_ANSWER_LIMIT,
     MESSAGE_CHAR_LIMIT,
     BotApi,

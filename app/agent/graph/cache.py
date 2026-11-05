@@ -28,7 +28,7 @@ def make_check_semantic_cache_node(
 ):
     """Factory, same rationale as make_retrieve_context_node: needs an
     injected client so tests can fake it (see tests/agent/graph/test_nodes.py) instead
-    of monkeypatching app.retrieval.semantic_cache directly.
+    of monkeypatching app.adapters.outbound.redis.semantic_cache directly.
     """
 
     async def check_semantic_cache(state: State) -> dict:

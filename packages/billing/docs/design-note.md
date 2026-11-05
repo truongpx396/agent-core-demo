@@ -53,7 +53,7 @@ Today the debit is in the same Postgres transaction as the usage event: the even
 | `app/billing_integration/export.py` and `reconcile.py` read core tables and the agent's `usage_events` | **done in spec 013**: the export worker, the wallet reconciliation and the usage-event retention are the package's, over its own `billing_usage_events`; the agent's comparison with the LLM gateway is the agent's | — |
 | `app/core/config.py` imports `credit_billing.settings` (the host's `Settings` inherits `BillingSettings`) | one definition of every billing variable | **done in PR C**: the package defines `BillingSettings`; the host still inherits it on purpose, so each variable has one definition |
 | `scripts/credits.py` and `scripts/billing_inbox_sweep.py` import the core directly and run on the agent's `scheduled_job` bootstrap | they are the core's own operator CLIs | **done in PR C**: they live in `credit_billing/cli/` with their own bootstrap (D11) |
-| the webhook rate limit is a host middleware on `/billing/webhooks/` (`app/api/rate_limit.py`) reading a core setting | the limiter is a host concern | **documented in PR C** (the package README); a service brings its own |
+| the webhook rate limit is a host middleware on `/billing/webhooks/` (`app/adapters/inbound/api/rate_limit.py`) reading a core setting | the limiter is a host concern | **documented in PR C** (the package README); a service brings its own |
 | the OTel meter scope string was `app.core.metrics` | the collector turns scope into a label and does not merge series (research P6) | **done in PR C**: the scope is `credit_billing`, with the webhook label sets pre-created at 0 |
 
 ## 6. What has to be built before any of it

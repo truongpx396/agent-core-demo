@@ -1,9 +1,9 @@
 """What the application asks the LLM gateway about its models: the price list and which model an alias resolves to.
 
-Both come from one admin endpoint (LiteLLM's `GET /model/info`; `app/adapters/litellm/model_catalog.py`). The application never names a
+Both come from one admin endpoint (LiteLLM's `GET /model/info`; `app/adapters/outbound/litellm/model_catalog.py`). The application never names a
 provider model: it uses the gateway's aliases (`chat`, `embed`) and asks here only for what it needs to price a call
 (`app/agent/cost/pricing.py`), to record which model answered (the usage events) and to fingerprint the embedding model
-(`app/retrieval/embedding_identity.py`).
+(`app/adapters/outbound/embeddings/embedding_identity.py`).
 """
 from __future__ import annotations
 

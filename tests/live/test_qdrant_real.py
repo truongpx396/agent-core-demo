@@ -1,4 +1,4 @@
-"""A real Qdrant + real embedding-model round trip for app/retrieval/qdrant_store.py: the fake-free counterpart
+"""A real Qdrant + real embedding-model round trip for app/adapters/outbound/qdrant/qdrant_store.py: the fake-free counterpart
 to tests/retrieval/test_qdrant_store.py, which (correctly, for a fast hermetic suite) mocks `get_client()` and
 proves only that the right `collection_name`/args reach a fake client. What that can't catch is a
 qdrant-client/qdrant-server wire-protocol mismatch (named dense+sparse vectors,
@@ -7,7 +7,7 @@ server, hence `@pytest.mark.llm` (tests/containers.py's docstring explains why i
 instead of needing `make up`).
 
 `@pytest.mark.llm`, not `integration`: it moved here from tests/integration/ after a CI run caught
-`openai.APIConnectionError`. `app.retrieval.embeddings.embed_text` (the dense leg) is a REAL network call to
+`openai.APIConnectionError`. `app.adapters.outbound.embeddings.embeddings.embed_text` (the dense leg) is a REAL network call to
 an embedding API ("Dense stays routed through LiteLLM like every other model call in this app", per
 `embeddings.py`), NOT the local fastembed model this file originally and wrongly assumed. Only `embed_sparse`
 is local; `rerank` moved to a dedicated `ml-service` container (see its docstring), which this test's
@@ -26,7 +26,8 @@ each real I/O call directly (`embed_sparse` stays sync: a local CPU-bound fastem
 import pytest
 from pydantic import SecretStr
 
-from app.retrieval import embeddings, qdrant_store
+from app.adapters.outbound.embeddings import embeddings
+from app.adapters.outbound.qdrant import qdrant_store
 from tests.containers import ensure_qdrant
 
 pytestmark = pytest.mark.llm
@@ -38,7 +39,7 @@ def real_qdrant_and_embeddings(monkeypatch, ollama_endpoint):
     monkeypatch.setattr(qdrant_store, "QDRANT_URL", qdrant_info["qdrant_url"])
 
     # `embeddings.embeddings` is a module-level `OpenAIEmbeddings` CLIENT
-    # OBJECT, constructed once at import time (app/retrieval/embeddings.py) —
+    # OBJECT, constructed once at import time (app/adapters/outbound/embeddings/embeddings.py) —
     # unlike CHAT_MODEL/OPENAI_API_BASE elsewhere in this suite, patching
     # config values after the fact wouldn't reach an already-constructed
     # client's own bound `base_url`/`model`. Replacing the module-level

@@ -53,7 +53,7 @@ func loadVectors(t testing.TB) (vectorFile, StaticKeys) {
 	t.Helper()
 	raw, err := os.ReadFile(filepath.Join(vectorsDir, "vectors.json"))
 	if err != nil {
-		t.Fatalf("the shared vectors are missing (scripts/gen_auth_vectors.py): %v", err)
+		t.Fatalf("the shared vectors are missing (scripts/tools/gen_auth_vectors.py): %v", err)
 	}
 	var f vectorFile
 	if err := json.Unmarshal(raw, &f); err != nil {

@@ -1,15 +1,15 @@
-"""The embedding identity: what makes two vector spaces the same, or different (app/retrieval/embedding_identity.py)."""
+"""The embedding identity: what makes two vector spaces the same, or different (app/adapters/outbound/embeddings/embedding_identity.py)."""
 import pytest
 
-from app.ports import models as model_ports
-from app.retrieval import embedding_identity as ident
-from app.retrieval.embedding_identity import (
+from app.adapters.outbound.embeddings import embedding_identity as ident
+from app.adapters.outbound.embeddings.embedding_identity import (
     EmbeddingIdentity,
     EmbeddingIdentityMismatch,
 )
-from app.retrieval.embedding_identity import (
+from app.adapters.outbound.embeddings.embedding_identity import (
     current_identity as real_current_identity,  # captured before the autouse fixture replaces it
 )
+from app.ports import models as model_ports
 
 
 def _identity(**overrides) -> EmbeddingIdentity:

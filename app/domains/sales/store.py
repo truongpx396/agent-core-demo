@@ -172,7 +172,7 @@ async def mark_lead_lost(
 
 async def due_followups(tenant: str, as_of: datetime) -> list[dict]:
     """Pending follow-ups due by `as_of`, joined with lead name/contact —
-    what scripts/followup_sweep.py sweeps. Scoped to `tenant` even though
+    what scripts/jobs/followup_sweep.py sweeps. Scoped to `tenant` even though
     the only caller already runs per-tenant, so a future multi-tenant
     caller can't accidentally drop the predicate."""
     sql = """

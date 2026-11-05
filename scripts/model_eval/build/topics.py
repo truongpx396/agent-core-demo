@@ -14,7 +14,7 @@ from pathlib import Path
 from scripts.model_eval import datasets as ds
 
 SOURCES = ds.REPO / "evals" / "sources" / "route-topics" / "prompts.tsv"
-LABELSET = ds.REPO / "docker" / "ml-service" / "labelsets" / "route-topics.json"
+LABELSET = ds.REPO / "services" / "ml-service" / "labelsets" / "route-topics.json"
 OUT = ds.DATASETS_ROOT / "route-topics"
 NONE = "none"
 
@@ -65,7 +65,7 @@ def write_dataset(splits: dict[str, list[dict]], labels: list[str], *, version: 
     manifest = {
         "schema_version": 1, "name": "route-topics", "version": version, "kind": "topics", "licence": ds.REPO_INTERNAL,
         "labels": sorted(labels), "none_label": NONE,
-        "provenance": {"author": "authored by the implementing agent from the topics in docker/ml-service/labelsets/route-topics.json; not yet reviewed by a person",
+        "provenance": {"author": "authored by the implementing agent from the topics in services/ml-service/labelsets/route-topics.json; not yet reviewed by a person",
                        "sources": ["evals/sources/route-topics/prompts.tsv"]},
         "splits": {name: {"file": f"{name}.jsonl", "sha256": ds.write_jsonl(target / f"{name}.jsonl", items), "items": len(items)} for name, items in splits.items()},
     }

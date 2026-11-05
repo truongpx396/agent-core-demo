@@ -1,4 +1,4 @@
-"""The answer cache is namespaced by the embedding identity (specs/014 FR-018, app/retrieval/semantic_cache.py).
+"""The answer cache is namespaced by the embedding identity (specs/014 FR-018, app/adapters/outbound/redis/semantic_cache.py).
 
 A cached entry holds an embedding. After a model, dimension or prefix change, comparing a new question with an old model's vectors either
 hits on nonsense or, if the size changed, breaks the index. So each identity gets its own index and key prefix and old entries are simply
@@ -9,8 +9,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.retrieval import embedding_identity, semantic_cache
-from app.retrieval.embedding_identity import EmbeddingIdentity
+from app.adapters.outbound.embeddings import embedding_identity
+from app.adapters.outbound.embeddings.embedding_identity import EmbeddingIdentity
+from app.adapters.outbound.redis import semantic_cache
 from tests.conftest import TEST_EMBEDDING_IDENTITY
 
 

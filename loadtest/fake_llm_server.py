@@ -163,7 +163,7 @@ def _run_subagent(last_user_text: str, requested_tool_names: set[str]) -> ToolCa
 
 @tool_simulator
 def _query_employees(last_user_text: str, requested_tool_names: set[str]) -> ToolCall | None:
-    """Matches a "list the employees"-shaped message (scripts/authlimit_smoke.py's real-API stage) —
+    """Matches a "list the employees"-shaped message (scripts/checks/authlimit_smoke.py's real-API stage) —
     app/domains/ecorp/tools.py's real `query_employees` then runs under the CALLER's tenant (the ctx the API built from the verified
     identity), and `_final_answer_text` below puts its result in the answer. That is the point of this simulator: an end-to-end check
     that two tenants asking the same question through the same door see only their own rows, with no real model in the way."""
@@ -399,7 +399,7 @@ FAKE_EMBED_DIM = 768  # callers that create a Qdrant collection against this
 # server (tests/integration/test_worker_scaling.py's own
 # qdrant_store.ensure_collection(dim=...)) must use this same value — it
 # imports this constant rather than hardcoding its own, so changing it here
-# is safe on its own. 768 specifically because app/retrieval/semantic_cache.py's
+# is safe on its own. 768 specifically because app/adapters/outbound/redis/semantic_cache.py's
 # Redis index is a HARD schema match, not a hint: FT.SEARCH rejects a query
 # vector of the wrong byte length outright ("Invalid vector length"), and
 # that index's own dim=768 (verified directly via `redis-cli FT.INFO

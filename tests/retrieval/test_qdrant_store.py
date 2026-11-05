@@ -1,5 +1,5 @@
 """Tests for the `collection` parameter on
-`app/retrieval/qdrant_store.py`'s `ensure_collection`/`upsert`/
+`app/adapters/outbound/qdrant/qdrant_store.py`'s `ensure_collection`/`upsert`/
 `hybrid_search` (GRAPH_PATTERNS.md pattern 45) — the shared plumbing a
 second collection (e.g. `SKILLS_COLLECTION`) reuses instead of forking the
 dense+sparse+RRF+rerank+degrade pipeline. Every real Qdrant/embedding call
@@ -19,9 +19,10 @@ from types import SimpleNamespace
 
 from qdrant_client.models import Modifier
 
+from app.adapters.outbound.embeddings import embeddings
+from app.adapters.outbound.qdrant import qdrant_store
 from app.core.config import COLLECTION
 from app.core.security import DEFAULT_POLICY, AccessScope
-from app.retrieval import embeddings, qdrant_store
 from tests.conftest import TEST_EMBEDDING_IDENTITY
 from tests.retrieval.fake_qdrant import FakeQdrant
 
@@ -97,7 +98,7 @@ class TestEnsureCollection:
         assert client.recreate_calls == [_physical("skills")]
 
     async def test_sparse_vector_config_requests_idf_scoring(self, monkeypatch):
-        """The fastembed `Qdrant/bm25` model (app/retrieval/embeddings.py)
+        """The fastembed `Qdrant/bm25` model (app/adapters/outbound/embeddings/embeddings.py)
         only computes the term-frequency half of BM25 locally and expects
         Qdrant to supply the IDF half via this modifier — omitting it
         silently downgrades the sparse leg to a plain TF dot product,

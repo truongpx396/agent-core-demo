@@ -3,7 +3,7 @@
 Support's escalations, sales' handoffs and ops' incidents and digests all end by posting here. It is a saga PIVOT: the write it follows (an
 escalation, a handoff, an incident) has already committed and is never rolled back because this send fails, so `post` NEVER RAISES; a failed
 sink is counted (`agent_team_channel_notify_total{sink,outcome}`, with an alert) instead. The sinks are the adapter's
-(`app/adapters/notify/team_channel.py`: a local file always, Slack when a webhook is configured).
+(`app/adapters/outbound/notify/team_channel.py`: a local file always, Slack when a webhook is configured).
 """
 from __future__ import annotations
 

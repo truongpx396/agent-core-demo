@@ -1,4 +1,4 @@
-"""Process setup for a scheduled or one-shot job (`scripts/ops_digest.py`,
+"""Process setup for a scheduled or one-shot job (`scripts/jobs/ops_digest.py`,
 `followup_sweep.py`, `tool_call_dedup_sweep.py`, `ops_investigate.py`).
 
 A long-lived process (the API, a worker) configures telemetry at startup and lets

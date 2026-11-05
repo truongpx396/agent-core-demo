@@ -22,7 +22,7 @@ compared again, so a service that ignored the filter still can't hand one conver
 entry with no readable tags is not reused.
 
 `connect_if_missing=True` goes on every `command_run`/`file_read`/`file_write`: `load_remote_tools` spawns a
-fresh opensandbox-mcp subprocess per call (app/mcp/client.py), so the bridge's registry never persists and
+fresh opensandbox-mcp subprocess per call (app/adapters/outbound/mcp/client.py), so the bridge's registry never persists and
 later calls would 404.
 
 Response shapes (confirmed against a real opensandbox-server, `make sandbox-up`;
@@ -59,7 +59,7 @@ SANDBOX_CALL_TIMEOUT_SECONDS = 60  # own budget vs TOOL_TIMEOUT_SECONDS:
 # Was briefly bumped to 150s after prod timeouts traced to
 # `ConnectionConfig.use_server_proxy=False` making opensandbox-mcp try to
 # reach each sandbox at its unreachable Docker bridge IP (44s+ retries);
-# fixed by launching the bridge with `--use-server-proxy` (app/adapters/mcp/sandbox_tools.py), so 60s is generous again.
+# fixed by launching the bridge with `--use-server-proxy` (app/adapters/outbound/mcp/sandbox_tools.py), so 60s is generous again.
 
 
 class SandboxCallFailed(Exception):
@@ -101,7 +101,7 @@ async def _call_raw_tool(raw: dict[str, BaseTool], name: str, **kwargs) -> dict:
     """Calls one of OpenSandbox's raw MCP tools by name, parses the result
     into a dict. Uses `.ainvoke` (the standard Runnable interface, not the
     StructuredTool-specific `.func`/`.coroutine`), since
-    `_wrap_remote_tool` (app/mcp/client.py) gives each tool a native async
+    `_wrap_remote_tool` (app/adapters/outbound/mcp/client.py) gives each tool a native async
     coroutine and every caller here is already `async def`. Raises
     SandboxCallFailed on a remote tool error or an unparseable/non-dict
     response, rather than silently returning a wrong shape."""

@@ -2,7 +2,7 @@
 
 # The billing package and the ML service's `ml_service` are found by path, not installed: a path dependency does not belong in the
 # lock file (spec 011 D20). Absolute, so a target that `cd`s into packages/billing still finds them; pytest and mypy do the same.
-export PYTHONPATH := $(CURDIR)/packages/billing/src:$(CURDIR)/docker/ml-service$(if $(PYTHONPATH),:$(PYTHONPATH))
+export PYTHONPATH := $(CURDIR)/packages/billing/src:$(CURDIR)/services/ml-service$(if $(PYTHONPATH),:$(PYTHONPATH))
 
 # The gateway stack's generated secrets (Casdoor database and admin passwords) live outside the repo and go to compose as a second
 # --env-file; `.env` comes first so every other variable still comes from it.
@@ -60,8 +60,8 @@ up-all: mcp-gateway-secrets authlimit-keys-ensure  ## Start everything in contai
 sandbox-up: sandbox-build  ## Start the authenticated OpenSandbox server for the domains' sandbox tools (opt-in `sandbox` profile: it mounts the Docker socket). Needs OPENSANDBOX_API_KEY in .env
 	$(COMPOSE) --profile sandbox up -d --build
 
-sandbox-build:  ## Build the sandbox base image (docker/sandbox.Dockerfile: python + numpy + pandas, non-root, no network) that SANDBOX_IMAGE references; rerun after editing it
-	docker build -t graph-agent-core-sandbox:latest -f docker/sandbox.Dockerfile .
+sandbox-build:  ## Build the sandbox base image (deploy/images/sandbox.Dockerfile: python + numpy + pandas, non-root, no network) that SANDBOX_IMAGE references; rerun after editing it
+	docker build -t graph-agent-core-sandbox:latest -f deploy/images/sandbox.Dockerfile .
 
 pull-models:  ## Download the chat model (qwen2.5:7b, ~4.7 GB), the small test-tier model (qwen2.5:3b, ~1.9 GB) and the embedding model into the native Ollama
 	ollama pull qwen2.5:7b
@@ -72,16 +72,16 @@ pull-strong-model:  ## Download the dev stand-in for the escalation alias chat-s
 	ollama pull qwen2.5:14b
 
 ingest:  ## Embed sample docs and upsert them into Qdrant
-	python -m scripts.seed
+	python -m scripts.tools.seed
 
-index-skills:  ## Embed the skills/ catalog (name+description) and upsert into its own Qdrant collection
-	python -m scripts.index_skills
+index-skills:  ## Embed the skills catalog (name+description) and upsert into its own Qdrant collection
+	python -m scripts.tools.index_skills
 
 reembed:  ## Rebuild a vector collection under the CURRENT embedding identity, then swap it in atomically (specs/014): make reembed COLLECTION_NAME=docs [ARGS=--dry-run]
 	# Deliberately NOT `COLLECTION=`: that is also the Settings variable naming the main collection, and make exports command-line
 	# variables to the recipe, so `COLLECTION=skills` would rename the main collection for this process and reject `docs`.
 	@test -n "$(COLLECTION_NAME)" || { echo "usage: make reembed COLLECTION_NAME=<docs|skills collection> [ARGS=--dry-run]"; exit 2; }
-	python -m scripts.reembed $(COLLECTION_NAME) $(ARGS)
+	python -m scripts.tools.reembed $(COLLECTION_NAME) $(ARGS)
 
 # Defined after COMPOSE, which the command line may override (the tests of this stack do). AUTHLIMIT_UID/GID run authlimit as the
 # host user; AUTHLIMIT_KEYS_DIR is the key directory.
@@ -100,7 +100,7 @@ mcp-gateway-up: mcp-gateway-secrets authlimit-keys-ensure  ## Start the MCP gate
 	$(GATEWAY_COMPOSE) up -d --build --no-deps casdoor-db casdoor mcp-gateway authlimit authlimit-echo caddy-gateway
 
 mcp-gateway-bootstrap: mcp-gateway-secrets  ## Create (idempotently) the Casdoor organizations, applications and demo users, and print the `claude mcp add` commands; ARGS="--tenant acme --tenant other-co" adds tenants (default ecorp)
-	@. $(GATEWAY_SECRETS) && export CASDOOR_ADMIN_PASSWORD && $(GATEWAY_COMPOSE) exec -T -e CASDOOR_ADMIN_PASSWORD mcp-gateway python -m scripts.mcp_gateway_bootstrap $(ARGS)
+	@. $(GATEWAY_SECRETS) && export CASDOOR_ADMIN_PASSWORD && $(GATEWAY_COMPOSE) exec -T -e CASDOOR_ADMIN_PASSWORD mcp-gateway python -m scripts.tools.mcp_gateway_bootstrap $(ARGS)
 
 mcp-gateway-ca: mcp-gateway-secrets  ## Export Caddy's local root certificate so a client can trust https://*.localhost:8443 (prints the NODE_EXTRA_CA_CERTS line for Claude Code)
 	$(GATEWAY_COMPOSE) cp caddy-gateway:/data/caddy/pki/authorities/local/root.crt $(GATEWAY_DIR)/caddy-root.crt

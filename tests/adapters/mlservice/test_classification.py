@@ -1,4 +1,4 @@
-"""app/adapters/mlservice/classification.py: one typed question out, one validated answer back, and every failure a value (specs/015 FR-024, specs/016).
+"""app/adapters/outbound/mlservice/classification.py: one typed question out, one validated answer back, and every failure a value (specs/015 FR-024, specs/016).
 
 `httpx.MockTransport` stands in for the decision service, so the REAL client, the real deadline handling and the real parsing run; only the network
 is replaced. Two kinds of answer are fed in: the local service's (with its `x_` evidence), and one built from the hosted System One / Jev interface's
@@ -13,7 +13,7 @@ import logging
 import httpx
 import pytest
 
-from app.adapters.mlservice import classification
+from app.adapters.outbound.mlservice import classification
 from app.ports.classification import NO_ANSWER, Choice, Labelled
 
 REAL_CLIENT = httpx.AsyncClient

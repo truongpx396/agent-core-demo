@@ -4,7 +4,7 @@
 Deletes `applied` and `ignored` rows older than `BILLING_INBOX_RETENTION_DAYS` (400 by default; the setting
 enforces a 30-day floor so a sweep never races a provider's retries). It never touches a row that is still
 open (`received`, `failed`, `quarantined`). Same "fixed pipeline, not an agent turn" shape as
-the agent app's scripts/usage_events_sweep.py, and like that one it is deliberately NOT run by anything automatically: wire it to
+the agent app's scripts/jobs/usage_events_sweep.py, and like that one it is deliberately NOT run by anything automatically: wire it to
 real cron once your retention policy is decided, e.g.
 
     45 3 * * 0 python -m credit_billing.cli.inbox_sweep        # or: credit-billing-inbox-sweep

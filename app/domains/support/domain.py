@@ -1,11 +1,11 @@
 """The support-copilot domain: a Tier-1 customer-facing agent, deployed
-behind a chat gateway (app/channels/telegram.py's AGENT_DOMAIN), with
+behind a chat gateway (app/adapters/inbound/channels/telegram.py's AGENT_DOMAIN), with
 SANDBOXED tool access — just the knowledge base plus the ticket system.
 
 `tools()` reuses `search_docs`/`ask_clarification` from app/agent/tools/builtin.py
 as-is rather than reimplementing retrieval. `skill_search`/`use_skill` are
 this domain's own pair (`make_skill_tools("support")`), so a
-domain-tagged `SKILL.md` stays scoped to the domain(s) it names.
+`SKILL.md` in support/skills/ stays scoped to this domain.
 `SUPPORT_MANIFEST.allowed_tools` is exactly those four plus this domain's
 five ticket tools — deliberately excluding
 calculator/add_note/remember/query_employees: a Tier-1 support bot has no
@@ -46,7 +46,7 @@ _RUN_SUBAGENT = make_domain_subagent_tool(
         "ask_clarification": SHARED_TOOL_CAPABILITIES["ask_clarification"],
     },
 )
-# None unless at least one bundled AGENT.md declares `domains: [support]` —
+# None unless support/subagents/ holds an AGENT.md —
 # see make_domain_subagent_tool's own docstring for why an empty menu means
 # "don't expose the tool at all" rather than a real, empty-choice tool.
 

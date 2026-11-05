@@ -1,6 +1,6 @@
-"""The sales/CRM-concierge domain: watches inbound channels (via app/channels/telegram.py's AGENT_DOMAIN
+"""The sales/CRM-concierge domain: watches inbound channels (via app/adapters/inbound/channels/telegram.py's AGENT_DOMAIN
 mechanism), logs interactions, drafts replies, schedules follow-ups (nudged later by
-scripts/followup_sweep.py), checks the pending queue, hands a qualified lead to a human rep with a packaged
+scripts/jobs/followup_sweep.py), checks the pending queue, hands a qualified lead to a human rep with a packaged
 brief, and closes leads that aren't converting. Reuses `search_docs`/`ask_clarification` as-is (like
 support/domain.py); `skill_search`/`use_skill` are its own pair (`make_skill_tools("sales")`), so
 `sales-lead-qualification` stays scoped here.
@@ -44,7 +44,7 @@ _RUN_SUBAGENT = make_domain_subagent_tool(
         "ask_clarification": SHARED_TOOL_CAPABILITIES["ask_clarification"],
     },
 )
-# None unless at least one bundled AGENT.md declares `domains: [sales]`.
+# None unless sales/subagents/ holds an AGENT.md.
 
 SALES_SYSTEM_PROMPT = """You are Ecorp's sales concierge.
 

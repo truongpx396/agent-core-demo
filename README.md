@@ -115,7 +115,7 @@ flowchart TB
     Authlimit -. signing keys .-> Casdoor
     Authlimit --> LimitState
     Caddy -- signed identity --> Queued
-    Caddy -- bearer token --> MCPGateway["MCP gateway<br/>(app/mcp/gateway.py)"]
+    Caddy -- bearer token --> MCPGateway["MCP gateway<br/>(app/adapters/inbound/mcp/gateway.py)"]
     MCPGateway -. response .-> Caddy
     Caddy -. response .-> ExtMCP
     CLI -->|"HTTPS, signed in as the person"| Caddy
@@ -375,7 +375,7 @@ race between validation and fetch). Production uploads (`POST /ingest/upload`) g
 ### Embedding models, and swapping them
 
 A **question** and a **stored passage** are embedded as two operations (`embed_query`, `embed_document(s)` in
-`app/retrieval/embeddings.py`), because task-prefixed models place them differently on purpose. `EMBED_QUERY_PREFIX` /
+`app/adapters/outbound/embeddings/embeddings.py`), because task-prefixed models place them differently on purpose. `EMBED_QUERY_PREFIX` /
 `EMBED_DOCUMENT_PREFIX` default to empty, exactly what the app sent before; whether nomic-embed-text's `search_query: ` /
 `search_document: ` prefixes pay is a measurement (`make model-eval`), not a default.
 
@@ -396,7 +396,7 @@ meanwhile (pause ingestion first; exit 4). The answer cache needs nothing: its i
 before identities existed is *adopted* with a warning until its first re-embed.
 
 **To serve an ONNX embedding model from `ml-service`** (config only): `GET http://localhost:8083/v1/models` lists the models and
-their prefixes (`docker/ml-service/models.toml` declares them; `ML_MODELS_ENABLED=bge-small-en-v1.5,gte-modernbert-base-int8`
+their prefixes (`services/ml-service/models.toml` declares them; `ML_MODELS_ENABLED=bge-small-en-v1.5,gte-modernbert-base-int8`
 loads more). Point the gateway's `embed` alias at `openai/<name>` with `api_base: http://ml-service:80/v1`
 ([the entry](specs/014-model-serving-eval-harness/contracts/gateway-aliases.md)), set the prefixes, restart the proxy, run
 `make reembed` per collection, bake, delete the old ones. Check memory headroom first (measured in pattern 67; the
@@ -421,7 +421,7 @@ Three chat tiers, each a gateway alias (the app names aliases, never a provider'
 Optional and **off by default** (`ROUTER_MODE=off`): no classifier is asked and every call is exactly what it was. It can only
 choose the model; approval, tenant scoping and idempotency are unchanged under every tier.
 
-- **How it decides.** The `route_model` node ([pattern 68](GRAPH_PATTERNS.md)) reads **rules** over the message (long, contains code, asks several things, reasoning words) and a **label** from the ML service (`POST /v1/decide`, the `route-topics` choice set in `docker/ml-service/labelsets/route-topics.json`). Each names the lowest tier it accepts; the turn goes to `min(ROUTER_MAX_TIER, max(rules, label))`, lowered to a configured, priced tier, and is answered, priced and recorded as that alias.
+- **How it decides.** The `route_model` node ([pattern 68](GRAPH_PATTERNS.md)) reads **rules** over the message (long, contains code, asks several things, reasoning words) and a **label** from the ML service (`POST /v1/decide`, the `route-topics` choice set in `services/ml-service/labelsets/route-topics.json`). Each names the lowest tier it accepts; the turn goes to `min(ROUTER_MAX_TIER, max(rules, label))`, lowered to a configured, priced tier, and is answered, priced and recorded as that alias.
 - **Failure.** No label leaves the rules to decide; any other failure runs the turn on `chat`.
 - **Roll out in stages.** `shadow` makes and counts every decision but runs on `chat`, so you read what routing *would* have spent (`agent_model_route_tier_total{tier,mode="shadow"}`, `agent_model_route_total{outcome}`), then `on`:
 
@@ -445,7 +445,7 @@ ROUTER_MAX_TIER=strong            # the ceiling: spend is bounded by it
 "Does this message ask us to send an email, or only to look something up?" is a classification problem with known answers
 and needs no paid-API call and no training:
 
-1. Write a **label set**: a reviewed JSON file of the choices with about ten example sentences each ([`docker/ml-service/labelsets/README.md`](docker/ml-service/labelsets/README.md)).
+1. Write a **label set**: a reviewed JSON file of the choices with about ten example sentences each ([`services/ml-service/labelsets/README.md`](services/ml-service/labelsets/README.md)).
 2. Choose its cutoff per serving model on sentences with known answers (`make labelset-calibrate`, [`evals/README.md`](evals/README.md)).
 3. Ask:
 
@@ -473,7 +473,7 @@ if answer.outcome == "labelled" and answer.label == "send_email":       # label 
 
 `make mcp-serve` and `make mcp-serve-ops` expose `query_employees` and the ops domain's metrics/incidents. MCP has no header
 seam, so the identity is the **launcher's**, never a tool argument: set `MCP_TENANT` and `MCP_PRINCIPAL` (the ops server needs
-only the principal) in `.env` or in the client's server entry, which runs `python -m app.mcp.server` from the repo root:
+only the principal) in `.env` or in the client's server entry, which runs `python -m app.adapters.inbound.mcp.server` from the repo root:
 
 ```json
 "env": { "PYTHONPATH": "/path/to/graph-agent-core/packages/billing/src", "MCP_TENANT": "ecorp", "MCP_PRINCIPAL": "alice" }
@@ -488,7 +488,7 @@ policy applies, but nothing authenticates whoever starts the process, and there 
 The same two servers over **Streamable HTTP behind OAuth 2.1**, for clients that aren't a child process of the person using
 them (a remote agent, Claude Code, several replicas).
 
-- A **resource server only** (`app/mcp/gateway.py`): each request carries a bearer token whose audience is that endpoint's URL (`/ecorp/mcp`, scope `ecorp:read`; `/ops/mcp`, scope `ops:read`, operator tenants only). The tenant and principal a tool acts for are the token's `owner` and `sub` claims, never an argument or `MCP_TENANT`.
+- A **resource server only** (`app/adapters/inbound/mcp/gateway.py`): each request carries a bearer token whose audience is that endpoint's URL (`/ecorp/mcp`, scope `ecorp:read`; `/ops/mcp`, scope `ops:read`, operator tenants only). The tenant and principal a tool acts for are the token's `owner` and `sub` claims, never an argument or `MCP_TENANT`.
 - **Stateless**, so `--scale mcp-gateway=N` behind Caddy load-balances. The `gateway` compose profile is a local stack (Casdoor on its own Postgres, the gateway, Caddy with local TLS on `https://mcp.localhost:8443`) and needs `make up` for the app database.
 - **Nothing that writes is behind it**: both tools are read-only, and the sandbox is deliberately unreachable (an outside caller doesn't pass through the approval gate).
 - ❌ Not built: production DNS/TLS and an identity provider. Contract and gaps: `specs/017-mcp-gateway/`.
@@ -535,7 +535,7 @@ the chat API or the MCP routes.
 
 Both are clients of the chat API, signed in as a person, so they get the same limits, signed identity and revocation as the web UI (spec 020, patterns 89 and 91).
 
-- 💻 **CLI:** `make chat` opens your browser at the authorization server the first time (the address is also printed), catches the redirect on a fixed loopback port (`CHANNEL_CLI_CALLBACK_PORT`, registered by `make mcp-gateway-bootstrap`), and keeps the session in a file only you can read (`~/.config/graph-agent-core/channel-session.json`), renewed before it expires. Point it at the door with `CHANNEL_API_URL` (and `CHANNEL_CA_FILE` for Caddy's local CA, `make mcp-gateway-ca`); `python -m app.channels.chat --sign-out` forgets the session. With `AUTH_MODE=headers` (development, announced loudly by the API) nothing is signed in and the API is reached directly.
+- 💻 **CLI:** `make chat` opens your browser at the authorization server the first time (the address is also printed), catches the redirect on a fixed loopback port (`CHANNEL_CLI_CALLBACK_PORT`, registered by `make mcp-gateway-bootstrap`), and keeps the session in a file only you can read (`~/.config/graph-agent-core/channel-session.json`), renewed before it expires. Point it at the door with `CHANNEL_API_URL` (and `CHANNEL_CA_FILE` for Caddy's local CA, `make mcp-gateway-ca`); `python -m app.adapters.inbound.channels.chat --sign-out` forgets the session. With `AUTH_MODE=headers` (development, announced loudly by the API) nothing is signed in and the API is reached directly.
 - 📱 **Telegram:** each Telegram user is a person `telegram-<id>` of one tenant (`TELEGRAM_TENANT`, default `DEFAULT_TENANT`); the bot signs in as them with a password it **derives** from `TELEGRAM_PERSON_SECRET` (`openssl rand -hex 32`), so it stores nothing per person. By default an operator adds a person (`make telegram-person ACTION=add TELEGRAM_ID=<id>`) and an unregistered user is told to ask an administrator. `make telegram-person ACTION=disable` ends their sign-in at once (the command prints the `make authlimit-revoke` line that voids a token already issued). Each person has their own conversation per chat, named `telegram:<person>:<chat>`; in a group chat that means one per person.
 - ⚠️ **`TELEGRAM_AUTO_PROVISION=true` lets the bot create the person on a first message, and puts a tenant-wide credential in its environment.** Measured on Casdoor 4.24.0: an application's client id and secret are an administrator's of the whole organization (they reset any person's password). Leave it off, or give the bot a tenant of its own. A leak of `TELEGRAM_PERSON_SECRET` exposes the Telegram people and nobody else, but a Telegram person's password also signs in at the web page.
 - 🔒 **Not changed:** an unattended Telegram turn (`TELEGRAM_APPROVALS=false`) declines an approval pause and never approves it, and with buttons (below) only a tap approves; a redelivered update is one turn; the worker's lock, reclaim and dead letters cover all three clients. Until the production Caddyfile is wired to the door (spec 018, T069), production has no limits for any client.
@@ -553,9 +553,9 @@ Spec 021 (patterns 92 to 94). All of it is settings of the bot; `.env.example` h
 
 ### MCP client, crawling, search and the sandbox
 
-- 🔗 **MCP client** (`app/mcp/client.py::load_remote_tools`) binds an external server's tools into the graph. A remote tool not named in `capability_overrides` defaults to `outward`; the remote's own annotations are never trusted. What the remote says is input: a catalog can be pinned by a hash of what the model is shown (the sandbox bridge is: 5 of its 19 tools), and replies are scrubbed and cut to `MCP_TOOL_OUTPUT_MAX_CHARS` (head and tail kept). One long-lived connection per server (`app/mcp/connection.py`) replaces a process per call, and a call that may have reached the server is never sent twice (pattern 78).
-- 🕸️ **Web crawling:** [crawl4ai](https://github.com/unclecode/crawl4ai) renders JS-heavy pages (`app/ingestion/web_crawler.py`; needs the `crawl4ai` container and `CRAWL4AI_API_TOKEN`). Three `outward` tools use it: `enrich_lead_from_website` (sales), `fetch_external_reference` (support), `check_vendor_status_page` (ops).
-- 🔍 **Web search:** [serper.dev](https://serper.dev) finds the addresses those tools then read (`app/adapters/web/serper.py` the client, `app/domains/web_search.py` the tool; optional, off without `SERPER_API_KEY`). `web_search` is `outward` in support, ops and sales: each call waits for a human to approve the query, which goes to Serper and Google and spends one credit. Ecorp has none. Results are third-party text, framed as data and never numbered like a citation. Not built: metering the spend against the agent's caps; only `organic` results are read (GRAPH_PATTERNS.md pattern 87). `make web-search-check` spends one credit to test the key; `WebSearchProviderRefusing` fires when the provider refuses it.
+- 🔗 **MCP client** (`app/adapters/outbound/mcp/client.py::load_remote_tools`) binds an external server's tools into the graph. A remote tool not named in `capability_overrides` defaults to `outward`; the remote's own annotations are never trusted. What the remote says is input: a catalog can be pinned by a hash of what the model is shown (the sandbox bridge is: 5 of its 19 tools), and replies are scrubbed and cut to `MCP_TOOL_OUTPUT_MAX_CHARS` (head and tail kept). One long-lived connection per server (`app/adapters/outbound/mcp/connection.py`) replaces a process per call, and a call that may have reached the server is never sent twice (pattern 78).
+- 🕸️ **Web crawling:** [crawl4ai](https://github.com/unclecode/crawl4ai) renders JS-heavy pages (`app/adapters/outbound/crawl4ai/web_crawler.py`; needs the `crawl4ai` container and `CRAWL4AI_API_TOKEN`). Three `outward` tools use it: `enrich_lead_from_website` (sales), `fetch_external_reference` (support), `check_vendor_status_page` (ops).
+- 🔍 **Web search:** [serper.dev](https://serper.dev) finds the addresses those tools then read (`app/adapters/outbound/web/serper.py` the client, `app/domains/web_search.py` the tool; optional, off without `SERPER_API_KEY`). `web_search` is `outward` in support, ops and sales: each call waits for a human to approve the query, which goes to Serper and Google and spends one credit. Ecorp has none. Results are third-party text, framed as data and never numbered like a citation. Not built: metering the spend against the agent's caps; only `organic` results are read (GRAPH_PATTERNS.md pattern 87). `make web-search-check` spends one credit to test the key; `WebSearchProviderRefusing` fires when the provider refuses it.
 - 📦 **Sandbox:** [OpenSandbox](https://github.com/opensandbox-group/OpenSandbox) over MCP gives every domain isolated code execution (`make sandbox-up`, needs `OPENSANDBOX_API_KEY`), per tenant and conversation. The model never sees its raw ~19-tool API: `app/domains/sandbox_session.py` wraps it as four flat tools (`run_command_in_sandbox`, `run_python_in_sandbox`, `read_sandbox_file`, `write_sandbox_file`), because the raw catalog made a small model hallucinate sandbox ids (pattern 50).
 - ☣️ **Crawled text is untrusted.** `app/core/untrusted.py::frame_untrusted` wraps it in `<retrieved_document>` delimiters the system prompt calls data, not instructions, and a closing tag inside the page can't end the frame. Framing marks the boundary; the approval gate stops a model that follows it anyway (pattern 12).
 
@@ -593,22 +593,22 @@ requester + subject", since what counts as the same ticket is a product decision
 |---|---|---|
 | 🏠 **Ecorp** `app/domains/ecorp/` | The default demo: cited answers from the knowledge base, calculator, staff directory, notes and memory (writes need approval) | `make serve` · `make chat` |
 | 🎧 **Support** `app/domains/support/` | Tier-1 copilot: searches the knowledge base, opens/checks/escalates tickets, adds comments, reads a customer-linked page, parses pasted logs in the sandbox | `make telegram-support` |
-| 📟 **Ops** `app/domains/ops/` | Reads this repo's own Prometheus metrics, flags thresholds matching the alert rules, logs and resolves incidents, checks vendor status pages | `make ops-digest` (cron) · `python -m scripts.ops_investigate "…"` |
+| 📟 **Ops** `app/domains/ops/` | Reads this repo's own Prometheus metrics, flags thresholds matching the alert rules, logs and resolves incidents, checks vendor status pages | `make ops-digest` (cron) · `python -m scripts.tools.ops_investigate "…"` |
 | 💼 **Sales** `app/domains/sales/` | Logs leads, drafts replies (never sends), schedules follow-ups, hands hot leads to a human, researches a lead's site, computes deal economics | `make telegram-sales` · `make followup-sweep` (cron) |
 
 Each is `store.py` + `tools.py` + `domain.py`. Its `AgentManifest.allowed_tools` is an exact list, and that omission, not a
-policy check, is what "sandboxed" means. Skills (`skills/*/SKILL.md`) and subagents (`subagents/*/AGENT.md`) take an optional
-`domains:` tag, so each domain gets its own `skill_search`, `use_skill` and `run_subagent`.
+policy check, is what "sandboxed" means. Skills (`app/domains/<domain>/skills/*/SKILL.md`, or `shared/` for all) and subagents
+(`app/domains/<domain>/subagents/*/AGENT.md`) sit in their domain's folder, so each domain gets its own `skill_search`, `use_skill` and `run_subagent`.
 
 - **One worker, many domains.** `AGENT_WORKER_DOMAINS` (names, or `all`) picks the domains a worker serves, each on its own graph under one concurrency budget (pattern 96). `AGENT_DOMAIN` is the domain the CLI and Telegram talk to; the API routes per request by `X-Domain` onto per-domain queues.
 - **Cron scripts never run the agent loop** (the approval gate would pause with no human). `ops_digest.py` and `followup_sweep.py` are fixed pipelines calling the domain's `_impl` functions, with a plain LLM call for the prose.
-- **`scripts/ops_investigate.py`** runs the ops agent once with its full toolset; if the model reaches for a gated write, the run ends with an empty answer rather than a crash.
+- **`scripts/tools/ops_investigate.py`** runs the ops agent once with its full toolset; if the model reaches for a gated write, the run ends with an empty answer rather than a crash.
 
 * * *
 
 ## 🚢 Deploying to production
 
-`infra/terraform/` provisions two DigitalOcean droplets: an **app droplet** (the lean prod stack behind Caddy) and a smaller
+`deploy/terraform/` provisions two DigitalOcean droplets: an **app droplet** (the lean prod stack behind Caddy) and a smaller
 **observability droplet** (Prometheus, Loki, Grafana, Alertmanager) fed over the private network. Creating or destroying
 droplets is always a human-run `terraform apply`; `.github/workflows/deploy.yml` then builds images to GHCR and redeploys
 automatically once CI passes on `main`.
@@ -619,14 +619,14 @@ automatically once CI passes on `main`.
 4. Merge to `main`.
 5. Once LiteLLM is up, mint the app's scoped gateway key and put it in `.env` as `LITELLM_APP_KEY` ([Gateway backstop](#gateway-backstop)).
 
-Full runbook, scaling, backups, rollback and teardown: **[infra/README.md](infra/README.md)**.
+Full runbook, scaling, backups, rollback and teardown: **[deploy/README.md](deploy/README.md)**.
 
 ### 🚨 Four things that bite on a first deploy
 
 - 🔓 **Production authentication is not wired.** `deploy/env/prod.env.example` sets `AUTH_MODE=identity`, but the prod compose and Caddyfile don't include the authlimit service, so requests get a 401 or 503 until it is wired (spec 018). `AUTH_MODE=headers` trusts `X-Tenant-Id`/`X-Principal-Id` as sent: use it only behind a gateway of your own that sets both and discards client copies ([Known gaps](#-roadmap-and-known-gaps)).
 - 📦 **The images ship no installer.** Built in stages with uv, the prod `api`, worker and `ml-service` containers run read-only with all capabilities dropped, so a change that writes to the image filesystem at runtime fails ([ENGINEERING_PATTERNS.md](ENGINEERING_PATTERNS.md) pattern 76).
 - 🗄️ **SQL migrations aren't applied to an existing volume.** `postgres-init/*.sql` runs only on a fresh volume and the deploy only syncs the files ([Database migrations](#database-migrations)).
-- 📒 **Upgrading from a release whose spend caps read `usage_ledger`:** apply `postgres-init/19`, run `make usage-events-carry-over` (`ARGS=--dry-run` first), deploy, then run it once more. Skipping the first makes every cap read fail open; skipping the second makes a monthly cap forget the month so far ([runbook](infra/README.md#upgrading-carry-the-ledgers-history-into-the-usage-events)).
+- 📒 **Upgrading from a release whose spend caps read `usage_ledger`:** apply `postgres-init/19`, run `make usage-events-carry-over` (`ARGS=--dry-run` first), deploy, then run it once more. Skipping the first makes every cap read fail open; skipping the second makes a monthly cap forget the month so far ([runbook](deploy/README.md#upgrading-carry-the-ledgers-history-into-the-usage-events)).
 
 ### Gateway backstop
 
@@ -696,7 +696,7 @@ hand, in order (`psql -U langfuse -d appdata -f postgres-init/NN-….sql`).
 `make obs-up` starts the backends, [`docker-compose.observability.yml`](deploy/compose/docker-compose.observability.yml), and the collectors that
 feed them, [`docker-compose.collectors.yml`](deploy/compose/docker-compose.collectors.yml) (the OTel collector, the exporters, cAdvisor, Promtail;
 `make collectors-up` starts only those, beside `make up`). Nothing in the app depends on either (`make obs-down` keeps data, `make obs-clean`
-drops it; config in [`observability/`](observability/); prod runs the backends on their own droplet, [infra/README.md](infra/README.md)).
+drops it; config in [`observability/`](observability/); prod runs the backends on their own droplet, [deploy/README.md](deploy/README.md)).
 
 | Piece | Role |
 |---|---|
@@ -742,7 +742,7 @@ model-alias or retrieval change; `make probe-tools` for any chat alias's model o
 
 | Tool | Checks | Run | CI |
 |---|---|---|---|
-| [Semgrep](https://semgrep.dev/) | Source SAST over `app/`, `scripts/`, `docker/` | `make semgrep` | Gate; SARIF to the Security tab |
+| [Semgrep](https://semgrep.dev/) | Source SAST over `app/`, `scripts/`, `services/ml-service/`, `deploy/images/` | `make semgrep` | Gate; SARIF to the Security tab |
 | [Trivy](https://github.com/aquasecurity/trivy) | Dependency CVEs, secrets, Dockerfile/compose misconfig, built image | `make trivy`, `make trivy-image` | Gate on **fixable CRITICAL** only; HIGH+ goes to the Security tab |
 | [Checkov](https://www.checkov.io/) | Terraform misconfiguration | `make checkov` | Gate |
 | [SonarQube](https://www.sonarsource.com/products/sonarqube/) | Code quality gate on new code | `make sonar-up` + `make sonar-scan` | Gate, on an ephemeral server |
@@ -792,7 +792,7 @@ until configured**.
 | `make up-app` | `make up` plus the containerized `api`, `agent-worker` (every domain) and `ingest-worker` |
 | `make up-all` · `make down-all` | Everything in containers behind the front door (infra, app, MCP gateway, observability; not the sandbox or SonarQube), web UI https://api.localhost:8443/; first time also `make mcp-gateway-bootstrap` and `make mcp-gateway-ca`. `down-all` stops every container, any profile (keeps data) |
 | `make serve` | API + web UI on :8000 |
-| `make chat` · `make chat-hitl` | CLI agent · with approval prompts. Both sign you in at the front door (`python -m app.channels.chat --sign-out` forgets it) and need that domain's worker: `AGENT_DOMAIN` picks it |
+| `make chat` · `make chat-hitl` | CLI agent · with approval prompts. Both sign you in at the front door (`python -m app.adapters.inbound.channels.chat --sign-out` forgets it) and need that domain's worker: `AGENT_DOMAIN` picks it |
 | `make agent-worker` · `make agent-worker-all` · `make ingest-worker` | Queue consumers: one domain (`AGENT_WORKER_DOMAINS=support,ops` picks others) · every domain · ingestion |
 | `make telegram[-support\|-sales]` · `make telegram-person ACTION=add\|disable\|enable TELEGRAM_ID=<id>` | Telegram gateway for a domain (needs `TELEGRAM_BOT_TOKEN`, `TELEGRAM_PERSON_SECRET` or the `TELEGRAM_LINKING` settings, and that domain's worker) · add, disable or re-enable a Telegram person |
 | **📥 Data and models** | |
@@ -826,30 +826,25 @@ casually. The compose files live in `deploy/compose/` but resolve paths and `.en
 
 ```
 app/
-  adapters/    the outbound adapters that have no older home: postgres/, litellm/, mlservice/, web/, notify/, mcp/
+  adapters/
+    inbound/   the DRIVING side (something outside calls the app): api/ (FastAPI: routers, deps by AUTH_MODE, identity, health, web UI), channels/ (CLI and Telegram, clients of the chat API through the front door; they never touch the queue or the graph), mcp/ (the published servers, the Streamable HTTP + OAuth 2.1 gateway), workers/ (agent and ingest queue consumers)
+    outbound/  the DRIVEN side (the app calls out, through a port), one package per technology: postgres/ qdrant/ redis/ (answer cache, Streams queue) minio/ litellm/ mlservice/ embeddings/ web/ crawl4ai/ notify/ mcp/ (the client and the sandbox bridge)
   agent/       graph/ (LangGraph), runtime/ (turns, streaming, sessions), tools/ (built-ins, catalogs, run_subagent), cost/ (meter, caps)
-  api/         FastAPI: main.py mounts routers/ (chat, ingest, usage, system); deps.py (caller by AUTH_MODE), identity.py, schemas, health, webhook rate limit, web UI (static/index.html)
   billing_integration/  the app's one seam to the billing package (port.py)
   bootstrap.py binds every port to its adapter; each entrypoint calls wire() first
-  channels/    CLI (chat.py) and Telegram: clients of the chat API through the front door (door.py, sign-in, Telegram people, and the bot's approvals, inbox, webhook and account linking); they never touch the queue or the graph
   core/        the kernel: config, security (SecurityCtx/Policy/AccessScope), metrics, errors, scrubbing, the gateway identity, tool timeout and the exactly-once guard (plus the SQL pool and other platform modules)
-  domains/     ecorp/, support/, ops/, sales/ (store = the domain's adapter + tools + domain each), registry, shared sandbox session
-  ingestion/   chunking, ingestor, crawler, object store, ingest worker
-  job_queue/   Redis Streams queue, agent worker, reclaim (the API is the only producer)
-  mcp/         server, ops_server (stdio), gateway (Streamable HTTP + OAuth 2.1), client
+  domains/     ecorp/, support/, ops/, sales/ (store = the domain's adapter + tools + domain, and its skills/ and subagents/), shared/skills/ (for every domain), registry, shared sandbox session
+  ingestion/   the ingest pipeline: chunking, extractors, ingestor
   ports/       the Protocols the application needs (cost, models, llm, sessions, retrieval, web, sandbox, a repository per domain, ...) and Slot, the typed seam
-  retrieval/   embeddings, Qdrant store, semantic cache, memory deletion
-scripts/       seed, eval, cron jobs, ops_investigate, defectdojo import; ai_review/ is the PR-review tool
-services/authlimit/       the edge auth and rate-limit service: the only Go in the repo (own tests, Dockerfile, CI job)
+scripts/       jobs/ (scheduled one-shots), checks/ (smokes, probes, eval), tools/ (operator CLIs); model_eval/ and ai_review/ (the PR-review tool) are packages
+services/      what runs as its own process, each with its own Dockerfile: authlimit/ (the edge auth and rate-limit service: the only Go in the repo) and ml-service/ (rerank, prompt guard, embeddings, label sets)
+Dockerfile     the app image (at the root: the build context)
 evals/ scripts/model_eval/   the model-evaluation harness and its frozen datasets, candidates, baselines
 specs/ .specify/          Spec Kit specs 001–019 and the constitution
-skills/ subagents/        the agent's own catalogs
-docker/ Dockerfile        ml-service, OpenSandbox, sandbox image; the app image (the Dockerfile stays at the root: the build context)
-deploy/                   compose/ (dev, prod, observability, load test), caddy/, litellm/ (configs, patches/)
-infra/terraform/          DigitalOcean droplets; infra/README.md is the runbook
+deploy/                   compose/ (dev, prod, observability, load test), caddy/, litellm/ (configs, patches/), images/ (sandbox builds), terraform/ (DigitalOcean droplets), env/; deploy/README.md is the runbook
 observability/            Prometheus (+ alerts.yml), Alertmanager, Loki, Promtail, otel-collector, Grafana
 postgres-init/            numbered SQL schema (fresh volumes only)
-tests/                    mirrors app/; adapters/ (SQL shape, requests), fakes/ (in-memory ports); integration/, live/, deepeval/ are the marked tiers
+tests/                    by feature area, not a mirror of app/; adapters/ (SQL shape, requests), fakes/ (in-memory ports); integration/, live/, deepeval/ are the marked tiers
 packages/billing/         the independent billing package: src, tests, schema, alerts, docs, specs
 promptfoo/ garak/ loadtest/   prompt checks (the repo's only package.json), jailbreak scan, Locust
 make/                     host.mk, admin.mk, evals.mk, security.mk, test.mk: targets the Makefile includes
@@ -901,7 +896,7 @@ anyone who sets the right headers.
 | Readiness returns 503 | The body names the failing dependency, e.g. `ml-service` still downloading its models on first start; `postgres` or `checkpointer` means the pooler or Postgres behind it (`docker compose logs pgbouncer`) |
 | Turns fail with `prepared statement "_pg3_N" does not exist`, or clients wait for a database connection | A connection that prepares statements is going through PgBouncer: every pool must pass `prepare_threshold=None` (`tests/core/test_pool_settings.py` finds the one that does not). Waiting clients: alert `PgBouncerClientsWaiting`, look for an `idle in transaction` session before raising `DEFAULT_POOL_SIZE` ([ENGINEERING_PATTERNS.md](ENGINEERING_PATTERNS.md) 95) |
 | The Pyroscope UI is empty | Pushes before the server reports ready (`curl :4040/ready`) are dropped without a trace; check `agent_profiling_start_failures_total` and that `PYROSCOPE_SERVER_ADDRESS` is set in the container |
-| A prod dashboard is empty | Check the app droplet's relay: `dc logs otel-collector-agent promtail` (the `dc` alias is defined there; [infra/README.md](infra/README.md)) |
+| A prod dashboard is empty | Check the app droplet's relay: `dc logs otel-collector-agent promtail` (the `dc` alias is defined there; [deploy/README.md](deploy/README.md)) |
 
 * * *
 
@@ -914,5 +909,5 @@ anyone who sets the right headers.
 | [WORKER_CONCURRENCY.md](WORKER_CONCURRENCY.md) | Sizing the worker pools |
 | [BILLING_INTEGRATION.md](BILLING_INTEGRATION.md) · [`packages/billing/`](packages/billing/README.md) | The app's side of the billing seam · the package: patterns, runbook, roadmap, specs |
 | [`specs/`](specs/) · [Constitution](.specify/memory/constitution.md) | Spec Kit specs 001–018 · the non-negotiable rules (tenant isolation, mandatory approval and exactly-once side effects are principles I, II and IV) |
-| [infra/README.md](infra/README.md) · [evals/README.md](evals/README.md) | Deploy runbook: scaling, backups, rollback, teardown · judging a model swap |
+| [deploy/README.md](deploy/README.md) · [evals/README.md](evals/README.md) | Deploy runbook: scaling, backups, rollback, teardown · judging a model swap |
 | [CLAUDE.md](CLAUDE.md) | Working rules for contributors and coding agents |

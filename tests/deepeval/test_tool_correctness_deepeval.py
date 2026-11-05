@@ -1,7 +1,7 @@
 """Tool-call TRAJECTORY correctness against the real graph, via deepeval (`@pytest.mark.deepeval`, `make
 deepeval`; GRAPH_PATTERNS.md pattern 48).
 
-A different question from every other check: `scripts/eval.py`'s `GoldenCase.expect_tool` checks only that a
+A different question from every other check: `scripts/checks/eval.py`'s `GoldenCase.expect_tool` checks only that a
 tool was called, never its arguments, and the RAG-quality and conversation files judge the FINAL ANSWER.
 Nothing else asks whether the agent called the right tool, and called it well.
 
@@ -17,7 +17,7 @@ Two metrics with different reliability (checked in deepeval's installed source):
 Six cases in two groups:
 - `search_docs`/`calculator`/`query_employees`: the tools this domain's small-model routing has been confused
   about. `search_docs` reuses the "Ecorp support hours" wording of `test_rag_quality_deepeval.py`, which
-  replaced `scripts/eval.py`'s `retrieval_company_topic_filter` and `calculator_basic` cases (retired
+  replaced `scripts/checks/eval.py`'s `retrieval_company_topic_filter` and `calculator_basic` cases (retired
   2026-09-16). `calculator` and `query_employees` guard the other direction: did tightening the prompt for the
   search_docs collision make them too narrow to fire? That overcorrection happened once (calculator briefly
   stopped firing on real math after an early SYSTEM_PROMPT edit).
@@ -36,7 +36,7 @@ import uuid
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage
 
-from app.ingestion import web_crawler
+from app.adapters.outbound.crawl4ai import web_crawler
 from tests.conftest import TEST_CTX
 from tests.ecorp import build_graph
 from tests.ollama import ollama_deps
@@ -195,7 +195,7 @@ async def test_skill_tool_calls_are_correct_and_well_argued(deepeval_ollama, dee
     today — tests/agent/tools/test_skills.py is hermetic (fake LLM), and nothing
     else in tests/live/ touches skills at all.
 
-    `onboarding-brief` (skills/onboarding-brief/SKILL.md) is the right
+    `onboarding-brief` (app/domains/shared/skills/onboarding-brief/SKILL.md) is the right
     fixture for this: it's one of the few bundled skills with NO `domains:`
     frontmatter restriction (confirmed by reading the file directly, not
     assumed from its name), so it's actually reachable from the same
@@ -260,7 +260,7 @@ async def test_subagent_delegation_is_correct_and_well_argued(deepeval_ollama, d
 def _use_crawl4ai_server(monkeypatch, crawl4ai_server):
     """NOT autouse: only `test_fetch_external_reference_tool_call_is_correct_and_well_argued` below needs it.
     `crawl4ai_server` (tests/deepeval/conftest.py, `tests/containers.py::ensure_crawl4ai()`) starts its own
-    ephemeral container, and this fixture points `app.ingestion.web_crawler`'s
+    ephemeral container, and this fixture points `app.adapters.outbound.crawl4ai.web_crawler`'s
     `CRAWL4AI_SERVER_URL`/`CRAWL4AI_API_TOKEN` module globals at it (a monkeypatch, not an env var; see that
     helper's docstring).
     """

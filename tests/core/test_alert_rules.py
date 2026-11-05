@@ -44,8 +44,8 @@ def test_every_agent_metric_an_alert_names_is_defined_in_the_code():
 
 
 def _ml_service_metrics() -> set[str]:
-    # The ML service is a separate image with its own metrics module (docker/ml-service/ml_service/metrics.py), named `ml_*`.
-    source = (REPO / "docker/ml-service/ml_service/metrics.py").read_text()
+    # The ML service is a separate image with its own metrics module (services/ml-service/ml_service/metrics.py), named `ml_*`.
+    source = (REPO / "services/ml-service/ml_service/metrics.py").read_text()
     return set(re.findall(r'(?:Counter|Gauge|Histogram)\(\s*"(ml_[a-z_]+)"', source))
 
 

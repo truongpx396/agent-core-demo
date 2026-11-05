@@ -24,7 +24,7 @@ slow, is a per-day rollup written in the event's transaction (not built; in the 
 
 ## History and failure
 
-Events begin when postgres-init/19 is applied, so `scripts/usage_events_carry_over.py` copies the older ledger
+Events begin when postgres-init/19 is applied, so `scripts/tools/usage_events_carry_over.py` copies the older ledger
 rows once (ids `ledger:<id>`, never rated, charged or exported). Run it BEFORE a deployment starts reading
 from here (README upgrade note).
 
@@ -44,6 +44,6 @@ async def usage_summary(tenant: str, principal: str | None = None, since: dateti
     `since` is what the budgets use for a ROLLING 24h window (`now - 24h`, not a calendar day, so a tenant's
     near-limit status never resets mid-day) and for the calendar month; `since=None` (all-time) is `GET /usage`'s
     "total ever spent", bounded by however long events are kept. Tenant is a parameter of every statement (the
-    adapter's: `app/adapters/postgres/usage_events.py`)."""
+    adapter's: `app/adapters/outbound/postgres/usage_events.py`)."""
     totals = await ports.usage_events.get().totals(tenant, principal, since)
     return {"total_tokens": totals.total_tokens, "total_cost_usd": totals.total_cost_usd}

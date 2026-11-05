@@ -1,8 +1,8 @@
 """Internal ops-bot domain: fetch operational metrics, flag anomalies, post digests to the team channel, and
-log/list/resolve durable incidents (app/domains/ops/store.py). `scripts/ops_investigate.py` also uses it for
+log/list/resolve durable incidents (app/domains/ops/store.py). `scripts/tools/ops_investigate.py` also uses it for
 ad-hoc "why is X happening" queries.
 
-`scripts/ops_digest.py`'s cron digest bypasses this agent loop: an unattended job can never satisfy the
+`scripts/jobs/ops_digest.py`'s cron digest bypasses this agent loop: an unattended job can never satisfy the
 mandatory human_approval gate that `post_to_team_channel` (an "outward" tool) requires, so it is a
 deterministic pipeline. `skill_search`/`use_skill` are this domain's own pair (`make_skill_tools("ops")`),
 keeping the `ops-incident-response` skill out of other catalogs.
@@ -54,7 +54,7 @@ _RUN_SUBAGENT = make_domain_subagent_tool(
         "use_skill": SHARED_TOOL_CAPABILITIES["use_skill"],
     },
 )
-# None unless at least one bundled AGENT.md declares `domains: [ops]`.
+# None unless ops/subagents/ holds an AGENT.md.
 
 OPS_SYSTEM_PROMPT = """You are Ecorp's internal ops assistant.
 

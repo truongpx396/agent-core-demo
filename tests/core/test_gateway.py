@@ -22,7 +22,7 @@ from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
 
-from app.adapters.litellm.failures import OpenAiFailures
+from app.adapters.outbound.litellm.failures import OpenAiFailures
 from app.agent.graph.build import GraphDeps
 from app.agent.graph.compaction import _estimate_tokens, make_compact_history_node
 from app.agent.graph.core import AGENT_RETRY_POLICY

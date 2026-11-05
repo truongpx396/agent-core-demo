@@ -6,7 +6,7 @@ be up.
   `GraphDeps`. A test that cares about a retrieved or cached value injects its own fake
   (`GraphDeps(search_docs=fake)`, `GraphDeps(cache_get=fake, ...)`, or `make_retrieve_context_node(fake)` /
   `make_check_semantic_cache_node(fake)` at node level).
-- `mock_classification`: the model router's one live call (`app/adapters/mlservice/classification.py`, a POST to the ML
+- `mock_classification`: the model router's one live call (`app/adapters/outbound/mlservice/classification.py`, a POST to the ML
   service's /v1/decide) always sees "no answer". The usage event's model-alias lookup is guarded inside
   `usage_event_sink`, the only caller of `model_resolver.resolve_model`.
 - `mock_ml_moderation`: `moderate_input` runs on every full-graph turn and its ML layer is a real HTTP call to
@@ -19,7 +19,7 @@ be up.
   every model call writes a usage event. Each degrades gracefully on a connection FAILURE, but not from a slow
   TCP attempt with no Postgres listening (CI runs none for this job), so every turn paid a real psycopg pool
   timeout, stacked past `REQUEST_TIMEOUT_SECONDS` and took the suite from ~10 s to ~20+ minutes (see
-  GRAPH_PATTERNS.md 46). It patches `get_connection` in the Postgres adapters (`app/adapters/postgres/`
+  GRAPH_PATTERNS.md 46). It patches `get_connection` in the Postgres adapters (`app/adapters/outbound/postgres/`
   `budget_holds`, `usage_events`, `sessions` and `tool_idempotency`; each module's OWN binding; patching
   the origin wouldn't reach it) and NOT the higher-level functions, because tests/agent/cost/test_tenant_budget.py, tests/agent/runtime/test_sessions.py
   and tests/core/test_tool_idempotency.py test those AS the function under test and patch `get_connection`
@@ -44,13 +44,13 @@ from opentelemetry.sdk.metrics import MeterProvider
 from opentelemetry.sdk.metrics.export import InMemoryMetricReader
 
 from app import bootstrap
-from app.adapters.mlservice import classification as ml_classification
+from app.adapters.inbound.api import identity
+from app.adapters.outbound.embeddings.embedding_identity import EmbeddingIdentity
+from app.adapters.outbound.mlservice import classification as ml_classification
 from app.agent.graph import build as graph_build
-from app.api import identity
 from app.core.config import settings
 from app.ports import classification as classification_ports
 from app.ports import screening as screening_ports
-from app.retrieval.embedding_identity import EmbeddingIdentity
 from tests.fakes.ml import ConstantScorer, NoAnswerClassifier
 
 TEST_CTX = {"tenant": "ecorp", "principal": "test-user", "claims": {}}
@@ -128,21 +128,22 @@ def no_real_tracing(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def no_real_web_search(monkeypatch):
-    """`web_search` (app/adapters/web/serper.py) is a billed call to a third party, and a developer's `.env` can hold a
+    """`web_search` (app/adapters/outbound/web/serper.py) is a billed call to a third party, and a developer's `.env` can hold a
     real `SERPER_API_KEY` (it is meant to).
     """
-    from app.adapters.web import serper
+    from app.adapters.outbound.web import serper
 
     monkeypatch.setattr(serper, "SERPER_API_KEY", "")
 
 
 @pytest.fixture(autouse=True)
 def fixed_embedding_identity(monkeypatch):
-    """The embedding identity is read on every Qdrant read and write (app/retrieval/qdrant_store.py::check_identity), and computing the
+    """The embedding identity is read on every Qdrant read and write (app/adapters/outbound/qdrant/qdrant_store.py::check_identity), and computing the
     real one asks LiteLLM which model the `embed` alias resolves to and probes the embedding model for its dimension: two live-service
     calls. A hermetic test gets a fixed identity instead, and a clean per-process target cache so one test's alias answers never leak
     into the next. A test that exercises the identity itself (tests/retrieval/test_qdrant_identity.py) supplies its own."""
-    from app.retrieval import embedding_identity, qdrant_store
+    from app.adapters.outbound.embeddings import embedding_identity
+    from app.adapters.outbound.qdrant import qdrant_store
 
     async def fixed():
         return TEST_EMBEDDING_IDENTITY
@@ -159,7 +160,7 @@ def no_real_qdrant(request, monkeypatch):
     """A hermetic test never opens a connection to a real Qdrant."""
     if any(request.node.get_closest_marker(m) for m in ("integration", "llm", "e2e", "deepeval", "crawl", "sandbox")):
         return
-    from app.retrieval import qdrant_store
+    from app.adapters.outbound.qdrant import qdrant_store
 
     def refuse():
         raise ConnectionError(
@@ -194,7 +195,7 @@ def mock_semantic_cache(monkeypatch):
     # (see e.g. test_graph_integration.py's module docstring) just as
     # surely as an unmocked search_docs call would. Both are `async def`
     # now — check_semantic_cache/write_semantic_cache await `cache_get`/
-    # `cache_set` directly (app/retrieval/semantic_cache.py's real
+    # `cache_set` directly (app/adapters/outbound/redis/semantic_cache.py's real
     # implementations await a real `redis.asyncio.Redis` client), so a
     # plain sync lambda here would raise "NoneType can't be used in
     # 'await' expression" the instant any graph test actually reached
@@ -211,7 +212,7 @@ def mock_semantic_cache(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def mock_appdata_postgres(monkeypatch):
-    from app.adapters.postgres import (
+    from app.adapters.outbound.postgres import (
         budget_holds,
         sessions,
         tool_idempotency,

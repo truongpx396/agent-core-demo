@@ -93,7 +93,7 @@ const (
 
 // KeyCache holds the authorization server's signing keys.
 //
-// Rules, each from a real failure in spec 017's equivalent (app/mcp/gateway_auth.py::JwksCache) or from the threat model:
+// Rules, each from a real failure in spec 017's equivalent (app/adapters/inbound/mcp/gateway_auth.py::JwksCache) or from the threat model:
 //
 //   - A token naming an unknown key id triggers one forced refresh, which is how a rotated key is picked up; but at most one per
 //     minRefresh however many tokens arrive, because an attacker can mint unlimited tokens with unknown ids and must not be able to turn

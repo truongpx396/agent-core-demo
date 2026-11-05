@@ -15,7 +15,7 @@ import pytest
 from langgraph.checkpoint.base import empty_checkpoint
 from psycopg_pool import AsyncConnectionPool
 
-from app.adapters.postgres import checkpointing
+from app.adapters.outbound.postgres import checkpointing
 from app.core import sql_store
 from tests.containers import ensure_pgbouncer
 
@@ -177,7 +177,7 @@ async def test_get_connection_still_commits_on_exit_rolls_back_on_error_and_enfo
 
 
 async def test_readiness_goes_through_the_pooler(pooler, monkeypatch):
-    from app.api import health
+    from app.adapters.inbound.api import health
 
     monkeypatch.setattr(health, "CHECKPOINTER_DATABASE_URL", pooler["checkpointer_database_url"])
     monkeypatch.setattr(sql_store, "APPDATA_DATABASE_URL", pooler["appdata_database_url"])

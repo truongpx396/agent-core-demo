@@ -1,10 +1,10 @@
 """`POST /billing/webhooks/{provider}`: money in (specs/010-credit-billing-readiness, T021).
 
-This is the billing core's own inbound path (spec 011). It lived in `app/api/routers/` until the core had to
+This is the billing core's own inbound path (spec 011). It lived in `app/adapters/inbound/api/routers/` until the core had to
 be installable without the agent app, and needs only FastAPI, the core's settings and the core's metrics. It
 doesn't wire itself to a database: the agent app mounts it through `app/billing_integration/http.py`, and
 importing that package gives the core its connection. The per-source rate limit stays a host middleware keyed
-on the path prefix (`app/api/rate_limit.py`).
+on the path prefix (`app/adapters/inbound/api/rate_limit.py`).
 
 The route is deliberately NOT behind the tenant-identity headers (`deps.get_ctx`): a payment provider can't
 send them, so the caller is unauthenticated and its authenticity is the provider's SIGNATURE and nothing else.

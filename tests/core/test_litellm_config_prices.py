@@ -17,7 +17,7 @@ from pathlib import Path
 import yaml
 
 from app.agent.cost.pricing import parse_model_info
-from scripts import litellm_key
+from scripts.tools import litellm_key
 
 REPO = Path(__file__).resolve().parents[2]
 DEV = REPO / "deploy/litellm/litellm-config.yaml"

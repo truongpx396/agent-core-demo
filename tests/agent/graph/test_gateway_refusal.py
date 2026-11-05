@@ -18,7 +18,7 @@ import pytest
 from langchain_core.messages import AIMessage, HumanMessage
 from langchain_openai import ChatOpenAI
 
-from app.adapters.litellm.failures import OpenAiFailures
+from app.adapters.outbound.litellm.failures import OpenAiFailures
 from app.agent.graph.build import GraphDeps
 from app.agent.graph.core import AGENT_RETRY_POLICY
 from app.agent.graph.messages import CANNOT_HELP_MESSAGE, GATEWAY_REFUSAL_KEY

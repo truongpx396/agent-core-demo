@@ -12,7 +12,7 @@ tests/integration/test_webhooks_real_postgres.py). The floor below is about not 
 not correctness.
 
 An operator job (`cli/inbox_sweep.py`), never reachable from a request. Like the usage events' sweep
-(`scripts/usage_events_sweep.py`) it spans tenants, because retention is a property of the table. Bounded: a
+(`scripts/jobs/usage_events_sweep.py`) it spans tenants, because retention is a property of the table. Bounded: a
 run deletes at most `SWEEP_MAX_BATCHES * SWEEP_BATCH_SIZE` rows and is idempotent, so the next run continues.
 """
 import logging

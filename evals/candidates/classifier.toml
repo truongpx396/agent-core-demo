@@ -8,7 +8,7 @@
 # A new router is evaluated by handing a `ClassifierBackend` to `runners.classify.run(backend=...)`, and gets a declaration here when it is wired to a command.
 
 # Label sets (specs/015): the model that embeds a set's examples and sentences, scored in-process on `--dataset route-topics`. `source.model` is the name
-# the ML service serves it under, which is the key of the set's `calibration`; repo, file and revision are the entry in docker/ml-service/models.toml
+# the ML service serves it under, which is the key of the set's `calibration`; repo, file and revision are the entry in services/ml-service/models.toml
 # (a test keeps them equal), and `prepare` is how that entry pools. No prefix: examples and sentences are the same kind of text, so nothing asymmetric
 # is wanted. They are not routers and have no outcomes: `make model-eval KIND=classifier CANDIDATE=labelset-bge-small-en-v1.5 DATASET=route-topics`.
 

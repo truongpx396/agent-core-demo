@@ -1,6 +1,6 @@
 """Scheduled jobs must export the metrics they record.
 
-`scripts/ops_digest.py`, `followup_sweep.py`, `tool_call_dedup_sweep.py` and
+`scripts/jobs/ops_digest.py`, `followup_sweep.py`, `tool_call_dedup_sweep.py` and
 `ops_investigate.py` are run by cron (or by hand) as short-lived processes. Each
 configured logging and nothing else, so every counter they incremented died with
 the process. That is not hypothetical: `ops_digest` posts to the team channel, and
@@ -25,7 +25,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import pytest
 
 from app.core import job_runtime, telemetry
-from scripts import followup_sweep, ops_digest, ops_investigate, tool_call_dedup_sweep
+from scripts.jobs import followup_sweep, ops_digest, tool_call_dedup_sweep
+from scripts.tools import ops_investigate
 
 
 @pytest.fixture

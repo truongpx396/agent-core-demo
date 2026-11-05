@@ -1,6 +1,6 @@
 """The MCP gateway's verifier against the shared external-token vectors (specs/018, T065 and T066).
 `testdata/auth-vectors/` is one file of tokens read by two verifiers in two languages, the Go service at the
-front door (`services/authlimit/internal/extjwt`) and `app/mcp/gateway_auth.py`. Each vector says what the
+front door (`services/authlimit/internal/extjwt`) and `app/adapters/inbound/mcp/gateway_auth.py`. Each vector says what the
 `mcp` profile must conclude, so the two can't quietly disagree about a valid token. A vector's reason for the
 `mcp` profile is informational (the gateway counts its own words); only `result` is compared.
 
@@ -24,7 +24,7 @@ import httpx
 import jwt
 import pytest
 
-from app.mcp.gateway_auth import JwksCache, JwtVerifier
+from app.adapters.inbound.mcp.gateway_auth import JwksCache, JwtVerifier
 
 VECTORS_DIR = Path(__file__).resolve().parents[2] / "testdata" / "auth-vectors"
 FILE = json.loads((VECTORS_DIR / "vectors.json").read_text())

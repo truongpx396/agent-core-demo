@@ -1,4 +1,4 @@
-"""The API and the agent worker end their MCP connections on the way out (app/mcp/connection.py).
+"""The API and the agent worker end their MCP connections on the way out (app/adapters/outbound/mcp/connection.py).
 
 Each connection is a child process (the sandbox bridge). Left to the event loop's teardown it would still be cancelled, but closing
 on the loop that served the requests is the orderly path, and it is the one a SIGTERM'd worker takes. Neither entry point's shutdown
@@ -10,8 +10,8 @@ import os
 import signal
 from unittest.mock import AsyncMock, MagicMock
 
-from app.api import main as api_main
-from app.job_queue import agent_worker
+from app.adapters.inbound.api import main as api_main
+from app.adapters.inbound.workers import agent_worker
 
 
 async def test_the_api_closes_its_mcp_connections_when_the_lifespan_ends(monkeypatch):

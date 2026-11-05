@@ -13,8 +13,8 @@ only pins "and it is counted, under the right `path`".
 import httpx
 import pytest
 
-from app.adapters.litellm import model_catalog
-from app.adapters.postgres import budget_holds as pg_budget_holds
+from app.adapters.outbound.litellm import model_catalog
+from app.adapters.outbound.postgres import budget_holds as pg_budget_holds
 from app.agent.cost import budget_holds, spend
 from app.agent.runtime import core as runtime_module
 from app.core import metrics

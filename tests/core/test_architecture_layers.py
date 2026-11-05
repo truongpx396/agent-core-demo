@@ -14,9 +14,10 @@ The rings, inside out:
 - application `app/agent/**` and `app/domains/**` except the adapter files below (a domain's `store.py`, and the registry that names every domain). The graph, the runtime, the cost policy, the tools.
               Imports no infrastructure client, no adapter and no inbound adapter; `app/agent` never imports `app/domains` (a domain plugs
               into the agent, not the other way round).
-- adapters    everything else: `app/retrieval`, `app/ingestion`, `app/mcp`, `app/job_queue`, `app/api`, `app/channels`, `app/adapters`,
-              the platform modules in `app/core`, and the per-domain `store.py` (the domain's repository, by the `store.py` + `tools.py` +
-              `domain.py` convention). They may import anything inside them.
+- adapters    everything else: `app/adapters/**`, `app/ingestion` (the ingest pipeline), the platform modules in `app/core`, and the per-domain
+              `store.py` (the domain's repository, by the `store.py` + `tools.py` + `domain.py` convention). They may import anything inside
+              them. `app/adapters/` has two sides: `inbound/` DRIVES the application (API, channels, MCP servers, workers) and is a leaf;
+              `outbound/` is DRIVEN by it (one package per technology, each implementing a port) and never imports `inbound/`.
 
 Accepted in the application ring, on purpose: LangGraph and LangChain core (the agent IS a LangGraph graph; `ARCHITECTURE.md` says why that
 is a framework choice and not a leak), and the observability libraries (OpenTelemetry, Langfuse, structlog), which are cross-cutting.
@@ -49,9 +50,7 @@ PLATFORM_CORE = frozenset({
 # Application-ring files that are adapters by convention.
 ADAPTER_FILE_GLOBS = ("app/domains/*/store.py", "app/domains/ops/metrics_client.py", "app/domains/registry.py")
 
-OUTER_PACKAGES = (
-    "app.retrieval", "app.ingestion", "app.mcp", "app.job_queue", "app.api", "app.channels", "app.adapters", "app.bootstrap",
-)
+OUTER_PACKAGES = ("app.adapters", "app.ingestion", "app.bootstrap")
 
 # The one adapter-ring module the application may import: billing's port facade (specs/011), whose boundary has two tests of its own.
 ALLOWED_OUTER = frozenset({"app.billing_integration.port"})
@@ -153,8 +152,8 @@ def test_the_ledger_only_shrinks():
 
 # --- two more shapes of the same rule -----------------------------------------------------------------------------------------
 
-# The driving adapters are leaves: the API and the channels call into the application and nothing calls into them.
-LEAF_PACKAGES = ("app.api", "app.channels")
+# The driving adapters are leaves: they call into the application and nothing calls into them.
+LEAF_PACKAGES = ("app.adapters.inbound.api", "app.adapters.inbound.channels", "app.adapters.inbound.mcp", "app.adapters.inbound.workers")
 
 # The composition root is imported by the code that STARTS a process (an entrypoint, or `scheduled_job` which starts the one-shot jobs), and by nothing else:
 # anything deeper that imported it could bind adapters behind a test's back or make the application depend on its own wiring.
@@ -184,6 +183,68 @@ def test_a_driving_adapter_is_a_leaf_nothing_else_in_the_app_imports_it(package)
     assert importers_of(package, _app_files()) == set()
 
 
+# --- the two sides of the hexagon -------------------------------------------------------------------------------------------
+
+INBOUND = "app/adapters/inbound/"
+OUTBOUND = "app/adapters/outbound/"
+
+# Where the driving side reaches a driven adapter directly, because no port stands between them yet: the Streams queue the API and the Telegram channel
+# publish to and the workers consume, the object store an upload goes to, the MCP connection a process closes at shutdown, and the probes behind /health.
+# Each is a port not written (ARCHITECTURE.md, "Not done"). The test fails on a crossing that is NOT listed and on a listed one that is gone, so it only shrinks.
+INBOUND_REACHES_OUTBOUND: frozenset[tuple[str, str]] = frozenset({
+    ("app/adapters/inbound/api/health.py", "app.adapters.outbound.qdrant.qdrant_store"),
+    ("app/adapters/inbound/api/health.py", "app.adapters.outbound.redis.queue"),
+    ("app/adapters/inbound/api/main.py", "app.adapters.outbound.mcp.connection"),
+    ("app/adapters/inbound/api/routers/chat.py", "app.adapters.outbound.redis.queue"),
+    ("app/adapters/inbound/api/routers/ingest.py", "app.adapters.outbound.minio.object_store"),
+    ("app/adapters/inbound/api/routers/ingest.py", "app.adapters.outbound.redis.ingest_queue"),
+    ("app/adapters/inbound/api/routers/ingest.py", "app.adapters.outbound.redis.queue"),
+    ("app/adapters/inbound/channels/telegram.py", "app.adapters.outbound.redis.queue"),
+    ("app/adapters/inbound/workers/agent_worker.py", "app.adapters.outbound.mcp.connection"),
+    ("app/adapters/inbound/workers/agent_worker.py", "app.adapters.outbound.redis.queue"),
+    ("app/adapters/inbound/workers/ingest_worker.py", "app.adapters.outbound.minio.object_store"),
+    ("app/adapters/inbound/workers/ingest_worker.py", "app.adapters.outbound.redis.ingest_queue"),
+    ("app/adapters/inbound/workers/ingest_worker.py", "app.adapters.outbound.redis.queue"),
+})
+
+
+def driven_modules_reached(source: str) -> set[str]:
+    """The `app.adapters.outbound.<technology>.<module>` modules `source` imports, however the import is spelled."""
+    return {
+        ".".join(name.split(".")[:5]) for name in _imports(ast.parse(source))
+        if _is(name, "app.adapters.outbound") and len(name.split(".")) >= 5
+    }
+
+
+def _files_under(prefix: str) -> dict[str, str]:
+    return {rel: src for rel, src in _app_files().items() if rel.startswith(prefix)}
+
+
+def test_the_driven_side_never_imports_the_driving_side():
+    files = _files_under(OUTBOUND)
+    assert len(files) > 20, "a floor against a vacuous pass: the outbound adapters moved"
+    offenders = sorted(rel for rel, src in files.items() if any(_is(n, "app.adapters.inbound") for n in _imports(ast.parse(src))))
+    assert offenders == [], "an outbound adapter is called by the application and knows nothing about who drives it"
+
+
+def test_the_driving_side_reaches_a_driven_adapter_only_where_listed():
+    files = _files_under(INBOUND)
+    assert len(files) > 30, "a floor against a vacuous pass: the inbound adapters moved"
+    now = {(rel, module) for rel, src in files.items() for module in driven_modules_reached(src)}
+    assert sorted(now - INBOUND_REACHES_OUTBOUND) == [], "an inbound adapter reaches a driven adapter directly: go through a port in app/ports/"
+    assert sorted(INBOUND_REACHES_OUTBOUND - now) == [], "these crossings are gone: delete them from INBOUND_REACHES_OUTBOUND so the ratchet tightens"
+
+
+def test_the_driven_scanner_sees_every_spelling_of_an_import():
+    for source in (
+        "from app.adapters.outbound.redis import queue\n",
+        "from app.adapters.outbound.redis.queue import get_client\n",
+        "import app.adapters.outbound.redis.queue as q\n",
+    ):
+        assert driven_modules_reached(source) == {"app.adapters.outbound.redis.queue"}, source
+    assert driven_modules_reached("from app.adapters.outbound import postgres\nfrom app.ports import cost\n") == set()
+
+
 def test_only_process_entrypoints_import_the_composition_root():
     files = _app_files()
     importers = importers_of(BOOTSTRAP, files)
@@ -197,12 +258,12 @@ def test_only_process_entrypoints_import_the_composition_root():
 
 def test_the_leaf_and_composition_scanners_can_fail():
     files = {
-        "app/agent/x.py": "from app.api import deps\n",
-        "app/api/deps.py": "import app.api.schemas\n",
+        "app/agent/x.py": "from app.adapters.inbound.api import deps\n",
+        "app/adapters/inbound/api/deps.py": "import app.adapters.inbound.api.schemas\n",
         "app/agent/y.py": "import app.bootstrap\n",
         "app/ok.py": "from app.core import config\n",
     }
-    assert importers_of("app.api", files) == {"app/agent/x.py"}, "a package's own imports of itself do not count"
+    assert importers_of("app.adapters.inbound.api", files) == {"app/agent/x.py"}, "a package's own imports of itself do not count"
     assert importers_of("app.bootstrap", files) == {"app/agent/y.py"}
 
 
@@ -250,9 +311,9 @@ def test_the_framework_scanner_can_fail():
         ("app/agent/cost/x.py", "from psycopg import errors", {"psycopg"}),
         ("app/agent/cost/x.py", "def f():\n    import httpx\n", {"httpx"}),
         ("app/agent/cost/x.py", "from app.core.sql_store import get_connection", {"app.core.sql_store"}),
-        ("app/agent/graph/x.py", "from app.retrieval import semantic_cache", {"app.retrieval"}),
+        ("app/agent/graph/x.py", "from app.adapters.outbound.redis import semantic_cache", {"app.adapters"}),
         ("app/domains/support/tools.py", "from app.domains.support import store", {"app.domains.support.store"}),
-        ("app/domains/support/tools.py", "from app.ingestion.web_crawler import render_url_to_markdown", {"app.ingestion"}),
+        ("app/domains/support/tools.py", "from app.adapters.outbound.crawl4ai.web_crawler import render_url_to_markdown", {"app.adapters"}),
         ("app/agent/runtime/x.py", "from app.domains.registry import resolve_domain", {"app.domains"}),
         # application: what is allowed
         ("app/agent/cost/x.py", "from app.ports.cost import UsageEventStore", set()),
@@ -266,11 +327,11 @@ def test_the_framework_scanner_can_fail():
         ("app/core/errors.py", "from app.agent.graph import state", {"app.agent"}),
         ("app/ports/cost.py", "from app.core.security import SecurityCtx", set()),
         ("app/ports/cost.py", "import psycopg", {"psycopg"}),
-        ("app/ports/cost.py", "from app.retrieval import qdrant_store", {"app.retrieval"}),
+        ("app/ports/cost.py", "from app.adapters.outbound.qdrant import qdrant_store", {"app.adapters"}),
         # adapters may import anything
-        ("app/adapters/postgres/x.py", "import psycopg\nfrom app.agent.cost import budgets", set()),
+        ("app/adapters/outbound/postgres/x.py", "import psycopg\nfrom app.agent.cost import budgets", set()),
         ("app/domains/support/store.py", "from app.core.sql_store import get_connection", set()),
-        ("app/api/routers/chat.py", "from app.agent.runtime import stream", set()),
+        ("app/adapters/inbound/api/routers/chat.py", "from app.agent.runtime import stream", set()),
         ("app/core/sql_store.py", "import psycopg_pool", set()),
     ],
 )

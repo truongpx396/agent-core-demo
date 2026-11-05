@@ -1,8 +1,8 @@
-"""Shared agent runtime, run by `app/job_queue/agent_worker.py` and nothing else that serves chat.
+"""Shared agent runtime, run by `app/adapters/inbound/workers/agent_worker.py` and nothing else that serves chat.
 
 It centralises the compiled graph (singleton), per-thread system-prompt seeding and Langfuse callbacks, so
-memory and tracing behave the same whichever front door a turn came through: the CLI (`app/channels/chat.py`) and
-Telegram (`app/channels/telegram.py`) are clients of the FastAPI service, which publishes every turn to the queue,
+memory and tracing behave the same whichever front door a turn came through: the CLI (`app/adapters/inbound/channels/chat.py`) and
+Telegram (`app/adapters/inbound/channels/telegram.py`) are clients of the FastAPI service, which publishes every turn to the queue,
 and a worker runs them here.
 
 ## Durable checkpointing (init_graph_async)
@@ -172,7 +172,7 @@ async def upsert_session(ctx: SecurityCtx | None, thread_id: str, text: str) -> 
 
 async def close_checkpointer_pool() -> None:
     """Closes what the checkpointer holds open cleanly (skipping this leaves background worker tasks/connections
-    open at process exit). Called from graceful-shutdown paths only (app/api/main.py's lifespan,
+    open at process exit). Called from graceful-shutdown paths only (app/adapters/inbound/api/main.py's lifespan,
     agent_worker.py::run); a no-op if the checkpointer was never opened."""
     await checkpointing.get().close()
 

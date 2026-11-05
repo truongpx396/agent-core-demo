@@ -131,7 +131,7 @@ class TestDomainScopedSubagent:
     """run_subagent is present, but it's this domain's OWN closure-built
     tool (app.agent.tools.run_subagent_domain.make_domain_subagent_tool), never Ecorp's literal
     module-level object — and its menu offers only the bundled subagent(s)
-    declared `domains: [support]` (subagents/ticket-researcher/AGENT.md),
+    declared `domains: [support]` (app/domains/support/subagents/ticket-researcher/AGENT.md),
     never Ecorp's own `researcher`."""
 
     def test_is_not_the_ecorp_domains_run_subagent_object(self):
@@ -304,7 +304,7 @@ async def test_escalate_to_human_notifies_the_team_channel(monkeypatch):
     """escalate_to_human's own side effect (app/domains/support/tools.py)
     — a unit-level check, not through the graph, so it doesn't also need a
     fake LLM/tool-call round trip just to reach one function call."""
-    from app.adapters.notify import team_channel as notify
+    from app.adapters.outbound.notify import team_channel as notify
     from app.domains.support.tools import _escalate_to_human_impl
 
     async def fake_escalate_ticket(tenant, ticket_id, reason):

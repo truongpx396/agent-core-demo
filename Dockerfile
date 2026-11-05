@@ -1,5 +1,5 @@
 # One image, three roles — the API service and both queue workers
-# (app/job_queue/agent_worker.py, app/ingestion/ingest_worker.py) are the same codebase and the
+# (app/adapters/inbound/workers/agent_worker.py, app/adapters/inbound/workers/ingest_worker.py) are the same codebase and the
 # same dependency set, just a different entrypoint command. docker-compose.yml
 # builds this once and overrides `command:` per service rather than
 # maintaining three near-identical Dockerfiles.
@@ -20,7 +20,7 @@
 # installer is; `builder` installs the lock into a virtualenv with uv and is thrown away; `runtime`, the LAST stage and so what
 # `docker build .` produces, is what ships: the base, the OS package the app needs, that virtualenv copied in, and the app.
 # Nothing that installs software is in the shipped image: not uv, not pip. Needs BuildKit (the default builder since Docker 23):
-# `RUN --mount` is BuildKit's. docker/ml-service.Dockerfile, the other image production runs, is built the same way and pinned
+# `RUN --mount` is BuildKit's. services/ml-service/Dockerfile, the other image production runs, is built the same way and pinned
 # to the same two digests (bump them together).
 
 # ---- base: the Python image, pinned by digest -------------------------------------------------------------------------------
@@ -29,7 +29,7 @@
 # and a scanner result can change under a PR that touched nothing. What keeps it fresh now: Dependabot proposes a new digest weekly
 # (.github/dependabot.yml, with a cooldown), `apt-get upgrade` below runs whenever that layer is rebuilt, and CI's Trivy image gate
 # fails if the pinned base ages into a fixable CRITICAL. Bump it by merging that PR, or by hand: take the new index digest,
-# change it here and in docker/ml-service.Dockerfile, and run `docker build .`.
+# change it here and in services/ml-service/Dockerfile, and run `docker build .`.
 FROM python:3.13-slim@sha256:57b29a7c050c4e679e4bea572e14b3965cf4b5839de2da49d55e49ffc4024f39 AS base
 
 # ---- uv: the installer, as a single static binary from its own image, pinned by digest ---------------------------------------
@@ -83,7 +83,7 @@ FROM base AS runtime
 # psycopg[binary]/lxml/pillow all ship manylinux wheels for this base
 # image's platform. No headless-browser install here — crawl4ai now runs
 # in its own dockerized server (docker-compose.yml's `crawl4ai` service,
-# GRAPH_PATTERNS.md pattern 50); app/ingestion/web_crawler.py talks to it
+# GRAPH_PATTERNS.md pattern 50); app/adapters/outbound/crawl4ai/web_crawler.py talks to it
 # over HTTP, so this image never launches a browser itself.
 #
 # `apt-get upgrade -y` before the install: pulls security patches for
@@ -120,23 +120,9 @@ ENV HOME=/home/appuser
 
 COPY app/ ./app/
 
-# Everything the app opens at runtime that is NOT under app/. Each of these
-# degrades QUIETLY when absent, so an image built without them boots healthy and
-# is simply missing the feature — which is how this image shipped for a while,
-# with no skills, no subagents (so no `run_subagent`) and no sandbox tools:
-#   skills/, subagents/ — the catalogs `load_skills()` / `load_subagents()` scan
-#       (`SKILLS_DIR` / `SUBAGENTS_DIR`, relative to WORKDIR); an absent
-#       directory is `{}`, not an error.
-#   scripts/ — `python -m scripts.index_skills` / `seed` and the
-#       cron jobs (`ops_digest`, `followup_sweep`, `tool_call_dedup_sweep`) that
-#       an operator runs inside the container. The whole package ships rather
-#       than a hand-picked list that would drift the next time one is added.
-#       (`load_sandbox_tools()` needs no file from here any more: it runs the
-#       installed `opensandbox_mcp` package, `python -m opensandbox_mcp`.)
-# CI's `docker-build` job runs the built image to prove they actually landed
-# (a file .dockerignore drops would not).
-COPY skills/ ./skills/
-COPY subagents/ ./subagents/
+# scripts/ is the one thing the app opens at runtime from outside app/: `python -m scripts.tools.index_skills` / `seed` and the cron jobs
+# an operator runs inside the container. The whole package ships, not a hand-picked list that would drift. A missing piece degrades
+# QUIETLY (an empty skill catalog, no sandbox tools), so CI's `docker-build` job runs the built image to prove the catalogs and scripts landed.
 COPY scripts/ ./scripts/
 
 # Both caches above were written as root (HOME already pointed at
@@ -152,10 +138,10 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/health/ready', timeout=3)" || exit 1
 
 # The API service is the default role; agent-worker/ingest-worker override
-# this in docker-compose.yml (`command: ["python", "-m", "app.job_queue.agent_worker"]`
-# / `app.ingestion.ingest_worker`) — neither of those binds a port, so EXPOSE/
+# this in docker-compose.yml (`command: ["python", "-m", "app.adapters.inbound.workers.agent_worker"]`
+# / `app.adapters.inbound.workers.ingest_worker`) — neither of those binds a port, so EXPOSE/
 # HEALTHCHECK above are meaningful for this default role only. A compose service
 # inherits the image's HEALTHCHECK unless it says otherwise, so each worker also sets
 # `healthcheck: *worker-healthcheck` (disabled) in both compose files; without it every
 # worker reports `unhealthy` for a port it never opens.
-CMD ["uvicorn", "app.api.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uvicorn", "app.adapters.inbound.api.main:app", "--host", "0.0.0.0", "--port", "8000"]

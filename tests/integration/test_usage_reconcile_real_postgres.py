@@ -18,7 +18,7 @@ from decimal import Decimal
 import psycopg
 import pytest
 
-from app.adapters.litellm.spend_logs import HttpGatewaySpendLog
+from app.adapters.outbound.litellm.spend_logs import HttpGatewaySpendLog
 from app.agent.cost import usage_events
 from app.agent.cost import usage_reconcile as reconcile
 from app.agent.cost.pricing import ModelPrice, PricedCall

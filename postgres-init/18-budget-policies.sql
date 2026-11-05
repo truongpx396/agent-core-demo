@@ -17,7 +17,7 @@
 -- A row replaces the default for its (subject, period); there is no row to say "use the
 -- default" — delete the row.
 --
--- Written only by an operator (scripts/budget_policy.py), never by a request, and read before
+-- Written only by an operator (scripts/tools/budget_policy.py), never by a request, and read before
 -- every turn through a short in-process cache (BUDGET_POLICY_REFRESH_SECONDS), so a change
 -- takes up to that long to reach a running worker.
 --

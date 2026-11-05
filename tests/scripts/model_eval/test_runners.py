@@ -85,8 +85,8 @@ def test_the_random_control_is_deterministic_and_close_to_chance():
 
 
 def test_the_gateway_backend_applies_the_candidates_own_prefixes_to_the_text_it_sends(monkeypatch):
+    from app.adapters.outbound.embeddings import embeddings as app_embeddings
     from app.ports import models as model_ports
-    from app.retrieval import embeddings as app_embeddings
 
     sent = {"queries": [], "documents": []}
 
@@ -116,7 +116,7 @@ def test_the_gateway_backend_applies_the_candidates_own_prefixes_to_the_text_it_
 
 
 def test_an_unreachable_gateway_is_a_missing_prerequisite_not_a_crash(monkeypatch):
-    from app.retrieval import embeddings as app_embeddings
+    from app.adapters.outbound.embeddings import embeddings as app_embeddings
 
     class Down:
         async def aembed_query(self, text):

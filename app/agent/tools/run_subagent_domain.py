@@ -25,8 +25,7 @@ def make_domain_subagent_tool(
     (`_resolve_subagent_tools`) as the Ecorp-level construction, but
     resolved against `all_tools`/`tool_capabilities` (the CALLING domain's
     own tool universe) and filtered to subagents actually declared for
-    `domain` (see app/agent/tools/subagent_catalog.py's docstring for the "untagged means
-    Ecorp-only" default).
+    `domain`, the one whose folder holds them (app/agent/tools/subagent_catalog.py).
 
     Returns `None` if the filtered registry is empty — a domain with no
     bundled subagent gets no `run_subagent` tool at all, never one offering

@@ -21,9 +21,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.adapters.postgres import usage_events as pg_usage_events
+from app.adapters.inbound.api.routers import usage as usage_router
+from app.adapters.outbound.postgres import usage_events as pg_usage_events
 from app.agent.cost import budget_holds, budgets, spend
-from app.api.routers import usage as usage_router
 from app.billing_integration import port as billing_port
 from app.core import metrics
 from credit_billing import admission, credits, usage

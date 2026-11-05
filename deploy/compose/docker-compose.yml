@@ -12,7 +12,7 @@ x-worker-healthcheck: &worker-healthcheck
 x-app-env: &app-env
   OPENAI_API_BASE: http://litellm:4000/v1
   # A container does not read `.env` (compose only uses it to fill `${...}`), so before this line the containers sent the dev master key and a scoped
-  # `make litellm-key` key was never used. Name as in docker-compose.prod.yml and scripts/litellm_key.py. Unset falls back to `sk-anything`.
+  # `make litellm-key` key was never used. Name as in docker-compose.prod.yml and scripts/tools/litellm_key.py. Unset falls back to `sk-anything`.
   OPENAI_API_KEY: ${LITELLM_APP_KEY:-sk-anything}
   QDRANT_URL: http://qdrant:6333
   ML_SERVICE_URL: http://ml-service:80
@@ -27,10 +27,10 @@ x-app-env: &app-env
   LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-}
   CRAWL4AI_SERVER_URL: http://crawl4ai:11235
   CRAWL4AI_API_TOKEN: ${CRAWL4AI_API_TOKEN:-}
-  # Empty leaves web_search declared but answering "not set up" (app/adapters/web/serper.py). A container does not read `.env`.
+  # Empty leaves web_search declared but answering "not set up" (app/adapters/outbound/web/serper.py). A container does not read `.env`.
   SERPER_API_KEY: ${SERPER_API_KEY:-}
   WEB_SEARCH_MAX_RESULTS: ${WEB_SEARCH_MAX_RESULTS:-5}
-  # opensandbox-mcp is a stdio subprocess of this process (app/adapters/mcp/sandbox_tools.py), so it resolves the in-network name. Only matters
+  # opensandbox-mcp is a stdio subprocess of this process (app/adapters/outbound/mcp/sandbox_tools.py), so it resolves the in-network name. Only matters
   # with the `sandbox` profile up; without it the sandbox tools are absent.
   OPENSANDBOX_MCP_DOMAIN: opensandbox-server:8090
   OPENSANDBOX_API_KEY: ${OPENSANDBOX_API_KEY:-}
@@ -74,7 +74,7 @@ services:
   litellm:
     # Pinned by digest: the gateway holds the provider keys and decides what a call costs, and its behaviour moves between releases (the stop status
     # went from 400 to 429; a LiteLLM PyPI release was compromised in 2026-03). This is the multi-arch index of `main-stable` on 2026-07-30 (1.94.1),
-    # the image COST_GOVERNANCE.md's checks ran on. To move it: infra/README.md ("Bumping the LiteLLM image"); docker-compose.prod.yml carries the same one.
+    # the image COST_GOVERNANCE.md's checks ran on. To move it: deploy/README.md ("Bumping the LiteLLM image"); docker-compose.prod.yml carries the same one.
     image: ghcr.io/berriai/litellm:main-stable@sha256:28b10a635296730007097390939b55f8696ece548530d4ddda3e31c708b4dc81
     command: ["--config", "/app/config.yaml", "--port", "4000"]
     ports:
@@ -123,8 +123,8 @@ services:
     volumes:
       - qdrant:/qdrant/storage
 
-  # --- ML service: the reranker (app/retrieval/embeddings.py `rerank`, on every retrieval), Llama Prompt Guard 2 (app/core/moderation.py), the
-  # embedding endpoint and the label sets, in one CPU container (design: docker/ml-service/main.py).
+  # --- ML service: the reranker (app/adapters/outbound/embeddings/embeddings.py `rerank`, on every retrieval), Llama Prompt Guard 2 (app/core/moderation.py), the
+  # embedding endpoint and the label sets, in one CPU container (design: services/ml-service/main.py).
   # Rerank used to run in the worker's process and oversubscribed its threads and cores under a 50-turn burst. This service coalesces concurrent
   # calls into one ONNX pass (batches of up to 256 pairs from ~12 callers) and served a 100-request burst with no rejections; Hugging Face TEI
   # (bge-reranker-base) rejected ~94% of the same burst and idled at 2.26 GiB against 200-420 MiB here.
@@ -134,13 +134,12 @@ services:
     tmpfs:
       - /tmp:size=128m  # the models live in the named volume below, not in tmpfs
     build:
-      context: .
-      dockerfile: docker/ml-service.Dockerfile
+      context: ./services/ml-service
       target: runtime
     ports:
       - "8083:80"
     environment:
-      # Which text models (docker/ml-service/models.toml) to load and the embedding endpoint's ceilings; empty = the defaults.
+      # Which text models (services/ml-service/models.toml) to load and the embedding endpoint's ceilings; empty = the defaults.
       ML_MODELS_ENABLED: ${ML_MODELS_ENABLED:-}
       ML_EMBED_MAX_ITEMS: ${ML_EMBED_MAX_ITEMS:-256}
       ML_EMBED_MAX_CHARS: ${ML_EMBED_MAX_CHARS:-8000}
@@ -153,7 +152,7 @@ services:
       retries: 12
       start_period: 45s   # covers a cold pull of BOTH models on first startup
 
-  # --- Redis Stack, not plain redis: the semantic cache (app/retrieval/semantic_cache.py) needs RediSearch's vector KNN ---
+  # --- Redis Stack, not plain redis: the semantic cache (app/adapters/outbound/redis/semantic_cache.py) needs RediSearch's vector KNN ---
   redis:
     image: redis/redis-stack-server:latest
     ports:
@@ -245,13 +244,13 @@ services:
       postgres:
         condition: service_healthy
 
-  # --- S3-compatible object storage for uploads (app/ingestion/object_store.py). No healthcheck: the image has no curl, and object_store.py turns
+  # --- S3-compatible object storage for uploads (app/adapters/outbound/minio/object_store.py). No healthcheck: the image has no curl, and object_store.py turns
   # a not-ready MinIO into a clear upload-time error. ---
   minio:
     image: minio/minio:latest
     command: ["server", "/data", "--console-address", ":9001"]
     ports:
-      - "9000:9000"   # S3 API — app/ingestion/object_store.py talks to this
+      - "9000:9000"   # S3 API — app/adapters/outbound/minio/object_store.py talks to this
       - "9001:9001"   # web console (http://localhost:9001) — browse uploads by hand
     environment:
       MINIO_ROOT_USER: minioadmin
@@ -277,13 +276,13 @@ services:
       retries: 10
       start_period: 40s   # crawl4ai's own docs: allow up to 40s startup
 
-  # --- OpenSandbox server for every domain's sandbox tools (app/adapters/mcp/sandbox_tools.py, pattern 50). Upstream publishes no image, so this
-  # repo builds one (docker/opensandbox-server.{Dockerfile,toml}). Own opt-in `sandbox` profile (`make sandbox-up`): it bind-mounts the Docker
+  # --- OpenSandbox server for every domain's sandbox tools (app/adapters/outbound/mcp/sandbox_tools.py, pattern 50). Upstream publishes no image, so this
+  # repo builds one (deploy/images/opensandbox-server.{Dockerfile,toml}). Own opt-in `sandbox` profile (`make sandbox-up`): it bind-mounts the Docker
   # socket to start sibling sandbox containers on the host daemon, the privilege `uvx opensandbox-server` had as a host process. ---
   opensandbox-server:
     build:
       context: .
-      dockerfile: docker/opensandbox-server.Dockerfile
+      dockerfile: deploy/images/opensandbox-server.Dockerfile
     profiles: ["sandbox"]
     restart: unless-stopped
     ports:
@@ -296,7 +295,7 @@ services:
       OPENSANDBOX_SERVER_API_KEY: ${OPENSANDBOX_API_KEY}
 
   # --- MCP gateway (profile `gateway`; `make mcp-gateway-up`; specs/017) ---
-  # The published MCP servers (app/mcp/server.py, ops_server.py) over Streamable HTTP behind OAuth 2.1: caddy-gateway terminates TLS, mcp-gateway is
+  # The published MCP servers (app/adapters/inbound/mcp/server.py, ops_server.py) over Streamable HTTP behind OAuth 2.1: caddy-gateway terminates TLS, mcp-gateway is
   # the resource server, casdoor issues the tokens. Local only: *.localhost names, Caddy's own CA, one loopback port. A deployment swaps in real
   # names, ACME and its own identity provider (the gateway needs only an issuer URL and a JWKS URL).
   #
@@ -347,7 +346,7 @@ services:
     build: *app-build
     profiles: ["gateway"]
     restart: unless-stopped
-    command: ["python", "-m", "app.mcp.gateway", "--host", "0.0.0.0", "--port", "8000"]
+    command: ["python", "-m", "app.adapters.inbound.mcp.gateway", "--host", "0.0.0.0", "--port", "8000"]
     # Only what the two tools read (the app database, Prometheus) and the gateway's own settings: no LLM keys, Redis or sandbox key, as anyone
     # holding a token can reach this process.
     environment:
@@ -529,7 +528,7 @@ services:
   api:
     <<: *hardened
     build: *app-build
-    # The one role that takes uploads (up to 5 x 25 MB, app/api/routers/ingest.py): the multipart parser spools to /tmp before the handler runs, so
+    # The one role that takes uploads (up to 5 x 25 MB, app/adapters/inbound/api/routers/ingest.py): the multipart parser spools to /tmp before the handler runs, so
     # /tmp is a disk-backed volume (a tmpfs would fill RAM at the second large upload). Only $HOME is tmpfs.
     tmpfs:
       - /home/appuser:size=64m,uid=1000,gid=1000
@@ -561,13 +560,13 @@ services:
       redis:
         condition: service_healthy
 
-  # One container serves every domain: each domain's requests stream, on that domain's graph (app/job_queue/agent_worker.py).
+  # One container serves every domain: each domain's requests stream, on that domain's graph (app/adapters/inbound/workers/agent_worker.py).
   agent-worker:
     <<: *hardened
     build: *app-build
     profiles: ["app"]
     restart: unless-stopped
-    command: ["python", "-m", "app.job_queue.agent_worker"]
+    command: ["python", "-m", "app.adapters.inbound.workers.agent_worker"]
     healthcheck: *worker-healthcheck
     environment:
       <<: *app-env
@@ -587,7 +586,7 @@ services:
     build: *app-build
     profiles: ["app"]
     restart: unless-stopped
-    command: ["python", "-m", "app.ingestion.ingest_worker"]
+    command: ["python", "-m", "app.adapters.inbound.workers.ingest_worker"]
     healthcheck: *worker-healthcheck
     environment: *app-env
     extra_hosts:

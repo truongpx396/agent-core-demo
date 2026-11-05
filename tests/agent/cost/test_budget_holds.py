@@ -14,7 +14,7 @@ drives the real table, including the abandoned-hold cases this file cannot.
 import uuid
 from contextlib import asynccontextmanager
 
-from app.adapters.postgres import budget_holds as pg_budget_holds
+from app.adapters.outbound.postgres import budget_holds as pg_budget_holds
 from app.agent.cost import budget_holds
 from tests.conftest import TEST_CTX
 

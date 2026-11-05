@@ -281,8 +281,8 @@ class TestAstreamEventsResumeCancellation:
         with the tool's I/O stubbed to *record* writes — the observable that
         distinguishes "cancelled before the approved tool ran" from "ran,
         then reported cancelled"."""
+        from app.adapters.outbound.qdrant import qdrant_store
         from app.domains.ecorp import store as ecorp_store
-        from app.retrieval import qdrant_store
 
         writes: list = []
 

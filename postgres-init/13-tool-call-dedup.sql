@@ -14,7 +14,7 @@
 -- caller that raced the INSERT and lost sees NULL and proceeds to run fn()
 -- itself rather than blocking (see that function's own docstring for why
 -- this narrow window is an accepted tradeoff, not a bug: the thread lock
--- app/job_queue/queue.py::acquire_thread_lock already holds for a job's
+-- app/adapters/outbound/redis/queue.py::acquire_thread_lock already holds for a job's
 -- whole run means two DIFFERENT jobs can never legitimately be executing
 -- the SAME tool_call_id at the same real moment in this app today).
 --

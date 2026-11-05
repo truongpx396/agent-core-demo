@@ -1,9 +1,9 @@
-"""Tests for app/mcp/ops_server.py — same hermetic MCPServer in-process
+"""Tests for app/adapters/inbound/mcp/ops_server.py — same hermetic MCPServer in-process
 call_tool/list_tools convention as tests/mcp/test_mcp_server.py, including its
 reason for binding the identity at launch (`launched_as`) instead of taking it
 as an argument.
 
-app/mcp/ops_server.py imports `fetch_metrics_summary_impl`/
+app/adapters/inbound/mcp/ops_server.py imports `fetch_metrics_summary_impl`/
 `list_recent_incidents_impl` by name (`from app.domains.ops.tools import
 ...`), so — unlike tests/mcp/test_mcp_server.py's `sql_store.query_employees`
 (a module-qualified call one layer deeper inside `query_employees_impl`
@@ -16,8 +16,8 @@ import logging
 
 import pytest
 
+from app.adapters.inbound.mcp import ops_server
 from app.core.config import DEFAULT_TENANT
-from app.mcp import ops_server
 
 
 async def _call(name, arguments=None):
@@ -102,7 +102,7 @@ async def test_calls_are_audited_under_the_default_tenant(launched_as, monkeypat
 
     monkeypatch.setattr(ops_server, "list_recent_incidents_impl", fake_impl)
 
-    with caplog.at_level(logging.INFO, logger="app.mcp.audit"):
+    with caplog.at_level(logging.INFO, logger="app.adapters.inbound.mcp.audit"):
         await _call("list_recent_incidents", {"status": "open"})
 
     (record,) = [r for r in caplog.records if r.message == "mcp_tool_call"]

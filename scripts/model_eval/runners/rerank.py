@@ -59,7 +59,7 @@ class RandomRerank:
 
 
 class ServiceRerank:
-    """The ML service's /rerank, exactly as app/retrieval/embeddings.py::rerank calls it."""
+    """The ML service's /rerank, exactly as app/adapters/outbound/embeddings/embeddings.py::rerank calls it."""
 
     identity: str
     revision: str | None = None

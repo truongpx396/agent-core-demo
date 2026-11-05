@@ -1,5 +1,5 @@
 # Prompt-injection / jailbreak screens (specs/014). The baseline is what the ML service's /prompt-guard runs today.
-# gravitee-io's ONNX ports are used (not meta-llama's gated originals; see docker/ml-service/ml_service/settings.py). Their licence is the
+# gravitee-io's ONNX ports are used (not meta-llama's gated originals; see services/ml-service/ml_service/settings.py). Their licence is the
 # Llama 4 Community License, which is the model's licence, recorded here as text; it is reported, not a reason to refuse to measure.
 
 [[candidate]]

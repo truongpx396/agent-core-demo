@@ -1,4 +1,4 @@
-"""The gateway's signing-key cache (app/mcp/gateway_auth.py::JwksCache) and the verifier that uses it, with a clock the test moves.
+"""The gateway's signing-key cache (app/adapters/inbound/mcp/gateway_auth.py::JwksCache) and the verifier that uses it, with a clock the test moves.
 
 The properties that matter operationally: a key is fetched once, not per request; a rotated key is picked up; a caller cannot make the
 gateway hammer the authorization server by sending tokens with key ids it does not have; and a key set that cannot be confirmed current
@@ -10,8 +10,12 @@ import httpx
 import jwt
 import pytest
 
+from app.adapters.inbound.mcp.gateway_auth import (
+    JwksCache,
+    JwksUnavailable,
+    JwtVerifier,
+)
 from app.core import metrics
-from app.mcp.gateway_auth import JwksCache, JwksUnavailable, JwtVerifier
 from tests.conftest import metric_value
 from tests.mcp import gateway_support as gs
 

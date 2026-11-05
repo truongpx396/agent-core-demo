@@ -31,11 +31,11 @@ updates:
       prefix: infra
 
   - package-ecosystem: docker
-    # Both directories: the root Dockerfile and docker/ml-service.Dockerfile, which pin the same two digests (a test keeps them equal).
-    # docker/ also holds the sandbox images, whose bases are not pinned by digest: they stay as they are, and are not what this is for.
+    # Both directories: the root Dockerfile and services/ml-service/Dockerfile, which pin the same two digests (a test keeps them equal).
+    # deploy/images/ holds the sandbox images, whose bases are not pinned by digest: they stay as they are, and are not what this is for.
     directories:
       - /
-      - /docker
+      - /services/ml-service
     schedule:
       interval: weekly
     # A release has to be two weeks old before it is proposed: uv's 0.13 line was days old when the pin was chosen, and a base image

@@ -2,7 +2,7 @@
 
 The web UI's switcher, the ownership gate on every message and the checks behind `GET /chat/sessions/{id}/messages` all read it. The rules
 (a valid context is required, a title is cut to length, a bookkeeping write never fails a turn while an ownership check never defaults to
-"yes") are the application's (`app/agent/runtime/sessions.py`); this is only where the rows live (`app/adapters/postgres/sessions.py`).
+"yes") are the application's (`app/agent/runtime/sessions.py`); this is only where the rows live (`app/adapters/outbound/postgres/sessions.py`).
 
 Every row is scoped by tenant, principal and domain, and every method takes all three: a thread opened under another tenant, person or
 domain reads as not found. Methods raise when the store cannot be reached; the application decides what that means.

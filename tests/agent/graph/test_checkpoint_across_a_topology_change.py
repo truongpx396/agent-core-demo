@@ -21,10 +21,10 @@ from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 
+from app.adapters.inbound.workers import agent_worker
 from app.agent.graph.build import GraphDeps
 from app.agent.runtime import stream as stream_module
 from app.core import metrics
-from app.job_queue import agent_worker
 from tests.agent.fakes import cfg
 from tests.conftest import metric_value
 from tests.ecorp import build_graph

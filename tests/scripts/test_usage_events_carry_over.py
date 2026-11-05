@@ -1,4 +1,4 @@
-"""scripts/usage_events_carry_over.py: the control flow and the words the operator reads (specs/010 T030).
+"""scripts/tools/usage_events_carry_over.py: the control flow and the words the operator reads (specs/010 T030).
 
 Hermetic, with a scripted connection. That proves the loop (when it stops, what it reports, what it hands the database); what
 the statements actually DO to the tables is proven against a real Postgres in
@@ -10,7 +10,7 @@ from decimal import Decimal
 import pytest
 from psycopg import errors as pg_errors
 
-from scripts import usage_events_carry_over as carry
+from scripts.tools import usage_events_carry_over as carry
 
 CUTOFF = datetime(2026, 10, 7, 3, 21, tzinfo=UTC)
 

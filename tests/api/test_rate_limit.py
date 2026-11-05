@@ -1,4 +1,4 @@
-"""Tests for app/api/rate_limit.py: the payment webhook's per-source-address limit, and the absence of every other limit.
+"""Tests for app/adapters/inbound/api/rate_limit.py: the payment webhook's per-source-address limit, and the absence of every other limit.
 
 Spec 018 moved the per-tenant limit on turn-creating requests out of this process and to the front door (services/authlimit), which enforces it
 from a verified tenant and person as a token bucket. This file used to test that limiter; it now tests that the API does NOT throttle turns any
@@ -13,7 +13,7 @@ from limits import RateLimitItemPerMinute, storage, strategies
 from starlette.requests import Request
 from starlette.responses import Response
 
-from app.api import rate_limit
+from app.adapters.inbound.api import rate_limit
 from app.core import config, metrics
 from tests.conftest import metric_value
 
@@ -45,7 +45,7 @@ def _fresh_middleware(monkeypatch, *, webhook_limit: int):
 
 class TestTheWebhookRoute:
     """POST /billing/webhooks/{provider} has no tenant (the caller is a payment provider) and Caddy lets it through un-checked, so it is
-    limited per SOURCE ADDRESS with its own ceiling (app/api/rate_limit.py)."""
+    limited per SOURCE ADDRESS with its own ceiling (app/adapters/inbound/api/rate_limit.py)."""
 
     async def test_it_is_limited_per_source_address(self, monkeypatch):
         middleware = _fresh_middleware(monkeypatch, webhook_limit=2)
@@ -126,7 +126,7 @@ class TestTheApiNoLongerLimitsTurns:
                 assert (await middleware.dispatch(_make_request(path), _call_next)).status_code == 200, path
 
     def test_the_app_mounts_the_webhook_limit_and_no_tenant_limiter(self):
-        from app.api.main import app
+        from app.adapters.inbound.api.main import app
 
         mounted = {m.cls.__name__ for m in app.user_middleware}
 

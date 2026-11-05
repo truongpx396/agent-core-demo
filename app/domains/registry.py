@@ -5,9 +5,9 @@
   domain's stream and build no graph. agent_worker.py reads AGENT_WORKER_DOMAINS
   (via the `DomainCatalog` port, backed by this table) and builds one graph per
   domain it serves.
-- Per-request: app/api/deps.py's `get_domain` validates the caller's
+- Per-request: app/adapters/inbound/api/deps.py's `get_domain` validates the caller's
   `X-Domain` header against this registry's keys, and the queued chat
-  endpoints (app/api/routers/chat.py) route onto that
+  endpoints (app/adapters/inbound/api/routers/chat.py) route onto that
   domain's own Redis Stream — which domain a MESSAGE is for, letting one
   API process serve every domain a worker is serving.
 """

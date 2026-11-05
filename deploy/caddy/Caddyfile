@@ -14,7 +14,7 @@
 # own comment for the fix (compose's `:-`, unlike Caddy's, treats
 # empty-and-unset the same). Net effect unchanged: a real DOMAIN_NAME gets
 # a real Let's Encrypt certificate (needs its DNS A/AAAA record already
-# pointed at infra/terraform's reserved_ip output, and ports 80/443
+# pointed at deploy/terraform's reserved_ip output, and ports 80/443
 # reachable from the internet — both already true per that module's
 # firewall); empty means plain HTTP on `:80` for any hostname/IP — no cert
 # to issue for a bare IP, so this is the deliberate fallback, not a bug:
@@ -48,7 +48,7 @@
 		# chunk-coalesce the response — Caddy streams by default, but
 		# flush_interval -1 makes that explicit rather than relying on
 		# the default heuristic. (The payment webhook's per-address limit,
-		# app/api/rate_limit.py, keys on the connecting address, which
+		# app/adapters/inbound/api/rate_limit.py, keys on the connecting address, which
 		# behind this proxy is the proxy's own; per-tenant and per-person
 		# turn limits are the front door's, services/authlimit.)
 		flush_interval -1

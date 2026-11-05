@@ -1,9 +1,9 @@
 [tool.pytest.ini_options]
 # The billing package is found through its src directory, not installed: the lock file is a machine-generated freeze
-# of a real install and a path dependency does not belong in it (spec 011 D20). `docker/ml-service` is on the path for the same
+# of a real install and a path dependency does not belong in it (spec 011 D20). `services/ml-service` is on the path for the same
 # reason: the ML service's package (`ml_service`) is imported by tests/ml_service and by the evaluation harness, which must run
 # the very tokenise/pool code the service serves with (specs/014 research.md C1); it is not installed and not in the lock file.
-pythonpath = [".", "packages/billing/src", "docker/ml-service"]
+pythonpath = [".", "packages/billing/src", "services/ml-service"]
 testpaths = ["tests"]
 # pytest-asyncio in "auto" mode: any `async def test_...` (or `async def`
 # fixture) is collected and run automatically, no `@pytest.mark.asyncio`
@@ -44,7 +44,7 @@ markers = [
 target-version = "py311"
 # First-party for import sorting: the repo root (`app`, `scripts`), the billing package and the ML service package (both found by path,
 # not installed).
-src = [".", "packages/billing/src", "docker/ml-service"]
+src = [".", "packages/billing/src", "services/ml-service"]
 
 [tool.ruff.lint]
 # Deliberately no "E"/pycodestyle line-length rule: docstrings and comments
@@ -55,7 +55,7 @@ src = [".", "packages/billing/src", "docker/ml-service"]
 # argument default is the framework's own idiom, not a bug).
 # BLE: flake8-blind-except — this codebase already annotates every
 # deliberate `except Exception` with a justifying `# noqa: BLE001 - ...`
-# comment (see app/agent/runtime/core.py, app/channels/telegram.py, etc.), so enabling
+# comment (see app/agent/runtime/core.py, app/adapters/inbound/channels/telegram.py, etc.), so enabling
 # the rule just makes those pre-existing comments meaningful instead of
 # decorative.
 # S110: bandit's try/except/pass check, paired with BLE001 for the same
@@ -83,6 +83,6 @@ ignore_missing_imports = true
 # `# type: ignore[...]` comments at each such site in app/ for the specific
 # reason. Scoped to app/ and scripts/ (not tests/) — tests are exercised by
 # actually running them (`make test`), not by static typing.
-files = ["app", "scripts", "packages/billing/src", "docker/ml-service/ml_service"]
-# docker/ml-service is on the path so the `ml_service` package resolves as a top-level name (its directory name has a hyphen).
-mypy_path = "packages/billing/src:docker/ml-service"
+files = ["app", "scripts", "packages/billing/src", "services/ml-service/ml_service"]
+# services/ml-service is on the path so the `ml_service` package resolves as a top-level name (its directory name has a hyphen).
+mypy_path = "packages/billing/src:services/ml-service"

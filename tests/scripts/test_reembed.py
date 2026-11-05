@@ -1,4 +1,4 @@
-"""scripts/reembed.py: rebuild a collection under the current embedding identity with no mixed moment (specs/014 FR-020).
+"""scripts/tools/reembed.py: rebuild a collection under the current embedding identity with no mixed moment (specs/014 FR-020).
 
 Against the shared in-memory Qdrant fake. What matters, in order: the live collection is never touched until the last step; a payload
 (tenant and owner included) arrives byte-for-byte; the sparse vector is kept, not recomputed; a write that lands mid-run stops the swap
@@ -10,9 +10,9 @@ from pathlib import Path
 import pytest
 from qdrant_client.models import PointStruct, SparseVector
 
-from app.retrieval import qdrant_store
-from scripts import reembed
-from scripts.reembed import ReembedError
+from app.adapters.outbound.qdrant import qdrant_store
+from scripts.tools import reembed
+from scripts.tools.reembed import ReembedError
 from tests.conftest import TEST_EMBEDDING_IDENTITY
 from tests.retrieval.fake_qdrant import FakeQdrant
 
@@ -299,6 +299,6 @@ def test_nothing_under_app_can_import_the_reembed_script():
                 names = [node.module or "", *[(node.module or "") + "." + a.name for a in node.names]]
             elif isinstance(node, ast.Import):
                 names = [a.name for a in node.names]
-            if any(n == "scripts.reembed" or n.endswith(".reembed") and n.startswith("scripts") for n in names):
+            if any(n == "scripts.tools.reembed" or n.endswith(".reembed") and n.startswith("scripts") for n in names):
                 offenders.append(path.relative_to(REPO).as_posix())
     assert offenders == []

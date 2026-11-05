@@ -8,9 +8,9 @@ from app.agent.tools.skill_catalog import SkillLoadError, load_skills
 from app.agent.tools.subagent_catalog import SubagentLoadError, load_subagents
 
 
-def _write(root, slug, filename, text):
-    d = root / slug
-    d.mkdir()
+def _write(root, slug, filename, text, owner="ecorp"):
+    d = root / owner / ("skills" if filename == "SKILL.md" else "subagents") / slug
+    d.mkdir(parents=True)
     (d / filename).write_text(text, encoding="utf-8")
 
 
@@ -42,6 +42,10 @@ def test_a_bad_file_is_skipped_and_the_first_duplicate_wins_with_kind_worded_log
     messages = [r.getMessage() for r in caplog.records]
     assert f"skipping invalid {kind} file" in messages
     assert f"duplicate {kind} name; keeping the first one found" in messages
+
+
+def test_the_owner_is_the_folder_two_levels_above_the_entry(tmp_path):
+    assert fm.owner_of(tmp_path / "sales" / "skills" / "deal-economics" / "SKILL.md") == "sales"
 
 
 def test_a_missing_directory_is_an_empty_catalog(tmp_path):

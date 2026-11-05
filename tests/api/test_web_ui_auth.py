@@ -12,7 +12,7 @@ what that script does. Three layers, cheapest first:
     it) forgets the token, and header mode is left as it was. No package, no network.
 
 The real proof, a person signing in with a real browser against a real Casdoor, is
-`scripts/authlimit_web_check.py`, a manual tier.
+`scripts/checks/authlimit_web_check.py`, a manual tier.
 """
 import html
 import json
@@ -26,14 +26,14 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from app.api import main as api
-from app.api import web_auth
-from app.api.routers.system import ui
+from app.adapters.inbound.api import main as api
+from app.adapters.inbound.api import web_auth
+from app.adapters.inbound.api.routers.system import ui
 from app.core.config import settings
 
 REPO = Path(__file__).resolve().parents[2]
-PAGE = (REPO / "app" / "api" / "static" / "index.html").read_text()
-SCRIPT = (REPO / "app" / "api" / "static" / "auth.js").read_text()
+PAGE = (REPO / "app" / "adapters" / "inbound" / "api" / "static" / "index.html").read_text()
+SCRIPT = (REPO / "app" / "adapters" / "inbound" / "api" / "static" / "auth.js").read_text()
 ROUTES = json.loads((REPO / "services" / "authlimit" / "routes.json").read_text())["routes"]
 
 
@@ -286,8 +286,8 @@ HARNESS = textwrap.dedent(
 @pytest.fixture(scope="module")
 def run():
     if not NODE:
-        pytest.skip("node is not installed: the script is checked by the greps above and by scripts/authlimit_web_check.py")
-    env = {**os.environ, "AUTH_JS": str(REPO / "app" / "api" / "static" / "auth.js")}
+        pytest.skip("node is not installed: the script is checked by the greps above and by scripts/checks/authlimit_web_check.py")
+    env = {**os.environ, "AUTH_JS": str(REPO / "app" / "adapters" / "inbound" / "api" / "static" / "auth.js")}
     result = subprocess.run([NODE, "-e", HARNESS], capture_output=True, text=True, timeout=60, check=False, env=env)
     assert result.returncode == 0, result.stderr
     return json.loads(result.stdout)

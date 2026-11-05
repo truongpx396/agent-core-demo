@@ -91,7 +91,7 @@ async def idempotent(
     Narrow accepted race: if the row read back has `result IS NULL` (the winner's `fn()` is still running, or
     died before the closing UPDATE), this caller runs `fn()` itself rather than blocking or looping, so a
     double run is possible in that exact window. Accepted because nothing today can put two callers there
-    concurrently: the only real caller (`app/job_queue/agent_worker.py`'s reclaim path) retries a job only
+    concurrently: the only real caller (`app/adapters/inbound/workers/agent_worker.py`'s reclaim path) retries a job only
     well after `AGENT_WORKER_RECLAIM_IDLE_SECONDS` of the ORIGINAL attempt going silent (presumed dead, not
     concurrently running), and `queue.py::acquire_thread_lock` already rules out two jobs for the same
     thread_id, hence the same tool_call_id. A future caller invoking this concurrently would need to close
@@ -133,7 +133,7 @@ async def idempotent(
 
 async def sweep_stale_rows(*, older_than_hours: int) -> int:
     """Deletes `tool_call_dedup` rows older than `older_than_hours`.
-    Meant for a periodic cron sweep (`scripts/tool_call_dedup_sweep.py`),
+    Meant for a periodic cron sweep (`scripts/jobs/tool_call_dedup_sweep.py`),
     never the hot path `idempotent()` itself runs.
 
     postgres-init/13-tool-call-dedup.sql creates this table with no

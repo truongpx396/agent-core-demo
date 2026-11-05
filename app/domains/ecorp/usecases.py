@@ -75,7 +75,7 @@ async def remember_impl(content: str, ctx: SecurityCtx, tool_call_id: str) -> st
     "Cross-session memory" section).
 
     `created_at` (UTC) is what `Policy.lower`'s retention filter (app/core/security.py, GRAPH_PATTERNS.md pattern 33) and
-    `app/retrieval/memory.py::delete_memories` both read: stamped once, here, never caller-supplied. The point id is `tool_call_id`-derived
+    `app/adapters/outbound/qdrant/memory.py::delete_memories` both read: stamped once, here, never caller-supplied. The point id is `tool_call_id`-derived
     (`tool_call_point_id`, same reasoning as `add_note_impl`), so a genuine re-run under the same tool_call_id upserts onto the same memory instead of
     duplicating it.
     """

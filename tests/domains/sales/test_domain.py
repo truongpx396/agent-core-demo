@@ -97,7 +97,7 @@ class TestDomainScopedSubagent:
     """Same proof as tests/domains/support/test_domain.py's own
     TestDomainScopedSubagent: run_subagent is this domain's OWN
     closure-built tool, and its menu offers only the bundled subagent(s)
-    declared `domains: [sales]` (subagents/lead-researcher/AGENT.md)."""
+    declared `domains: [sales]` (app/domains/sales/subagents/lead-researcher/AGENT.md)."""
 
     def test_is_not_the_ecorp_domains_run_subagent_object(self):
         ecorp_run_subagent = {t.name: t for t in ECORP_DOMAIN_PLUGIN.tools()}["run_subagent"]
@@ -273,7 +273,7 @@ async def test_handoff_to_human_notifies_the_team_channel(monkeypatch):
     """handoff_to_human's own side effect (app/domains/sales/tools.py) —
     unit-level, same shape as
     tests/domains/support/test_domain.py::test_escalate_to_human_notifies_the_team_channel."""
-    from app.adapters.notify import team_channel as notify
+    from app.adapters.outbound.notify import team_channel as notify
     from app.domains.sales.tools import _handoff_to_human_impl
 
     async def fake_set_lead_status(tenant, contact, status):

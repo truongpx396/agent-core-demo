@@ -1,4 +1,4 @@
-"""Tests for scripts/ops_digest.py. `build_digest_prompt` is pure — tested
+"""Tests for scripts/jobs/ops_digest.py. `build_digest_prompt` is pure — tested
 directly. `run_digest` is tested with a fake LLM (`llm=` DI, same pattern
 app/agent/tools/run_subagent.py::run_subagent_impl already uses) and
 metrics_client/notify monkeypatched, so this stays hermetic (no live
@@ -15,10 +15,10 @@ import asyncio
 
 import pytest
 
-from app.adapters.notify import team_channel as team_channel_adapter
+from app.adapters.outbound.notify import team_channel as team_channel_adapter
 from app.core import gateway
 from app.domains.ops import metric_checks, metrics_client
-from scripts import ops_digest
+from scripts.jobs import ops_digest
 
 
 class _FakeResponse:

@@ -40,7 +40,7 @@ from scripts.model_eval.runners.base import (
 from scripts.model_eval.suites import ItemData
 
 DATASETS = ("route-topics",)  # repository datasets of kind "topics": scored by this module instead of the routing-outcomes runner
-LABELSET_DIR = ds.REPO / "docker" / "ml-service" / "labelsets"
+LABELSET_DIR = ds.REPO / "services" / "ml-service" / "labelsets"
 DEFAULT_KEEP = 0.95  # the share of in-scope dev sentences the calibrated cutoff must keep
 
 
@@ -62,8 +62,8 @@ class InProcessTopics:
     def __init__(self, candidate: Candidate, labelset, threads: int | None = None) -> None:
         try:
             from ml_service import labelsets as service
-        except ImportError as exc:  # the Makefile exports PYTHONPATH with docker/ml-service; a bare `python -m` may not
-            raise PrerequisiteMissing(f"cannot import the ML service package ({exc}); run through `make model-eval` or set PYTHONPATH=docker/ml-service") from exc
+        except ImportError as exc:  # the Makefile exports PYTHONPATH with services/ml-service; a bare `python -m` may not
+            raise PrerequisiteMissing(f"cannot import the ML service package ({exc}); run through `make model-eval` or set PYTHONPATH=services/ml-service") from exc
         from scripts.model_eval.runners.embedding import InProcessEmbedding
 
         model = candidate.source.model
@@ -92,7 +92,7 @@ def load_labelset(name: str, directory: Path = LABELSET_DIR):
     try:
         from ml_service import labelsets as service
     except ImportError as exc:
-        raise PrerequisiteMissing(f"cannot import the ML service package ({exc}); run through `make model-eval` or set PYTHONPATH=docker/ml-service") from exc
+        raise PrerequisiteMissing(f"cannot import the ML service package ({exc}); run through `make model-eval` or set PYTHONPATH=services/ml-service") from exc
     path = directory / f"{name}.json"
     if not path.exists():
         raise PrerequisiteMissing(f"no label set named {name!r} at {path}")

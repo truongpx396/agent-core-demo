@@ -27,7 +27,7 @@ print("ok")
 
 
 def test_importing_every_harness_module_opens_no_socket_and_loads_no_ml_framework():
-    env = {**os.environ, "PYTHONPATH": os.pathsep.join([str(REPO), str(REPO / "docker" / "ml-service"), str(REPO / "packages" / "billing" / "src")])}
+    env = {**os.environ, "PYTHONPATH": os.pathsep.join([str(REPO), str(REPO / "services" / "ml-service"), str(REPO / "packages" / "billing" / "src")])}
     done = subprocess.run([sys.executable, "-c", PROBE], cwd=REPO, env=env, capture_output=True, text=True, timeout=120)
 
     assert done.returncode == 0, done.stderr

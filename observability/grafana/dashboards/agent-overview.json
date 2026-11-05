@@ -1274,7 +1274,7 @@
     {
       "type": "timeseries",
       "title": "Memory deletions",
-      "description": "deleted | refused \u2014 app/retrieval/memory.py::delete_memories.",
+      "description": "deleted | refused \u2014 app/adapters/outbound/qdrant/memory.py::delete_memories.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -1326,7 +1326,7 @@
     {
       "type": "timeseries",
       "title": "Payment-webhook rate-limit rejections",
-      "description": "Per-source-address limit on /billing/webhooks (app/api/rate_limit.py). Turn limits are the front door's, services/authlimit.",
+      "description": "Per-source-address limit on /billing/webhooks (app/adapters/inbound/api/rate_limit.py). Turn limits are the front door's, services/authlimit.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"

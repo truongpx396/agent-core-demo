@@ -60,16 +60,16 @@ zap_reports/
 .scannerwork/
 .sonar/
 
-# Terraform (infra/terraform, see infra/README.md) — local state and any
+# Terraform (deploy/terraform, see deploy/README.md) — local state and any
 # real tfvars; terraform.tfvars.example and .terraform.lock.hcl (both
 # meant to be committed) are unaffected since neither matches these globs.
-infra/terraform/.terraform/
-infra/terraform/*.tfstate
-infra/terraform/*.tfstate.*
-infra/terraform/*.tfplan
-infra/terraform/terraform.tfvars
-infra/terraform/*.auto.tfvars
-infra/terraform/crash.log
+deploy/terraform/.terraform/
+deploy/terraform/*.tfstate
+deploy/terraform/*.tfstate.*
+deploy/terraform/*.tfplan
+deploy/terraform/terraform.tfvars
+deploy/terraform/*.auto.tfvars
+deploy/terraform/crash.log
 
 # Production secrets — must exist only on the droplet itself, never in this
 # repo (see docker-compose.prod.yml's own header comment); deploy/env/prod.env.example

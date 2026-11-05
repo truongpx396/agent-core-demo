@@ -1,4 +1,4 @@
-"""Real-subprocess capacity test: do N independently scaled app/job_queue/agent_worker.py processes, each running
+"""Real-subprocess capacity test: do N independently scaled app/adapters/inbound/workers/agent_worker.py processes, each running
 M turns concurrently (AGENT_WORKER_MAX_CONCURRENCY), absorb N*M concurrent real HTTP requests against POST
 /chat/stream/queued correctly, not just without crashing?
 
@@ -15,7 +15,7 @@ but no Ollama/GPU sidecar, so it runs in the same CI job as the rest of tests/in
 
 TestScaledWorkersAbsorbConcurrentLoad guards a real capacity bug found while manually verifying this scenario:
 250 concurrent requests against 5 agent_worker.py processes at AGENT_WORKER_MAX_CONCURRENCY=50 each failed
-~83% of the time with redis.exceptions.MaxConnectionsError. app/job_queue/queue.py::get_client()'s Redis pool
+~83% of the time with redis.exceptions.MaxConnectionsError. app/adapters/outbound/redis/queue.py::get_client()'s Redis pool
 silently inherited redis-py's 100-connection default, a ceiling unrelated to the configured workers or
 concurrency (every POST /chat/stream/queued SSE connection holds a pooled connection for the FULL blocking
 read of its turn, so concurrent SSE connections map ~1:1 onto held pool connections). Fixed via
@@ -47,7 +47,7 @@ import pytest
 from qdrant_client import QdrantClient
 from qdrant_client.models import FieldCondition, Filter, MatchValue
 
-from app.retrieval import qdrant_store
+from app.adapters.outbound.qdrant import qdrant_store
 from tests.containers import (
     ensure_ml_service,
     ensure_postgres,
@@ -114,7 +114,7 @@ def _wait_until_ready(url: str, proc: subprocess.Popen, timeout: float = 60.0) -
 @pytest.fixture(scope="module")
 def qdrant_collection() -> str:
     """A collection name unique to this test module's run —
-    app/retrieval/qdrant_store.py's default `COLLECTION` ("docs") is a
+    app/adapters/outbound/qdrant/qdrant_store.py's default `COLLECTION` ("docs") is a
     single, production-shaped name, and `ensure_qdrant()`'s container is
     shared across the WHOLE pytest session (and, under `pytest -n auto`,
     across every xdist worker — exactly what CI runs). Verified directly
@@ -133,9 +133,9 @@ def qdrant_collection() -> str:
 
 @pytest.fixture(scope="module")
 def scaled_stack(qdrant_collection: str) -> Iterator[str]:
-    """`_NUM_WORKERS` real app/job_queue/agent_worker.py OS processes, each at
+    """`_NUM_WORKERS` real app/adapters/inbound/workers/agent_worker.py OS processes, each at
     `AGENT_WORKER_MAX_CONCURRENCY=_PER_WORKER_CONCURRENCY` (`_TOTAL_REQUESTS`
-    system-wide capacity), plus a real `uvicorn app.api.main` and a real
+    system-wide capacity), plus a real `uvicorn app.adapters.inbound.api.main` and a real
     `loadtest/fake_llm_server.py` — the exact shape manually verified
     before this test was written (see this module's own docstring)."""
     postgres = ensure_postgres()
@@ -147,7 +147,7 @@ def scaled_stack(qdrant_collection: str) -> Iterator[str]:
     # or write it — Qdrant does NOT auto-create one on first use (verified
     # directly: TestScaledWorkersHandleHITLAndSubagentDelegation's own
     # `remember` writes raised until this was added). Created from THIS
-    # process, not a subprocess, via the same app/retrieval/qdrant_store.py
+    # process, not a subprocess, via the same app/adapters/outbound/qdrant/qdrant_store.py
     # function production ingestion (`make ingest`) uses, against
     # `qdrant_collection` (see that fixture's own docstring for why a
     # unique name matters here) — dimension must match
@@ -170,7 +170,9 @@ def scaled_stack(qdrant_collection: str) -> Iterator[str]:
     # server's /v1/embeddings returns, and no prefixes. This fixture is module-scoped, so it runs BEFORE tests/conftest.py's
     # function-scoped autouse identity exists; without this it would ask the real embedding endpoint (which is not up yet) for a dimension.
     async def _identity_of_the_stack_below():
-        from app.retrieval.embedding_identity import EmbeddingIdentity
+        from app.adapters.outbound.embeddings.embedding_identity import (
+            EmbeddingIdentity,
+        )
 
         return EmbeddingIdentity("embed", None, FAKE_EMBED_DIM, "", "", "")
 
@@ -192,7 +194,7 @@ def scaled_stack(qdrant_collection: str) -> Iterator[str]:
         "REDIS_URL": redis["redis_url"],
         # A real Qdrant IS needed here, even though this test's own
         # assertions never depend on retrieval quality — verified directly:
-        # GET /health/ready (app/api/health.py) reports "degraded" (a
+        # GET /health/ready (app/adapters/inbound/api/health.py) reports "degraded" (a
         # non-200 status) whenever ANY checked dependency, Qdrant included,
         # is unreachable, so _wait_until_ready below would time out without
         # this — same reason tests/live/conftest.py's own real_stack always
@@ -206,7 +208,7 @@ def scaled_stack(qdrant_collection: str) -> Iterator[str]:
         "COLLECTION": qdrant_collection,
         # Same "must be real, purely to satisfy /health/ready" reasoning as
         # QDRANT_URL above — added once that endpoint started checking
-        # ml_service too (app/api/health.py); no test assertion here
+        # ml_service too (app/adapters/inbound/api/health.py); no test assertion here
         # depends on real reranking/prompt-guard output either.
         "ML_SERVICE_URL": ml_service["ml_service_url"],
         "OPENAI_API_BASE": f"http://127.0.0.1:{fake_llm_port}/v1",
@@ -231,7 +233,7 @@ def scaled_stack(qdrant_collection: str) -> Iterator[str]:
         # in production and measuring the wrong thing here, so this test, which measures
         # capacity, gets the same ceiling its own HTTP client has.
         "CHAT_FIRST_RESPONSE_DEADLINE_SECONDS": str(_CLIENT_TIMEOUT_SECONDS),
-        # The semantic cache (app/retrieval/semantic_cache.py) goes to real,
+        # The semantic cache (app/adapters/outbound/redis/semantic_cache.py) goes to real,
         # ephemeral Redis and CAN now genuinely hit (loadtest/fake_llm_server.py's
         # own POST /v1/embeddings route makes embed_text work for real) —
         # not something any test here depends on, since
@@ -243,11 +245,11 @@ def scaled_stack(qdrant_collection: str) -> Iterator[str]:
         # Disables OTel metrics export (app/core/telemetry.py's own
         # blank-endpoint short-circuit) — same reasoning as
         # tests/live/conftest.py's own copy of this: these subprocesses
-        # genuinely enter app/api/main.py's lifespan, so without this
+        # genuinely enter app/adapters/inbound/api/main.py's lifespan, so without this
         # they'd retry a real OTLP export every ~15s against a collector
         # that doesn't exist anywhere in this fixture.
         "OTEL_EXPORTER_OTLP_ENDPOINT": "",
-        # The API's default is identity mode (AUTH_MODE, app/api/deps.py): it trusts only a signed identity from the front door, and its lifespan
+        # The API's default is identity mode (AUTH_MODE, app/adapters/inbound/api/deps.py): it trusts only a signed identity from the front door, and its lifespan
         # refuses to start without AUTHLIMIT_KEYS_URL. This fixture talks to the API directly, with X-Tenant-Id / X-Principal-Id, and has no front
         # door, so it says header mode out loud. Without this line the subprocess exits with code 3 before it is ready (CI, #208).
         "AUTH_MODE": "headers",
@@ -264,7 +266,7 @@ def scaled_stack(qdrant_collection: str) -> Iterator[str]:
 
     api_proc = subprocess.Popen(
         [
-            sys.executable, "-m", "uvicorn", "app.api.main:app",
+            sys.executable, "-m", "uvicorn", "app.adapters.inbound.api.main:app",
             "--host", "127.0.0.1", "--port", str(api_port),
         ],
         env=env,
@@ -274,7 +276,7 @@ def scaled_stack(qdrant_collection: str) -> Iterator[str]:
 
     worker_procs = [
         subprocess.Popen(
-            [sys.executable, "-m", "app.job_queue.agent_worker"], env=env, cwd=str(_REPO_ROOT)
+            [sys.executable, "-m", "app.adapters.inbound.workers.agent_worker"], env=env, cwd=str(_REPO_ROOT)
         )
         for _ in range(_NUM_WORKERS)
     ]
@@ -319,7 +321,7 @@ def qdrant_url(scaled_stack) -> str:
 def _parse_final_answer(sse_text: str) -> str:
     """Concatenates every `"token"` event's content from a raw
     POST /chat/stream/queued SSE response body — the same shape
-    app/api/static/index.html's own `pumpSSE`/`handleEvent` parse, just
+    app/adapters/inbound/api/static/index.html's own `pumpSSE`/`handleEvent` parse, just
     without needing a real browser here."""
     answer = ""
     for line in sse_text.splitlines():
@@ -378,7 +380,7 @@ class TestScaledWorkersAbsorbConcurrentLoad:
         assert succeeded == n, (
             f"only {succeeded}/{n} requests succeeded ({n - succeeded} failed) — "
             f"status codes seen: {sorted(set(statuses))}. If these are Redis "
-            f"connection errors, app/job_queue/queue.py::get_client()'s "
+            f"connection errors, app/adapters/outbound/redis/queue.py::get_client()'s "
             f"REDIS_MAX_CONNECTIONS ceiling has regressed below what "
             f"{n} concurrent SSE connections need."
         )

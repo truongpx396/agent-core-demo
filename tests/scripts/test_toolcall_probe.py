@@ -1,4 +1,4 @@
-"""`scripts/toolcall_probe.py`: the check that tells a model that drops tool calls from one that makes them.
+"""`scripts/checks/toolcall_probe.py`: the check that tells a model that drops tool calls from one that makes them.
 
 The classification is what a model decision rests on, so it is tested against the SHAPES of the real replies seen in
 Langfuse trace `1e46b2c8` and in the probe runs behind it, not against what the code happens to return: a reply with 23
@@ -10,7 +10,7 @@ import json
 import httpx
 import pytest
 
-from scripts import toolcall_probe as tp
+from scripts.checks import toolcall_probe as tp
 
 TOOLS, SYSTEM = tp.app_tools_and_prompt()
 SCHEMAS = {t["function"]["name"]: t["function"].get("parameters", {}) for t in TOOLS}

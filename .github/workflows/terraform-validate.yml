@@ -1,26 +1,26 @@
 name: Terraform validate
 
 # Structural correctness only (fmt + validate) — deliberately NOT `terraform
-# plan`: infra/terraform's backend defaults to local state (see
-# infra/terraform/versions.tf's own comment), which this runner has no
+# plan`: deploy/terraform's backend defaults to local state (see
+# deploy/terraform/versions.tf's own comment), which this runner has no
 # access to, so a `plan` here would show "create everything from scratch"
 # rather than a real diff against the actual droplet. IaC misconfiguration
 # scanning for this same directory lives in .github/workflows/ci.yml's
 # `checkov` job instead (runs on every push, not just infra changes — see
-# that file's own header). See infra/README.md for the real, human-run
+# that file's own header). See deploy/README.md for the real, human-run
 # `terraform plan`/`apply` workflow.
 on:
   pull_request:
     branches: [main]
     paths:
-      - "infra/terraform/**"
+      - "deploy/terraform/**"
 
 jobs:
   validate:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: infra/terraform
+        working-directory: deploy/terraform
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 

@@ -37,7 +37,7 @@ LimitedBy = Literal["ceiling", "unconfigured", "unpriced"]
 DEFAULT_LONG_PROMPT_CHARS = 1500  # Settings.router_long_prompt_chars defaults to it, and the evaluation harness uses it, so both judge the same router
 RULE_IDS = ("long_prompt", "code", "multi_part", "reasoning_markers")  # a closed list: these are the only rule names a log or a test sees
 
-# What kind of work a message asks of a model -> the lowest tier that should do it. Keys must equal the labels of docker/ml-service/labelsets/route-topics.json
+# What kind of work a message asks of a model -> the lowest tier that should do it. Keys must equal the labels of services/ml-service/labelsets/route-topics.json
 # (tests/core/test_routing_policy.py). A small local model is good at the first four: finding a fact, passing a request to a tool (every write is
 # approved by a person anyway), a courteous reply, a short draft. Analysis across several considerations and writing or fixing code are where the
 # gap to a larger model is most often visible, so they ask for the middle tier. Multi-step calculation and logic, and questions whose answer a

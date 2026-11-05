@@ -33,7 +33,7 @@ testcontainers[postgres,redis,ollama]==4.9.0
 # same one-resolve conflict a single combined install (what CI actually
 # runs) does.
 
-# Browser E2E against app/api/static/index.html (tests/live/test_chat_ui.py).
+# Browser E2E against app/adapters/inbound/api/static/index.html (tests/live/test_chat_ui.py).
 # Python bindings, not the Node @playwright/test runner: this suite's E2E
 # test shares one pytest session (and its testcontainers-backed services)
 # with tests/live/'s Python-level Ollama tests — see GRAPH_PATTERNS.md
@@ -85,12 +85,12 @@ google-auth==2.58.0
 # huggingface_hub click one already disclosed above.
 locust==2.46.4
 
-# --- specs/014: the model-evaluation harness and the ML service package (installed by the CI `test` job explicitly; keep these pins, that job and docker/ml-service equal) ---
+# --- specs/014: the model-evaluation harness and the ML service package (installed by the CI `test` job explicitly; keep these pins, that job and services/ml-service equal) ---
 # Reads the public parquet datasets in scripts/model_eval (BEIR, deepset/prompt-injections, CLINC150). Dev only: never in
 # requirements.txt or the lock file, so the app image does not carry it.
 pyarrow==26.0.0
-# Imported by docker/ml-service/ml_service/metrics.py, which tests/ml_service imports from the root environment; the service image
-# gets it from docker/ml-service/requirements.txt.
+# Imported by services/ml-service/ml_service/metrics.py, which tests/ml_service imports from the root environment; the service image
+# gets it from services/ml-service/requirements.txt.
 prometheus-client==0.26.0
 # Validates reports against specs/014 contracts/model-eval.report.schema.json. Already pinned transitively in requirements-lock.txt
 # (4.26.0); declared here so the harness's test does not lose it if that transitive edge ever goes.

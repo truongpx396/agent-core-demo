@@ -1,4 +1,4 @@
-"""A real crawl4ai round trip THROUGH the graph, not just through app/ingestion/web_crawler.py
+"""A real crawl4ai round trip THROUGH the graph, not just through app/adapters/outbound/crawl4ai/web_crawler.py
 (test_web_crawler_live.py is that narrower check). It proves the wiring of
 app/domains/ops/tools.py::check_vendor_status_page and app/domains/support/tools.py::fetch_external_reference
 (GRAPH_PATTERNS.md pattern 50) end to end: a scripted tool call pauses at human_approval (mandatory,
@@ -13,7 +13,7 @@ sales's `enrich_lead_from_website`, which also needs a real lead row; that combi
 mocked-store test, since covering it live would need a real Postgres for little extra proof).
 
 `_use_crawl4ai_server` (2026-09-17): both tools bottom out in
-`app.ingestion.web_crawler.render_url_to_markdown`, as in test_web_crawler_live.py, so it needs the same
+`app.adapters.outbound.crawl4ai.web_crawler.render_url_to_markdown`, as in test_web_crawler_live.py, so it needs the same
 `crawl4ai_server` fixture + monkeypatch shape (see that file's fixture docstring). This is its own copy, from
 `tests/live/conftest.py` rather than `tests/integration/conftest.py`, because this file stayed in
 `tests/live/` (it drives the real graph through a `human_approval` interrupt; test_web_crawler_live.py
@@ -26,10 +26,10 @@ from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.types import Command
 
+from app.adapters.outbound.crawl4ai import web_crawler
 from app.agent.graph.build import GraphDeps
 from app.domains.ops.domain import OPS_DOMAIN_PLUGIN, OPS_MANIFEST
 from app.domains.support.domain import SUPPORT_DOMAIN_PLUGIN, SUPPORT_MANIFEST
-from app.ingestion import web_crawler
 from tests.conftest import TEST_CTX
 from tests.containers import CRAWL_TARGET_HEADING, CRAWL_TARGET_URL
 from tests.ecorp import build_graph

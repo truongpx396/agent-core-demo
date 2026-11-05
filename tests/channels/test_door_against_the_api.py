@@ -1,4 +1,4 @@
-"""The door client against the REAL chat API (app/api/main.py) in process, with a fake Redis and a "worker" that answers the moment a job lands.
+"""The door client against the REAL chat API (app/adapters/inbound/api/main.py) in process, with a fake Redis and a "worker" that answers the moment a job lands.
 
 test_door.py replaces the network; this replaces only Redis and the worker. What it adds is that the request the client builds is the one the
 real routes accept (their validation, their ownership check, their header-mode caller), and that the SSE the real route streams is what the client
@@ -9,11 +9,11 @@ import json
 import httpx
 import pytest
 
+from app.adapters.inbound.api.main import app
+from app.adapters.inbound.channels.door import Door, HeaderAuth
+from app.adapters.outbound.redis import queue
 from app.agent.runtime import sessions
-from app.api.main import app
-from app.channels.door import Door, HeaderAuth
 from app.core.config import settings
-from app.job_queue import queue
 from tests.job_queue.test_queue import FakeRedis
 
 

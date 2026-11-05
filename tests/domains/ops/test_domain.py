@@ -20,7 +20,7 @@ from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.types import Command
 
-from app.adapters.notify import team_channel as notify
+from app.adapters.outbound.notify import team_channel as notify
 from app.agent.graph.build import GraphDeps
 from app.domains.ops.domain import OPS_DOMAIN_PLUGIN, OPS_MANIFEST
 from tests.conftest import TEST_CTX
@@ -92,7 +92,7 @@ class TestDomainScopedSubagent:
     """Same proof as tests/domains/support/test_domain.py's own
     TestDomainScopedSubagent: run_subagent is this domain's OWN
     closure-built tool, and its menu offers only the bundled subagent(s)
-    declared `domains: [ops]` (subagents/metrics-researcher/AGENT.md)."""
+    declared `domains: [ops]` (app/domains/ops/subagents/metrics-researcher/AGENT.md)."""
 
     def test_is_not_the_ecorp_domains_run_subagent_object(self):
         ecorp_run_subagent = {t.name: t for t in ECORP_DOMAIN_PLUGIN.tools()}["run_subagent"]

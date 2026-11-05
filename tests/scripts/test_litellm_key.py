@@ -1,4 +1,4 @@
-"""scripts/litellm_key.py — the operator CLI that mints the app's scoped, budget-capped gateway key.
+"""scripts/tools/litellm_key.py — the operator CLI that mints the app's scoped, budget-capped gateway key.
 
 Hermetic: LiteLLM is an `httpx.MockTransport`, so these pin what is asked of the gateway (the
 payload, the credential it is asked with) and what the operator is told. The real endpoint's
@@ -13,7 +13,7 @@ import pytest
 import yaml
 
 from app.core import gateway
-from scripts import litellm_key
+from scripts.tools import litellm_key
 
 REPO = Path(__file__).resolve().parents[2]
 MASTER = "sk-master-SECRET"

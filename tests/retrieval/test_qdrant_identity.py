@@ -10,11 +10,12 @@ from types import SimpleNamespace
 import pytest
 from qdrant_client.models import Filter, PointStruct
 
-from app.retrieval import embeddings, qdrant_store
-from app.retrieval.embedding_identity import (
+from app.adapters.outbound.embeddings import embeddings
+from app.adapters.outbound.embeddings.embedding_identity import (
     EmbeddingIdentity,
     EmbeddingIdentityMismatch,
 )
+from app.adapters.outbound.qdrant import qdrant_store
 from tests.conftest import TEST_EMBEDDING_IDENTITY
 from tests.retrieval.fake_qdrant import FakeQdrant, NotFound
 

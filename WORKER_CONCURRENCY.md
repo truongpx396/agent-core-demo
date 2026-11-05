@@ -1,10 +1,10 @@
 # Worker concurrency: how we decided, what we built
 
-The reasoning behind scaling `app/job_queue/agent_worker.py` and `app/ingestion/ingest_worker.py` for concurrent requests, why both ended up on one concurrency model despite very different work, and how to size them. It's a scaling/ops decision record, so it lives apart from [GRAPH_PATTERNS.md](GRAPH_PATTERNS.md).
+The reasoning behind scaling `app/adapters/inbound/workers/agent_worker.py` and `app/adapters/inbound/workers/ingest_worker.py` for concurrent requests, why both ended up on one concurrency model despite very different work, and how to size them. It's a scaling/ops decision record, so it lives apart from [GRAPH_PATTERNS.md](GRAPH_PATTERNS.md).
 
 ## The starting question
 
-`POST /ingest/upload` (`app/api/routers/ingest.py`) uploads to MinIO, publishes a job onto `ingest:requests` (`app/ingestion/ingest_queue.py`) and returns immediately; `app/ingestion/ingest_worker.py`, a separate consumer, does the parsing and embedding. `POST /chat/stream/queued` uses the same producer/consumer split against `app/job_queue/agent_worker.py` via `app/job_queue/queue.py`. The question: **if 50 requests land at once, do we need 50 worker containers?** No.
+`POST /ingest/upload` (`app/adapters/inbound/api/routers/ingest.py`) uploads to MinIO, publishes a job onto `ingest:requests` (`app/adapters/outbound/redis/ingest_queue.py`) and returns immediately; `app/adapters/inbound/workers/ingest_worker.py`, a separate consumer, does the parsing and embedding. `POST /chat/stream/queued` uses the same producer/consumer split against `app/adapters/inbound/workers/agent_worker.py` via `app/adapters/outbound/redis/queue.py`. The question: **if 50 requests land at once, do we need 50 worker containers?** No.
 
 ## Why 1:1 (requests : containers) is the wrong model
 
@@ -38,7 +38,7 @@ The cost is isolation. A flood on one domain can occupy every slot while another
 
 - **Why "50 parallel requests" doesn't need 50 cores:** a turn's slow part is a network round trip to an LLM API plus tool execution, during which the process is idle. asyncio overlaps many such waits on one thread: while turn A awaits the LLM, the loop runs turn B. That's **concurrency** (many outstanding I/O operations interleaved), not **parallelism**. If the "LLM call" were local CPU-bound computation, it wouldn't work (see Model 2).
 - **Why it's safe:** a turn holds no in-process state a concurrent sibling could corrupt. Conversation state lives in Postgres via the checkpointer; tenant-scoped resources (Redis, Qdrant, the appdata pool) are per-call or pooled; and `bind_request_id`'s `contextvars.ContextVar` is copied per task by `asyncio.create_task`, so one task's request id never leaks into a sibling's logs.
-- **The bottleneck it doesn't remove:** the checkpointer. `PgCheckpointing.open` (`app/adapters/postgres/checkpointing.py`) backs `AsyncPostgresSaver` with a connection *pool* because psycopg wraps every operation on one connection in its own lock, so a single shared connection would serialize every turn's checkpoint reads and writes regardless of the semaphore. The pool is what lets `_MAX_CONCURRENCY` turns overlap.
+- **The bottleneck it doesn't remove:** the checkpointer. `PgCheckpointing.open` (`app/adapters/outbound/postgres/checkpointing.py`) backs `AsyncPostgresSaver` with a connection *pool* because psycopg wraps every operation on one connection in its own lock, so a single shared connection would serialize every turn's checkpoint reads and writes regardless of the semaphore. The pool is what lets `_MAX_CONCURRENCY` turns overlap.
 
 ## Model 2: `ingest_worker`, originally serial, now mirrors Model 1
 
@@ -87,4 +87,4 @@ What the pooler costs the code: **no prepared statements and no session state.**
 
 ## A different knob: the UI's per-request file cap
 
-`MAX_UPLOAD_FILES_PER_REQUEST` (`app/core/config.py`, default `5`, enforced in `POST /ingest/upload` and mirrored in `app/api/static/index.html`'s upload form) caps how many files ONE submission may batch. It's a UX/abuse guard on one HTTP request, not a worker setting: a user can submit several batches back to back, and all `ingest-worker` replicas × `INGEST_WORKER_MAX_CONCURRENCY` drain them concurrently however they were batched. Raising the cap adds no ingest throughput, and raising `INGEST_WORKER_MAX_CONCURRENCY` doesn't change how many files one form may include.
+`MAX_UPLOAD_FILES_PER_REQUEST` (`app/core/config.py`, default `5`, enforced in `POST /ingest/upload` and mirrored in `app/adapters/inbound/api/static/index.html`'s upload form) caps how many files ONE submission may batch. It's a UX/abuse guard on one HTTP request, not a worker setting: a user can submit several batches back to back, and all `ingest-worker` replicas × `INGEST_WORKER_MAX_CONCURRENCY` drain them concurrently however they were batched. Raising the cap adds no ingest throughput, and raising `INGEST_WORKER_MAX_CONCURRENCY` doesn't change how many files one form may include.

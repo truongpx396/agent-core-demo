@@ -350,8 +350,8 @@ agent_unattended_pause_total = Counter(
     "Pauses auto-declined by astream_events_turn_unattended (one count per "
     "decline round — a model that re-requests a declined write is declined "
     "again, up to UNATTENDED_MAX_DECLINE_ROUNDS) at "
-    "a mandatory capability gate — its callers (app/job_queue/agent_worker.py's "
-    "queue consumer, app/channels/telegram.py) have no interactive human on "
+    "a mandatory capability gate — its callers (app/adapters/inbound/workers/agent_worker.py's "
+    "queue consumer, app/adapters/inbound/channels/telegram.py) have no interactive human on "
     "the other end of the call to solicit a real decision from (unlike "
     "astream_events_turn's approval_required/astream_events_resume flow)",
 )
@@ -360,7 +360,7 @@ agent_unattended_job_paused_total = Counter(
     "agent_unattended_job_paused_total",
     "An unattended job (a Telegram message) that reached its channel as approval_required instead of "
     "being declined by the worker, so the channel cancelled the pause itself "
-    "(app/channels/telegram.py::_decline_pause). The worker declines a pause for such a job "
+    "(app/adapters/inbound/channels/telegram.py::_decline_pause). The worker declines a pause for such a job "
     "(agent_unattended_pause_total counts those), so this should stay at zero: a count means a worker "
     "that predates the `unattended` flag ran the job, which is a rolling deploy that upgraded the "
     "channel before its workers (GRAPH_PATTERNS.md 89). Nothing ran and nothing is left paused, which "
@@ -369,14 +369,14 @@ agent_unattended_job_paused_total = Counter(
 
 channel_signin_total = Counter(
     "channel_signin_total",
-    "A channel's sign-in at the authorization server (app/channels/oauth.py), by channel and outcome. The CLI and the Telegram channel are "
+    "A channel's sign-in at the authorization server (app/adapters/inbound/channels/oauth.py), by channel and outcome. The CLI and the Telegram channel are "
     "clients of the front door and hold a sign-in per person (specs/020)",
     ["channel", "outcome"],
 )  # channel: cli | telegram; outcome: ok | refreshed | forbidden | unknown_person | credentials | unavailable
 
 channel_door_refusal_total = Counter(
     "channel_door_refusal_total",
-    "A request from the CLI or the Telegram channel that the front door (or the API behind it) did not serve (app/channels/door.py), by why. "
+    "A request from the CLI or the Telegram channel that the front door (or the API behind it) did not serve (app/adapters/inbound/channels/door.py), by why. "
     "`unreachable` is the door not answering at all: the turn was NOT sent, and nothing falls back to publishing it directly",
     ["channel", "reason"],
 )  # reason: unauthenticated | forbidden | not_found | rate_limited | unavailable | unreachable | invalid | other
@@ -389,7 +389,7 @@ channel_person_provisioned_total = Counter(
 
 channel_telegram_update_total = Counter(
     "channel_telegram_update_total",
-    "A Telegram update after it reached the bot's inbox (app/channels/telegram_inbox.py), by what became of it. `dropped` is an update the "
+    "A Telegram update after it reached the bot's inbox (app/adapters/inbound/channels/telegram_inbox.py), by what became of it. `dropped` is an update the "
     "bot gave up on after a crash loop or could not read, and the person never got an answer",
     ["outcome"],
 )  # outcome: handled | error | overflow | requeued | dropped
@@ -410,25 +410,25 @@ channel_telegram_link_total = Counter(
 
 channel_telegram_webhook_total = Counter(
     "channel_telegram_webhook_total",
-    "Requests to the bot's webhook (app/channels/telegram_server.py), by outcome. `forbidden` is a request without the secret Telegram was given",
+    "Requests to the bot's webhook (app/adapters/inbound/channels/telegram_server.py), by outcome. `forbidden` is a request without the secret Telegram was given",
     ["outcome"],
 )  # outcome: accepted | forbidden | invalid | unavailable
 
 agent_retrieval_degraded_total = Counter(
     "agent_retrieval_degraded_total",
-    "Hybrid retrieval stages that failed and degraded (app/retrieval/qdrant_store.py::hybrid_search)",
+    "Hybrid retrieval stages that failed and degraded (app/adapters/outbound/qdrant/qdrant_store.py::hybrid_search)",
     ["stage"],
 )  # stage: sparse (-> dense-only) | rerank (-> RRF-fused order)
 
 agent_semantic_cache_total = Counter(
     "agent_semantic_cache_total",
-    "Semantic cache lookups by outcome (app/retrieval/semantic_cache.py)",
+    "Semantic cache lookups by outcome (app/adapters/outbound/redis/semantic_cache.py)",
     ["outcome"],
 )  # outcome: hit | miss | error (degraded — treated as a miss, recorded separately)
 
 agent_embedding_identity_total = Counter(
     "agent_embedding_identity_total",
-    "Embedding-identity checks of a vector collection (app/retrieval/qdrant_store.py::check_identity): did the vectors it holds come "
+    "Embedding-identity checks of a vector collection (app/adapters/outbound/qdrant/qdrant_store.py::check_identity): did the vectors it holds come "
     "from the embedding model, dimension and prefixes this process is configured to use? A mismatch is REFUSED (reads degrade like a "
     "retrieval outage, writes fail), never answered with wrong-space results; see GRAPH_PATTERNS.md pattern 67.",
     ["outcome", "collection"],
@@ -477,8 +477,8 @@ agent_moderation_total = Counter(
 agent_worker_job_reclaimed_total = Counter(
     "agent_worker_job_reclaimed_total",
     "Jobs reclaimed via XAUTOCLAIM after their original worker died mid-job "
-    "(app/job_queue/queue.py::reclaim_stale_entries). 'retried' means the "
-    "job was judged safe to run again (app/job_queue/agent_worker.py::"
+    "(app/adapters/outbound/redis/queue.py::reclaim_stale_entries). 'retried' means the "
+    "job was judged safe to run again (app/adapters/inbound/workers/agent_worker.py::"
     "_classify_reclaimed_turn — an unfinished turn is continued from its "
     "checkpoint, not restarted) and was silently republished; "
     "'dead_lettered' means it was surfaced as an error on its own results "
@@ -515,9 +515,9 @@ agent_moderation_ml_degraded_total = Counter(
 
 agent_memory_deletion_total = Counter(
     "agent_memory_deletion_total",
-    "Memory deletion calls by outcome (app/retrieval/memory.py)",
+    "Memory deletion calls by outcome (app/adapters/outbound/qdrant/memory.py)",
     ["outcome"],
-)  # outcome: deleted | refused — never carries tenant/principal (see app/retrieval/memory.py's
+)  # outcome: deleted | refused — never carries tenant/principal (see app/adapters/outbound/qdrant/memory.py's
 # structured log line for the identified, per-call audit trail instead)
 
 agent_no_progress_total = Counter(
@@ -562,7 +562,7 @@ agent_context_window_exceeded_total = Counter(
 
 agent_rate_limit_exceeded_total = Counter(
     "agent_rate_limit_exceeded_total",
-    "Payment-webhook requests rejected by app/api/rate_limit.py's per-source-address limit (BILLING_WEBHOOK_RATE_LIMIT_PER_MINUTE). "
+    "Payment-webhook requests rejected by app/adapters/inbound/api/rate_limit.py's per-source-address limit (BILLING_WEBHOOK_RATE_LIMIT_PER_MINUTE). "
     "The per-tenant limiter that also counted here was removed in spec 018: turn limits are enforced at the front door, the authlimit service",
 )
 
@@ -656,7 +656,7 @@ agent_upload_failed_total = Counter(
 agent_worker_unreachable_total = Counter(
     "agent_worker_unreachable_total",
     "Queued jobs whose results stream received no event at all within the "
-    "first-event deadline (app/job_queue/queue.py and app/ingestion/ingest_queue.py "
+    "first-event deadline (app/adapters/outbound/redis/queue.py and app/adapters/outbound/redis/ingest_queue.py "
     "read_results) — nobody picked the job up. One of these is a stuck request; a "
     "stream of them is a worker pool that answers nothing (none running for a "
     "domain, or all of them dead), which until this metric produced one error per "
@@ -721,7 +721,7 @@ agent_circuit_breaker_half_open_total = Counter(
 
 agent_web_search_total = Counter(
     "agent_web_search_total",
-    "One `web_search` call's outcome (app/adapters/web/serper.py), counted once per call that got as far as the client. ok / no_results "
+    "One `web_search` call's outcome (app/adapters/outbound/web/serper.py), counted once per call that got as far as the client. ok / no_results "
     "are answers. not_configured: SERPER_API_KEY is empty, so no request was made. blank_query: refused locally, because "
     "serper.dev answers a blank query with unrelated results and spends a credit on it (measured). auth_failed (401/403; a wrong "
     "key is a measured 403) and rejected (any other 4xx; an account out of credits is expected to land here, which is NOT "
@@ -734,7 +734,7 @@ agent_web_search_total = Counter(
 
 agent_mcp_tool_pin_failures_total = Counter(
     "agent_mcp_tool_pin_failures_total",
-    "A remote MCP tool the caller pinned (app/mcp/client.py::load_remote_tools `pinned`: the tool's name plus a hash of its "
+    "A remote MCP tool the caller pinned (app/adapters/outbound/mcp/client.py::load_remote_tools `pinned`: the tool's name plus a hash of its "
     "description and input schema) was left OUT of the catalog because the server now offers something else under that name "
     "(reason=changed) or no longer offers it (reason=missing). The hash covers exactly the text the model is shown, so a "
     "changed one is the signature of a dependency upgrade nobody reviewed, or of a server that rewrote its own tool "
@@ -756,7 +756,7 @@ agent_tool_output_truncated_total = Counter(
 
 agent_mcp_connection_events_total = Counter(
     "agent_mcp_connection_events_total",
-    "Lifecycle of the long-lived stdio connection to a remote MCP server (app/mcp/connection.py): started (first process "
+    "Lifecycle of the long-lived stdio connection to a remote MCP server (app/adapters/outbound/mcp/connection.py): started (first process "
     "spawned on this event loop), restarted (a new one after the previous was lost), lost (found dead, or recycled after "
     "three timeouts in a row with no success between), closed (shut down on purpose). Before the connection was kept open "
     "a process was spawned per call, so this had no meaning; now `restarted` and `lost` are the signal that a bridge keeps "
@@ -766,7 +766,7 @@ agent_mcp_connection_events_total = Counter(
 
 agent_sandbox_unavailable_total = Counter(
     "agent_sandbox_unavailable_total",
-    "The sandbox tool catalog could not be loaded (app/adapters/mcp/sandbox_tools.py::load_sandbox_tools): the feature degrades "
+    "The sandbox tool catalog could not be loaded (app/adapters/outbound/mcp/sandbox_tools.py::load_sandbox_tools): the feature degrades "
     "to 'no sandbox tools' and the turn goes on, which before this counter was a log line nobody was watching (specs/009 A9). "
     "reason=connection|timeout when the bridge started but could not be used, circuit_open when the breaker is refusing "
     "to try, other for anything else (opensandbox-mcp not installed, crashing at start, an SDK it cannot import).",
@@ -775,7 +775,7 @@ agent_sandbox_unavailable_total = Counter(
 
 agent_mcp_gateway_requests_total = Counter(
     "agent_mcp_gateway_requests_total",
-    "What the MCP gateway (app/mcp/gateway.py) decided about the bearer token of a request, per published server: ok (a valid "
+    "What the MCP gateway (app/adapters/inbound/mcp/gateway.py) decided about the bearer token of a request, per published server: ok (a valid "
     "token for this server), invalid_token (bad signature, wrong or missing audience, expired, an algorithm outside the "
     "allow-list, an unknown key id), jwks_unavailable (the authorization server's signing keys could not be confirmed current, "
     "so NO token could be checked: to a client that looks like an expired login, so this label is the only place the outage "
@@ -813,7 +813,7 @@ agent_api_auth_mode = Gauge(
 
 agent_team_channel_notify_total = Counter(
     "agent_team_channel_notify_total",
-    "app/adapters/notify/team_channel.py::post_to_team_channel attempts by sink and outcome. "
+    "app/adapters/outbound/notify/team_channel.py::post_to_team_channel attempts by sink and outcome. "
     "This is a PIVOT transaction (can't be un-sent) backing a human_approval'd "
     "escalation/handoff/incident-log write that already committed — a failed "
     "send here used to be a log line only (no metric, so no alert could ever "

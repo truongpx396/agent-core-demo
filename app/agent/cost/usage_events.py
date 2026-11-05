@@ -19,7 +19,7 @@ transaction and only for a newly inserted row, it hands the billing package ONE 
 kind, cost, model, tokens) through `app/billing_integration/port.py`. What the package does with it is its own
 (`packages/billing/src/credit_billing/usage.py`); the table has no billing column.
 
-The per-turn `usage_ledger` is gone (specs/010 T030c); `scripts/usage_events_carry_over.py` copied its history
+The per-turn `usage_ledger` is gone (specs/010 T030c); `scripts/tools/usage_events_carry_over.py` copied its history
 here.
 """
 import logging

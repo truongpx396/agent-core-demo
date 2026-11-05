@@ -9,7 +9,7 @@ Reads happen before every turn, so they go through a short per-process cache
 to reach a running worker, which is the price of not adding a database round trip to every turn.
 That includes a SUSPEND (limit 0), so it is bounded rather than instant.
 
-Writes are an operator action (scripts/budget_policy.py) and are the one place in the app that
+Writes are an operator action (scripts/tools/budget_policy.py) and are the one place in the app that
 deliberately spans tenants; nothing on a request path can reach them.
 """
 import logging

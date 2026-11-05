@@ -45,7 +45,12 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMe
 from langchain_core.outputs import ChatGeneration, ChatResult
 from qdrant_client.models import FieldCondition, Filter, MatchValue
 
-from app.adapters.postgres import checkpointing as pg_checkpointing
+from app.adapters.inbound.workers import agent_worker
+from app.adapters.outbound.embeddings import embeddings as embeddings_module
+from app.adapters.outbound.embeddings.embedding_identity import EmbeddingIdentity
+from app.adapters.outbound.postgres import checkpointing as pg_checkpointing
+from app.adapters.outbound.qdrant import qdrant_store
+from app.adapters.outbound.redis import queue, semantic_cache
 from app.agent.graph.build import GraphDeps
 from app.agent.runtime import core as agent_module
 from app.agent.runtime import stream as stream_module
@@ -53,11 +58,7 @@ from app.agent.tools import builtin as tools_module
 from app.agent.tools import run_subagent as subagent_tools
 from app.core import metrics
 from app.domains.ecorp import store as ecorp_store
-from app.job_queue import agent_worker, queue
 from app.ports import checkpointing as checkpointing_port
-from app.retrieval import embeddings as embeddings_module
-from app.retrieval import qdrant_store, semantic_cache
-from app.retrieval.embedding_identity import EmbeddingIdentity
 from tests.conftest import metric_value as _count
 from tests.containers import ensure_postgres, ensure_qdrant, ensure_redis
 from tests.ecorp import build_graph
@@ -168,7 +169,7 @@ async def _fake_identity():
 
 
 async def _fake_embed_text(text: str) -> list[float]:
-    """Deterministic, network-free stand-in for the real `embed_text` (app/retrieval/embeddings.py), which needs
+    """Deterministic, network-free stand-in for the real `embed_text` (app/adapters/outbound/embeddings/embeddings.py), which needs
     a reachable OPENAI_API_BASE: fine on a dev machine with `make up`, but absent from the `test-integration`
     CI job, which provisions no LLM.
     """
@@ -178,7 +179,7 @@ async def _fake_embed_text(text: str) -> list[float]:
 
 @pytest.fixture(autouse=True)
 async def real_semantic_cache_redis(monkeypatch):
-    """Points the REAL app/retrieval/semantic_cache.py (not stubbed via `GraphDeps.cache_get/cache_set`, since
+    """Points the REAL app/adapters/outbound/redis/semantic_cache.py (not stubbed via `GraphDeps.cache_get/cache_set`, since
     isolation under concurrency is what TestSemanticCacheIsolationUnderConcurrency checks) at an ephemeral
     Redis Stack container. `_client`/`_index_ready` are reset as tests/integration/test_queue_real_redis.py
     resets its lazy-singleton client, and `embed_text` is replaced by `_fake_embed_text` (see its docstring).
@@ -210,7 +211,7 @@ async def _real_search_docs(query: str, ctx) -> tuple[str, list[dict]]:
 
 
 def _install_fake_graph(monkeypatch, llm, *, search_docs=_no_op_search) -> None:
-    """`cache_get`/`cache_set` are wired explicitly to the REAL app/retrieval/semantic_cache.py module functions
+    """`cache_get`/`cache_set` are wired explicitly to the REAL app/adapters/outbound/redis/semantic_cache.py module functions
     — GraphDeps's own documented test-injection seam (see its docstring: "tests set individual fields to
     inject fakes instead of monkeypatching module globals").
     """
@@ -235,13 +236,13 @@ _FAKE_EMBED_DIM = 32  # len(hashlib.sha256(...).digest()) — see _fake_embed_te
 @pytest.fixture
 async def real_qdrant(monkeypatch):
     """Point every real Qdrant read/write path (app/agent/tools/builtin.py's remember/add_note/search_docs, down
-    through app/retrieval/qdrant_store.py) at a real, ephemeral Qdrant container. For
+    through app/adapters/outbound/qdrant/qdrant_store.py) at a real, ephemeral Qdrant container. For
     TestHITLApprovalUnderConcurrency and TestQdrantReadWriteUnderConcurrency specifically, not autouse: the
     other classes never touch Qdrant.
 
     `embed_text` is patched in BOTH places that hold a separate binding of it: app/agent/tools/builtin.py's
-    `from ... import embed_text`, and app/retrieval/embeddings.py itself (qdrant_store.hybrid_search reads it
-    late via `from app.retrieval import embeddings; embeddings.embed_text(...)`, so patching the ORIGIN module
+    `from ... import embed_text`, and app/adapters/outbound/embeddings/embeddings.py itself (qdrant_store.hybrid_search reads it
+    late via `from app.adapters.outbound.embeddings import embeddings; embeddings.embed_text(...)`, so patching the ORIGIN module
     is what that call site needs). A `from X import Y` binding is a separate reference, the same reasoning
     `real_semantic_cache_redis` applies to semantic_cache.py's copy.
 
@@ -264,7 +265,7 @@ async def real_qdrant(monkeypatch):
 
 
 class TestNoCrossContaminationUnderConcurrency:
-    """The pooled checkpointer (app/adapters/postgres/checkpointing.py::PgCheckpointing.open)
+    """The pooled checkpointer (app/adapters/outbound/postgres/checkpointing.py::PgCheckpointing.open)
     replaced a single shared AsyncConnection specifically so concurrent
     turns don't all funnel through one connection — this is the most
     direct possible check that the pool genuinely ISOLATES them rather
@@ -305,7 +306,7 @@ class TestNoCrossContaminationUnderConcurrency:
 
 
 class TestSemanticCacheIsolationUnderConcurrency:
-    """app/retrieval/semantic_cache.py scopes every read/write to
+    """app/adapters/outbound/redis/semantic_cache.py scopes every read/write to
     ctx['tenant']+ctx['principal'] as a SERVER-SIDE RediSearch TAG
     predicate, not a Python post-filter (see that module's own docstring).
     Proves that holds under real concurrent access, not just by reading
@@ -357,7 +358,7 @@ class TestSemanticCacheIsolationUnderConcurrency:
 
 
 class TestWorkerConcurrencyAgainstTheRealQueue:
-    """Regression guard for the actual production dispatch code (app/job_queue/agent_worker.py::run's
+    """Regression guard for the actual production dispatch code (app/adapters/inbound/workers/agent_worker.py::run's
     Semaphore-gated asyncio.create_task loop, exercised here via the same `_process_with_limit` helper `run()`
     itself calls) against a real Redis queue.
     """
@@ -422,7 +423,7 @@ class TestWorkerConcurrencyAgainstTheRealQueue:
             _, entries = response[0]
             assert len(entries) == n
 
-            # The EXACT dispatch shape app/job_queue/agent_worker.py::run uses:
+            # The EXACT dispatch shape app/adapters/inbound/workers/agent_worker.py::run uses:
             # acquire the semaphore BEFORE creating each task (so a full
             # worker backpressures reads, not just processing), release
             # inside _process_with_limit's own finally.
@@ -478,7 +479,7 @@ class TestSameThreadTurnsAreSerializedNotCorrupted:
     put N turns on N DIFFERENT thread_ids/tenants and check they stay
     isolated. This puts TWO real "turn" jobs on the SAME thread_id through
     the real queue/worker dispatch at the same real moment — before
-    `app/job_queue/queue.py::acquire_thread_lock` existed, both would read
+    `app/adapters/outbound/redis/queue.py::acquire_thread_lock` existed, both would read
     the checkpointer's latest state as their own parent and both write a
     child from it, so whichever committed last would silently win and the
     other job's message would vanish from the thread's visible history.
@@ -796,7 +797,7 @@ class TestSubagentCallUnderConcurrency:
 
 
 class TestQdrantReadWriteUnderConcurrency:
-    """app/retrieval/qdrant_store.py's hybrid_search scopes every read to
+    """app/adapters/outbound/qdrant/qdrant_store.py's hybrid_search scopes every read to
     ctx['tenant'] as a server-side Filter predicate
     (app/core/security.py::Policy.lower), ANDed onto both the dense AND
     sparse prefetch legs — the same tenant pre-filter discipline

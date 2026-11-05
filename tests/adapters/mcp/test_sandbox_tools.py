@@ -1,5 +1,5 @@
-"""Tests for app/adapters/mcp/sandbox_tools.py — mocks
-`app.mcp.client.load_remote_tools` (the existing, unmodified pattern-28
+"""Tests for app/adapters/outbound/mcp/sandbox_tools.py — mocks
+`app.adapters.outbound.mcp.client.load_remote_tools` (the existing, unmodified pattern-28
 client this module builds on, same boundary tests/mcp/test_mcp_client.py
 already mocks one level deeper at `_list_remote_tools`/`_call_remote_tool`)
 so these stay hermetic, no live `opensandbox-mcp`/`opensandbox-server`
@@ -26,10 +26,10 @@ import sys
 
 import pytest
 
-from app.adapters.mcp import sandbox_tools
+from app.adapters.outbound.mcp import client as mcp_client
+from app.adapters.outbound.mcp import sandbox_tools
 from app.core import metrics
 from app.core.resilience import CircuitBreaker
-from app.mcp import client as mcp_client
 from tests.conftest import metric_value
 
 
@@ -113,7 +113,7 @@ async def test_with_no_key_configured_the_bridge_gets_no_empty_variable(monkeypa
 
 async def test_never_supplies_capability_overrides_so_every_tool_defaults_to_outward(monkeypatch):
     """No override means load_remote_tools's own fail-closed default
-    applies (app/mcp/client.py: unlisted -> "outward") — this module must
+    applies (app/adapters/outbound/mcp/client.py: unlisted -> "outward") — this module must
     never narrow that on OpenSandbox's behalf."""
     captured = {}
 

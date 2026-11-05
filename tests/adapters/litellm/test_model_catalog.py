@@ -1,4 +1,4 @@
-"""Tests for app/adapters/litellm/model_catalog.py.
+"""Tests for app/adapters/outbound/litellm/model_catalog.py.
 
 Two kinds of test, on purpose:
 
@@ -21,7 +21,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import httpx
 import pytest
 
-from app.adapters.litellm import model_catalog
+from app.adapters.outbound.litellm import model_catalog
 
 _MODEL_INFO = {"data": [{"model_name": "chat", "litellm_params": {"model": "ollama_chat/qwen2.5:3b"}}]}
 

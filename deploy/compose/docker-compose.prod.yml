@@ -1,4 +1,4 @@
-# Lean production stack for the DigitalOcean droplet infra/terraform provisions (runbook: infra/README.md). A smaller set than the dev stack:
+# Lean production stack for the DigitalOcean droplet deploy/terraform provisions (runbook: deploy/README.md). A smaller set than the dev stack:
 # no Ollama (litellm-config.prod.yaml points at a hosted OpenAI-compatible endpoint), no Langfuse or open-webui, and no MinIO (object storage is
 # DigitalOcean Spaces; the `minio` client talks to any S3-compatible endpoint, see MINIO_* in deploy/env/prod.env.example). Caddy fronts it for TLS.
 #
@@ -21,7 +21,7 @@ x-app-env: &app-env
   OPENAI_API_BASE: http://litellm:4000/v1
   # A SCOPED key, not the master: the master is gateway admin (it mints keys, reads every spend log, rewrites models, removes budgets) and cannot
   # carry a budget, so an app sending it has no gateway-side cap and a compromised container hands over the gateway. Mint LITELLM_APP_KEY once with
-  # `python -m scripts.litellm_key create` (infra/README.md). The master-key fallback only keeps an existing deployment running until you do.
+  # `python -m scripts.tools.litellm_key create` (deploy/README.md). The master-key fallback only keeps an existing deployment running until you do.
   OPENAI_API_KEY: ${LITELLM_APP_KEY:-${LITELLM_MASTER_KEY}}
   CHAT_MODEL: chat
   EMBED_MODEL: embed
@@ -180,7 +180,7 @@ services:
       - qdrant:/qdrant/storage
 
   litellm:
-    # Pinned by digest, the same as docker-compose.yml (a test checks); bump it with infra/README.md ("Bumping the LiteLLM image").
+    # Pinned by digest, the same as docker-compose.yml (a test checks); bump it with deploy/README.md ("Bumping the LiteLLM image").
     image: ghcr.io/berriai/litellm:main-stable@sha256:28b10a635296730007097390939b55f8696ece548530d4ddda3e31c708b4dc81
     restart: unless-stopped
     cpus: "0.3"
@@ -226,7 +226,7 @@ services:
     environment:
       RERANK_CPU_BUDGET: "2"
       GUARD_CPU_BUDGET: "1"
-      # Which text models (docker/ml-service/models.toml) to load. Measure memory first: it idles near 0.8 GiB with bge-small and peaked at 1.07 GiB under
+      # Which text models (services/ml-service/models.toml) to load. Measure memory first: it idles near 0.8 GiB with bge-small and peaked at 1.07 GiB under
       # load, against this file's 2g limit.
       ML_MODELS_ENABLED: ${ML_MODELS_ENABLED:-}
       ML_EMBED_MAX_ITEMS: ${ML_EMBED_MAX_ITEMS:-256}
@@ -245,7 +245,7 @@ services:
   api:
     <<: *hardened
     image: ${APP_IMAGE}:${IMAGE_TAG:-latest}
-    # The one role that takes uploads (up to 5 x 25 MB, app/api/routers/ingest.py): the multipart parser spools to /tmp before the handler runs, so
+    # The one role that takes uploads (up to 5 x 25 MB, app/adapters/inbound/api/routers/ingest.py): the multipart parser spools to /tmp before the handler runs, so
     # /tmp is a disk-backed volume (a tmpfs would fill RAM at the second large upload). Only $HOME is tmpfs.
     tmpfs:
       - /home/appuser:size=64m,uid=1000,gid=1000
@@ -258,7 +258,7 @@ services:
     # SIGTERM; this gives it time.
     stop_grace_period: 60s
     # No `ports:`: a fixed host port cannot be shared across replicas, and Caddy's `dynamic a` upstream needs `--scale api=N`. To reach the API by hand,
-    # `ssh` in and `docker compose exec api curl localhost:8000/health` (infra/README.md).
+    # `ssh` in and `docker compose exec api curl localhost:8000/health` (deploy/README.md).
     environment: *app-env
     depends_on:
       pgbouncer:
@@ -273,11 +273,11 @@ services:
     cpus: "0.5"
     mem_limit: 768m
     stop_grace_period: 90s # let an in-flight agent turn (LLM calls, tool use) finish rather than being killed mid-turn
-    command: ["python", "-m", "app.job_queue.agent_worker"]
+    command: ["python", "-m", "app.adapters.inbound.workers.agent_worker"]
     healthcheck: *worker-healthcheck
     environment:
       <<: *app-env
-      # The domains this worker serves: comma-separated names or `all` (app/job_queue/agent_worker.py). Ecorp only by default; the others are demo domains.
+      # The domains this worker serves: comma-separated names or `all` (app/adapters/inbound/workers/agent_worker.py). Ecorp only by default; the others are demo domains.
       AGENT_WORKER_DOMAINS: ${AGENT_WORKER_DOMAINS:-ecorp}
     depends_on:
       pgbouncer:
@@ -293,7 +293,7 @@ services:
     cpus: "0.3"
     mem_limit: 768m
     stop_grace_period: 90s # let an in-flight document parse/embed job finish rather than being killed mid-job
-    command: ["python", "-m", "app.ingestion.ingest_worker"]
+    command: ["python", "-m", "app.adapters.inbound.workers.ingest_worker"]
     healthcheck: *worker-healthcheck
     environment: *app-env
     depends_on:
@@ -302,7 +302,7 @@ services:
       redis:
         condition: service_healthy
 
-  # Reverse proxy and TLS, the only service with host ports 80/443 (infra/terraform's firewall). Let's Encrypt when DOMAIN_NAME is set, plain HTTP on
+  # Reverse proxy and TLS, the only service with host ports 80/443 (deploy/terraform's firewall). Let's Encrypt when DOMAIN_NAME is set, plain HTTP on
   # the reserved IP otherwise (see the Caddyfile).
   caddy:
     image: caddy:2-alpine

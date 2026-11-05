@@ -21,7 +21,7 @@ import pytest
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, HumanMessage
 
-from app.adapters.litellm import model_catalog
+from app.adapters.outbound.litellm import model_catalog
 from app.agent.cost import pricing
 from app.agent.runtime import core as runtime_module
 from app.agent.runtime import stream as stream_module

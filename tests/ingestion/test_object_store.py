@@ -1,4 +1,4 @@
-"""Tests for app/ingestion/object_store.py — the MinIO wrapper backing the
+"""Tests for app/adapters/outbound/minio/object_store.py — the MinIO wrapper backing the
 production ingestion pipeline (GRAPH_PATTERNS.md roadmap item #1). Same
 "assert the call, not a live service result" approach
 tests/core/test_sql_store.py already uses for Postgres, applied to MinIO
@@ -8,7 +8,7 @@ separately (`make up` + a real upload round trip).
 
 import pytest
 
-from app.ingestion import object_store
+from app.adapters.outbound.minio import object_store
 
 
 class _FakeResponse:
@@ -84,7 +84,7 @@ class TestEnsureBucket:
 
     def test_is_idempotent_within_one_process_only_checks_once(self, monkeypatch):
         """Second call shouldn't even call bucket_exists again — matches
-        app/retrieval/qdrant_store.py::ensure_collection / app/retrieval/semantic_cache.py's
+        app/adapters/outbound/qdrant/qdrant_store.py::ensure_collection / app/adapters/outbound/redis/semantic_cache.py's
         _ensure_index "checked once per process" shape."""
         fake = _FakeMinioClient(bucket_exists=False)
         calls = []
@@ -174,7 +174,7 @@ class TestDownloadBytes:
 
 
 class TestDeleteObject:
-    """delete_object — the compensating-delete side of app/api/routers/
+    """delete_object — the compensating-delete side of app/adapters/inbound/api/routers/
     ingest.py::ingest_upload: a file that reached MinIO but never got a job published
     must not linger as an orphaned blob."""
 

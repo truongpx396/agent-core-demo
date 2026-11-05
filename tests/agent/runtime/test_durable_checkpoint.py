@@ -27,7 +27,7 @@ from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 
-from app.adapters.postgres import checkpointing as pg_checkpointing
+from app.adapters.outbound.postgres import checkpointing as pg_checkpointing
 from app.agent.graph.build import GraphDeps
 from app.agent.graph.hitl import resumability_error_async
 from app.agent.graph.state import STATE_SCHEMA_VERSION
@@ -374,7 +374,7 @@ class TestAsyncEntryPoints:
 
 class TestAstreamEventsContinueTurn:
     """`astream_events_continue_turn` (crash-recovery counterpart to
-    astream_events_turn/_resume, app/job_queue/agent_worker.py's
+    astream_events_turn/_resume, app/adapters/inbound/workers/agent_worker.py's
     `"turn_continue"` kind) — the core claim under test: continuing a
     checkpoint whose last superstep already ran a real tool call does NOT
     re-execute that tool, unlike restarting via a fresh astream_events_turn
@@ -626,7 +626,7 @@ class TestResumabilityErrorRejectsAnActivelyRunningThread:
         # wouldn't share state with what cancel_run() itself looks up.
         # cache_get/cache_set are stubbed out — the default GraphDeps()
         # would hit the real Redis-backed semantic cache
-        # (app/retrieval/semantic_cache.py), irrelevant to what's under test here.
+        # (app/adapters/outbound/redis/semantic_cache.py), irrelevant to what's under test here.
         llm = self._SlowFakeLLM(messages=iter([AIMessage(content="one two three four five")]))
 
         async def fake_cache_get(ctx, query):

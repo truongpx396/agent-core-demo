@@ -1,8 +1,8 @@
-# Prod counterpart of docker-compose.observability.yml, run on the SEPARATE, smaller droplet infra/terraform provisions
+# Prod counterpart of docker-compose.observability.yml, run on the SEPARATE, smaller droplet deploy/terraform provisions
 # (digitalocean_droplet.observability), so a metrics or logs spike cannot compete with the app for CPU and memory, and losing this box never touches
 # the app's data. Deployed by .github/workflows/deploy.yml's `deploy-observability` job, independently of the app droplet.
 #
-# Unlike the dev file, nothing bridges through `host.docker.internal`: the app droplet reaches IN, over the two ports infra/terraform/main.tf's
+# Unlike the dev file, nothing bridges through `host.docker.internal`: the app droplet reaches IN, over the two ports deploy/terraform/main.tf's
 # digitalocean_firewall.observability scopes to the VPC's CIDR: OTLP (4318, from its otel-collector-agent) and Loki's push (3100, from its promtail).
 # docker-compose.prod.yml has the other half of the topology.
 #
@@ -69,7 +69,7 @@ services:
 
   # Continuous profiling (specs/022): the app droplet's api and workers push CPU profiles here over the VPC when PYROSCOPE_SERVER_ADDRESS is set in its
   # .env (deploy/env/prod.env.example), like OTLP and Loki; Grafana reads them through the Pyroscope datasource. No authentication, the same posture as
-  # those two: the firewall scopes 4040 to the VPC (infra/terraform digitalocean_firewall.observability) and profiles hold function names, never request
+  # those two: the firewall scopes 4040 to the VPC (deploy/terraform digitalocean_firewall.observability) and profiles hold function names, never request
   # data. Flags and sizing: docker-compose.observability.yml.
   pyroscope:
     image: grafana/pyroscope:2.3.2@sha256:78c3b509f2ad98a6974b38c6f2135d5daf9597809532560e9ca29f9b43aa339e

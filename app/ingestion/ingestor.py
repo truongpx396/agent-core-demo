@@ -1,11 +1,11 @@
 """General-purpose Ingestor: files, URLs, or raw text → retrievable, citable
-Qdrant points (GRAPH_PATTERNS.md pattern 24). `scripts/seed.py`
+Qdrant points (GRAPH_PATTERNS.md pattern 24). `scripts/tools/seed.py`
 (`make ingest`) is just this module's `ingest_text` called once per sample
 doc — one ingest pipeline, one place it can drift.
 
 Every item is chunked (`app/ingestion/chunking.py`'s parent-child, sliding-
 window strategy) and embedded the way `hybrid_search` expects (dense+sparse,
-via `app/retrieval/embeddings.py`, through `qdrant_store.build_point` — same
+via `app/adapters/outbound/embeddings/embeddings.py`, through `qdrant_store.build_point` — same
 shape `add_note`/`remember` use), so ingested content shares the same
 retrieval path as everything else.
 
@@ -23,17 +23,17 @@ from pathlib import Path
 
 import httpx
 
+from app.adapters.outbound.embeddings.embeddings import (
+    EMBED_BATCH_SIZE,
+    embed_documents,
+    embed_sparse_batch,
+)
+from app.adapters.outbound.qdrant import qdrant_store
 from app.core import metrics
 from app.core.security import SecurityCtx, valid_ctx
 from app.core.url_safety import UnsafeURLError
 from app.core.url_safety import assert_safe_url_async as _assert_safe_url_impl
 from app.ingestion.chunking import chunk_text
-from app.retrieval import qdrant_store
-from app.retrieval.embeddings import (
-    EMBED_BATCH_SIZE,
-    embed_documents,
-    embed_sparse_batch,
-)
 
 logger = logging.getLogger(__name__)
 
@@ -224,7 +224,7 @@ class _TextExtractor(html.parser.HTMLParser):
 
 async def _assert_safe_url(url: str) -> None:
     """SSRF guard — the actual check lives in `app/core/url_safety.py`,
-    shared with `app/ingestion/web_crawler.py`'s render path. This wrapper
+    shared with `app/adapters/outbound/crawl4ai/web_crawler.py`'s render path. This wrapper
     just translates `UnsafeURLError` into this module's `IngestRefused` and
     records the refusal metric; see `url_safety.py` for the disclosed
     DNS-rebinding gap. Async because the name lookup must not block the event

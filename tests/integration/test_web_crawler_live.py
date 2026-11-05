@@ -1,4 +1,4 @@
-"""A real crawl4ai-server round trip for app/ingestion/web_crawler.py (GRAPH_PATTERNS.md pattern 50): the
+"""A real crawl4ai-server round trip for app/adapters/outbound/crawl4ai/web_crawler.py (GRAPH_PATTERNS.md pattern 50): the
 fake-free counterpart to tests/ingestion/test_web_crawler.py, which (correctly, for a fast hermetic suite)
 mocks the `Crawl4aiDockerClient`/`_crawl` boundary. What that can't catch needs a real server, hence
 `@pytest.mark.integration`: a real container launching a browser, navigating, and returning the
@@ -30,7 +30,7 @@ thereafter" posture of tests/mcp/test_mcp_server.py's docstring for FastMCP's in
 """
 import pytest
 
-from app.ingestion import web_crawler
+from app.adapters.outbound.crawl4ai import web_crawler
 from tests.containers import CRAWL_TARGET_HEADING, CRAWL_TARGET_URL
 
 pytestmark = pytest.mark.integration

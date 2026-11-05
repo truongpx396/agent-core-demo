@@ -19,7 +19,7 @@ gateway (start time) and the event (insert time). A busy tenant's tolerance abso
 expensive call shows opposite drifts on adjacent days, the straddle signature, not a loss.
 
 The gateway read (`GET /spend/logs/v2`, paginated, de-duplicated, never trusted when incomplete) is the adapter's:
-`app/adapters/litellm/spend_logs.py`. An incomplete read is never compared, since a truncated sum would page someone for every tenant.
+`app/adapters/outbound/litellm/spend_logs.py`. An incomplete read is never compared, since a truncated sum would page someone for every tenant.
 
 Cost: events are read by time but the index leads with the tenant, so a pass is a sequential scan. A time-only
 index would tax every insert for a job that runs a few times a day; if a pass gets slow, that index (or a

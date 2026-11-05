@@ -1,11 +1,11 @@
 """Retry-with-backoff plus a circuit breaker for calls into this app's shared LOCAL dependencies:
-opensandbox-server (app/adapters/mcp/sandbox_tools.py) and crawl4ai (app/ingestion/web_crawler.py). Both are
+opensandbox-server (app/adapters/outbound/mcp/sandbox_tools.py) and crawl4ai (app/adapters/outbound/crawl4ai/web_crawler.py). Both are
 compose services that can be briefly unreachable (still starting, restarted) through no fault of the code;
 app/domains/sandbox_session.py's self-healing cache is the "already warmed up" side, this is the "still cold"
 half.
 
 Deliberately narrow, matching the app's "surface the error, don't blindly retry" posture
-(app/ingestion/ingest_worker.py::process_job). `CircuitBreaker.call` retries only exceptions the CALLER names
+(app/adapters/inbound/workers/ingest_worker.py::process_job). `CircuitBreaker.call` retries only exceptions the CALLER names
 via `retry_on`, never a bare `except Exception`, so each caller must justify that an exception means "this
 call never landed" (refused or timed-out connection) and not "it landed and the answer is a real failure" (bad
 args, a 4xx), where retrying wastes time or repeats a side effect. That is why sandbox_session.py's raw MCP

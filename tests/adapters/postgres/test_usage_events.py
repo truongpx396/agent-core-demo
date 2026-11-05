@@ -1,4 +1,4 @@
-"""`app/adapters/postgres/usage_events.py`: the statements the usage-event store SENDS, against a scripted connection.
+"""`app/adapters/outbound/postgres/usage_events.py`: the statements the usage-event store SENDS, against a scripted connection.
 
 That proves the shape (the delete permission is set first and local to the transaction, no tenant narrows the sweep, the table's missing migration
 is translated); what the database DOES with them (the PRIMARY KEY's `ON CONFLICT`, the append-only trigger, the batch counts) is proven against a real
@@ -10,7 +10,7 @@ from types import SimpleNamespace
 import pytest
 from psycopg import errors as pg_errors
 
-from app.adapters.postgres import usage_events as adapter
+from app.adapters.outbound.postgres import usage_events as adapter
 from app.ports.cost import UsageTableMissing
 
 

@@ -30,7 +30,7 @@ CREATE TABLE crm_followups (
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
--- scripts/followup_sweep.py's own query shape: pending items due by now,
+-- scripts/jobs/followup_sweep.py's own query shape: pending items due by now,
 -- scoped to tenant.
 CREATE INDEX crm_followups_tenant_due_idx ON crm_followups (tenant, due_at)
     WHERE status = 'pending';

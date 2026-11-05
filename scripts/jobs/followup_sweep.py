@@ -1,0 +1,107 @@
+"""Cron-callable follow-up sweep: find every CRM follow-up due today
+(app/domains/sales/store.py::due_followups), draft a nudge in the sales
+concierge's own voice for each, and post the draft to the team channel for
+a human to review and send.
+
+Same "fixed pipeline, not an agent turn" shape as scripts/jobs/ops_digest.py:
+an unattended cron run can never satisfy should_continue's mandatory
+human_approval gate, so this never calls schedule_followup/
+handoff_to_human/log_lead_interaction through the real agent loop — those
+are for the interactive sales domain (a human actually present, via
+app/adapters/inbound/channels/telegram.py). This script only drafts; the human stays in the
+loop for both sending and any handoff decision.
+
+Meant to be wired to real cron, e.g.:
+
+    0 9 * * * cd /path/to/graph-agent-core && python -m scripts.jobs.followup_sweep
+
+Each due follow-up is marked 'done' once swept (crm_followups.status) so a
+re-run doesn't redraft the same nudge tomorrow.
+"""
+import asyncio
+from datetime import UTC, datetime
+
+from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_openai import ChatOpenAI
+from pydantic import SecretStr
+
+from app.agent.cost import metering
+from app.core.config import CHAT_MODEL, DEFAULT_TENANT, OPENAI_API_BASE, OPENAI_API_KEY
+from app.core.job_runtime import scheduled_job
+from app.core.security import SecurityCtx
+from app.domains.sales import store
+from app.domains.sales.domain import SALES_MANIFEST
+from app.ports.notify import team_channel
+
+_CRON_CTX: SecurityCtx = {"tenant": DEFAULT_TENANT, "principal": "sales-followup-cron", "claims": {}}
+
+_DRAFT_TASK_INSTRUCTIONS = """
+
+You are now drafting ONE follow-up nudge for a lead who is due for contact
+today. You'll be given their name, the note left when this follow-up was
+scheduled, and their interaction history so far. Write a short,
+ready-to-send message in the voice described above — a human will review
+it before anything goes out, so write the message itself, not a
+description of what you'd say."""
+
+
+def build_followup_prompt(lead_name: str, contact: str, note: str) -> str:
+    """Pure — the human-turn text for one lead's drafting call. Kept
+    separate from run_followup_sweep so it's directly unit-testable
+    without an LLM."""
+    return (
+        f"Lead: {lead_name} ({contact})\n"
+        f"Follow-up note: {note}\n\n"
+        "Draft the nudge message now."
+    )
+
+
+async def run_followup_sweep(tenant: str = DEFAULT_TENANT, llm=None) -> list[str]:
+    """Sweep every due follow-up for `tenant`, draft a nudge for each, post
+    it to the team channel, mark it done. Returns the list of drafted
+    texts (empty if nothing was due). `llm` is DI for tests, same pattern
+    as scripts/jobs/ops_digest.py::run_digest."""
+    due = await store.due_followups(tenant, datetime.now(UTC))
+    if not due:
+        return []
+
+    chat = llm if llm is not None else ChatOpenAI(
+        model=CHAT_MODEL,
+        base_url=OPENAI_API_BASE,
+        api_key=SecretStr(OPENAI_API_KEY),
+        temperature=0,
+    )
+    system_prompt = SALES_MANIFEST.system_prompt + _DRAFT_TASK_INSTRUCTIONS
+
+    drafts = []
+    for item in due:
+        human_prompt = build_followup_prompt(item["lead_name"], item["contact"], item["note"])
+        # One metered call (app/agent/cost/metering.py): identity, priced once, one usage event.
+        call = await metering.metered_invoke(
+            chat,
+            [SystemMessage(content=system_prompt), HumanMessage(content=human_prompt)],
+            config={"configurable": {"ctx": _CRON_CTX, "thread_id": f"followup-sweep:{item['id']}"}},
+            kind="cron",
+            model_alias=CHAT_MODEL,
+        )
+        response = call.response
+        draft = response.content if isinstance(response.content, str) else str(response.content)
+
+        await team_channel.get().post(
+            "sales-followups",
+            f"Draft nudge for {item['lead_name']} ({item['contact']}):\n{draft}",
+        )
+        await store.mark_followup_done(tenant, item["id"])
+        drafts.append(draft)
+
+    return drafts
+
+
+def main() -> None:
+    with scheduled_job("agent-core-followup-sweep"):
+        drafts = asyncio.run(run_followup_sweep())
+        print(f"Drafted {len(drafts)} follow-up nudge(s)." if drafts else "No follow-ups due.")
+
+
+if __name__ == "__main__":
+    main()

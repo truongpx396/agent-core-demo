@@ -65,7 +65,7 @@ class TestCheckAllowance:
     async def test_fails_open_when_the_ledger_read_itself_raises(self, monkeypatch):
         """A usage-ledger outage must not ALSO take down every turn on top
         of whatever already took the ledger down — same degrade-don't-crash
-        posture as app/retrieval/semantic_cache.py and app/core/moderation.py."""
+        posture as app/adapters/outbound/redis/semantic_cache.py and app/core/moderation.py."""
         from app.agent.cost import spend
 
         async def _broken(*a, **kw):

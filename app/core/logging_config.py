@@ -1,5 +1,5 @@
-"""Structured (JSON) logging, shared by every long-running service process (app/api/main.py, agent_worker.py,
-ingest_worker.py, app/channels/telegram.py), NOT the interactive CLI (app/channels/chat.py) or one-shot
+"""Structured (JSON) logging, shared by every long-running service process (app/adapters/inbound/api/main.py, agent_worker.py,
+ingest_worker.py, app/adapters/inbound/channels/telegram.py), NOT the interactive CLI (app/adapters/inbound/channels/chat.py) or one-shot
 scripts, which print for a human and would get JSON noise interleaved.
 
 Built on structlog, but no log call site changed: every call already goes through stdlib `logging` (`logger =
@@ -10,7 +10,7 @@ free.
 
 Three problems this fixes without changing what's logged:
 1. Plain `logging.basicConfig` silently drops every `extra` field.
-2. app/api/main.py had no logging handler at all under `make serve`: Python discarded every `logger.info(...)`
+2. app/adapters/inbound/api/main.py had no logging handler at all under `make serve`: Python discarded every `logger.info(...)`
    (only WARNING+ reached stderr, without `extra`).
 3. `request_id`/`thread_id` was attached only at a turn's failure boundary, so every other log line of that
    turn had no correlation id. `bind_request_id`/`request_id_var` fix it: a contextvar set once at the entry
@@ -37,7 +37,7 @@ request_id_var: ContextVar[str | None] = ContextVar("request_id", default=None)
 @contextmanager
 def bind_request_id(request_id: str) -> Iterator[None]:
     """Wrap one turn/job's processing (agent_worker.py::process_request,
-    ingest_worker.py::process_job, app/api/main.py's in-process endpoints —
+    ingest_worker.py::process_job, app/adapters/inbound/api/main.py's in-process endpoints —
     `thread_id` doubles as the id for non-queued turns). Every log line
     emitted anywhere during the wrapped block — including deep inside
     app/agent/graph/core.py/tools.py, which have no idea this id exists — carries it, via

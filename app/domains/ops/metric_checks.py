@@ -94,7 +94,7 @@ def detect_anomalies(readings: dict[str, float | None]) -> list[str]:
 
 def format_readings(readings: dict[str, float | None]) -> str:
     """Human-readable line per check, for feeding to the digest's
-    summarization prompt (scripts/ops_digest.py) or an ad-hoc
+    summarization prompt (scripts/jobs/ops_digest.py) or an ad-hoc
     investigation's fetch_metrics_summary tool result."""
     by_name = {check.name: check for check in CHECKS}
     lines = []

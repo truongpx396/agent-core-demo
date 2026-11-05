@@ -144,7 +144,7 @@ async def _iterate_with_timeout(aiter, timeout_seconds: float, cancel_check=None
     once per iteration, before waiting on the next event; if it returns
     True, raises `TurnCancelled`. Cancellation only takes effect at the
     next event boundary, not mid-flight on an already-running tool/model
-    call. Wired by `app/job_queue/agent_worker.py` to a Redis cancel flag
+    call. Wired by `app/adapters/inbound/workers/agent_worker.py` to a Redis cancel flag
     (`POST /chat/cancel` → `queue.py::is_cancelled`); other callers pass
     nothing and keep timeout-only behavior.
     """
@@ -607,7 +607,7 @@ async def astream_events_turn(
     mirrors app/agent/graph/core.py's opt-in HITL gate (should_continue): a tool call
     pauses instead of executing, and the caller resumes via
     astream_events_resume(thread_id, approved, ctx) — see
-    app/channels/chat.py's `--hitl` mode, which does it through the queue
+    app/adapters/inbound/channels/chat.py's `--hitl` mode, which does it through the queue
     (a `resume` job) rather than by calling this module. `images` (pattern 44) is
     optional. `cancel_check` forwards to `_run_graph_stream`; only
     agent_worker.py's turn-job dispatch passes one (wired to a Redis flag
@@ -990,7 +990,7 @@ async def cancel_run(thread_id: str, ctx: SecurityCtx) -> bool:
 
 
 async def get_session_messages(thread_id: str) -> list[dict]:
-    """Session-switcher transcript replay (`GET /chat/sessions/{thread_id}/messages`, app/api/routers/chat.py).
+    """Session-switcher transcript replay (`GET /chat/sessions/{thread_id}/messages`, app/adapters/inbound/api/routers/chat.py).
     It reads the same Postgres checkpointer every resume/cancel path uses (`chat_sessions` in
     app/agent/runtime/sessions.py holds only title and timestamps, not content).
 
@@ -1027,7 +1027,7 @@ async def get_session_messages(thread_id: str) -> list[dict]:
 
 async def get_pending_approval(thread_id: str) -> dict | None:
     """Session-switcher pause check
-    (`GET /chat/sessions/{thread_id}/pending_approval`, app/api/routers/chat.py) —
+    (`GET /chat/sessions/{thread_id}/pending_approval`, app/adapters/inbound/api/routers/chat.py) —
     lets the web UI re-show the approve/reject banner when the user
     returns to a thread that's still paused at human_approval, instead of
     looking idle (its own `activeTurn` is in-memory JS state a page

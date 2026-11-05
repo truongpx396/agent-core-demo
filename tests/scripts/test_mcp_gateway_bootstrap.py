@@ -1,4 +1,4 @@
-"""scripts/mcp_gateway_bootstrap.py — what it asks Casdoor to create (specs/017, extended by specs/018).
+"""scripts/tools/mcp_gateway_bootstrap.py — what it asks Casdoor to create (specs/017, extended by specs/018).
 
 Hermetic: `Casdoor` is replaced by a recorder, so these pin WHAT the script asks for (the applications, their scopes, redirect URIs and token
 lifetime), not Casdoor's behaviour; that is measured against the real image by `make mcp-gateway-smoke` and `make authlimit-smoke`.
@@ -9,7 +9,7 @@ bound, and a test that the default is 168 is a test that nobody quietly changes 
 """
 import pytest
 
-from scripts import mcp_gateway_bootstrap as bootstrap
+from scripts.tools import mcp_gateway_bootstrap as bootstrap
 
 
 class FakeCasdoor:
@@ -105,7 +105,7 @@ def test_the_cli_callback_port_is_the_one_the_cli_listens_on_and_can_be_moved(ca
 
 
 def test_the_chat_apis_clients_have_the_id_the_web_page_looks_for_and_the_mcp_ones_keep_a_generated_one(casdoor):
-    from app.api.web_auth import CLIENT_ID_PREFIX
+    from app.adapters.inbound.api.web_auth import CLIENT_ID_PREFIX
 
     apps = by_name(casdoor(["--tenant", "ecorp", "--tenant", "other-co"]))
 
@@ -251,7 +251,7 @@ def test_a_named_client_id_is_used_on_creation_and_replaces_the_kept_one_on_a_re
 
 
 def test_the_telegram_bots_login_return_is_registered_only_when_asked_and_is_the_path_the_bot_serves(casdoor):
-    from app.channels import telegram_link
+    from app.adapters.inbound.channels import telegram_link
 
     assert bootstrap.TELEGRAM_LINK_CALLBACK_PATH == telegram_link.CALLBACK_PATH
     assert by_name(casdoor())["api-ecorp"]["redirect_uris"] == ["https://api.localhost:8443/", bootstrap.API_SMOKE_CALLBACK, "http://localhost:33420/callback"]

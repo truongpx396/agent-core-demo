@@ -66,7 +66,7 @@ _DENYLIST_PATTERNS = [
 
 async def _ml_malicious_score(text: str) -> float:
     """Raises on any failure to get a score: `screen` owns the fail-open degrade policy, same split as `embeddings.py::rerank` raising and
-    `hybrid_search` owning the degrade decision. The scorer is the `InjectionScorer` port (`app/adapters/mlservice/prompt_guard.py`)."""
+    `hybrid_search` owning the degrade decision. The scorer is the `InjectionScorer` port (`app/adapters/outbound/mlservice/prompt_guard.py`)."""
     return await injection_scorer.get().malicious_score(text)
 
 

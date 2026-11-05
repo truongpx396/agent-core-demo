@@ -18,7 +18,7 @@ from langchain_core.tools import tool
 from langchain_openai import ChatOpenAI
 from langgraph.types import Command
 
-from app.adapters.litellm.failures import OpenAiFailures
+from app.adapters.outbound.litellm.failures import OpenAiFailures
 from app.agent.cost import metering, pricing
 from app.agent.graph import model_route
 from app.agent.graph.build import GraphDeps
@@ -349,8 +349,8 @@ async def test_the_system_prompt_and_the_whole_request_are_identical_under_all_t
 # ---- the guarantees that must not move -----------------------------------------------------------------------------------------
 async def _mutating_turn(monkeypatch, label: str):
     """The same `add_note` turn, from the user's message to the approved write, with the router sending it where the label says."""
+    from app.adapters.outbound.qdrant import qdrant_store
     from app.domains.ecorp import store as ecorp_store
-    from app.retrieval import qdrant_store
 
     writes: list = []
     idempotency_keys: list = []

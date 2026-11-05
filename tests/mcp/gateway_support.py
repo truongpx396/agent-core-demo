@@ -15,7 +15,7 @@ import jwt
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 
-from app.mcp.gateway import GatewayConfig
+from app.adapters.inbound.mcp.gateway import GatewayConfig
 
 PUBLIC = "http://127.0.0.1:9000"
 ISSUER = "https://auth.example.test"

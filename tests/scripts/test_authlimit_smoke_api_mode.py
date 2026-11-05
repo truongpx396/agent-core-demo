@@ -1,4 +1,4 @@
-"""scripts/authlimit_smoke.py's `--upstream api` (specs/018, T068): which stages run, the forgery it makes, and the two helpers that talk to the API.
+"""scripts/checks/authlimit_smoke.py's `--upstream api` (specs/018, T068): which stages run, the forgery it makes, and the two helpers that talk to the API.
 
 The smoke itself is a manual tier (it needs the whole stack). What is checkable without it is the logic around it, and that logic is where a smoke
 quietly stops proving something: a stage selection that lets a stage run against an upstream it cannot say anything about, a forged identity that
@@ -16,7 +16,7 @@ import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ed25519
 
-from scripts import authlimit_smoke as smoke
+from scripts.checks import authlimit_smoke as smoke
 
 # --- which stages run ---------------------------------------------------------------------------------------------------------------------
 

@@ -1,4 +1,4 @@
-"""The door client (app/channels/door.py): how the CLI and the Telegram channel reach the chat API (specs/020).
+"""The door client (app/adapters/inbound/channels/door.py): how the CLI and the Telegram channel reach the chat API (specs/020).
 
 A real `httpx.AsyncClient` over a `MockTransport` stands in for the front door and the API, so these exercise the actual request, the actual SSE
 parsing and the actual status handling; only the network is replaced. What matters here is what a person sees and what is NEVER done: a refusal
@@ -9,8 +9,13 @@ import json
 import httpx
 import pytest
 
-from app.channels.door import SIGNIN_MESSAGES, Door, DoorRefused, HeaderAuth
-from app.channels.oauth import SignInRefused
+from app.adapters.inbound.channels.door import (
+    SIGNIN_MESSAGES,
+    Door,
+    DoorRefused,
+    HeaderAuth,
+)
+from app.adapters.inbound.channels.oauth import SignInRefused
 from app.core import metrics
 from tests.conftest import metric_value as _count
 

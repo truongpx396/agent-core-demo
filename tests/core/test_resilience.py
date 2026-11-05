@@ -1,6 +1,6 @@
 """Tests for app/core/resilience.py's CircuitBreaker: the retry-with-backoff
-+ fail-fast primitive behind app/adapters/mcp/sandbox_tools.py::load_sandbox_tools
-and app/ingestion/web_crawler.py::_crawl (see that module's own docstring
++ fail-fast primitive behind app/adapters/outbound/mcp/sandbox_tools.py::load_sandbox_tools
+and app/adapters/outbound/crawl4ai/web_crawler.py::_crawl (see that module's own docstring
 for why it exists and what it deliberately does NOT cover).
 
 Every test builds its own fresh CircuitBreaker instance — this state is

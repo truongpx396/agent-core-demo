@@ -24,7 +24,7 @@ from mcp import ClientSession
 from mcp.client.stdio import StdioServerParameters, stdio_client
 
 REPO = Path(__file__).resolve().parents[2]
-_PYTHONPATH = os.pathsep.join(str(REPO / p) for p in (".", "packages/billing/src", "docker/ml-service"))
+_PYTHONPATH = os.pathsep.join(str(REPO / p) for p in (".", "packages/billing/src", "services/ml-service"))
 
 
 def _env(**mcp: str) -> dict[str, str]:
@@ -36,7 +36,7 @@ def _env(**mcp: str) -> dict[str, str]:
 
 def test_a_server_started_without_an_identity_exits_and_leaves_stdout_clean(tmp_path):
     done = subprocess.run(
-        [sys.executable, "-m", "app.mcp.server"],
+        [sys.executable, "-m", "app.adapters.inbound.mcp.server"],
         env=_env(), cwd=tmp_path, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=90,
     )
 
@@ -47,7 +47,7 @@ def test_a_server_started_without_an_identity_exits_and_leaves_stdout_clean(tmp_
 
 def test_the_operations_server_without_a_principal_exits_the_same_way(tmp_path):
     done = subprocess.run(
-        [sys.executable, "-m", "app.mcp.ops_server"],
+        [sys.executable, "-m", "app.adapters.inbound.mcp.ops_server"],
         env=_env(), cwd=tmp_path, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=90,
     )
 
@@ -58,7 +58,7 @@ def test_the_operations_server_without_a_principal_exits_the_same_way(tmp_path):
 
 async def test_over_stdio_the_schema_has_no_identity_argument_and_every_call_is_audited_on_stderr(tmp_path):
     params = StdioServerParameters(
-        command=sys.executable, args=["-m", "app.mcp.server"], cwd=str(tmp_path),
+        command=sys.executable, args=["-m", "app.adapters.inbound.mcp.server"], cwd=str(tmp_path),
         env=_env(MCP_TENANT="ecorp", MCP_PRINCIPAL="alice"),
     )
     with tempfile.TemporaryFile("w+") as stderr:
@@ -83,7 +83,7 @@ async def test_over_stdio_the_schema_has_no_identity_argument_and_every_call_is_
     assert "NotADept" not in logged
 
 
-@pytest.mark.parametrize("module, tools", [("app.mcp.ops_server", {"fetch_metrics_summary", "list_recent_incidents"})])
+@pytest.mark.parametrize("module, tools", [("app.adapters.inbound.mcp.ops_server", {"fetch_metrics_summary", "list_recent_incidents"})])
 async def test_the_operations_server_lists_its_tools_over_stdio_with_only_the_launchers_principal(module, tools, tmp_path):
     params = StdioServerParameters(
         command=sys.executable, args=["-m", module], cwd=str(tmp_path), env=_env(MCP_PRINCIPAL="oncall"),

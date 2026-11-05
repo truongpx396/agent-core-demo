@@ -13,8 +13,8 @@ import logging
 
 import pytest
 
-from app.api import identity
-from app.api import main as api
+from app.adapters.inbound.api import identity
+from app.adapters.inbound.api import main as api
 from app.core import metrics
 from app.core.config import settings
 from app.core.internal_identity import AuthConfigError
@@ -71,7 +71,7 @@ def test_header_mode_is_a_warning_in_the_log_and_names_no_header_value(caplog):
 
     identity.warn_if_header_mode("headers")
 
-    (record,) = [r for r in caplog.records if r.name == "app.api.identity"]
+    (record,) = [r for r in caplog.records if r.name == "app.adapters.inbound.api.identity"]
     assert record.levelno == logging.WARNING and record.getMessage() == "api_auth_mode_headers"
     assert record.auth_mode == "headers"  # type: ignore[attr-defined]  # an `extra` field the logging module sets as an attribute
 
@@ -81,7 +81,7 @@ def test_identity_mode_is_an_info_line_not_a_warning(caplog):
 
     identity.warn_if_header_mode("identity")
 
-    (record,) = [r for r in caplog.records if r.name == "app.api.identity"]
+    (record,) = [r for r in caplog.records if r.name == "app.adapters.inbound.api.identity"]
     assert record.levelno == logging.INFO
 
 

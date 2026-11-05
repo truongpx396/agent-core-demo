@@ -14,20 +14,23 @@ A test that wants a different adapter for one port uses `Slot.overriding` (or bi
 """
 import psycopg
 
-from app.adapters.litellm.chat_model import OpenAiChatModels
-from app.adapters.litellm.failures import OpenAiFailures
-from app.adapters.litellm.model_catalog import LiteLLMModelCatalog
-from app.adapters.mcp.sandbox_tools import OpenSandboxCatalog
-from app.adapters.mlservice.classification import MlServiceClassifier
-from app.adapters.mlservice.prompt_guard import MlServicePromptGuard
-from app.adapters.notify.team_channel import LocalAndSlackTeamChannel
-from app.adapters.postgres.budget_holds import PgBudgetHoldStore
-from app.adapters.postgres.budget_policies import PgBudgetPolicyStore
-from app.adapters.postgres.checkpointing import PgCheckpointing
-from app.adapters.postgres.sessions import PgSessionStore
-from app.adapters.postgres.tool_idempotency import PgToolCallLedger
-from app.adapters.postgres.usage_events import PgUsageEventStore
-from app.adapters.web.serper import SerperWebSearch
+from app.adapters.outbound.crawl4ai.web_crawler import Crawl4aiPageRenderer
+from app.adapters.outbound.litellm.chat_model import OpenAiChatModels
+from app.adapters.outbound.litellm.failures import OpenAiFailures
+from app.adapters.outbound.litellm.model_catalog import LiteLLMModelCatalog
+from app.adapters.outbound.mcp.sandbox_tools import OpenSandboxCatalog
+from app.adapters.outbound.mlservice.classification import MlServiceClassifier
+from app.adapters.outbound.mlservice.prompt_guard import MlServicePromptGuard
+from app.adapters.outbound.notify.team_channel import LocalAndSlackTeamChannel
+from app.adapters.outbound.postgres.budget_holds import PgBudgetHoldStore
+from app.adapters.outbound.postgres.budget_policies import PgBudgetPolicyStore
+from app.adapters.outbound.postgres.checkpointing import PgCheckpointing
+from app.adapters.outbound.postgres.sessions import PgSessionStore
+from app.adapters.outbound.postgres.tool_idempotency import PgToolCallLedger
+from app.adapters.outbound.postgres.usage_events import PgUsageEventStore
+from app.adapters.outbound.qdrant.qdrant_store import QdrantDocumentIndex
+from app.adapters.outbound.redis.semantic_cache import RedisAnswerCache
+from app.adapters.outbound.web.serper import SerperWebSearch
 from app.core.errors import register_store_error
 from app.domains.ecorp import store as ecorp_store
 from app.domains.ops import metrics_client as ops_metrics_client
@@ -35,7 +38,6 @@ from app.domains.ops import store as ops_store
 from app.domains.registry import RegistryDomainCatalog
 from app.domains.sales import store as sales_store
 from app.domains.support import store as support_store
-from app.ingestion.web_crawler import Crawl4aiPageRenderer
 from app.ports import (
     checkpointing,
     classification,
@@ -56,8 +58,6 @@ from app.ports import (
     web,
 )
 from app.ports.slot import PortNotBound, Slot, unbound
-from app.retrieval.qdrant_store import QdrantDocumentIndex
-from app.retrieval.semantic_cache import RedisAnswerCache
 
 
 def adapters() -> dict[Slot, object]:

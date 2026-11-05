@@ -1,4 +1,4 @@
-"""The MCP gateway (app/mcp/gateway.py, specs/017) end to end, in memory: the real SDK middleware, the real Streamable HTTP transport and
+"""The MCP gateway (app/adapters/inbound/mcp/gateway.py, specs/017) end to end, in memory: the real SDK middleware, the real Streamable HTTP transport and
 the real published tools, with only the identity provider replaced (tests/mcp/gateway_support.py).
 
 What these pin is the boundary: who gets in, who is told what, and that the tenant a tool reads is the TOKEN's, never an argument and
@@ -16,9 +16,9 @@ import pytest
 from mcp import Client
 from mcp.client.streamable_http import streamable_http_client
 
+from app.adapters.inbound.mcp import gateway, ops_server
+from app.adapters.inbound.mcp import server as ecorp_server
 from app.core import metrics
-from app.mcp import gateway, ops_server
-from app.mcp import server as ecorp_server
 from tests.conftest import metric_value
 from tests.mcp import gateway_support as gs
 

@@ -154,7 +154,7 @@ async def schedule_followup(
     config: RunnableConfig,
     tool_call_id: Annotated[str, InjectedToolCallId],
 ) -> str:
-    """Schedule a future follow-up for a lead. scripts/followup_sweep.py
+    """Schedule a future follow-up for a lead. scripts/jobs/followup_sweep.py
     (run via cron) picks these up once due and drafts a nudge for a human
     to review and send."""
     ctx = ctx_or_refuse(config, "schedule_followup")

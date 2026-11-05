@@ -11,10 +11,10 @@ test for moderation, which has its own hermetic tests.
 A small local model has near-zero jailbreak resistance on its own (verified): `dan.Dan_11_0`/`dan.AntiDAN`
 against `qwen2.5:1.5b` scored 100% attack success on at least one detector every time. That is a disclosed
 cost of choosing a small, fast, CI-friendly model, not a bug this app can fix. A hard gate would be
-permanently red from the first push, and a gate that always fails gets disabled (see `scripts/eval.py`). So
+permanently red from the first push, and a gate that always fails gets disabled (see `scripts/checks/eval.py`). So
 this prints an honest summary and fails the BUILD only when garak itself crashes, never because an attack
 succeeded. `make garak-full` and CI's uploaded `garak_runs/` artifact are where a human reviews findings, the
-same hard-gate-plus-reviewed-report split `scripts/eval.py` uses.
+same hard-gate-plus-reviewed-report split `scripts/checks/eval.py` uses.
 
 Excluded on purpose:
 - `agent_breaker` (a newer probe for tool-calling agents) is excluded from BOTH this subset and `garak-full`:

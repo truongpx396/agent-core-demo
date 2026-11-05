@@ -1,4 +1,4 @@
-"""The gateway refuses to start unless it can safely serve someone (app/mcp/gateway.py::GatewayConfig).
+"""The gateway refuses to start unless it can safely serve someone (app/adapters/inbound/mcp/gateway.py::GatewayConfig).
 
 A network service that treats a missing issuer as "no check" would be an open door; that is the failure these pin. Plain http is
 accepted only where it cannot cross a network: a loopback public URL or issuer, and an in-network (dotless) name for the key fetch.
@@ -8,9 +8,9 @@ from pathlib import Path
 
 import pytest
 
+from app.adapters.inbound.mcp import gateway
+from app.adapters.inbound.mcp.gateway import GatewayConfig, GatewayConfigError
 from app.core.config import settings
-from app.mcp import gateway
-from app.mcp.gateway import GatewayConfig, GatewayConfigError
 
 GOOD = {
     "mcp_gateway_public_url": "https://mcp.example.test",
@@ -91,7 +91,7 @@ def test_starting_without_an_issuer_exits_with_the_reason(monkeypatch):
 def test_the_gateway_never_reads_the_launchers_identity():
     """A text check on purpose: the failure to guard is a future edit that falls back to MCP_TENANT/MCP_PRINCIPAL 'when there is no
     token', which would turn a network service into one that acts for whoever started it."""
-    root = Path(__file__).resolve().parents[2] / "app" / "mcp"
+    root = Path(__file__).resolve().parents[2] / "app" / "adapters" / "inbound" / "mcp"
 
     for module in ("gateway.py", "gateway_auth.py"):
         code = re.sub(r'""".*?"""', "", (root / module).read_text(), flags=re.DOTALL)  # prose may name them; code may not

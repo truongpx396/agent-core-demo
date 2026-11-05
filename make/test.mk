@@ -72,22 +72,22 @@ authlimit-test:  ## go vet and the authlimit service's tests with the race detec
 	cd services/authlimit && go vet ./... && go test -race ./...
 
 mcp-gateway-smoke: mcp-gateway-secrets  ## OAuth + MCP end-to-end check against the running gateway stack, as a client does it (throwaway users, deleted after). Run after `make mcp-gateway-ca` and `make mcp-gateway-bootstrap`, and after any change to the Casdoor digest. Manual, never CI
-	@. $(GATEWAY_SECRETS) && export CASDOOR_ADMIN_PASSWORD && python -m scripts.mcp_gateway_smoke --ca $(GATEWAY_DIR)/caddy-root.crt
+	@. $(GATEWAY_SECRETS) && export CASDOOR_ADMIN_PASSWORD && python -m scripts.checks.mcp_gateway_smoke --ca $(GATEWAY_DIR)/caddy-root.crt
 
 authlimit-smoke: mcp-gateway-secrets  ## End-to-end check of the front door: sign-in, refusal, rate limit, revocation, replica kill, Casdoor outage, key rotation (throwaway users). Run after `make authlimit-up`, `make mcp-gateway-ca` and `make mcp-gateway-bootstrap`. Manual, never CI
-	@. $(GATEWAY_SECRETS) && export CASDOOR_ADMIN_PASSWORD && $(GATEWAY_ENV) python -m scripts.authlimit_smoke --ca $(GATEWAY_DIR)/caddy-root.crt --keys-dir $(AUTHLIMIT_KEYS_DIR) --compose '$(GATEWAY_COMPOSE_CMD)' $(ARGS)
+	@. $(GATEWAY_SECRETS) && export CASDOOR_ADMIN_PASSWORD && $(GATEWAY_ENV) python -m scripts.checks.authlimit_smoke --ca $(GATEWAY_DIR)/caddy-root.crt --keys-dir $(AUTHLIMIT_KEYS_DIR) --compose '$(GATEWAY_COMPOSE_CMD)' $(ARGS)
 
 authlimit-web-check:  ## The web page in a REAL browser (Playwright): sign in through Casdoor, chat, see only your tenant's rows, sign out, refused token (specs/018). Run after `make authlimit-up-app`, `make mcp-gateway-bootstrap ARGS="--tenant ecorp --tenant other-co"` and `make mcp-gateway-ca`, with the worker on loadtest/fake_llm_server.py. Manual, never CI
-	@. $(GATEWAY_SECRETS) && export CASDOOR_ADMIN_PASSWORD && python -m scripts.authlimit_web_check --ca $(GATEWAY_DIR)/caddy-root.crt $(ARGS)
+	@. $(GATEWAY_SECRETS) && export CASDOOR_ADMIN_PASSWORD && python -m scripts.checks.authlimit_web_check --ca $(GATEWAY_DIR)/caddy-root.crt $(ARGS)
 
 authlimit-latency:  ## Time the front door's check adds to a request: a checked route against a public one, alternating (specs/018 SC-008). Run after `make authlimit-up` and `make mcp-gateway-bootstrap`; ARGS="-n 1000 --path /chat/sessions"
-	@. $(GATEWAY_SECRETS) && export CASDOOR_ADMIN_PASSWORD && python -m scripts.authlimit_latency --ca $(GATEWAY_DIR)/caddy-root.crt $(ARGS)
+	@. $(GATEWAY_SECRETS) && export CASDOOR_ADMIN_PASSWORD && python -m scripts.checks.authlimit_latency --ca $(GATEWAY_DIR)/caddy-root.crt $(ARGS)
 
 authlimit-mutants:  ## Apply each deliberate defect of the authlimit mutation list and require a test to fail (specs/018 SC-010). Edits the source in place and restores it: run on a clean tree; needs Go
-	python scripts/authlimit_mutants.py
+	python scripts/checks/authlimit_mutants.py
 
-gateway-check:  ## Run the PINNED LiteLLM image on the shipped dev config and a stub backend: every alias priced, spend = tokens x price, nothing identifying reaches the backend. Needs Docker only; re-run after bumping the image (infra/README.md)
-	python -m scripts.gateway_check
+gateway-check:  ## Run the PINNED LiteLLM image on the shipped dev config and a stub backend: every alias priced, spend = tokens x price, nothing identifying reaches the backend. Needs Docker only; re-run after bumping the image (deploy/README.md)
+	python -m scripts.checks.gateway_check
 
 web-search-check:  ## Does SERPER_API_KEY work? One real search; spends ONE serper.dev credit, prints the outcome and first result, never the key. Exit 0 ok / 1 failed / 2 no key (GRAPH_PATTERNS.md 87)
-	python -m scripts.web_search_check
+	python -m scripts.checks.web_search_check
