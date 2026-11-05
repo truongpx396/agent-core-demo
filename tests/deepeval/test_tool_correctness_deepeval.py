@@ -1,7 +1,7 @@
 """Tool-call TRAJECTORY correctness against the real graph, via deepeval (`@pytest.mark.deepeval`, `make
 deepeval`; GRAPH_PATTERNS.md pattern 48).
 
-A different question from every other check: `scripts/eval.py`'s `GoldenCase.expect_tool` checks only that a
+A different question from every other check: `scripts/checks/eval.py`'s `GoldenCase.expect_tool` checks only that a
 tool was called, never its arguments, and the RAG-quality and conversation files judge the FINAL ANSWER.
 Nothing else asks whether the agent called the right tool, and called it well.
 
@@ -17,7 +17,7 @@ Two metrics with different reliability (checked in deepeval's installed source):
 Six cases in two groups:
 - `search_docs`/`calculator`/`query_employees`: the tools this domain's small-model routing has been confused
   about. `search_docs` reuses the "Ecorp support hours" wording of `test_rag_quality_deepeval.py`, which
-  replaced `scripts/eval.py`'s `retrieval_company_topic_filter` and `calculator_basic` cases (retired
+  replaced `scripts/checks/eval.py`'s `retrieval_company_topic_filter` and `calculator_basic` cases (retired
   2026-09-16). `calculator` and `query_employees` guard the other direction: did tightening the prompt for the
   search_docs collision make them too narrow to fire? That overcorrection happened once (calculator briefly
   stopped firing on real math after an early SYSTEM_PROMPT edit).

@@ -9,7 +9,7 @@ A one-shot `build_graph(manifest=OPS_MANIFEST, domain=OPS_DOMAIN_PLUGIN)`, not `
 `fetch_metrics_summary`/`list_recent_incidents`, narrower than open-ended questions need. No durable
 checkpointer (the default in-memory MemorySaver): one question, one answer, no memory across runs.
 
-Run with `python -m scripts.ops_investigate "why is latency high right now?"`.
+Run with `python -m scripts.tools.ops_investigate "why is latency high right now?"`.
 """
 import asyncio
 import getpass

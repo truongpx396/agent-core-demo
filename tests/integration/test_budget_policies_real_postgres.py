@@ -22,7 +22,7 @@ import psycopg
 import pytest
 
 from app.agent.cost import budget_policies, budgets
-from scripts import budget_policy
+from scripts.tools import budget_policy
 from tests.containers import ensure_postgres
 from tests.integration.postgres_adapters import use_real_postgres
 from tests.integration.usage_seed import seed_event

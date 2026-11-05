@@ -1,5 +1,5 @@
 """General-purpose Ingestor: files, URLs, or raw text → retrievable, citable
-Qdrant points (GRAPH_PATTERNS.md pattern 24). `scripts/seed.py`
+Qdrant points (GRAPH_PATTERNS.md pattern 24). `scripts/tools/seed.py`
 (`make ingest`) is just this module's `ingest_text` called once per sample
 doc — one ingest pipeline, one place it can drift.
 

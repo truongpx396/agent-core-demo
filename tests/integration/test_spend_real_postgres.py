@@ -24,7 +24,7 @@ from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, HumanMessage
 
 from app.agent.cost import budgets, metering, spend
-from scripts import usage_events_carry_over as carry
+from scripts.tools import usage_events_carry_over as carry
 from tests.containers import ensure_postgres
 from tests.integration.postgres_adapters import use_real_postgres
 from tests.integration.usage_seed import purge_events, seed_event, seed_ledger_row

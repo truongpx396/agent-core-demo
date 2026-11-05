@@ -1,7 +1,7 @@
 # Prompt-level regression checks for app/domains/support/domain.py's
 # SUPPORT_SYSTEM_PROMPT — black-box, against the RAW prompt+model, not the
 # graph (see GRAPH_PATTERNS.md pattern 48 for how
-# this differs from scripts/eval.py). Run `python -m promptfoo.dump_prompts`
+# this differs from scripts/checks/eval.py). Run `python -m promptfoo.dump_prompts`
 # first (see Makefile's `promptfoo` target) so promptfoo/prompts/support.json
 # reflects the CURRENT prompt, not a stale copy.
 #

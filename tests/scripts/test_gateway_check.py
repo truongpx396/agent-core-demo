@@ -1,11 +1,11 @@
-"""scripts/gateway_check.py — the pure parts. Running the pinned image needs Docker and is the script's own job (`make gateway-check`); what is
+"""scripts/checks/gateway_check.py — the pure parts. Running the pinned image needs Docker and is the script's own job (`make gateway-check`); what is
 pinned here is what it is built from: the image it runs, the config it feeds the gateway, and how it decides that something leaked."""
 import re
 from pathlib import Path
 
 import yaml
 
-from scripts import gateway_check
+from scripts.checks import gateway_check
 
 REPO = Path(__file__).resolve().parents[2]
 DEV = yaml.safe_load((REPO / "deploy/litellm/litellm-config.yaml").read_text())

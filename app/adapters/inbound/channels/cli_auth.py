@@ -3,7 +3,7 @@ authorization server's own lifetime ends.
 
 The first request (or a 401) opens the authorization server's page in the browser; a one-shot listener on a loopback port catches the redirect,
 and the code is exchanged with PKCE. The port is fixed (`CHANNEL_CLI_CALLBACK_PORT`) because the authorization server compares a redirect URI
-exactly with what the tenant's `api-<tenant>` client registered (scripts/mcp_gateway_bootstrap.py registers it). The session is kept in a file only
+exactly with what the tenant's `api-<tenant>` client registered (scripts/tools/mcp_gateway_bootstrap.py registers it). The session is kept in a file only
 its owner can read and is renewed with its refresh token before it expires; a refresh that is refused (the person was disabled, the token was
 revoked) falls back to signing in again, and one that could not be tried (the server did not answer) is reported, not turned into a new sign-in.
 

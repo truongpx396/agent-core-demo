@@ -593,7 +593,7 @@ requester + subject", since what counts as the same ticket is a product decision
 |---|---|---|
 | 🏠 **Ecorp** `app/domains/ecorp/` | The default demo: cited answers from the knowledge base, calculator, staff directory, notes and memory (writes need approval) | `make serve` · `make chat` |
 | 🎧 **Support** `app/domains/support/` | Tier-1 copilot: searches the knowledge base, opens/checks/escalates tickets, adds comments, reads a customer-linked page, parses pasted logs in the sandbox | `make telegram-support` |
-| 📟 **Ops** `app/domains/ops/` | Reads this repo's own Prometheus metrics, flags thresholds matching the alert rules, logs and resolves incidents, checks vendor status pages | `make ops-digest` (cron) · `python -m scripts.ops_investigate "…"` |
+| 📟 **Ops** `app/domains/ops/` | Reads this repo's own Prometheus metrics, flags thresholds matching the alert rules, logs and resolves incidents, checks vendor status pages | `make ops-digest` (cron) · `python -m scripts.tools.ops_investigate "…"` |
 | 💼 **Sales** `app/domains/sales/` | Logs leads, drafts replies (never sends), schedules follow-ups, hands hot leads to a human, researches a lead's site, computes deal economics | `make telegram-sales` · `make followup-sweep` (cron) |
 
 Each is `store.py` + `tools.py` + `domain.py`. Its `AgentManifest.allowed_tools` is an exact list, and that omission, not a
@@ -602,7 +602,7 @@ policy check, is what "sandboxed" means. Skills (`app/domains/<domain>/skills/*/
 
 - **One worker, many domains.** `AGENT_WORKER_DOMAINS` (names, or `all`) picks the domains a worker serves, each on its own graph under one concurrency budget (pattern 96). `AGENT_DOMAIN` is the domain the CLI and Telegram talk to; the API routes per request by `X-Domain` onto per-domain queues.
 - **Cron scripts never run the agent loop** (the approval gate would pause with no human). `ops_digest.py` and `followup_sweep.py` are fixed pipelines calling the domain's `_impl` functions, with a plain LLM call for the prose.
-- **`scripts/ops_investigate.py`** runs the ops agent once with its full toolset; if the model reaches for a gated write, the run ends with an empty answer rather than a crash.
+- **`scripts/tools/ops_investigate.py`** runs the ops agent once with its full toolset; if the model reaches for a gated write, the run ends with an empty answer rather than a crash.
 
 * * *
 

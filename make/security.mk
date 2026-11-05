@@ -104,4 +104,4 @@ defectdojo-import:  ## Import a scan report into `make defectdojo-up`: DEFECTDOJ
 	@test -n "$$DEFECTDOJO_API_KEY" || (echo "DEFECTDOJO_API_KEY is required — generate one in the DefectDojo UI (My Account -> API v2 Key)" && exit 1)
 	@test -n "$$REPORT" || (echo "REPORT=<path to scan report file> is required" && exit 1)
 	@test -n "$$SCAN_TYPE" || (echo 'SCAN_TYPE="<DefectDojo scan_type string>" is required, e.g. SCAN_TYPE="ZAP Scan"' && exit 1)
-	python -m scripts.defectdojo_import --file "$$REPORT" --scan-type "$$SCAN_TYPE" $${ENGAGEMENT:+--engagement-name "$$ENGAGEMENT"}
+	python -m scripts.tools.defectdojo_import --file "$$REPORT" --scan-type "$$SCAN_TYPE" $${ENGAGEMENT:+--engagement-name "$$ENGAGEMENT"}

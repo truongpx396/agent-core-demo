@@ -3,7 +3,7 @@
 concierge's own voice for each, and post the draft to the team channel for
 a human to review and send.
 
-Same "fixed pipeline, not an agent turn" shape as scripts/ops_digest.py:
+Same "fixed pipeline, not an agent turn" shape as scripts/jobs/ops_digest.py:
 an unattended cron run can never satisfy should_continue's mandatory
 human_approval gate, so this never calls schedule_followup/
 handoff_to_human/log_lead_interaction through the real agent loop — those
@@ -13,7 +13,7 @@ loop for both sending and any handoff decision.
 
 Meant to be wired to real cron, e.g.:
 
-    0 9 * * * cd /path/to/graph-agent-core && python -m scripts.followup_sweep
+    0 9 * * * cd /path/to/graph-agent-core && python -m scripts.jobs.followup_sweep
 
 Each due follow-up is marked 'done' once swept (crm_followups.status) so a
 re-run doesn't redraft the same nudge tomorrow.
@@ -60,7 +60,7 @@ async def run_followup_sweep(tenant: str = DEFAULT_TENANT, llm=None) -> list[str
     """Sweep every due follow-up for `tenant`, draft a nudge for each, post
     it to the team channel, mark it done. Returns the list of drafted
     texts (empty if nothing was due). `llm` is DI for tests, same pattern
-    as scripts/ops_digest.py::run_digest."""
+    as scripts/jobs/ops_digest.py::run_digest."""
     due = await store.due_followups(tenant, datetime.now(UTC))
     if not due:
         return []

@@ -133,7 +133,7 @@ async def idempotent(
 
 async def sweep_stale_rows(*, older_than_hours: int) -> int:
     """Deletes `tool_call_dedup` rows older than `older_than_hours`.
-    Meant for a periodic cron sweep (`scripts/tool_call_dedup_sweep.py`),
+    Meant for a periodic cron sweep (`scripts/jobs/tool_call_dedup_sweep.py`),
     never the hot path `idempotent()` itself runs.
 
     postgres-init/13-tool-call-dedup.sql creates this table with no

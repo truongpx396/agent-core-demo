@@ -23,7 +23,7 @@ from app.adapters.inbound.channels.telegram_people import (
     person_password,
 )
 from app.core.config import settings
-from scripts.mcp_gateway_bootstrap import Casdoor, CasdoorError
+from scripts.tools.mcp_gateway_bootstrap import Casdoor, CasdoorError
 
 
 def main(argv: list[str] | None = None) -> None:

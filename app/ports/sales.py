@@ -3,7 +3,7 @@
 Every method takes the tenant and scopes its statement by it (the tenant is the caller's `SecurityCtx`, never the model's). The writes take the
 provider's `tool_call_id` where a replay must not duplicate (a lead, a follow-up, a note, a loss), made exactly-once at the ROW level one layer below the
 tool-level `idempotent()` claim (constitution Principle IV). A note is its own row, never text appended onto a column. The Postgres adapter is
-`app/domains/sales/store.py`; the scheduled follow-up sweep (`scripts/followup_sweep.py`) reads `due_followups` and `mark_followup_done` through it.
+`app/domains/sales/store.py`; the scheduled follow-up sweep (`scripts/jobs/followup_sweep.py`) reads `due_followups` and `mark_followup_done` through it.
 """
 from __future__ import annotations
 

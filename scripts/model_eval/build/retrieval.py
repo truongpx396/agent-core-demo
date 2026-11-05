@@ -72,7 +72,7 @@ def load_sources(root: Path = SOURCES) -> list[Source]:
 def extra_sources() -> list[Source]:
     """The sample documents and the skill catalog: real content already in the repository, tagged `general` or with the skill's domain."""
     from app.agent.tools import skill_catalog
-    from scripts.sample_docs import DOCS
+    from scripts.tools.sample_docs import DOCS
 
     out = [Source("general", f"sample-{d['id']}", d["title"], d["text"]) for d in DOCS]
     skill_catalog.reload_skills()

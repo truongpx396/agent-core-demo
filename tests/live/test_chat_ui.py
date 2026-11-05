@@ -144,7 +144,7 @@ def test_a_read_only_tool_call_returns_real_data(page: Page, real_stack: str):
 
 def test_a_grounded_answer_shows_a_real_citation(page: Page, real_stack_with_retrieval: str):
     """search_docs against a REAL embedding + a REAL seeded Qdrant (real_stack_with_retrieval, backed by
-    scripts/seed.py's sample docs) — proves retrieval and the citations UI (`renderCitations`,
+    scripts/tools/seed.py's sample docs) — proves retrieval and the citations UI (`renderCitations`,
     app/adapters/inbound/api/static/index.html) work end to end, not just that search_docs returns SOMETHING.
     """
     page.goto(real_stack_with_retrieval)

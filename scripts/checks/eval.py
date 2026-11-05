@@ -51,7 +51,7 @@ from app.core.config import DEFAULT_TENANT
 from app.core.security import SecurityCtx
 from app.domains.registry import resolve_domain
 
-RESULTS_DIR = Path(__file__).resolve().parent.parent / "eval_runs"
+RESULTS_DIR = Path(__file__).resolve().parents[2] / "eval_runs"
 
 EVAL_REPETITIONS = 5  # AR-021a: N repetitions, not a single pass/fail
 REPETITION_PASS_THRESHOLD = 0.80  # 4-of-5

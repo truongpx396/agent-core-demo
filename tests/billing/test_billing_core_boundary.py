@@ -282,7 +282,7 @@ def test_the_seam_scan_covers_the_files_that_used_to_import_the_package():
     covered = {path.relative_to(REPO).as_posix() for path in _seam_files()}
 
     assert {"app/agent/cost/usage_events.py", "app/agent/cost/budgets.py", "app/adapters/inbound/api/routers/usage.py", "app/adapters/inbound/api/main.py",
-            "app/core/config.py", "scripts/usage_reconcile.py", "app/agent/cost/usage_reconcile.py"} <= covered
+            "app/core/config.py", "scripts/jobs/usage_reconcile.py", "app/agent/cost/usage_reconcile.py"} <= covered
     assert all(not path.startswith("app/billing_integration/") for path in covered), "the seam itself is not scanned"
     users = {p for p in covered if any(_is_core(n) for _, n in _imported((REPO / p).read_text(encoding="utf-8"), _package_of(REPO / p)))}
     assert users == {"app/core/config.py"}, f"the only direct user of the package outside the seam is the settings inheritance ({sorted(users)})"

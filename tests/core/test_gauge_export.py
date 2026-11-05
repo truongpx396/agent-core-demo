@@ -1,4 +1,4 @@
-"""A pin on the OpenTelemetry behaviour the reconciliation workers' heartbeat exists for (scripts/usage_reconcile.py, and the billing package's `credit-billing-reconcile --loop`).
+"""A pin on the OpenTelemetry behaviour the reconciliation workers' heartbeat exists for (scripts/jobs/usage_reconcile.py, and the billing package's `credit-billing-reconcile --loop`).
 
 A synchronous Gauge is exported ONCE per set: the SDK's last-value aggregation clears the value when it is collected
 (`_LastValueAggregation.collect`, verified in opentelemetry-sdk 1.44), and the collector's Prometheus exporter then forgets a series

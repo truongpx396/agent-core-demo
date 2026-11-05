@@ -9,7 +9,7 @@ and one that outlives its turn ages out on its own clock.
 
 This left `usage_ledger.py` when that module went (specs/010 T030c3; the caps sum `spend.py`, retention is
 `usage_events_retention.py`). The `usage_ledger` TABLE stays as read-only history that
-`scripts/usage_events_carry_over.py` can copy; dropping it is a later destructive migration.
+`scripts/tools/usage_events_carry_over.py` can copy; dropping it is a later destructive migration.
 
 Every function fails OPEN (a hold that can't be written or read must not block a turn) and counts the failure
 (`agent_cost_governance_degraded_total{path="reservation"}`).

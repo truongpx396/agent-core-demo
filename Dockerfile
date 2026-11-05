@@ -120,7 +120,7 @@ ENV HOME=/home/appuser
 
 COPY app/ ./app/
 
-# scripts/ is the one thing the app opens at runtime from outside app/: `python -m scripts.index_skills` / `seed` and the cron jobs
+# scripts/ is the one thing the app opens at runtime from outside app/: `python -m scripts.tools.index_skills` / `seed` and the cron jobs
 # an operator runs inside the container. The whole package ships, not a hand-picked list that would drift. A missing piece degrades
 # QUIETLY (an empty skill catalog, no sandbox tools), so CI's `docker-build` job runs the built image to prove the catalogs and scripts landed.
 COPY scripts/ ./scripts/

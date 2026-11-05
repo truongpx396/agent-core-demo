@@ -26,7 +26,7 @@ import sys
 
 from playwright.async_api import Page, async_playwright
 
-from scripts.authlimit_smoke import FAILED, Door, check, info
+from scripts.checks.authlimit_smoke import FAILED, Door, check, info
 
 TENANTS = {
     # tenant -> (a name that must appear in its answer, a name that must NOT)

@@ -36,7 +36,7 @@ import yaml
 
 from app.bootstrap import wire
 
-REPO = Path(__file__).resolve().parents[1]
+REPO = Path(__file__).resolve().parents[2]
 DEV_CONFIG = REPO / "deploy/litellm/litellm-config.yaml"
 DEV_COMPOSE = REPO / "deploy/compose/docker-compose.yml"
 STUB_PORT, GATEWAY_PORT = 18911, 18912

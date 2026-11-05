@@ -1,4 +1,4 @@
-"""Tests for scripts/defectdojo_import.py. Hermetic — `httpx.MockTransport`
+"""Tests for scripts/tools/defectdojo_import.py. Hermetic — `httpx.MockTransport`
 stands in for a real DefectDojo instance (no live server needed), same
 "no live services" discipline the rest of this suite holds to
 (tests/conftest.py). The request-shape assertions (auth header, multipart
@@ -10,7 +10,7 @@ silently drifting from that contract, not re-discovering it.
 import httpx
 import pytest
 
-from scripts import defectdojo_import
+from scripts.tools import defectdojo_import
 
 
 def _mock_transport(*, status_code=201, response_json=None, capture=None):

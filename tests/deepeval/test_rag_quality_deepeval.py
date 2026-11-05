@@ -2,7 +2,7 @@
 GRAPH_PATTERNS.md pattern 48).
 
 A different kind of check, not a smaller copy of another: promptfoo/support.yaml asserts keyword presence
-(deterministic); scripts/eval.py's `ungrounded_claims_count` counts citation markers against sentences and
+(deterministic); scripts/checks/eval.py's `ungrounded_claims_count` counts citation markers against sentences and
 never reads whether a cited CLAIM is true; test_prompt_injection_via_retrieval.py is a binary leak check on
 one adversarial input. deepeval's FaithfulnessMetric/AnswerRelevancyMetric are semantic and LLM-judged: do the
 answer's claims follow from the retrieved context, and does it address the question asked?

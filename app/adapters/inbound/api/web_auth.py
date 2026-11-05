@@ -15,7 +15,7 @@ from pathlib import Path
 
 from app.core.config import settings
 
-# A tenant's chat-API application at the authorization server has the client id `api-<tenant>` (scripts/mcp_gateway_bootstrap.py creates it
+# A tenant's chat-API application at the authorization server has the client id `api-<tenant>` (scripts/tools/mcp_gateway_bootstrap.py creates it
 # so), which is how the page finds the client of the organization a person types without being told every tenant's id in advance.
 CLIENT_ID_PREFIX = "api-"
 PLACEHOLDER = "__AGENT_AUTH__"

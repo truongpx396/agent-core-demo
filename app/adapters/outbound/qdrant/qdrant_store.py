@@ -28,7 +28,7 @@ configured for:
   visibly. Mixing two embedding spaces returns confident nonsense that vector size can't catch;
 - switching models builds `docs-<new hash>` beside the old one, verifies it, then repoints the alias in ONE
   atomic request, so the live collection never holds both and a failure before the repoint leaves the old one
-  serving (`scripts/reembed.py`);
+  serving (`scripts/tools/reembed.py`);
 - a pre-existing collection named exactly `docs` with no alias is ADOPTED: `docs-live -> docs` is created
   (non-destructive) and the configured identity is trusted, with a warning and a metric, since nothing records
   what it was made with. The first re-embed replaces it with a verifiable one.
@@ -272,7 +272,7 @@ async def ensure_collection(dim: int, collection: str | None = None) -> None:
     Destructive only for a collection of the same identity (`make ingest` re-seeds from scratch by design); a collection built under
     another identity is left untouched and simply stops being live, so the old data survives until an operator deletes it.
     `collection` defaults to the main `COLLECTION` (docs) — pass e.g. `SKILLS_COLLECTION` to (re)create a SEPARATE collection with the
-    same dense+sparse schema, as `scripts/index_skills.py` does."""
+    same dense+sparse schema, as `scripts/tools/index_skills.py` does."""
     logical = collection or COLLECTION
     physical = physical_name(logical, (await current_identity()).hash8())
     await create_physical(physical, dim)
@@ -286,7 +286,7 @@ def build_point(
     sparse_vector: tuple[list[int], list[float]] | None = None,
 ) -> PointStruct:
     """One point, both vector legs — the single place that assembles the
-    hybrid vector shape, so `scripts/seed.py` and `app/agent/tools/builtin.py`'s
+    hybrid vector shape, so `scripts/tools/seed.py` and `app/agent/tools/builtin.py`'s
     write paths (add_note, remember) can't drift from `ensure_collection`'s
     schema. `sparse_vector` is optional (a point missing it just never
     surfaces via that leg's Prefetch, still findable dense-only) so a

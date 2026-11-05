@@ -3,7 +3,7 @@
 # --- Model and retrieval evals ---
 
 eval:  ## Golden-dataset evaluation against the real stack (needs `make up` + `make ingest`)
-	python -m scripts.eval
+	python -m scripts.checks.eval
 
 model-eval:  ## Evaluate ONE model against its recorded baseline: make model-eval KIND=embedding|reranker|screen|classifier CANDIDATE=<name> [VIA=gateway|service|inprocess] [DATASET=<name>] [OUTCOMES=<file>] (specs/014)
 	@test -n "$(KIND)" -a -n "$(CANDIDATE)" || { echo "usage: make model-eval KIND=embedding CANDIDATE=<name> [VIA=...] [DATASET=...]"; exit 2; }
@@ -32,7 +32,7 @@ router-label:  ## Score the route prompts' answers from the local and strong mod
 	python -m scripts.model_eval route-label --judge $(JUDGE) $(if $(LOCAL),--local $(LOCAL)) $(if $(STRONG),--strong $(STRONG)) $(if $(STRONG_ID),--strong-id $(STRONG_ID)) $(if $(DEADLINE),--deadline $(DEADLINE)) $(if $(LIMIT),--limit $(LIMIT))
 
 probe-tools:  ## Does the chat model emit usable tool calls? 25 labelled prompts plus 4 that must not loop, ~2 min on native Ollama (ARGS=--no-loops: quick half). Run after ANY change to a chat alias's model or repeat_penalty (GRAPH_PATTERNS.md 73)
-	python -m scripts.toolcall_probe $(ARGS)
+	python -m scripts.checks.toolcall_probe $(ARGS)
 
 # --- Prompt checks and LLM-judged quality ---
 

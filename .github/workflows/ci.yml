@@ -1,6 +1,6 @@
 name: CI
 
-# Runs on every push/PR against main. Deliberately does NOT run scripts/eval.py
+# Runs on every push/PR against main. Deliberately does NOT run scripts/checks/eval.py
 # here (see README's Troubleshooting / GRAPH_PATTERNS.md) — that harness
 # needs the real stack (Ollama models, Qdrant, a warm local model) and is
 # meant for a maintainer to run deliberately (`make eval`) before a release,
@@ -9,7 +9,7 @@ name: CI
 # (a fake LLM, no live services — see tests/conftest.py).
 #
 # `test-integration`/`test-live`/`promptfoo` are the newer, DELIBERATELY
-# DIFFERENT tradeoff from scripts/eval.py above: real backends via
+# DIFFERENT tradeoff from scripts/checks/eval.py above: real backends via
 # testcontainers (test-integration/test-live) or a small Ollama sidecar
 # (promptfoo), but a genuinely SMALL model and a FAST, curated subset each —
 # cheap enough to run on every push, unlike eval.py's real release-gating
@@ -753,7 +753,7 @@ jobs:
           if not subagents.load_subagents():
               problems.append("the subagent catalog is empty (the subagents/ folders under app/domains are missing from the image)")
           try:
-              import scripts.index_skills  # noqa: F401
+              import scripts.tools.index_skills  # noqa: F401
           except ImportError as exc:
               problems.append(f"the scripts package is missing or broken: {exc}")
           # The bridge's catalog is static, so the app's own loader can start it here, with no sandbox server, and must find exactly

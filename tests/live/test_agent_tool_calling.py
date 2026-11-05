@@ -2,17 +2,17 @@
 model's native tool-calling: the one thing every other test here (`GenericFakeChatModel`, hand-scripted
 responses) can't prove, because a fake model's tool calls are authored by the test, not reasoned.
 
-It is the fast, cheap sibling of the release gate, not a replacement. `scripts/eval.py` runs its own, harder
+It is the fast, cheap sibling of the release gate, not a replacement. `scripts/checks/eval.py` runs its own, harder
 golden cases `EVAL_REPETITIONS` times each against the full-size `CHAT_MODEL` the deployment ships, gated by a
 statistical pass threshold, and is kept OUT of CI on purpose (see .github/workflows/ci.yml's comment) as
 maintainer-run pre-release scanning. This file runs ONE repetition of the simplest case against a deliberately
 SMALL model, in CI, on every push: a smoke test that the model/graph integration hasn't broken, not a quality
 gate.
 
-(`scripts/eval.py`'s `calculator_basic`, the golden case a comment below used to cite, was retired 2026-09-16
+(`scripts/checks/eval.py`'s `calculator_basic`, the golden case a comment below used to cite, was retired 2026-09-16
 into tests/deepeval/test_tool_correctness_deepeval.py's
 `test_calculator_tool_call_is_correct_and_well_argued`. This file's role is unaffected: it tests what that
-case never did, a SMALL CI-speed model rather than `scripts/eval.py`'s production one.)
+case never did, a SMALL CI-speed model rather than `scripts/checks/eval.py`'s production one.)
 
 `build_graph()` is called directly, with no `app.agent.runtime.core` wrapper and no Postgres/Redis/Qdrant
 (only `ollama_endpoint`, the cheaper of tests/live/conftest.py's fixtures): the "assert the real dependency,
@@ -47,7 +47,7 @@ async def _invoke(endpoint: dict, text: str) -> dict:
 
 
 async def test_real_model_uses_the_calculator_tool_and_returns_the_right_answer(ollama_endpoint):
-    """Used to mirror scripts/eval.py's GOLDEN_CASES `calculator_basic`
+    """Used to mirror scripts/checks/eval.py's GOLDEN_CASES `calculator_basic`
     case, retired from there 2026-09-16 (see this file's own module
     docstring) — this smoke test stays regardless, since it's testing a
     different thing (the CI-speed model, on every push) than that golden
@@ -69,7 +69,7 @@ async def test_real_model_uses_the_calculator_tool_and_returns_the_right_answer(
 
 
 async def test_real_model_answers_a_plain_question_without_a_tool_call(ollama_endpoint):
-    """Mirrors scripts/eval.py's GOLDEN_CASES `general_knowledge_no_tool_needed`
+    """Mirrors scripts/checks/eval.py's GOLDEN_CASES `general_knowledge_no_tool_needed`
     case — proves the real model doesn't reach for a tool it doesn't need,
     not just that it CAN call one when it does."""
     result = await _invoke(ollama_endpoint, "In one sentence, what is the capital of France?")

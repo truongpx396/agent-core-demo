@@ -1,4 +1,4 @@
-"""scripts/mcp_gateway_bootstrap.py — what it asks Casdoor to create (specs/017, extended by specs/018).
+"""scripts/tools/mcp_gateway_bootstrap.py — what it asks Casdoor to create (specs/017, extended by specs/018).
 
 Hermetic: `Casdoor` is replaced by a recorder, so these pin WHAT the script asks for (the applications, their scopes, redirect URIs and token
 lifetime), not Casdoor's behaviour; that is measured against the real image by `make mcp-gateway-smoke` and `make authlimit-smoke`.
@@ -9,7 +9,7 @@ bound, and a test that the default is 168 is a test that nobody quietly changes 
 """
 import pytest
 
-from scripts import mcp_gateway_bootstrap as bootstrap
+from scripts.tools import mcp_gateway_bootstrap as bootstrap
 
 
 class FakeCasdoor:

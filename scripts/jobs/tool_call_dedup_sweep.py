@@ -7,12 +7,12 @@ lags the original attempt by `AGENT_WORKER_RECLAIM_IDLE_SECONDS`, a few
 minutes), but nothing ever deletes from it. Left alone, every
 mutating/outward tool call this app ever makes accumulates here forever,
 full result text included. This script is the fix, same "fixed pipeline,
-not an agent turn" shape as scripts/followup_sweep.py/ops_digest.py — a
+not an agent turn" shape as scripts/jobs/followup_sweep.py/ops_digest.py — a
 plain DELETE, no LLM involved.
 
 Meant to be wired to real cron, e.g.:
 
-    0 3 * * * cd /path/to/graph-agent-core && python -m scripts.tool_call_dedup_sweep
+    0 3 * * * cd /path/to/graph-agent-core && python -m scripts.jobs.tool_call_dedup_sweep
 
 Idempotent and safe to run as often as you like — a re-run before the next
 row goes stale just deletes nothing.

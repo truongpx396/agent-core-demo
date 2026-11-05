@@ -1,7 +1,7 @@
 """Rebuild a vector collection under the CURRENT embedding identity, with no moment in which the live collection holds two (specs/014
 FR-020, contracts/reembed.md).
 
-    make reembed COLLECTION_NAME=docs            # or: python -m scripts.reembed docs [--dry-run] [--resume] [--page N] [--allow-skips id,id]
+    make reembed COLLECTION_NAME=docs            # or: python -m scripts.tools.reembed docs [--dry-run] [--resume] [--page N] [--allow-skips id,id]
 
 WHEN. After the embedding model, its dimension, its query/document prefixes or EMBED_MODEL_REVISION changed, `qdrant_store` refuses to read
 or write a collection made under the old identity (GET /health/ready names it). This is the way out.
@@ -213,7 +213,7 @@ async def _check_sample(client, source: str, target: str, sample: int, page: int
 
 
 def _parse(argv: list[str]) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(prog="python -m scripts.reembed", description=__doc__.split("\n\n")[0])
+    parser = argparse.ArgumentParser(prog="python -m scripts.tools.reembed", description=__doc__.split("\n\n")[0])
     parser.add_argument("collection", help=f"the logical collection: {COLLECTION!r} (documents, notes, memories) or {SKILLS_COLLECTION!r}")
     parser.add_argument("--dry-run", action="store_true", help="print the plan and stop; write nothing")
     parser.add_argument("--resume", action="store_true", help="reuse a half-built target collection instead of recreating it")

@@ -64,7 +64,7 @@ import httpx
 import jwt
 from cryptography.hazmat.primitives import serialization
 
-CALLBACK_API = "http://localhost:33419/callback"  # registered for api-<tenant> by scripts/mcp_gateway_bootstrap.py
+CALLBACK_API = "http://localhost:33419/callback"  # registered for api-<tenant> by scripts/tools/mcp_gateway_bootstrap.py
 CALLBACK_MCP = "http://localhost:33418/callback"  # registered for mcp-<tenant>
 IDENTITY_ISSUER = "urn:agent-core:authlimit"
 IDENTITY_AUDIENCE = "agent-core-api"

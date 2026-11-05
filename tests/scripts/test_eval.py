@@ -1,13 +1,13 @@
-"""Tests for scripts/eval.py's aggregation logic — run_case's repetition
+"""Tests for scripts/checks/eval.py's aggregation logic — run_case's repetition
 averaging/pass-rate and grounded_claims_ratio's answer-quality gate
 (GRAPH_PATTERNS.md pattern 40). Uses a fake graph (no real LLM/Qdrant),
-matching the rest of this suite's hermetic discipline — scripts/eval.py
+matching the rest of this suite's hermetic discipline — scripts/checks/eval.py
 itself is meant to run against the real stack (see its own module
 docstring), but the AGGREGATION math is pure and worth testing in
 isolation.
 
 run_case/_run_case_once are `async def` (call `graph.ainvoke`/`aget_state` —
-see scripts/eval.py), so every call below runs through `asyncio.run(...)`,
+see scripts/checks/eval.py), so every call below runs through `asyncio.run(...)`,
 this repo's established pattern for exercising async code from a plain
 `def test_...` (no pytest-asyncio configured).
 """
@@ -15,7 +15,7 @@ this repo's established pattern for exercising async code from a plain
 import pytest
 from langchain_core.messages import AIMessage
 
-from scripts.eval import CaseResult, GoldenCase, grounded_claims_ratio, run_case
+from scripts.checks.eval import CaseResult, GoldenCase, grounded_claims_ratio, run_case
 
 
 class _FakeState:

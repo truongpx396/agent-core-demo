@@ -1,6 +1,6 @@
 """The sales/CRM-concierge domain: watches inbound channels (via app/adapters/inbound/channels/telegram.py's AGENT_DOMAIN
 mechanism), logs interactions, drafts replies, schedules follow-ups (nudged later by
-scripts/followup_sweep.py), checks the pending queue, hands a qualified lead to a human rep with a packaged
+scripts/jobs/followup_sweep.py), checks the pending queue, hands a qualified lead to a human rep with a packaged
 brief, and closes leads that aren't converting. Reuses `search_docs`/`ask_clarification` as-is (like
 support/domain.py); `skill_search`/`use_skill` are its own pair (`make_skill_tools("sales")`), so
 `sales-lead-qualification` stays scoped here.

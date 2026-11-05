@@ -27,8 +27,8 @@ from app.adapters.outbound.embeddings.embedding_identity import (
 )
 from app.adapters.outbound.qdrant import qdrant_store
 from app.adapters.outbound.redis import semantic_cache
-from scripts import reembed
-from scripts.reembed import ReembedError
+from scripts.tools import reembed
+from scripts.tools.reembed import ReembedError
 from tests.conftest import TEST_EMBEDDING_IDENTITY
 from tests.containers import ensure_qdrant, ensure_redis
 

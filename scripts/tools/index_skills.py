@@ -4,7 +4,7 @@ Qdrant collection — the search index `skill_search` queries
 
 Run with `make index-skills` whenever a SKILL.md is added/edited/removed.
 
-Mirrors scripts/seed.py's shape: `ensure_collection` is destructive
+Mirrors scripts/tools/seed.py's shape: `ensure_collection` is destructive
 (recreates the collection), so it's called explicitly, once. Unlike
 seed.py, skips the chunking pipeline — a skill's searchable text is just
 its `name: description` summary; the full instruction body is never
@@ -34,7 +34,7 @@ async def main() -> None:
                 f"No skills found under {skills_module.DOMAINS_DIR!r} — nothing to index."
             )
 
-        # dim comes from a real embed call, same as scripts/seed.py — never hardcoded.
+        # dim comes from a real embed call, same as scripts/tools/seed.py — never hardcoded.
         await qdrant_store.ensure_collection(
             dim=await embedding_dim(), collection=SKILLS_COLLECTION
         )

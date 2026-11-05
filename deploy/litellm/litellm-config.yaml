@@ -27,7 +27,7 @@ model_list:
   # `ollama/` provider fakes tools via prompt injection and loops on tool use.
   #
   # The model is qwen2.5:7b, not the 3b this file used to name, because of what each does with this app's tool calls
-  # (`python -m scripts.toolcall_probe`, 25 labelled prompts against the app's real tools and system prompt, temperature 0):
+  # (`python -m scripts.checks.toolcall_probe`, 25 labelled prompts against the app's real tools and system prompt, temperature 0):
   # the 3b answered 8/19 correctly at the old repeat_penalty 1.3, 13/19 at 1.1 and 15/19 even at 1.0, the misses mostly silently dropped by Ollama
   # (the model wrote malformed JSON, Ollama's parser discards a call it cannot read, and the graph sees an empty reply);
   # the 7b answers 19/19 at 1.1 or 1.0. See GRAPH_PATTERNS.md pattern 73 and the repeat_penalty note below.
@@ -78,7 +78,7 @@ model_list:
       # and 1.3 is what broke tool calling: the penalty falls on tokens already in
       # the context, and a tool call's `":` and quote tokens are in it dozens of
       # times, so the model drifts off the JSON. Measured with
-      # scripts/toolcall_probe.py: qwen2.5:7b answered 11/19 tool-needing prompts
+      # scripts/checks/toolcall_probe.py: qwen2.5:7b answered 11/19 tool-needing prompts
       # at 1.3 (the rest came out as fragments like `brtc {"name": "calculator"...`)
       # and 19/19 at 1.1 and at 1.0; qwen2.5:3b dropped 8 of 22 replies outright at
       # 1.3 (Ollama discards a call whose JSON it cannot parse, with no error).
@@ -210,7 +210,7 @@ litellm_settings:
   # user budget not found in database" on each call and applies NO per-person cap (it fails open). It caps each PERSON, so a tenant
   # with many people can spend many times it: the tenant's own limits are the app's. It is a backstop above the app's own limits (size
   # it above your largest person's legitimate spend), not a copy of them, and it covers chat calls only: embeddings carry no end user
-  # yet. Keep it equal to scripts/litellm_key.py's PERSON_BUDGET_ID (a test checks).
+  # yet. Keep it equal to scripts/tools/litellm_key.py's PERSON_BUDGET_ID (a test checks).
   max_end_user_budget_id: person-default
   # Log every request/response to Langfuse from the proxy layer, and expose
   # LiteLLM's own built-in request/latency/token metrics for Prometheus to

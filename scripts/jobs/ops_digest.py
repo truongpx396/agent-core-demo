@@ -4,10 +4,10 @@ post are fixed, deterministic operations, and through build_graph() they would h
 human_approval gate (GRAPH_PATTERNS.md pattern 15), which an unattended cron run can't satisfy, and
 auto-declining (as app/adapters/inbound/channels/telegram.py does) would silently make "post the digest" never happen. So it
 calls the ops `_impl` functions directly, reserving the LLM for turning numbers into prose. Contrast
-scripts/ops_investigate.py, where a human asks an ad-hoc question and the agent loop is right.
+scripts/tools/ops_investigate.py, where a human asks an ad-hoc question and the agent loop is right.
 
 Wire it to cron, a systemd timer or a Kubernetes CronJob, e.g. `0 8 * * * cd /path/to/graph-agent-core &&
-python -m scripts.ops_digest`. One team-channel post per run, safe to re-run by hand or after a missed tick.
+python -m scripts.jobs.ops_digest`. One team-channel post per run, safe to re-run by hand or after a missed tick.
 """
 import asyncio
 from datetime import UTC, datetime

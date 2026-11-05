@@ -24,7 +24,7 @@ slow, is a per-day rollup written in the event's transaction (not built; in the 
 
 ## History and failure
 
-Events begin when postgres-init/19 is applied, so `scripts/usage_events_carry_over.py` copies the older ledger
+Events begin when postgres-init/19 is applied, so `scripts/tools/usage_events_carry_over.py` copies the older ledger
 rows once (ids `ledger:<id>`, never rated, charged or exported). Run it BEFORE a deployment starts reading
 from here (README upgrade note).
 

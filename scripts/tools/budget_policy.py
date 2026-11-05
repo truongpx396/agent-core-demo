@@ -5,21 +5,21 @@ The four spend limits are Settings defaults that apply to everyone. This changes
 tenant's, or one person's, without a redeploy:
 
     # show a tenant's overrides, and the limits that currently apply to one of its people
-    python -m scripts.budget_policy show --tenant acme --principal alice
+    python -m scripts.tools.budget_policy show --tenant acme --principal alice
 
     # give tenant acme a $50/day tenant limit (its plan tier), audited to you
-    python -m scripts.budget_policy set --tenant acme --period day --limit 50 --by you@example.com
+    python -m scripts.tools.budget_policy set --tenant acme --period day --limit 50 --by you@example.com
 
     # every person in acme gets a $10/day personal limit; alice gets $25
-    python -m scripts.budget_policy set --tenant acme --all-principals --period day --limit 10 --by you
-    python -m scripts.budget_policy set --tenant acme --principal alice --period day --limit 25 --by you
+    python -m scripts.tools.budget_policy set --tenant acme --all-principals --period day --limit 10 --by you
+    python -m scripts.tools.budget_policy set --tenant acme --principal alice --period day --limit 25 --by you
 
     # SUSPEND someone (a limit of 0 refuses every turn), then lift it
-    python -m scripts.budget_policy set --tenant acme --principal mallory --period day --limit 0 --by you
-    python -m scripts.budget_policy clear --tenant acme --principal mallory --period day
+    python -m scripts.tools.budget_policy set --tenant acme --principal mallory --period day --limit 0 --by you
+    python -m scripts.tools.budget_policy clear --tenant acme --principal mallory --period day
 
     # explicitly NO cap for a tenant, overriding a Settings default
-    python -m scripts.budget_policy set --tenant internal --period month --limit none --by you
+    python -m scripts.tools.budget_policy set --tenant internal --period month --limit none --by you
 
 `--limit` is a dollar amount, `0` (suspend) or `none` (no cap). A running worker picks a change
 up within BUDGET_POLICY_REFRESH_SECONDS (30 by default), so a suspend is bounded, not instant.

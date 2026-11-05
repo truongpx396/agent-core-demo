@@ -26,7 +26,7 @@ from mcp import Client
 from mcp.client.streamable_http import streamable_http_client
 from mcp.types import TextContent
 
-CALLBACK = "http://localhost:33418/callback"  # what scripts/mcp_gateway_bootstrap.py registers
+CALLBACK = "http://localhost:33418/callback"  # what scripts/tools/mcp_gateway_bootstrap.py registers
 FAILED: list[str] = []
 
 

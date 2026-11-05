@@ -1,4 +1,4 @@
-"""Tests for scripts/followup_sweep.py — same hermetic-DI approach as
+"""Tests for scripts/jobs/followup_sweep.py — same hermetic-DI approach as
 tests/scripts/test_ops_digest.py: a fake LLM via `llm=`, and
 store/notify monkeypatched so this never touches a real Postgres, network, or
 filesystem sink. The metered call's usage event is captured by tests/conftest.py's
@@ -15,7 +15,7 @@ import pytest
 
 from app.adapters.outbound.notify import team_channel as team_channel_adapter
 from app.core import gateway
-from scripts import followup_sweep
+from scripts.jobs import followup_sweep
 
 
 class _FakeResponse:

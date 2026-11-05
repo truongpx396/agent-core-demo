@@ -340,7 +340,7 @@ groups:
             spent it (LiteLLM spend logs or its Customer Usage view, grouped by
             `end_user`, which is `tenant:<tenant>/user:<principal>`, a person; or the
             `tenant:<name>` tag for a whole tenant) before raising it. The app's key shows its spend and reset time with
-            `python -m scripts.litellm_key info`; it covers chat and embeddings, so
+            `python -m scripts.tools.litellm_key info`; it covers chat and embeddings, so
             retrieval degrades along with answers.
 
       - alert: ModerationBlockSpike

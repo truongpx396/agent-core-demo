@@ -17,7 +17,7 @@ from app.bootstrap import wire
 from app.core.config import DEFAULT_TENANT
 from app.core.security import SecurityCtx
 from app.ingestion import ingestor
-from scripts.sample_docs import DOCS
+from scripts.tools.sample_docs import DOCS
 
 # Ingestion needs a real SecurityCtx — `ingest_text` refuses without one
 # (unowned content is never ingested as tenant-less/public). `make ingest`

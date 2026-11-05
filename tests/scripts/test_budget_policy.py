@@ -1,11 +1,11 @@
-"""scripts/budget_policy.py — the operator CLI. Hermetic: the policy functions are replaced, so
+"""scripts/tools/budget_policy.py — the operator CLI. Hermetic: the policy functions are replaced, so
 these prove argument handling and what is asked of them (and that a mistake is rejected before
 anything is written); tests/integration/test_budget_policies_real_postgres.py runs it for real."""
 import pytest
 
 from app.agent.cost import budget_policies
 from app.ports.cost import Override
-from scripts import budget_policy
+from scripts.tools import budget_policy
 
 
 @pytest.fixture

@@ -12,7 +12,7 @@ x-worker-healthcheck: &worker-healthcheck
 x-app-env: &app-env
   OPENAI_API_BASE: http://litellm:4000/v1
   # A container does not read `.env` (compose only uses it to fill `${...}`), so before this line the containers sent the dev master key and a scoped
-  # `make litellm-key` key was never used. Name as in docker-compose.prod.yml and scripts/litellm_key.py. Unset falls back to `sk-anything`.
+  # `make litellm-key` key was never used. Name as in docker-compose.prod.yml and scripts/tools/litellm_key.py. Unset falls back to `sk-anything`.
   OPENAI_API_KEY: ${LITELLM_APP_KEY:-sk-anything}
   QDRANT_URL: http://qdrant:6333
   ML_SERVICE_URL: http://ml-service:80

@@ -66,7 +66,7 @@ class Settings(BillingSettings):
     qdrant_url: str = "http://localhost:6333"
     collection: str = "docs"
 
-    # Multi-tenant isolation (app/core/security.py) — the tenant scripts/seed.py
+    # Multi-tenant isolation (app/core/security.py) — the tenant scripts/tools/seed.py
     # stamps on seeded sample docs, so `make ingest` has a tenant without a
     # signup flow. A real deployment ingests per real tenant.
     default_tenant: str = "ecorp"
@@ -288,7 +288,7 @@ class Settings(BillingSettings):
             )
         return self
 
-    # How long usage EVENTS are kept by scripts/usage_events_sweep.py (spec D7; nothing trimmed them, and the caps and the
+    # How long usage EVENTS are kept by scripts/jobs/usage_events_sweep.py (spec D7; nothing trimmed them, and the caps and the
     # reconciliation read them). The floor is the same as the ledger's for the same reason: a window something still reads must
     # never lose spend, so a smaller value is refused at startup. 400 days keeps a year-on-year view. An event whose export never
     # finished is kept whatever its age (see the module), and the wallet's debits are never touched.
@@ -543,7 +543,7 @@ class Settings(BillingSettings):
     channel_api_url: str = "http://localhost:8000"
     channel_ca_file: str = ""
     # The CLI signs in with a browser and a one-shot listener on this loopback port, registered as a redirect URI of the tenant's chat client
-    # (scripts/mcp_gateway_bootstrap.py): the authorization server compares redirect URIs exactly, so the port cannot be chosen per run.
+    # (scripts/tools/mcp_gateway_bootstrap.py): the authorization server compares redirect URIs exactly, so the port cannot be chosen per run.
     channel_cli_callback_port: int = Field(default=33420, ge=1024, le=65535)
     # The tenant the CLI's person belongs to (the Casdoor organization whose `api-<tenant>` client it signs in at); empty = DEFAULT_TENANT.
     channel_cli_tenant: str = ""
@@ -583,7 +583,7 @@ class Settings(BillingSettings):
     telegram_stream_edit_interval_seconds: float = Field(default=2.0, ge=0.5, le=30.0)
     # Account linking: `/login` sends the person to the authorization server's own page and binds their Telegram id to the account they sign in
     # as, instead of the bot signing in as a `telegram-<id>` person. `telegram_link_public_url` is the bot's public HTTPS base (the callback is
-    # `<it>/telegram/link/callback`, registered at the tenant's client by scripts/mcp_gateway_bootstrap.py); `telegram_link_key` is a Fernet key that
+    # `<it>/telegram/link/callback`, registered at the tenant's client by scripts/tools/mcp_gateway_bootstrap.py); `telegram_link_key` is a Fernet key that
     # encrypts the refresh token kept per link (`python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`).
     telegram_linking: bool = False
     telegram_link_public_url: str = ""

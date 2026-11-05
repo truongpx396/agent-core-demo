@@ -167,7 +167,7 @@ over the compose network; the master key is passed from your shell's environment
 ```
 cd /opt/graph-agent-core
 export LITELLM_MASTER_KEY="$(grep '^LITELLM_MASTER_KEY=' .env | cut -d= -f2-)"
-dc exec -e LITELLM_MASTER_KEY api python -m scripts.litellm_key create --max-budget <usd per window> --rpm-limit 600
+dc exec -e LITELLM_MASTER_KEY api python -m scripts.tools.litellm_key create --max-budget <usd per window> --rpm-limit 600
 unset LITELLM_MASTER_KEY
 nano .env          # paste the printed key as LITELLM_APP_KEY=
 dc up -d           # recreates api / agent-worker / ingest-worker with the new key
@@ -177,11 +177,11 @@ dc up -d           # recreates api / agent-worker / ingest-worker with the new k
   **above** the sum of your tenants' own monthly caps, so it fires only when the app-level limits have
   failed (below normal use it turns routine traffic into an outage). It covers chat and embeddings.
 - Check it any time with `dc exec -e LITELLM_MASTER_KEY -e LITELLM_APP_KEY api python -m
-  scripts.litellm_key info` (spend, budget and the real reset time; LiteLLM aligned `30d` to the next
+  scripts.tools.litellm_key info` (spend, budget and the real reset time; LiteLLM aligned `30d` to the next
   month boundary when this was tried, so read `resets at` rather than assuming 30 days).
 - When the key is spent, turns fail with `provider_budget_exceeded` and `GatewayBudgetExceeded` pages.
   Find who spent it in LiteLLM's spend logs (grouped by `end_user`, or the `tenant:<name>` tag) before
-  raising the budget; `python -m scripts.litellm_key end-user --tenant <name>` maps a name to its id.
+  raising the budget; `python -m scripts.tools.litellm_key end-user --tenant <name>` maps a name to its id.
 - To roll the key, mint a new one, swap `LITELLM_APP_KEY`, `dc up -d`, then delete the old key in
   LiteLLM's UI.
 - A key lists the aliases it may call. `create` now defaults to every alias the prod config defines
@@ -193,14 +193,14 @@ dc up -d           # recreates api / agent-worker / ingest-worker with the new k
 app also sends every call with `user` = `tenant:<tenant>/user:<principal>` (for example
 `tenant:acme/user:alice`; a `:` or `/` inside a name is written `%3A` / `%2F`), which LiteLLM keeps as the
 call's *end user*: it is what the **Customer Usage** view in the admin UI filters by, so spend can be read
-per person (`python -m scripts.litellm_key end-user --tenant acme --principal alice` prints exactly what
+per person (`python -m scripts.tools.litellm_key end-user --tenant acme --principal alice` prints exactly what
 the app sends). LiteLLM also holds a *default budget for every end user*, i.e. every person: the configs
 name it (`litellm_settings.max_end_user_budget_id: person-default`) and **you create it once**; until you
 do, LiteLLM logs "Default end user budget not found in database" on each call and applies no cap at all.
 
 ```
-dc exec -e LITELLM_MASTER_KEY api python -m scripts.litellm_key person-budget set --max-budget <usd per person per window>
-dc exec -e LITELLM_MASTER_KEY api python -m scripts.litellm_key person-budget info   # exits 1 if it is missing: run it after every deploy
+dc exec -e LITELLM_MASTER_KEY api python -m scripts.tools.litellm_key person-budget set --max-budget <usd per person per window>
+dc exec -e LITELLM_MASTER_KEY api python -m scripts.tools.litellm_key person-budget info   # exits 1 if it is missing: run it after every deploy
 ```
 
 - It caps **each person**, not a tenant: a tenant with many people can spend many times it, and a tenant's own
@@ -338,7 +338,7 @@ No worker is a compose service yet (disclosed): on the app droplet run them from
 ```
 # LITELLM_MASTER_KEY is in the droplet's .env; compose reads .env for interpolation only, so export it for this one command
 set -a; . ./.env; set +a
-dc run -d --no-deps --name usage-reconcile  -e LITELLM_MASTER_KEY api python -m scripts.usage_reconcile --loop
+dc run -d --no-deps --name usage-reconcile  -e LITELLM_MASTER_KEY api python -m scripts.jobs.usage_reconcile --loop
 dc run -d --no-deps --name credit-reconcile api python -m credit_billing.cli.reconcile --loop      # credit billing only
 dc run -d --no-deps --name billing-export   api python -m credit_billing.cli.export_worker         # only if a provider bills on usage
 ```
@@ -350,7 +350,7 @@ dc run -d --no-deps --name billing-export   api python -m credit_billing.cli.exp
 | `gateway`, drift **above** zero | the gateway spent more than the events record: a call whose event was never written (`UsageEventWriteFailing`), an unpriced call (the note says how many), or spend the app does not meter | check the alert history for that day; `usage_event_unpriced_total`; the pricing of the model. A call with no event is also a call no dollar cap counted |
 | `gateway`, drift **below** zero | events with no call behind them, or spend the gateway lost | check the gateway database and its spend-log write queue |
 | a tenant you do not recognise, with `gateway` drift above zero | the gateway spent for a tenant with no events at all, the worst shape a lost meter takes (the tenant is read off the end user `tenant:<tenant>/user:<principal>`, so it is named) | check it is not another deployment sharing the gateway (its end users that are not this app's format go to `unattributed`, never here) |
-| a tenant named `tenant_<hash> (no tenant in this database hashes to it)` | the same, in a spend-log row written before the end user named the person (the older one-way id) | look the hash up with `python -m scripts.litellm_key end-user --tenant <name>`; these age out with the gateway's spend logs |
+| a tenant named `tenant_<hash> (no tenant in this database hashes to it)` | the same, in a spend-log row written before the end user named the person (the older one-way id) | look the hash up with `python -m scripts.tools.litellm_key end-user --tenant <name>`; these age out with the gateway's spend logs |
 
 **Tolerance.** A difference is drift only above the larger of `USAGE_RECONCILE_TOLERANCE_USD` and `_PCT` of the larger figure. A small
 **persistent** gap on every tenant is a price mismatch between the app and the gateway for one of your models, not a loss: tune the percentage

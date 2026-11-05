@@ -18,9 +18,9 @@ Temperature 0 makes one run per prompt the whole distribution. Each reply is put
     prose_instead_of_call  text where a call was needed (the garbled-JSON-as-text form included)
     wrong_tool / bad_args (a schema violation, or the wrong values for the question) / unneeded_call / empty
 
-    python -m scripts.toolcall_probe                          # the `chat` alias exactly as configured
-    python -m scripts.toolcall_probe --alias chat-strong
-    python -m scripts.toolcall_probe --model qwen2.5:7b --repeat-penalty 1.3 1.1 1.0   # what a setting does
+    python -m scripts.checks.toolcall_probe                          # the `chat` alias exactly as configured
+    python -m scripts.checks.toolcall_probe --alias chat-strong
+    python -m scripts.checks.toolcall_probe --model qwen2.5:7b --repeat-penalty 1.3 1.1 1.0   # what a setting does
 
 It also asks four open-ended prompts with no tools, because the other half of the trade-off is a repetition loop: a high
 `repeat_penalty` was added (1.3) to stop `qwen2.5:3b` repeating itself until `num_predict` cut it off, and lowering it on a small
@@ -48,7 +48,7 @@ from app.core.config import settings as app_settings
 from app.core.tool_schema import strict_tool_schema
 from app.domains.registry import resolve_domain
 
-CONFIG = Path(__file__).resolve().parents[1] / "deploy" / "litellm" / "litellm-config.yaml"
+CONFIG = Path(__file__).resolve().parents[2] / "deploy" / "litellm" / "litellm-config.yaml"
 # The options the gateway forwards to Ollama; anything else in `litellm_params` is routing, not sampling.
 FORWARDED = ("num_ctx", "num_predict", "repeat_penalty")
 

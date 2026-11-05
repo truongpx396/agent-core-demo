@@ -34,7 +34,7 @@ credit-reconcile-worker:  ## credit-reconcile as a loop: a pass every CREDIT_REC
 	python -m credit_billing.cli.reconcile --loop $(ARGS)
 
 usage-reconcile-worker:  ## usage-reconcile as a loop: a pass every USAGE_RECONCILE_INTERVAL_SECONDS, drift gauge refreshed every minute
-	python -m scripts.usage_reconcile --loop $(ARGS)
+	python -m scripts.jobs.usage_reconcile --loop $(ARGS)
 
 # --- Channels ---
 

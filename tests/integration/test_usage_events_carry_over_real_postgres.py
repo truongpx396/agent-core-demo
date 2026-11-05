@@ -1,4 +1,4 @@
-"""The ledger-to-events carry-over against a REAL Postgres (scripts/usage_events_carry_over.py, specs/010 T030).
+"""The ledger-to-events carry-over against a REAL Postgres (scripts/tools/usage_events_carry_over.py, specs/010 T030).
 tests/scripts/test_usage_events_carry_over.py proves the loop through a scripted connection; the cutover's
 safety rests on what the statements DO:
 - history older than the first real event is copied and NOTHING newer (those turns already have events;
@@ -24,7 +24,7 @@ from decimal import Decimal
 import psycopg
 import pytest
 
-from scripts import usage_events_carry_over as carry
+from scripts.tools import usage_events_carry_over as carry
 from tests.containers import ensure_postgres
 from tests.integration.usage_seed import purge_events, seed_event
 

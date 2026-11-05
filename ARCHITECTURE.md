@@ -117,7 +117,7 @@ usage-event store, the model catalog, the classifier and the injection scorer is
 ## Not done, and why
 
 - **The inbound adapters still reach some infrastructure directly.** `app/adapters/inbound/api/health.py` probes Postgres, Qdrant and the ML service itself, the Telegram channel and the queue use Redis, and the
-  operator scripts import adapter modules (`scripts/followup_sweep.py` calls the sales store). They are adapters, so the rule allows it; routing them through ports would add ports with one caller.
+  operator scripts import adapter modules (`scripts/jobs/followup_sweep.py` calls the sales store). They are adapters, so the rule allows it; routing them through ports would add ports with one caller.
 - **`app/ingestion/` and `app/adapters/outbound/qdrant/memory.py` are classified as adapters but hold pipeline logic** (chunking, crawl, the ingest job). Splitting that logic from the Qdrant and MinIO calls is a port or two
   (`VectorWriter`, `ObjectStore`) not written here.
 - **The integration and live tiers were not run in this change** (they need Docker and models). Their fixtures were rewritten to bind the adapters and the tiers still collect.

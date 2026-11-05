@@ -20,7 +20,7 @@ this module only carries the fact.
 
 This is the DISK side only, the source of truth for a skill's full body. `builtin.py::use_skill` reads the
 `body` from here by exact `name`, never from Qdrant: the `skills` collection (`app/adapters/outbound/qdrant/qdrant_store.py`,
-built by `scripts/index_skills.py`) holds only `{name, description}`, just enough for `skill_search` to find
+built by `scripts/tools/index_skills.py`) holds only `{name, description}`, just enough for `skill_search` to find
 the right name. Keeping "searchable" (Qdrant) and "authoritative" (this module) as two systems means a skill's
 instructions can't drift from what's on disk.
 

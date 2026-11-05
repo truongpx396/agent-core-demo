@@ -10,7 +10,7 @@ package's, `credit-billing-reconcile`.
     make usage-reconcile-worker
 
 The comparison reads LiteLLM's spend log with the gateway's admin key, taken from `LITELLM_MASTER_KEY` in the
-environment (never an argument) and the gateway's address from `LITELLM_URL`, the same two things `scripts/litellm_key.py`
+environment (never an argument) and the gateway's address from `LITELLM_URL`, the same two things `scripts/tools/litellm_key.py`
 reads. It REFUSES to start without them: a worker that quietly skipped the independent meter would report "ok" while
 proving less than its name says. (`--no-gateway` still exists for a dry run of the database read alone and reports the gateway as not compared.)
 

@@ -12,7 +12,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1] / "services" / "authlimit"
+ROOT = Path(__file__).resolve().parents[2] / "services" / "authlimit"
 
 # (name, file, old, new, package to test)
 M = [

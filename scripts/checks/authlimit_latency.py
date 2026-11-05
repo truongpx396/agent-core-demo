@@ -1,4 +1,4 @@
-"""How much time does the front door's check add to a request? `python -m scripts.authlimit_latency` (specs/018,
+"""How much time does the front door's check add to a request? `python -m scripts.checks.authlimit_latency` (specs/018,
 SC-008).
 
 The comparison isolates the check: the same client, TLS connection, Caddy and stub upstream, alternating one
@@ -24,7 +24,7 @@ import time
 
 import httpx
 
-from scripts.authlimit_smoke import Door
+from scripts.checks.authlimit_smoke import Door
 
 
 def percentile(sorted_ms: list[float], p: float) -> float:

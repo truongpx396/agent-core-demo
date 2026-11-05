@@ -240,7 +240,7 @@ def _seed_retrieval_data(env: dict[str, str]) -> None:
     already-imported `app.adapters.outbound.embeddings.embeddings`/ `qdrant_store` module state (tests/live/test_qdrant_real.py's
     own fixture does that instead, for a different, in-process use case).
     """
-    for module in ("scripts.seed", "scripts.index_skills"):
+    for module in ("scripts.tools.seed", "scripts.tools.index_skills"):
         subprocess.run(
             [sys.executable, "-m", module],
             env=env,

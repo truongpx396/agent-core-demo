@@ -44,7 +44,7 @@ DEFAULT_OPS_USER = "oncall"
 # `<organization>/<name>` is the id the script looks a user up by and `<name>@<organization>.localhost` the email it gives them, so a name holds no slash, space or '@'.
 USER_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 REFRESH_HOURS = 168
-# The smoke check (scripts/authlimit_smoke.py) signs in as a public client with this callback; the web page signs in with its own root URL.
+# The smoke check (scripts/checks/authlimit_smoke.py) signs in as a public client with this callback; the web page signs in with its own root URL.
 API_SMOKE_CALLBACK = "http://localhost:33419/callback"
 # Where the Telegram bot's browser returns after a login (app/adapters/inbound/channels/telegram_link.py::CALLBACK_PATH; a test holds the two equal: this script imports nothing from app/).
 TELEGRAM_LINK_CALLBACK_PATH = "/telegram/link/callback"

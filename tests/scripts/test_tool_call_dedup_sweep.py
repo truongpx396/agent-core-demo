@@ -1,10 +1,10 @@
-"""Tests for scripts/tool_call_dedup_sweep.py — same hermetic-DI approach
+"""Tests for scripts/jobs/tool_call_dedup_sweep.py — same hermetic-DI approach
 as tests/scripts/test_followup_sweep.py/test_ops_digest.py:
 sweep_stale_rows is monkeypatched so this never touches a real Postgres.
 """
 import asyncio
 
-from scripts import tool_call_dedup_sweep
+from scripts.jobs import tool_call_dedup_sweep
 
 
 def test_run_sweep_uses_the_default_retention_window_and_returns_the_count(monkeypatch):

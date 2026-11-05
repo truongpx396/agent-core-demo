@@ -9,21 +9,21 @@ which the app reports as `provider_budget_exceeded` and alerts on) even if every
 the app has failed.
 
     # mint it ONCE (the master key comes from the environment, never from an argument)
-    LITELLM_MASTER_KEY=sk-... python -m scripts.litellm_key create \\
+    LITELLM_MASTER_KEY=sk-... python -m scripts.tools.litellm_key create \\
         --max-budget 600 --budget-duration 30d --rpm-limit 600 --tpm-limit 400000
 
     # how much of it is used, and when it resets
-    LITELLM_MASTER_KEY=sk-... LITELLM_APP_KEY=sk-... python -m scripts.litellm_key info
+    LITELLM_MASTER_KEY=sk-... LITELLM_APP_KEY=sk-... python -m scripts.tools.litellm_key info
 
     # the end-user id the gateway shows for a person (readable: tenant:<tenant>/user:<principal>); without
     # --principal it prints the older tenant-level id (tenant_<hash>) that spend logs written before the
     # end user named the person still carry
-    python -m scripts.litellm_key end-user --tenant acme --principal alice
-    python -m scripts.litellm_key end-user --tenant acme
+    python -m scripts.tools.litellm_key end-user --tenant acme --principal alice
+    python -m scripts.tools.litellm_key end-user --tenant acme
 
     # the default per-person cap (COST_GOVERNANCE.md pattern 74): create or change it, then read it back
-    LITELLM_MASTER_KEY=sk-... python -m scripts.litellm_key person-budget set --max-budget 20 --budget-duration 30d
-    LITELLM_MASTER_KEY=sk-... python -m scripts.litellm_key person-budget info
+    LITELLM_MASTER_KEY=sk-... python -m scripts.tools.litellm_key person-budget set --max-budget 20 --budget-duration 30d
+    LITELLM_MASTER_KEY=sk-... python -m scripts.tools.litellm_key person-budget info
 
 Sizing `--max-budget`: it is the LAST line of defence, so set it ABOVE what the app's own limits can
 legitimately add up to (the sum of your tenants' monthly caps), so it fires only when they have
@@ -112,7 +112,7 @@ def _create(args: argparse.Namespace) -> int:
         "models": [m.strip() for m in args.models.split(",") if m.strip()],
         "max_budget": args.max_budget,
         "budget_duration": args.budget_duration,
-        "metadata": {"purpose": "agent-core-demo app key", "created_by": "scripts/litellm_key.py"},
+        "metadata": {"purpose": "agent-core-demo app key", "created_by": "scripts/tools/litellm_key.py"},
     }
     for field, value in (("rpm_limit", args.rpm_limit), ("tpm_limit", args.tpm_limit), ("max_parallel_requests", args.max_parallel)):
         if value is not None:
@@ -191,7 +191,7 @@ def _person_budget_info(args: argparse.Namespace) -> int:
     if budget is None:
         print(f"Budget {PERSON_BUDGET_ID!r}: NOT FOUND.", file=sys.stderr)
         print("LiteLLM finds no default per-person budget, so it applies none (and logs 'Default end user budget not found in database' on every call).", file=sys.stderr)
-        print("Create it: python -m scripts.litellm_key person-budget set --max-budget <usd per person per window>", file=sys.stderr)
+        print("Create it: python -m scripts.tools.litellm_key person-budget set --max-budget <usd per person per window>", file=sys.stderr)
         return 1
     max_budget = budget.get("max_budget")
     print(f"Budget {PERSON_BUDGET_ID!r}")
