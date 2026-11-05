@@ -51,7 +51,7 @@ request pending; `_reclaim_loop` (every worker runs one) sweeps those via `strea
   result.
 - `"turn"`/`"turn_continue"`: `_classify_reclaimed_turn` reads the checkpoint since the last `HumanMessage`:
   - `"dead_letter"`: the checkpoint can't be read; the turn already produced its final answer
-    (`_turn_already_completed`; a retry would double-record its cost); or it crashed between a real
+    (`reclaimed_turn.turn_already_completed`; a retry would double-record its cost); or it crashed between a real
     `human_approval` interrupt and the ack.
   - `"retry_fresh"` (republished as `"turn"`): no `HumanMessage` yet, so the crash came before anything was
     checkpointed.
@@ -78,8 +78,6 @@ import uuid
 from contextlib import aclosing
 from typing import cast
 
-from langchain_core.messages import AIMessage
-
 from app.adapters.inbound.workers.streams import (
     RECLAIM_ATTEMPTS_FIELD,
     acquire_thread_lock,
@@ -92,7 +90,7 @@ from app.adapters.inbound.workers.streams import (
     release_thread_lock,
     republish_job,
 )
-from app.agent.graph.messages import is_retry_artifact, is_user_message
+from app.agent.runtime import reclaimed_turn
 from app.agent.runtime.core import (
     bind_domain,
     close_checkpointer_pool,
@@ -393,31 +391,12 @@ async def _process_with_limit(
         semaphore.release()
 
 
-def _turn_already_completed(turn_messages: list) -> bool:
-    """True if the last message in this turn's own slice is a real final
-    `AIMessage` (content produced, no pending `tool_calls`) — i.e. the
-    graph already reached `check_output`/`END` (or a safety-net fallback)
-    for this turn, which means `runtime/stream.py::_record_turn_metrics`
-    already ran and recorded this turn's usage/cost. Retrying it — fresh
-    OR continued — would re-run/re-tally an answer that already exists,
-    silently double-recording that cost for no benefit; a zero-tool-call
-    turn that crashed in the thin window between finishing and this job's
-    own ack would otherwise look identical to one that never got that far
-    at all."""
-    if not turn_messages:
-        return False
-    last = turn_messages[-1]
-    # A rejected answer (tagged by `retry_output`, see messages.RETRY_ARTIFACT_KEY) has no
-    # tool calls either, but it is the answer the turn is about to be asked to replace.
-    return isinstance(last, AIMessage) and not last.tool_calls and not is_retry_artifact(last)
-
-
 async def _classify_reclaimed_turn(graph, thread_id: str) -> str:
     """Returns `"dead_letter"`, `"retry_fresh"` or `"retry_continue"` for a reclaimed `"turn"`/`"turn_continue"`
     job, from the thread's checkpointed state. Read-only (`graph.aget_state`, as `get_session_messages` and
     `resumability_error_async` use); it never re-runs anything.
 
-    It finds the last message the PERSON sent (`is_user_message`, not the retry feedback `retry_output` writes
+    It finds the last message the PERSON sent (`reclaimed_turn.last_turn_messages`, not the retry feedback `retry_output` writes
     as a tagged `HumanMessage`). Every turn appends one fresh `HumanMessage` before anything else, so
     everything after it belongs to the most recent turn: the crashed one, or, if the crash came before that
     message was checkpointed, a DIFFERENT, completed one.
@@ -425,7 +404,7 @@ async def _classify_reclaimed_turn(graph, thread_id: str) -> str:
     - `"retry_fresh"`: no `HumanMessage` anywhere, so the thread never reached its first turn. Republished as
       an ordinary `"turn"` with the original text.
     - `"dead_letter"`: the checkpoint can't be read; or the messages after the last `HumanMessage` show the
-      turn already produced its final answer (`_turn_already_completed`); or the checkpoint is paused at a
+      turn already produced its final answer (`reclaimed_turn.turn_already_completed`); or the checkpoint is paused at a
       real `human_approval` interrupt (`state.tasks[i].interrupts`, not `state.next`, see
       `graph/hitl.py::_resumability_error_from_state`). A healthy worker acks a job that reaches a pause like
       one that finishes, so a reclaimed turn finding one means the crash landed just AFTER the interrupt
@@ -437,7 +416,7 @@ async def _classify_reclaimed_turn(graph, thread_id: str) -> str:
       structurally safe, not heuristic.
 
     Deliberately conservative in one edge: if the crash came before this turn's own `HumanMessage` was
-    checkpointed, the last one found belongs to the PRECEDING turn, normally `_turn_already_completed`, so
+    checkpointed, the last one found belongs to the PRECEDING turn, normally `turn_already_completed`, so
     this reports `"dead_letter"` for a turn that never started. That is a false negative (dead-lettering
     something safe to retry), never a false positive, which is cheaper than tracking where a turn's messages
     start.
@@ -452,17 +431,10 @@ async def _classify_reclaimed_turn(graph, thread_id: str) -> str:
         return "dead_letter"
 
     messages = (state.values or {}).get("messages", []) if state else []
-    # The turn's own question, not `retry_output`'s feedback (a HumanMessage too, tagged): see
-    # messages.is_user_message. Today the two readings agree, because the feedback and the
-    # rejected answer are written together; this keeps them agreeing if that ever changes.
-    last_human_index = next(
-        (i for i in range(len(messages) - 1, -1, -1) if is_user_message(messages[i])),
-        None,
-    )
-    if last_human_index is None:
+    turn_messages = reclaimed_turn.last_turn_messages(messages)
+    if turn_messages is None:
         return "retry_fresh"  # this thread never even reached its first turn
-    turn_messages = messages[last_human_index + 1 :]
-    if _turn_already_completed(turn_messages):
+    if reclaimed_turn.turn_already_completed(turn_messages):
         return "dead_letter"
     if state.next and any(task.interrupts for task in state.tasks):
         return "dead_letter"  # crashed strictly after reaching a real pause
