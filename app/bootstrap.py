@@ -15,6 +15,7 @@ A test that wants a different adapter for one port uses `Slot.overriding` (or bi
 import psycopg
 
 from app.adapters.outbound.crawl4ai.web_crawler import Crawl4aiPageRenderer
+from app.adapters.outbound.embeddings.embeddings import HybridEmbedder
 from app.adapters.outbound.litellm.chat_model import OpenAiChatModels
 from app.adapters.outbound.litellm.failures import OpenAiFailures
 from app.adapters.outbound.litellm.model_catalog import LiteLLMModelCatalog
@@ -30,10 +31,14 @@ from app.adapters.outbound.postgres.checkpointing import PgCheckpointing
 from app.adapters.outbound.postgres.sessions import PgSessionStore
 from app.adapters.outbound.postgres.tool_idempotency import PgToolCallLedger
 from app.adapters.outbound.postgres.usage_events import PgUsageEventStore
-from app.adapters.outbound.qdrant.qdrant_store import QdrantDocumentIndex
+from app.adapters.outbound.qdrant.qdrant_store import (
+    QdrantDocumentIndex,
+    QdrantDocumentWriter,
+)
 from app.adapters.outbound.redis.ingest_queue import RedisIngestQueue
 from app.adapters.outbound.redis.queue import RedisTurnQueue
 from app.adapters.outbound.redis.semantic_cache import RedisAnswerCache
+from app.adapters.outbound.web.page_fetch import HttpxPageFetcher
 from app.adapters.outbound.web.serper import SerperWebSearch
 from app.core.errors import register_store_error
 from app.domains.ecorp import store as ecorp_store
@@ -79,6 +84,8 @@ def adapters() -> dict[Slot, object]:
         checkpointing.checkpointing: PgCheckpointing(),
         domains.domain_catalog: RegistryDomainCatalog(),
         retrieval.document_index: QdrantDocumentIndex(),
+        retrieval.document_writer: QdrantDocumentWriter(),
+        retrieval.embedder: HybridEmbedder(),
         retrieval.answer_cache: RedisAnswerCache(),
         llm.llm_failures: OpenAiFailures(),
         llm.chat_models: OpenAiChatModels(),
@@ -86,6 +93,7 @@ def adapters() -> dict[Slot, object]:
         screening.injection_scorer: MlServicePromptGuard(),
         web.web_search: SerperWebSearch(),
         web.page_renderer: Crawl4aiPageRenderer(),
+        web.page_fetcher: HttpxPageFetcher(),
         notify.team_channel: LocalAndSlackTeamChannel(),
         storage.object_store: MinioObjectStore(),
         jobs.turn_queue: RedisTurnQueue(),

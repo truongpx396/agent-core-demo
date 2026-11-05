@@ -13,6 +13,7 @@ The two search methods are separate on purpose. `search` cannot be called withou
 """
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
@@ -27,6 +28,23 @@ class SearchHit:
     id: str | int
     score: float
     payload: dict[str, Any] = field(default_factory=dict)
+
+
+# How many texts one dense-embedding call should carry; a caller that wants progress between calls batches by this. The embedding endpoint rejects
+# far more than this: 1000 per call broke the local Ollama backend and 700 hung past a minute, while 100 to 500 all worked, with no clear win past ~200.
+EMBED_BATCH_SIZE = 200
+
+SparseVector = tuple[list[int], list[float]]  # (indices, values) of a BM25 vector
+
+
+@dataclass(frozen=True)
+class DocumentPoint:
+    """One chunk ready to store: its id, both vectors and its payload. The payload carries the tenant, which is how every search later scopes it."""
+
+    point_id: str
+    dense_vector: list[float]
+    payload: dict[str, Any]
+    sparse_vector: SparseVector | None = None
 
 
 @dataclass(frozen=True)
@@ -69,6 +87,23 @@ class DocumentIndex(Protocol):
         ...
 
 
+class Embedder(Protocol):
+    async def embed_documents(self, texts: list[str]) -> list[list[float]]:
+        """Dense vectors for stored passages, in order. Send at most `EMBED_BATCH_SIZE` texts per call. Raises when the embedding endpoint fails."""
+        ...
+
+    def embed_sparse_batch(self, texts: list[str]) -> list[SparseVector]:
+        """Sparse (BM25) vectors for `texts`, in order. Local CPU work: call it off the event loop. Raises on failure; the caller owns the degrade-to-dense-only policy."""
+        ...
+
+
+class DocumentWriter(Protocol):
+    async def upsert(self, points: Sequence[DocumentPoint]) -> None:
+        """Writes `points` to the live collection by id, so writing the same ids again overwrites instead of duplicating (what lets a retried ingest job repeat safely).
+        Raises when the collection was built under another embedding identity."""
+        ...
+
+
 class AnswerCache(Protocol):
     async def get(self, ctx: SecurityCtx | None, query: str) -> tuple[str, list[dict]] | None:
         """A cached `(answer, citations)` for a semantically close query from the same tenant and person, or None."""
@@ -80,4 +115,6 @@ class AnswerCache(Protocol):
 
 
 document_index: Slot[DocumentIndex] = Slot("document_index", DocumentIndex)
+embedder: Slot[Embedder] = Slot("embedder", Embedder)
+document_writer: Slot[DocumentWriter] = Slot("document_writer", DocumentWriter)
 answer_cache: Slot[AnswerCache] = Slot("answer_cache", AnswerCache)

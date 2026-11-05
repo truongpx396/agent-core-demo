@@ -37,6 +37,7 @@ import asyncio
 import logging
 import re
 import time
+from collections.abc import Sequence
 from typing import cast
 from uuid import UUID
 
@@ -78,7 +79,7 @@ from app.core.config import (
     RERANK_TOP_K,
 )
 from app.core.security import AccessScope
-from app.ports.outbound.retrieval import IdentityStatus, SearchHit
+from app.ports.outbound.retrieval import DocumentPoint, IdentityStatus, SearchHit
 
 logger = logging.getLogger(__name__)
 
@@ -506,3 +507,12 @@ class QdrantDocumentIndex:
 
     async def identity_status(self, collection: str | None = None) -> IdentityStatus:
         return await identity_status(collection)
+
+
+class QdrantDocumentWriter:
+    """The `DocumentWriter` adapter (`app/ports/outbound/retrieval.py`). The module's functions are looked up at call time."""
+
+    async def upsert(self, points: Sequence[DocumentPoint]) -> None:
+        await upsert(
+            [build_point(point_id=p.point_id, dense_vector=p.dense_vector, payload=p.payload, sparse_vector=p.sparse_vector) for p in points]
+        )

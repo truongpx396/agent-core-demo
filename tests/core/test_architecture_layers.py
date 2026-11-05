@@ -11,10 +11,10 @@ The rings, inside out:
 - ports       `app/ports/**`. Protocols and plain data. Imports the standard library, `pydantic`, the kernel and other ports.
 - kernel      `app/core/*.py` except the platform modules below. Security context, errors, scrubbing, the tool wrapper, metrics, settings.
               Imports no infrastructure client and nothing outside the kernel and the ports.
-- application `app/agent/**` and `app/domains/**` except the adapter files below (a domain's `store.py`, and the registry that names every domain). The graph, the runtime, the cost policy, the tools.
+- application `app/agent/**`, `app/domains/**` and `app/ingestion/**` except the adapter files below (a domain's `store.py`, and the registry that names every domain). The graph, the runtime, the cost policy, the tools, the ingest pipeline.
               Imports no infrastructure client, no adapter and no inbound adapter; `app/agent` never imports `app/domains` (a domain plugs
               into the agent, not the other way round).
-- adapters    everything else: `app/adapters/**`, `app/ingestion` (the ingest pipeline), the platform modules in `app/core`, and the per-domain
+- adapters    everything else: `app/adapters/**`, the platform modules in `app/core`, and the per-domain
               `store.py` (the domain's repository, by the `store.py` + `tools.py` + `domain.py` convention). They may import anything inside
               them. `app/adapters/` has two sides: `inbound/` DRIVES the application (API, channels, MCP servers, workers), is a leaf and imports
               nothing from `outbound/`; `outbound/` is DRIVEN by it (one package per technology, each implementing a port) and imports nothing from `inbound/`.
@@ -50,7 +50,7 @@ PLATFORM_CORE = frozenset({
 # Application-ring files that are adapters by convention.
 ADAPTER_FILE_GLOBS = ("app/domains/*/store.py", "app/domains/ops/metrics_client.py", "app/domains/registry.py")
 
-OUTER_PACKAGES = ("app.adapters", "app.ingestion", "app.bootstrap")
+OUTER_PACKAGES = ("app.adapters", "app.bootstrap")
 
 # The one adapter-ring module the application may import: billing's port facade (specs/011), whose boundary has two tests of its own.
 ALLOWED_OUTER = frozenset({"app.billing_integration.port"})
@@ -69,7 +69,7 @@ def ring_of(rel: str) -> str:
     if rel.startswith("app/core/"):
         stem = Path(rel).stem
         return "adapter" if stem in PLATFORM_CORE else "kernel"
-    if rel.startswith(("app/agent/", "app/domains/")):
+    if rel.startswith(("app/agent/", "app/domains/", "app/ingestion/")):
         return "application"
     return "adapter"
 
@@ -296,6 +296,9 @@ def test_the_framework_scanner_can_fail():
         ("app/agent/graph/x.py", "from app.adapters.outbound.redis import semantic_cache", {"app.adapters"}),
         ("app/domains/support/tools.py", "from app.domains.support import store", {"app.domains.support.store"}),
         ("app/domains/support/tools.py", "from app.adapters.outbound.crawl4ai.web_crawler import render_url_to_markdown", {"app.adapters"}),
+        ("app/ingestion/ingestor.py", "import httpx", {"httpx"}),
+        ("app/ingestion/ingestor.py", "from app.adapters.outbound.qdrant import qdrant_store", {"app.adapters"}),
+        ("app/ingestion/ingestor.py", "from app.ports.outbound.retrieval import embedder", set()),
         ("app/agent/runtime/x.py", "from app.domains.registry import resolve_domain", {"app.domains"}),
         # application: what is allowed
         ("app/agent/cost/x.py", "from app.ports.outbound.cost import UsageEventStore", set()),

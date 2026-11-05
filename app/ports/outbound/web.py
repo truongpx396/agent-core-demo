@@ -38,6 +38,20 @@ class CrawlFailed(Exception):
     """A page that could not be rendered. The message is written for the model and the person."""
 
 
+class PageFetchFailed(Exception):
+    """The request did not complete (a network error or a timeout). A 4xx or 5xx answer is a `FetchedPage`, not this."""
+
+
+@dataclass(frozen=True)
+class FetchedPage:
+    """`text` is empty when the body was larger than the `max_bytes` asked for (`size` still says how large it was), so a caller never decodes what it will refuse."""
+
+    status_code: int
+    content_type: str
+    text: str
+    size: int
+
+
 class WebSearch(Protocol):
     async def search(self, query: str) -> list[SearchHit]:
         """Up to the configured number of results for `query`, best first; an empty list means the search ran and found nothing.
@@ -52,5 +66,13 @@ class PageRenderer(Protocol):
         ...
 
 
+class PageFetcher(Protocol):
+    async def fetch(self, url: str, *, max_bytes: int) -> FetchedPage:
+        """GETs `url` once, following no redirect (a validated URL redirecting to an unvalidated one would reopen the hole the caller's SSRF guard closes), within
+        a short timeout. The caller runs that guard first. Raises `PageFetchFailed` when the request does not complete."""
+        ...
+
+
 web_search: Slot[WebSearch] = Slot("web_search", WebSearch)
+page_fetcher: Slot[PageFetcher] = Slot("page_fetcher", PageFetcher)
 page_renderer: Slot[PageRenderer] = Slot("page_renderer", PageRenderer)
