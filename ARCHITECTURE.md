@@ -50,7 +50,7 @@ Two rules, each a test (`tests/core/test_architecture_layers.py`):
 - **A module imports no other module.** It may import itself, `app/domains/shared/`, the kernel and the platform ports; not a sibling and not the registry. What two modules both need goes in `shared/`;
   what one asks of the world is a port.
 - **The rest of the code imports only what a module publishes**: `domain` (the plugin) and `usecases` (what a driving adapter calls). `app/bootstrap.py` also names `ports` and the adapter (`store`, `metrics_client`),
-  which is its job. Four reaches remain in `MODULE_LEDGER`, which may only shrink.
+  which is its job. `MODULE_LEDGER` (a reach into a module's internals that a use case has not yet replaced) is empty, and may only stay so.
 
 A port belongs to the module when only that module's tools use it (`TicketStore` is the support module's) and to the platform (`app/ports/outbound/`) when several things use it (`WebSearch`, `SandboxCatalog`, `UsageEventStore`).
 
@@ -175,7 +175,6 @@ usage-event store, the model catalog, the classifier and the injection scorer is
   The operator scripts likewise import adapter modules (`scripts/jobs/followup_sweep.py` calls the sales store).
 - **`app/adapters/outbound/qdrant/memory.py` (scoped memory deletion) builds its selector in the adapter ring.** Nothing in the application calls it: it is for a data-subject request or a retention sweep, run by an operator.
 - **A domain's `store.py` is an adapter living in its domain**, by the `store.py` + `tools.py` + `domain.py` convention (see Decisions).
-- **Four reaches into a module's internals remain** (`MODULE_LEDGER`): the ops MCP server uses `ops/tools.py`, the ops digest job uses `ops/metric_checks.py` and `ops/ports.py`, and the follow-up sweep queries `sales/store.py`. Each is a use case the module has not published (ops has no `usecases.py`).
 - **Only the business domains are modules.** The agent engine, `app/ingestion/` and `app/billing_integration/` keep their own shape; they are not cut the same way and are not under the module rules.
 - **`app/billing_integration/` sits beside the adapters, not in them.** It is the earlier seam to the billing package, with its own two boundary tests; moving it would touch the constitution's "Self-contained packages".
 - **The constitution does not describe the rings.** They and the rules above would be a MINOR addition to "Architecture & Technology Constraints", which goes through `/speckit-constitution`. (Its two path pointers that named the API's old package were fixed in 1.4.2.)
