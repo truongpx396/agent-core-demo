@@ -1,5 +1,7 @@
 """The on-disk format `SKILL.md` and `AGENT.md` share: a YAML frontmatter block followed by a
-markdown body, one file per directory, scanned into a `{name: record}` catalog.
+markdown body, one file per directory, scanned into a `{name: record}` catalog. A catalog lives at
+`<root>/<owner>/skills/<name>/SKILL.md` (or `.../subagents/<name>/AGENT.md`); the OWNER folder is the
+domain the entry is for, or `shared` for a skill every domain may see.
 
 `skill_catalog.py` and `subagent_catalog.py` each define their own record type and their own
 required/optional fields; everything else (splitting the file, the validation messages, scanning a
@@ -22,6 +24,13 @@ logger = logging.getLogger(__name__)
 _FRONTMATTER_RE = re.compile(r"\A---\s*\n(.*?\n)---\s*\n?", re.DOTALL)
 
 R = TypeVar("R")
+
+SHARED = "shared"  # the owner folder of what every domain may use
+
+
+def owner_of(path: Path) -> str:
+    """The owner folder of `<owner>/<kind>s/<name>/<file>`: a domain name, or `SHARED`."""
+    return path.parents[2].name
 
 
 def split_file(path: Path, error: type[ValueError]) -> tuple[dict[str, Any], str]:
@@ -82,7 +91,7 @@ def load_catalog(
     error: type[ValueError],
     kind: str,
 ) -> dict[str, R]:
-    """Scan `root/*/<filename>` into `{name: record}`. A malformed file is logged and skipped,
+    """Scan `root/*/<kind>s/*/<filename>` into `{name: record}`. A malformed file is logged and skipped,
     never raised past this function, so one bad file can't take the whole catalog down
     (GRAPH_PATTERNS.md pattern 10's degrade-gracefully posture). A duplicate `name` across two
     directories keeps whichever was parsed first (directory order) and logs a warning; it's not an
@@ -92,7 +101,7 @@ def load_catalog(
         return {}
 
     catalog: dict[str, R] = {}
-    for file in sorted(root.glob(f"*/{filename}")):
+    for file in sorted(root.glob(f"*/{kind}s/*/{filename}")):
         try:
             record = parse(file)
         except error as exc:

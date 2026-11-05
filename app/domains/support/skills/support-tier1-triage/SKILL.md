@@ -1,7 +1,6 @@
 ---
 name: support-tier1-triage
 description: Triage an inbound customer support request end to end — check the knowledge base first, open a ticket if unresolved, escalate to a human when it's outside Tier-1 scope. Use for any customer issue, complaint, or question arriving through the support copilot.
-domains: [support]
 ---
 
 # Tier-1 Support Triage

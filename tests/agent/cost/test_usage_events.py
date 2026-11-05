@@ -274,7 +274,7 @@ class TestWhatAnEventRecords:
 
         record = SubagentRecord(
             name="researcher", description="d", system_prompt="You are a test subagent.",
-            tools=("calculator",), model=None, domains=None, path=Path("subagents/researcher/AGENT.md"),
+            tools=("calculator",), model=None, domains=("ecorp",), path=Path("app/domains/ecorp/subagents/researcher/AGENT.md"),
         )
 
         result = await run_subagent_impl(

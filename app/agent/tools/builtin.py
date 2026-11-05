@@ -359,9 +359,8 @@ def _format_skill_hits(hits: list) -> str:
 
 
 def _skill_visible_to_domain(record: "skills_module.SkillRecord", domain: str) -> bool:
-    """A skill with no `domains:` frontmatter (`record.domains is None`) is
-    visible everywhere, the default before this field existed. A tagged one
-    is visible only to the domains it names — INCLUDING Ecorp."""
+    """A skill in the `shared` folder (`record.domains is None`) is visible
+    everywhere; one in a domain's folder only to that domain — INCLUDING Ecorp."""
     return record.domains is None or domain in record.domains
 
 
@@ -387,8 +386,8 @@ def make_skill_tools(domain: str) -> tuple[BaseTool, BaseTool]:
     """Builds a `(skill_search, use_skill)` pair scoped to `domain`. Ecorp's
     own pair below is `make_skill_tools("ecorp")`; each of
     app/domains/support|sales|ops/domain.py builds its own instead of reusing
-    Ecorp's tool objects, so a domain-tagged skill (`domains: [...]`,
-    app/agent/tools/skill_catalog.py) never leaks into a domain it wasn't written for.
+    Ecorp's tool objects, so a skill in a domain's folder
+    (app/agent/tools/skill_catalog.py) never leaks into a domain it wasn't written for.
     Enforced in BOTH tools: use_skill loads by exact name with no search
     step, so it applies the same filter itself in case a model somehow
     guesses a foreign-domain skill's name.

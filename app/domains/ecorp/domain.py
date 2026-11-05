@@ -132,7 +132,7 @@ _RUN_SUBAGENT = make_domain_subagent_tool(
     all_tools=[*_ACTION_TOOLS, *_REUSED_TOOLS],
     tool_capabilities=_CAPABILITIES,
 )
-# None unless at least one bundled AGENT.md is declared for Ecorp (an untagged one is) — see
+# None unless Ecorp's subagents/ folder holds an AGENT.md — see
 # make_domain_subagent_tool for why an empty menu means "don't expose the tool at all".
 
 

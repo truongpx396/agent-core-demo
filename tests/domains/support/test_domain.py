@@ -131,7 +131,7 @@ class TestDomainScopedSubagent:
     """run_subagent is present, but it's this domain's OWN closure-built
     tool (app.agent.tools.run_subagent_domain.make_domain_subagent_tool), never Ecorp's literal
     module-level object — and its menu offers only the bundled subagent(s)
-    declared `domains: [support]` (subagents/ticket-researcher/AGENT.md),
+    declared `domains: [support]` (app/domains/support/subagents/ticket-researcher/AGENT.md),
     never Ecorp's own `researcher`."""
 
     def test_is_not_the_ecorp_domains_run_subagent_object(self):

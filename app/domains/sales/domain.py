@@ -44,7 +44,7 @@ _RUN_SUBAGENT = make_domain_subagent_tool(
         "ask_clarification": SHARED_TOOL_CAPABILITIES["ask_clarification"],
     },
 )
-# None unless at least one bundled AGENT.md declares `domains: [sales]`.
+# None unless sales/subagents/ holds an AGENT.md.
 
 SALES_SYSTEM_PROMPT = """You are Ecorp's sales concierge.
 

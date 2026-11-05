@@ -1,7 +1,6 @@
 ---
 name: vendor-incident-postmortem
 description: Investigate whether an anomaly is caused by an external vendor/dependency, with real evidence — not a guess. Use when fetch_metrics_summary flags something and a vendor is a plausible cause, or when someone directly asks "is this our fault or theirs."
-domains: [ops]
 ---
 
 # Vendor Incident Postmortem

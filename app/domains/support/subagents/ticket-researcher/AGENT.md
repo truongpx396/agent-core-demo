@@ -2,7 +2,6 @@
 name: ticket-researcher
 description: Look up knowledge-base answers and a customer's existing ticket history without pulling the intermediate search steps into the main conversation. Use for a self-contained lookup whose reasoning doesn't need to appear in the main thread.
 tools: [search_docs, check_ticket_status, list_my_tickets]
-domains: [support]
 ---
 
 # Ticket Researcher

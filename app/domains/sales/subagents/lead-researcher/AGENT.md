@@ -2,7 +2,6 @@
 name: lead-researcher
 description: Pull a lead's full brief and pending-follow-up context without pulling the intermediate lookup steps into the main conversation. Use for a self-contained lookup whose reasoning doesn't need to appear in the main thread.
 tools: [search_docs, package_lead_brief, list_pending_followups]
-domains: [sales]
 ---
 
 # Lead Researcher

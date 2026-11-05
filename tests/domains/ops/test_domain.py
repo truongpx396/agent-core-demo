@@ -92,7 +92,7 @@ class TestDomainScopedSubagent:
     """Same proof as tests/domains/support/test_domain.py's own
     TestDomainScopedSubagent: run_subagent is this domain's OWN
     closure-built tool, and its menu offers only the bundled subagent(s)
-    declared `domains: [ops]` (subagents/metrics-researcher/AGENT.md)."""
+    declared `domains: [ops]` (app/domains/ops/subagents/metrics-researcher/AGENT.md)."""
 
     def test_is_not_the_ecorp_domains_run_subagent_object(self):
         ecorp_run_subagent = {t.name: t for t in ECORP_DOMAIN_PLUGIN.tools()}["run_subagent"]

@@ -2,7 +2,6 @@
 name: vendor-history-researcher
 description: Search this app's own incident log for past mentions of a specific vendor/dependency and summarize any pattern (how often, when). Use before opening a new incident for an external vendor, to check whether this is a known, recurring problem rather than a one-off.
 tools: [list_recent_incidents]
-domains: [ops]
 ---
 
 # Vendor History Researcher

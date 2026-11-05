@@ -6,7 +6,7 @@ whatever this app's own domain modules currently define, never a
 hand-copied string that can drift out of sync the moment a domain prompt
 changes. The generated files are git-ignored build output, the same
 relationship this app's `scripts/index_skills.py`-built Qdrant index has to
-`skills/`'s own on-disk SKILL.md files: disk (here, the Python source) is
+the skills' own on-disk SKILL.md files: disk (here, the Python source) is
 truth, the generated artifact is just a cache of it in the shape the
 consuming tool (promptfoo) needs.
 

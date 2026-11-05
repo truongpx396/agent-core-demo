@@ -1,7 +1,6 @@
 ---
 name: deal-economics
 description: Compute real multi-year deal math a plain calculator can't do — escalating annual pricing, volume-discount tiers, total contract value. Use when a lead is negotiating anything beyond a flat single-year price.
-domains: [sales]
 ---
 
 # Deal Economics

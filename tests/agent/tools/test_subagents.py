@@ -1,6 +1,6 @@
 """Tests for app/agent/tools/subagent_catalog.py — the on-disk subagent-definition loader
 (GRAPH_PATTERNS.md pattern 46). All isolated to `tmp_path`; nothing here
-touches the real `subagents/` directory shipped with the app.
+touches the subagents shipped with the app (`test_every_shipped_subagent_loads` aside).
 """
 import re
 from pathlib import Path
@@ -23,9 +23,9 @@ from tests.agent.fakes import Domain, call, cfg, scripted_llm
 from tests.ecorp import build_graph
 
 
-def _write_subagent(tmp_path, slug, content):
-    agent_dir = tmp_path / slug
-    agent_dir.mkdir()
+def _write_subagent(tmp_path, slug, content, owner="ecorp"):
+    agent_dir = tmp_path / owner / "subagents" / slug
+    agent_dir.mkdir(parents=True)
     (agent_dir / "AGENT.md").write_text(content, encoding="utf-8")
     return agent_dir / "AGENT.md"
 
@@ -63,17 +63,21 @@ class TestParseSubagentFile:
 
         assert record.tools is None
         assert record.model is None
-        assert record.domains is None
 
-    def test_parses_domains_list(self, tmp_path):
-        content = _VALID.replace("model: chat\n---", "model: chat\ndomains: [support]\n---")
-        path = _write_subagent(tmp_path, "researcher", content)
+    def test_a_subagent_belongs_to_the_domain_whose_folder_holds_it(self, tmp_path):
+        path = _write_subagent(tmp_path, "researcher", _VALID, owner="support")
         assert _parse_subagent_file(path).domains == ("support",)
 
-    def test_non_list_domains_raises(self, tmp_path):
-        content = _VALID.replace("model: chat\n---", "model: chat\ndomains: support\n---")
-        path = _write_subagent(tmp_path, "bad", content)
-        with pytest.raises(SubagentLoadError):
+    @pytest.mark.parametrize("tag", ["domains: [support]", "domains: support"])
+    def test_a_domains_tag_is_refused_because_the_folder_is_the_domain(self, tmp_path, tag):
+        content = _VALID.replace("model: chat\n---", f"model: chat\n{tag}\n---")
+        path = _write_subagent(tmp_path, "researcher", content, owner="sales")
+        with pytest.raises(SubagentLoadError, match="folder"):
+            _parse_subagent_file(path)
+
+    def test_there_is_no_shared_folder_for_subagents(self, tmp_path):
+        path = _write_subagent(tmp_path, "researcher", _VALID, owner="shared")
+        with pytest.raises(SubagentLoadError, match="shared"):
             _parse_subagent_file(path)
 
     def test_missing_frontmatter_raises(self, tmp_path):
@@ -153,6 +157,14 @@ class TestLoadSubagents:
         assert catalog["researcher"].path.parent.name == "aaa-first"
 
 
+def test_every_shipped_subagent_loads():
+    """A shipped AGENT.md that fails to parse is skipped with a warning, which would leave a domain without it unnoticed."""
+    domains_dir = Path(__file__).resolve().parents[3] / "app" / "domains"
+    on_disk = list(domains_dir.glob("*/subagents/*/AGENT.md"))
+    assert on_disk, "no shipped subagents found: the layout moved"
+    assert {p.parent.name for p in on_disk} == {r.path.parent.name for r in load_subagents(domains_dir).values()}
+
+
 FACT = "Ecorp support hours are nine to five Monday through Friday Pacific time."
 
 
@@ -170,7 +182,7 @@ async def test_a_subagent_never_emits_citation_markers_or_events_into_the_parent
         return f"[1] {FACT}", [citation]
 
     monkeypatch.setattr(graph, "default_search", nested_search)  # the nested graph's retrieval
-    record = SubagentRecord("researcher", "d", "You research.", (), None, None, Path("x"))
+    record = SubagentRecord("researcher", "d", "You research.", (), None, ("ecorp",), Path("x"))
     nested_inputs, answers = [], []
 
     @tool

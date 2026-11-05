@@ -74,7 +74,7 @@ pull-strong-model:  ## Download the dev stand-in for the escalation alias chat-s
 ingest:  ## Embed sample docs and upsert them into Qdrant
 	python -m scripts.seed
 
-index-skills:  ## Embed the skills/ catalog (name+description) and upsert into its own Qdrant collection
+index-skills:  ## Embed the skills catalog (name+description) and upsert into its own Qdrant collection
 	python -m scripts.index_skills
 
 reembed:  ## Rebuild a vector collection under the CURRENT embedding identity, then swap it in atomically (specs/014): make reembed COLLECTION_NAME=docs [ARGS=--dry-run]

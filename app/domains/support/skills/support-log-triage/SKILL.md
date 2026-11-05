@@ -1,7 +1,6 @@
 ---
 name: support-log-triage
 description: Parse a customer-pasted error log, stack trace, or webhook/JSON payload for real facts — occurrence counts, exception types, whether JSON is even well-formed — instead of eyeballing raw pasted text. Use whenever a customer pastes a log dump, error message, or payload and asks what it means or how often something happened.
-domains: [support]
 ---
 
 # Support Log Triage

@@ -597,8 +597,8 @@ requester + subject", since what counts as the same ticket is a product decision
 | 💼 **Sales** `app/domains/sales/` | Logs leads, drafts replies (never sends), schedules follow-ups, hands hot leads to a human, researches a lead's site, computes deal economics | `make telegram-sales` · `make followup-sweep` (cron) |
 
 Each is `store.py` + `tools.py` + `domain.py`. Its `AgentManifest.allowed_tools` is an exact list, and that omission, not a
-policy check, is what "sandboxed" means. Skills (`skills/*/SKILL.md`) and subagents (`subagents/*/AGENT.md`) take an optional
-`domains:` tag, so each domain gets its own `skill_search`, `use_skill` and `run_subagent`.
+policy check, is what "sandboxed" means. Skills (`app/domains/<domain>/skills/*/SKILL.md`, or `shared/` for all) and subagents
+(`app/domains/<domain>/subagents/*/AGENT.md`) sit in their domain's folder, so each domain gets its own `skill_search`, `use_skill` and `run_subagent`.
 
 - **One worker, many domains.** `AGENT_WORKER_DOMAINS` (names, or `all`) picks the domains a worker serves, each on its own graph under one concurrency budget (pattern 96). `AGENT_DOMAIN` is the domain the CLI and Telegram talk to; the API routes per request by `X-Domain` onto per-domain queues.
 - **Cron scripts never run the agent loop** (the approval gate would pause with no human). `ops_digest.py` and `followup_sweep.py` are fixed pipelines calling the domain's `_impl` functions, with a plain LLM call for the prose.

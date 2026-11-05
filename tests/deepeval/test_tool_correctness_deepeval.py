@@ -195,7 +195,7 @@ async def test_skill_tool_calls_are_correct_and_well_argued(deepeval_ollama, dee
     today — tests/agent/tools/test_skills.py is hermetic (fake LLM), and nothing
     else in tests/live/ touches skills at all.
 
-    `onboarding-brief` (skills/onboarding-brief/SKILL.md) is the right
+    `onboarding-brief` (app/domains/shared/skills/onboarding-brief/SKILL.md) is the right
     fixture for this: it's one of the few bundled skills with NO `domains:`
     frontmatter restriction (confirmed by reading the file directly, not
     assumed from its name), so it's actually reachable from the same

@@ -1,15 +1,17 @@
 """Tests for app/agent/tools/skill_catalog.py — the on-disk skill-package loader
 (GRAPH_PATTERNS.md pattern 45). All isolated to `tmp_path`; nothing here
-touches the real `skills/` directory shipped with the app or a live Qdrant.
+touches the skills shipped with the app (`test_every_shipped_skill_loads` aside) or a live Qdrant.
 """
+from pathlib import Path
+
 import pytest
 
 from app.agent.tools.skill_catalog import SkillLoadError, _parse_skill_file, load_skills
 
 
-def _write_skill(tmp_path, slug, content):
-    skill_dir = tmp_path / slug
-    skill_dir.mkdir()
+def _write_skill(tmp_path, slug, content, owner="shared"):
+    skill_dir = tmp_path / owner / "skills" / slug
+    skill_dir.mkdir(parents=True)
     (skill_dir / "SKILL.md").write_text(content, encoding="utf-8")
     return skill_dir / "SKILL.md"
 
@@ -35,19 +37,19 @@ class TestParseSkillFile:
         assert "Use the calculator tool" in record.body
         assert record.path == path
 
-    def test_omitted_domains_defaults_to_none(self, tmp_path):
-        path = _write_skill(tmp_path, "expense-summary", _VALID)
+    def test_a_skill_in_the_shared_folder_is_for_every_domain(self, tmp_path):
+        path = _write_skill(tmp_path, "expense-summary", _VALID, owner="shared")
         assert _parse_skill_file(path).domains is None
 
-    def test_parses_domains_list(self, tmp_path):
-        content = _VALID.replace("---\n\n# Expense", "domains: [support, sales]\n---\n\n# Expense")
-        path = _write_skill(tmp_path, "expense-summary", content)
-        assert _parse_skill_file(path).domains == ("support", "sales")
+    def test_a_skill_in_a_domains_folder_is_for_that_domain_only(self, tmp_path):
+        path = _write_skill(tmp_path, "expense-summary", _VALID, owner="support")
+        assert _parse_skill_file(path).domains == ("support",)
 
-    def test_non_list_domains_raises(self, tmp_path):
-        content = _VALID.replace("---\n\n# Expense", "domains: support\n---\n\n# Expense")
-        path = _write_skill(tmp_path, "bad", content)
-        with pytest.raises(SkillLoadError):
+    @pytest.mark.parametrize("tag", ["domains: [support]", "domains: support"])
+    def test_a_domains_tag_is_refused_because_the_folder_is_the_owner(self, tmp_path, tag):
+        content = _VALID.replace("---\n\n# Expense", f"{tag}\n---\n\n# Expense")
+        path = _write_skill(tmp_path, "expense-summary", content, owner="sales")
+        with pytest.raises(SkillLoadError, match="owner folder"):
             _parse_skill_file(path)
 
     def test_missing_frontmatter_raises(self, tmp_path):
@@ -97,6 +99,15 @@ class TestLoadSkills:
         assert set(catalog) == {"expense-summary", "onboarding-brief"}
         assert catalog["expense-summary"].description.startswith("Summarize expense")
 
+    def test_each_skill_is_owned_by_the_folder_it_sits_in(self, tmp_path):
+        _write_skill(tmp_path, "everyone", _VALID.replace("expense-summary", "everyone"), owner="shared")
+        _write_skill(tmp_path, "ops-only", _VALID.replace("expense-summary", "ops-only"), owner="ops")
+
+        catalog = load_skills(tmp_path)
+
+        assert catalog["everyone"].domains is None
+        assert catalog["ops-only"].domains == ("ops",)
+
     def test_a_malformed_skill_is_skipped_not_fatal_to_the_whole_catalog(self, tmp_path):
         """One bad SKILL.md must not take down every other skill — the
         same 'degrade a single failing leg, not the whole call' posture
@@ -116,3 +127,11 @@ class TestLoadSkills:
 
         assert len(catalog) == 1
         assert catalog["expense-summary"].path.parent.name == "aaa-first"
+
+
+def test_every_shipped_skill_loads():
+    """A shipped SKILL.md that fails to parse is skipped with a warning, which would leave a domain without it unnoticed."""
+    domains_dir = Path(__file__).resolve().parents[3] / "app" / "domains"
+    on_disk = list(domains_dir.glob("*/skills/*/SKILL.md"))
+    assert on_disk, "no shipped skills found: the layout moved"
+    assert {p.parent.name for p in on_disk} == {r.path.parent.name for r in load_skills(domains_dir).values()}

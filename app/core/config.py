@@ -147,13 +147,15 @@ class Settings(BillingSettings):
     hybrid_prefetch_limit: int = 20  # candidates pulled per leg (dense, sparse) before fusion
     rerank_top_k: int = 5            # final results returned after rerank
 
+    # Where the bundled skills and subagents live: <domains_dir>/<domain|shared>/{skills,subagents}/<name>/. Disk is
+    # truth for a skill's body (use_skill) and a subagent's prompt; relative to the working directory, shipped in the image.
+    domains_dir: str = "app/domains"
+
     # Skill packages (app/agent/tools/skill_catalog.py, pattern 45) — bundled SKILL.md
     # files, a *procedural capability* shipped with the app, not tenant data.
-    # `skills_dir` is disk truth for a skill's body (loaded by use_skill);
     # `skills_collection` is a SEPARATE Qdrant collection (never `collection`
     # above) holding {name, description} for skill_search, rebuilt via
     # `make index-skills`.
-    skills_dir: str = "skills"
     skills_collection: str = "skills"
     # 1, not a more generous top-K: live-verified (tests/live/
     # test_chat_ui.py::test_a_skill_is_found_and_followed, qwen2.5:3b, this
@@ -167,11 +169,8 @@ class Settings(BillingSettings):
     skills_search_top_k: int = 1
 
     # Subagents (app/agent/tools/subagent_catalog.py, pattern 46) — bundled AGENT.md files,
-    # each a scoped nested agent run `run_subagent` can delegate to.
-    # `subagents_dir` is disk truth like `skills_dir`, but no separate Qdrant
-    # collection — a subagent's description is embedded in run_subagent's
-    # own tool schema.
-    subagents_dir: str = "subagents"
+    # each a scoped nested agent run `run_subagent` can delegate to. No Qdrant collection:
+    # a subagent's description is embedded in run_subagent's own tool schema.
 
     # Structured-data tool (app/core/sql_store.py) — a SEPARATE database in
     # the same Postgres as LiteLLM/Langfuse, not sharing their schema.
@@ -745,10 +744,9 @@ ROUTER_LONG_PROMPT_CHARS = settings.router_long_prompt_chars
 ROUTER_TIMEOUT_SECONDS = settings.router_timeout_seconds
 HYBRID_PREFETCH_LIMIT = settings.hybrid_prefetch_limit
 RERANK_TOP_K = settings.rerank_top_k
-SKILLS_DIR = settings.skills_dir
+DOMAINS_DIR = settings.domains_dir
 SKILLS_COLLECTION = settings.skills_collection
 SKILLS_SEARCH_TOP_K = settings.skills_search_top_k
-SUBAGENTS_DIR = settings.subagents_dir
 APPDATA_DATABASE_URL = settings.appdata_database_url
 REDIS_URL = settings.redis_url
 SEMANTIC_CACHE_SIMILARITY_THRESHOLD = settings.semantic_cache_similarity_threshold

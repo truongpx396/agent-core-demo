@@ -170,8 +170,8 @@ def test_a_grounded_answer_shows_a_real_citation(page: Page, real_stack_with_ret
 @pytest.mark.advisory
 def test_a_skill_is_found_and_followed(page: Page, real_stack_with_retrieval: str):
     """skill_search -> use_skill -> the skill's own instructed tool calls
-    (GRAPH_PATTERNS.md pattern 45) — `expense-summary` (skills/expense-
-    summary/SKILL.md) chosen specifically because its OWN instructions
+    (GRAPH_PATTERNS.md pattern 45) — `expense-summary` (app/domains/shared/skills/
+    expense-summary/SKILL.md) chosen specifically because its OWN instructions
     only need `calculator` afterward, not search_docs/query_employees too:
     skill_search itself still needs real embeddings (real_stack_with_retrieval),
     but this keeps the number of real, independently-fallible model
@@ -199,7 +199,7 @@ def test_a_skill_is_found_and_followed(page: Page, real_stack_with_retrieval: st
 @pytest.mark.advisory
 def test_a_subagent_delegates_and_returns_a_real_answer(page: Page, real_stack_with_retrieval: str):
     """run_subagent (GRAPH_PATTERNS.md pattern 46) — delegates to the bundled `researcher` subagent
-    (subagents/researcher/AGENT.md, visible on the default Ecorp domain this test already runs against), which
+    (app/domains/ecorp/subagents/researcher/AGENT.md, visible on the default Ecorp domain this test already runs against), which
     itself calls query_employees in a NESTED graph run this conversation never sees directly.
     """
     page.goto(real_stack_with_retrieval)

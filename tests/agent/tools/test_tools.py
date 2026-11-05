@@ -694,11 +694,11 @@ class TestSkillSearch:
             lambda: {
                 "onboarding-brief": SkillRecord(
                     name="onboarding-brief", description="d", body="b", domains=None,
-                    path=Path("skills/onboarding-brief/SKILL.md"),
+                    path=Path("app/domains/shared/skills/onboarding-brief/SKILL.md"),
                 ),
                 "expense-summary": SkillRecord(
                     name="expense-summary", description="d", body="b", domains=None,
-                    path=Path("skills/expense-summary/SKILL.md"),
+                    path=Path("app/domains/shared/skills/expense-summary/SKILL.md"),
                 ),
             },
         )
@@ -739,7 +739,7 @@ class TestUseSkill:
             description="Compose a new-hire brief.",
             body="# Onboarding Brief\n1. Call query_employees...",
             domains=None,
-            path=Path("skills/onboarding-brief/SKILL.md"),
+            path=Path("app/domains/shared/skills/onboarding-brief/SKILL.md"),
         )
         monkeypatch.setattr(skills_module, "get_skills", lambda: {"onboarding-brief": record})
 
@@ -873,7 +873,7 @@ class _RecordingFakeLLM:
         return await self._inner.ainvoke(messages, *args, **kwargs)
 
 
-def _fake_subagent_record(name="researcher", tools_=("search_docs", "calculator"), model=None, domains_=None):
+def _fake_subagent_record(name="researcher", tools_=("search_docs", "calculator"), model=None, domains_=("ecorp",)):
     return SubagentRecord(
         name=name,
         description="A test subagent.",
@@ -881,7 +881,7 @@ def _fake_subagent_record(name="researcher", tools_=("search_docs", "calculator"
         tools=tools_,
         model=model,
         domains=domains_,
-        path=Path(f"subagents/{name}/AGENT.md"),
+        path=Path(f"app/domains/{domains_[0]}/subagents/{name}/AGENT.md"),
     )
 
 
@@ -1548,12 +1548,12 @@ class TestRunSubagentTool:
 
 
 class TestSubagentDeclaredForDomain:
-    def test_untagged_subagent_is_declared_only_for_ecorp(self):
-        record = _fake_subagent_record(domains_=None)
+    def test_a_subagent_in_ecorps_folder_is_declared_only_for_ecorp(self):
+        record = _fake_subagent_record(domains_=("ecorp",))
         assert _subagent_declared_for_domain(record, "ecorp") is True
         assert _subagent_declared_for_domain(record, "support") is False
 
-    def test_tagged_subagent_is_declared_only_for_its_domains(self):
+    def test_a_subagent_is_declared_only_for_the_domain_whose_folder_holds_it(self):
         record = _fake_subagent_record(domains_=("support",))
         assert _subagent_declared_for_domain(record, "support") is True
         assert _subagent_declared_for_domain(record, "ecorp") is False
@@ -1562,7 +1562,7 @@ class TestSubagentDeclaredForDomain:
 
 class TestBuildSubagentRegistryDomainFilter:
     def test_domain_filter_ONLY_admits_subagents_declared_for_it(self, monkeypatch):
-        ecorp_record = _fake_subagent_record(name="ecorp-only", tools_=("search_docs",), domains_=None)
+        ecorp_record = _fake_subagent_record(name="ecorp-only", tools_=("search_docs",), domains_=("ecorp",))
         support_record = _fake_subagent_record(
             name="support-only", tools_=("search_docs",), domains_=("support",)
         )

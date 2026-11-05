@@ -27,7 +27,7 @@ async def main() -> None:
         catalog = skills_module.get_skills()
         if not catalog:
             raise SystemExit(
-                f"No skills found under {skills_module.SKILLS_DIR!r} — nothing to index."
+                f"No skills found under {skills_module.DOMAINS_DIR!r} — nothing to index."
             )
 
         # dim comes from a real embed call, same as scripts/seed.py — never hardcoded.

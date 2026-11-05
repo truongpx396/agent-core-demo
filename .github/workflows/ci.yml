@@ -749,9 +749,9 @@ jobs:
 
           problems = []
           if not skills.load_skills():
-              problems.append("the skill catalog is empty (skills/ is missing from the image)")
+              problems.append("the skill catalog is empty (the skills/ folders under app/domains are missing from the image)")
           if not subagents.load_subagents():
-              problems.append("the subagent catalog is empty (subagents/ is missing from the image)")
+              problems.append("the subagent catalog is empty (the subagents/ folders under app/domains are missing from the image)")
           try:
               import scripts.index_skills  # noqa: F401
           except ImportError as exc:

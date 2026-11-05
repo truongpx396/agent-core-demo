@@ -120,15 +120,8 @@ def _resolve_subagent_tools(
 
 
 def _subagent_declared_for_domain(record: "subagents_module.SubagentRecord", domain: str) -> bool:
-    """An AGENT.md with no `domains:` frontmatter (`record.domains is None`)
-    stays visible only to `domain="ecorp"` — it doesn't silently become
-    available to every new domain. See app/agent/tools/subagent_catalog.py's docstring for
-    why this default differs from SkillRecord's (there `None` means "every
-    domain"): a subagent's declared `tools:` are only meaningful against ONE
-    tool universe, so an untagged subagent handed to another domain would
-    typically resolve to nothing useful anyway."""
-    if record.domains is None:
-        return domain == "ecorp"
+    """A subagent is visible to the one domain whose folder it sits in
+    (app/agent/tools/subagent_catalog.py's docstring says why there is no shared one)."""
     return domain in record.domains
 
 

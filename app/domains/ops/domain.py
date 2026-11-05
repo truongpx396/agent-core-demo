@@ -54,7 +54,7 @@ _RUN_SUBAGENT = make_domain_subagent_tool(
         "use_skill": SHARED_TOOL_CAPABILITIES["use_skill"],
     },
 )
-# None unless at least one bundled AGENT.md declares `domains: [ops]`.
+# None unless ops/subagents/ holds an AGENT.md.
 
 OPS_SYSTEM_PROMPT = """You are Ecorp's internal ops assistant.
 
