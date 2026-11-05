@@ -30,7 +30,7 @@ example "does this message ask us to send an email?", add `<name>.json` here, or
 - **One label should be one cluster of meaning.** The service averages a label's examples into one point. A label that is really two topics
   ("billing questions" and "shipping questions") belongs in two labels.
 - **Write examples the way users write.** Short, varied, real-sounding. Keep them different from the sentences you will judge the set on.
-- **`calibration` has an entry for every model that serves requests** (`docker/ml-service/models.toml`, the `classify` roles). It is the
+- **`calibration` has an entry for every model that serves requests** (`services/ml-service/models.toml`, the `classify` roles). It is the
   similarity below which the answer is "none of these". It differs by model, because the models place sentences on different scales (bge-small's
   cutoff is about 0.7, MiniLM's about 0.25). **A model with no entry does not serve the set**, so the fallback model cannot be handed the
   primary's number by accident.

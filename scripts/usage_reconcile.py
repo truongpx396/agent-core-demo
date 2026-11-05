@@ -18,7 +18,7 @@ Why a worker and not just cron: the figures reach Prometheus through an OpenTele
 forgets a series five minutes after its last update, and a synchronous gauge is exported once per set. A pass every few hours
 would show the drift gauge for five minutes in each of them, so an alert on it could never stay firing. The worker re-sets the
 gauges from the last pass every minute. Cron with `make usage-reconcile` still works for the printed report and the exit
-code, but it gives the alert nothing durable to hold on to (disclosed in infra/README.md).
+code, but it gives the alert nothing durable to hold on to (disclosed in deploy/README.md).
 
 SIGTERM or SIGINT stops the worker after the pass in flight.
 """

@@ -20,7 +20,7 @@
 # installer is; `builder` installs the lock into a virtualenv with uv and is thrown away; `runtime`, the LAST stage and so what
 # `docker build .` produces, is what ships: the base, the OS package the app needs, that virtualenv copied in, and the app.
 # Nothing that installs software is in the shipped image: not uv, not pip. Needs BuildKit (the default builder since Docker 23):
-# `RUN --mount` is BuildKit's. docker/ml-service.Dockerfile, the other image production runs, is built the same way and pinned
+# `RUN --mount` is BuildKit's. services/ml-service/Dockerfile, the other image production runs, is built the same way and pinned
 # to the same two digests (bump them together).
 
 # ---- base: the Python image, pinned by digest -------------------------------------------------------------------------------
@@ -29,7 +29,7 @@
 # and a scanner result can change under a PR that touched nothing. What keeps it fresh now: Dependabot proposes a new digest weekly
 # (.github/dependabot.yml, with a cooldown), `apt-get upgrade` below runs whenever that layer is rebuilt, and CI's Trivy image gate
 # fails if the pinned base ages into a fixable CRITICAL. Bump it by merging that PR, or by hand: take the new index digest,
-# change it here and in docker/ml-service.Dockerfile, and run `docker build .`.
+# change it here and in services/ml-service/Dockerfile, and run `docker build .`.
 FROM python:3.13-slim@sha256:57b29a7c050c4e679e4bea572e14b3965cf4b5839de2da49d55e49ffc4024f39 AS base
 
 # ---- uv: the installer, as a single static binary from its own image, pinned by digest ---------------------------------------

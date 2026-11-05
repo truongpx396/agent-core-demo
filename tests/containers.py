@@ -454,8 +454,8 @@ def ensure_crawl4ai() -> dict[str, str]:
     return _acquire("crawl4ai", _start)
 
 
-def _build_image(dockerfile: str, tag: str) -> None:
-    """Build `dockerfile` (repo-relative) as `tag` with the Docker CLI, which is BuildKit, and not with the `docker` SDK.
+def _build_image(context: str, tag: str) -> None:
+    """Build the `Dockerfile` in `context` (a repo-relative directory, also the build context) as `tag` with the Docker CLI, which is BuildKit, and not with the `docker` SDK.
 
     The SDK's `images.build` drives the LEGACY builder, which rejects `RUN --mount` ("the --mount option requires BuildKit"); the Dockerfiles
     use BuildKit's cache mounts, as `docker build` and `docker compose` build them by default (ENGINEERING_PATTERNS.md pattern 76). The first
@@ -465,7 +465,7 @@ def _build_image(dockerfile: str, tag: str) -> None:
     if docker_cli is None:
         raise RuntimeError("the docker CLI is needed to build the image (the daemon is reachable, so this is a PATH problem)")
     result = subprocess.run(  # noqa: S603 - a fixed argv of this repo's own paths, no shell
-        [docker_cli, "build", "--file", dockerfile, "--tag", tag, str(_REPO_ROOT)],
+        [docker_cli, "build", "--tag", tag, str(_REPO_ROOT / context)],
         env={**os.environ, "DOCKER_BUILDKIT": "1"},
         capture_output=True,
         text=True,
@@ -473,14 +473,14 @@ def _build_image(dockerfile: str, tag: str) -> None:
     )
     if result.returncode != 0:
         raise RuntimeError(
-            f"`docker build --file {dockerfile}` failed ({result.returncode}):\n{result.stdout[-1500:]}\n{result.stderr[-3500:]}"
+            f"`docker build {context}` failed ({result.returncode}):\n{result.stdout[-1500:]}\n{result.stderr[-3500:]}"
         )
 
 
 def ensure_ml_service() -> dict[str, str]:
     """Real reranker + prompt-injection-classifier service — the same
     image docker-compose.yml's own `ml-service` builds from
-    docker/ml-service.Dockerfile. Needed purely to satisfy
+    services/ml-service/Dockerfile. Needed purely to satisfy
     `GET /health/ready`'s `ml_service` check (app/api/health.py), added
     once that endpoint started checking it: the same "a real instance, not
     a stub, even though this test's own assertions don't depend on it"
@@ -494,7 +494,7 @@ def ensure_ml_service() -> dict[str, str]:
     not a published one) and no pre-built public tag to pull — built once
     here with the Docker CLI (BuildKit, see `_build_image`), then driven through the generic
     `DockerContainer` API like `ensure_qdrant()`. Both ONNX models this
-    service loads (~22M params each, docker/ml-service/ml_service/) are small
+    service loads (~22M params each, services/ml-service/ml_service/) are small
     enough that a cold download inside the container's own healthcheck-
     covered startup stays cheap — unlike `ensure_ollama()`'s multi-GB chat
     model, no extra host-side model cache/`actions/cache` step is needed
@@ -507,7 +507,7 @@ def ensure_ml_service() -> dict[str, str]:
         from testcontainers.core.container import DockerContainer
 
         tag = "graph-agent-core-ml-service:test"
-        _build_image("docker/ml-service.Dockerfile", tag)
+        _build_image("services/ml-service", tag)
         container = DockerContainer(tag).with_exposed_ports(80)
         container.start()
         host = container.get_container_host_ip()

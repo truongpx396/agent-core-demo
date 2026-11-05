@@ -4,7 +4,7 @@ name: OWASP ZAP DAST
 # .github/workflows/strix.yml's own dynamic pass, ZAP costs no money and
 # needs no cloud LLM key, but it still needs a REACHABLE, RUNNING target —
 # this repo's own CI has no live deployment to point at by default (see
-# infra/README.md; docker-compose.prod.yml's droplet is the one real
+# deploy/README.md; docker-compose.prod.yml's droplet is the one real
 # candidate once deployed) — and `mode: api-scan` below actively attacks
 # whatever URL you give it, the same "maintainer runs this deliberately"
 # framing every live-target job in this repo uses (`make strix-app`, `make

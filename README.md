@@ -396,7 +396,7 @@ meanwhile (pause ingestion first; exit 4). The answer cache needs nothing: its i
 before identities existed is *adopted* with a warning until its first re-embed.
 
 **To serve an ONNX embedding model from `ml-service`** (config only): `GET http://localhost:8083/v1/models` lists the models and
-their prefixes (`docker/ml-service/models.toml` declares them; `ML_MODELS_ENABLED=bge-small-en-v1.5,gte-modernbert-base-int8`
+their prefixes (`services/ml-service/models.toml` declares them; `ML_MODELS_ENABLED=bge-small-en-v1.5,gte-modernbert-base-int8`
 loads more). Point the gateway's `embed` alias at `openai/<name>` with `api_base: http://ml-service:80/v1`
 ([the entry](specs/014-model-serving-eval-harness/contracts/gateway-aliases.md)), set the prefixes, restart the proxy, run
 `make reembed` per collection, bake, delete the old ones. Check memory headroom first (measured in pattern 67; the
@@ -421,7 +421,7 @@ Three chat tiers, each a gateway alias (the app names aliases, never a provider'
 Optional and **off by default** (`ROUTER_MODE=off`): no classifier is asked and every call is exactly what it was. It can only
 choose the model; approval, tenant scoping and idempotency are unchanged under every tier.
 
-- **How it decides.** The `route_model` node ([pattern 68](GRAPH_PATTERNS.md)) reads **rules** over the message (long, contains code, asks several things, reasoning words) and a **label** from the ML service (`POST /v1/decide`, the `route-topics` choice set in `docker/ml-service/labelsets/route-topics.json`). Each names the lowest tier it accepts; the turn goes to `min(ROUTER_MAX_TIER, max(rules, label))`, lowered to a configured, priced tier, and is answered, priced and recorded as that alias.
+- **How it decides.** The `route_model` node ([pattern 68](GRAPH_PATTERNS.md)) reads **rules** over the message (long, contains code, asks several things, reasoning words) and a **label** from the ML service (`POST /v1/decide`, the `route-topics` choice set in `services/ml-service/labelsets/route-topics.json`). Each names the lowest tier it accepts; the turn goes to `min(ROUTER_MAX_TIER, max(rules, label))`, lowered to a configured, priced tier, and is answered, priced and recorded as that alias.
 - **Failure.** No label leaves the rules to decide; any other failure runs the turn on `chat`.
 - **Roll out in stages.** `shadow` makes and counts every decision but runs on `chat`, so you read what routing *would* have spent (`agent_model_route_tier_total{tier,mode="shadow"}`, `agent_model_route_total{outcome}`), then `on`:
 
@@ -445,7 +445,7 @@ ROUTER_MAX_TIER=strong            # the ceiling: spend is bounded by it
 "Does this message ask us to send an email, or only to look something up?" is a classification problem with known answers
 and needs no paid-API call and no training:
 
-1. Write a **label set**: a reviewed JSON file of the choices with about ten example sentences each ([`docker/ml-service/labelsets/README.md`](docker/ml-service/labelsets/README.md)).
+1. Write a **label set**: a reviewed JSON file of the choices with about ten example sentences each ([`services/ml-service/labelsets/README.md`](services/ml-service/labelsets/README.md)).
 2. Choose its cutoff per serving model on sentences with known answers (`make labelset-calibrate`, [`evals/README.md`](evals/README.md)).
 3. Ask:
 
@@ -608,7 +608,7 @@ policy check, is what "sandboxed" means. Skills (`app/domains/<domain>/skills/*/
 
 ## 🚢 Deploying to production
 
-`infra/terraform/` provisions two DigitalOcean droplets: an **app droplet** (the lean prod stack behind Caddy) and a smaller
+`deploy/terraform/` provisions two DigitalOcean droplets: an **app droplet** (the lean prod stack behind Caddy) and a smaller
 **observability droplet** (Prometheus, Loki, Grafana, Alertmanager) fed over the private network. Creating or destroying
 droplets is always a human-run `terraform apply`; `.github/workflows/deploy.yml` then builds images to GHCR and redeploys
 automatically once CI passes on `main`.
@@ -619,14 +619,14 @@ automatically once CI passes on `main`.
 4. Merge to `main`.
 5. Once LiteLLM is up, mint the app's scoped gateway key and put it in `.env` as `LITELLM_APP_KEY` ([Gateway backstop](#gateway-backstop)).
 
-Full runbook, scaling, backups, rollback and teardown: **[infra/README.md](infra/README.md)**.
+Full runbook, scaling, backups, rollback and teardown: **[deploy/README.md](deploy/README.md)**.
 
 ### 🚨 Four things that bite on a first deploy
 
 - 🔓 **Production authentication is not wired.** `deploy/env/prod.env.example` sets `AUTH_MODE=identity`, but the prod compose and Caddyfile don't include the authlimit service, so requests get a 401 or 503 until it is wired (spec 018). `AUTH_MODE=headers` trusts `X-Tenant-Id`/`X-Principal-Id` as sent: use it only behind a gateway of your own that sets both and discards client copies ([Known gaps](#-roadmap-and-known-gaps)).
 - 📦 **The images ship no installer.** Built in stages with uv, the prod `api`, worker and `ml-service` containers run read-only with all capabilities dropped, so a change that writes to the image filesystem at runtime fails ([ENGINEERING_PATTERNS.md](ENGINEERING_PATTERNS.md) pattern 76).
 - 🗄️ **SQL migrations aren't applied to an existing volume.** `postgres-init/*.sql` runs only on a fresh volume and the deploy only syncs the files ([Database migrations](#database-migrations)).
-- 📒 **Upgrading from a release whose spend caps read `usage_ledger`:** apply `postgres-init/19`, run `make usage-events-carry-over` (`ARGS=--dry-run` first), deploy, then run it once more. Skipping the first makes every cap read fail open; skipping the second makes a monthly cap forget the month so far ([runbook](infra/README.md#upgrading-carry-the-ledgers-history-into-the-usage-events)).
+- 📒 **Upgrading from a release whose spend caps read `usage_ledger`:** apply `postgres-init/19`, run `make usage-events-carry-over` (`ARGS=--dry-run` first), deploy, then run it once more. Skipping the first makes every cap read fail open; skipping the second makes a monthly cap forget the month so far ([runbook](deploy/README.md#upgrading-carry-the-ledgers-history-into-the-usage-events)).
 
 ### Gateway backstop
 
@@ -696,7 +696,7 @@ hand, in order (`psql -U langfuse -d appdata -f postgres-init/NN-….sql`).
 `make obs-up` starts the backends, [`docker-compose.observability.yml`](deploy/compose/docker-compose.observability.yml), and the collectors that
 feed them, [`docker-compose.collectors.yml`](deploy/compose/docker-compose.collectors.yml) (the OTel collector, the exporters, cAdvisor, Promtail;
 `make collectors-up` starts only those, beside `make up`). Nothing in the app depends on either (`make obs-down` keeps data, `make obs-clean`
-drops it; config in [`observability/`](observability/); prod runs the backends on their own droplet, [infra/README.md](infra/README.md)).
+drops it; config in [`observability/`](observability/); prod runs the backends on their own droplet, [deploy/README.md](deploy/README.md)).
 
 | Piece | Role |
 |---|---|
@@ -742,7 +742,7 @@ model-alias or retrieval change; `make probe-tools` for any chat alias's model o
 
 | Tool | Checks | Run | CI |
 |---|---|---|---|
-| [Semgrep](https://semgrep.dev/) | Source SAST over `app/`, `scripts/`, `docker/` | `make semgrep` | Gate; SARIF to the Security tab |
+| [Semgrep](https://semgrep.dev/) | Source SAST over `app/`, `scripts/`, `services/ml-service/`, `deploy/images/` | `make semgrep` | Gate; SARIF to the Security tab |
 | [Trivy](https://github.com/aquasecurity/trivy) | Dependency CVEs, secrets, Dockerfile/compose misconfig, built image | `make trivy`, `make trivy-image` | Gate on **fixable CRITICAL** only; HIGH+ goes to the Security tab |
 | [Checkov](https://www.checkov.io/) | Terraform misconfiguration | `make checkov` | Gate |
 | [SonarQube](https://www.sonarsource.com/products/sonarqube/) | Code quality gate on new code | `make sonar-up` + `make sonar-scan` | Gate, on an ephemeral server |
@@ -846,7 +846,7 @@ specs/ .specify/          Spec Kit specs 001–019 and the constitution
 skills/ subagents/        the agent's own catalogs
 docker/ Dockerfile        ml-service, OpenSandbox, sandbox image; the app image (the Dockerfile stays at the root: the build context)
 deploy/                   compose/ (dev, prod, observability, load test), caddy/, litellm/ (configs, patches/)
-infra/terraform/          DigitalOcean droplets; infra/README.md is the runbook
+deploy/terraform/          DigitalOcean droplets; deploy/README.md is the runbook
 observability/            Prometheus (+ alerts.yml), Alertmanager, Loki, Promtail, otel-collector, Grafana
 postgres-init/            numbered SQL schema (fresh volumes only)
 tests/                    mirrors app/; adapters/ (SQL shape, requests), fakes/ (in-memory ports); integration/, live/, deepeval/ are the marked tiers
@@ -901,7 +901,7 @@ anyone who sets the right headers.
 | Readiness returns 503 | The body names the failing dependency, e.g. `ml-service` still downloading its models on first start; `postgres` or `checkpointer` means the pooler or Postgres behind it (`docker compose logs pgbouncer`) |
 | Turns fail with `prepared statement "_pg3_N" does not exist`, or clients wait for a database connection | A connection that prepares statements is going through PgBouncer: every pool must pass `prepare_threshold=None` (`tests/core/test_pool_settings.py` finds the one that does not). Waiting clients: alert `PgBouncerClientsWaiting`, look for an `idle in transaction` session before raising `DEFAULT_POOL_SIZE` ([ENGINEERING_PATTERNS.md](ENGINEERING_PATTERNS.md) 95) |
 | The Pyroscope UI is empty | Pushes before the server reports ready (`curl :4040/ready`) are dropped without a trace; check `agent_profiling_start_failures_total` and that `PYROSCOPE_SERVER_ADDRESS` is set in the container |
-| A prod dashboard is empty | Check the app droplet's relay: `dc logs otel-collector-agent promtail` (the `dc` alias is defined there; [infra/README.md](infra/README.md)) |
+| A prod dashboard is empty | Check the app droplet's relay: `dc logs otel-collector-agent promtail` (the `dc` alias is defined there; [deploy/README.md](deploy/README.md)) |
 
 * * *
 
@@ -914,5 +914,5 @@ anyone who sets the right headers.
 | [WORKER_CONCURRENCY.md](WORKER_CONCURRENCY.md) | Sizing the worker pools |
 | [BILLING_INTEGRATION.md](BILLING_INTEGRATION.md) · [`packages/billing/`](packages/billing/README.md) | The app's side of the billing seam · the package: patterns, runbook, roadmap, specs |
 | [`specs/`](specs/) · [Constitution](.specify/memory/constitution.md) | Spec Kit specs 001–018 · the non-negotiable rules (tenant isolation, mandatory approval and exactly-once side effects are principles I, II and IV) |
-| [infra/README.md](infra/README.md) · [evals/README.md](evals/README.md) | Deploy runbook: scaling, backups, rollback, teardown · judging a model swap |
+| [deploy/README.md](deploy/README.md) · [evals/README.md](evals/README.md) | Deploy runbook: scaling, backups, rollback, teardown · judging a model swap |
 | [CLAUDE.md](CLAUDE.md) | Working rules for contributors and coding agents |

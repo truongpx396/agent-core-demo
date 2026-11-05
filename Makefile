@@ -2,7 +2,7 @@
 
 # The billing package and the ML service's `ml_service` are found by path, not installed: a path dependency does not belong in the
 # lock file (spec 011 D20). Absolute, so a target that `cd`s into packages/billing still finds them; pytest and mypy do the same.
-export PYTHONPATH := $(CURDIR)/packages/billing/src:$(CURDIR)/docker/ml-service$(if $(PYTHONPATH),:$(PYTHONPATH))
+export PYTHONPATH := $(CURDIR)/packages/billing/src:$(CURDIR)/services/ml-service$(if $(PYTHONPATH),:$(PYTHONPATH))
 
 # The gateway stack's generated secrets (Casdoor database and admin passwords) live outside the repo and go to compose as a second
 # --env-file; `.env` comes first so every other variable still comes from it.
@@ -60,8 +60,8 @@ up-all: mcp-gateway-secrets authlimit-keys-ensure  ## Start everything in contai
 sandbox-up: sandbox-build  ## Start the authenticated OpenSandbox server for the domains' sandbox tools (opt-in `sandbox` profile: it mounts the Docker socket). Needs OPENSANDBOX_API_KEY in .env
 	$(COMPOSE) --profile sandbox up -d --build
 
-sandbox-build:  ## Build the sandbox base image (docker/sandbox.Dockerfile: python + numpy + pandas, non-root, no network) that SANDBOX_IMAGE references; rerun after editing it
-	docker build -t graph-agent-core-sandbox:latest -f docker/sandbox.Dockerfile .
+sandbox-build:  ## Build the sandbox base image (deploy/images/sandbox.Dockerfile: python + numpy + pandas, non-root, no network) that SANDBOX_IMAGE references; rerun after editing it
+	docker build -t graph-agent-core-sandbox:latest -f deploy/images/sandbox.Dockerfile .
 
 pull-models:  ## Download the chat model (qwen2.5:7b, ~4.7 GB), the small test-tier model (qwen2.5:3b, ~1.9 GB) and the embedding model into the native Ollama
 	ollama pull qwen2.5:7b

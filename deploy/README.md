@@ -1,6 +1,6 @@
 # Deploying to a Digital Ocean droplet
 
-Provisions TWO droplets (via `infra/terraform/`):
+Provisions TWO droplets (via `deploy/terraform/`):
 
 - The **app droplet**, running a lean production subset of this app's stack
   (`docker-compose.prod.yml`): api + agent-worker + ingest-worker + postgres
@@ -24,7 +24,7 @@ Two separate, deliberately non-automatic-together pieces:
   Always a human running `terraform plan`/`apply` by hand (below), against
   the local state file `versions.tf`'s backend block defaults to. CI's
   `terraform-validate` workflow checks `fmt`/`validate` (and Checkov, via
-  `ci.yml`'s own `checkov` job) on any PR touching `infra/terraform/**` —
+  `ci.yml`'s own `checkov` job) on any PR touching `deploy/terraform/**` —
   structural correctness only, not a real `plan` diff, since a real plan
   needs the actual state file, which a local backend deliberately keeps off
   CI's machine. If you switch to the commented-out DigitalOcean Spaces
@@ -54,7 +54,7 @@ Two separate, deliberately non-automatic-together pieces:
 ### 2. Provision both droplets
 
 ```
-cd infra/terraform
+cd deploy/terraform
 cp terraform.tfvars.example terraform.tfvars   # fill in do_token, ssh_key_fingerprints,
                                                 # admin_ip_cidrs, deploy_ssh_public_key (deploy_key.pub's contents)
 terraform init
@@ -292,7 +292,7 @@ commit on `main`, or SSH in and `IMAGE_TAG=<older-sha> dc up -d` directly using 
 observability stack has no image tags of its own to roll back — its images
 are always `:latest` off-the-shelf.
 
-**Destroying a droplet**: `cd infra/terraform && terraform destroy` removes
+**Destroying a droplet**: `cd deploy/terraform && terraform destroy` removes
 **both** droplets and both reserved IPs in one go. To remove just the
 observability droplet and keep the app running, target it specifically:
 `terraform destroy -target=digitalocean_droplet.observability
@@ -384,7 +384,7 @@ Everything about credit billing (turning it on, changing a wallet, reconciling t
 ## Security scanning in front of all this
 
 - **Checkov** (`.checkov.yaml`, CI's `checkov` job, `make checkov`) scans
-  `infra/terraform/**` for IaC misconfiguration before you ever `apply`.
+  `deploy/terraform/**` for IaC misconfiguration before you ever `apply`.
 - **Semgrep** (CI's `semgrep` job, `make semgrep`) and **Trivy** (CI's
   `trivy` job) scan the application source/Dockerfile/dependencies that end
   up in the images this workflow ships.

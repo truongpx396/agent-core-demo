@@ -12,7 +12,7 @@ It checks what the app's design rests on and a mock can't show:
    end user (`user`), tenant, principal or conversation. The end user is readable on purpose
    (`gateway.end_user_id`: `tenant:<tenant>/user:<principal>`), which is safe only while the gateway keeps it
    to itself. That is a property of LiteLLM, not of this code, hence the check and why the image is pinned by
-   digest; run it whenever the digest is bumped (infra/README.md, "Bumping the LiteLLM image").
+   digest; run it whenever the digest is bumped (deploy/README.md, "Bumping the LiteLLM image").
 
 Only the model backend is faked (and only the host in each `api_base` rewritten). It can't show budget
 enforcement, spend-log or Langfuse fields, which need LiteLLM's database. Exit 0 every check passed, 1 a check

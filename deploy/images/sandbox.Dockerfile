@@ -16,7 +16,7 @@
 # Built via `make sandbox-build`, NOT a docker-compose service — this is
 # an IMAGE opensandbox-server references by tag when creating ephemeral
 # sandbox containers (via the host Docker socket it already has, see
-# docker/opensandbox-server.Dockerfile), not a long-running service itself.
+# deploy/images/opensandbox-server.Dockerfile), not a long-running service itself.
 FROM python:3.12-slim
 RUN pip install --no-cache-dir numpy==2.5.3 pandas==3.0.5
 RUN useradd --create-home --uid 1000 sandboxuser

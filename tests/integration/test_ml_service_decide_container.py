@@ -89,7 +89,7 @@ def test_the_shipped_route_topics_set_is_served_by_the_real_container_and_matche
     """`POST /v1/decide` against the image as built: the label set baked into it, both real models, the real
     tokenisers.
     """
-    raw = json.loads((Path(__file__).resolve().parents[2] / "docker" / "ml-service" / "labelsets" / "route-topics.json").read_text())
+    raw = json.loads((Path(__file__).resolve().parents[2] / "services" / "ml-service" / "labelsets" / "route-topics.json").read_text())
     sentences = [CODE_SENTENCE, "We received a subpoena for customer records, what do we do?", "qwerty qwerty qwerty"]
     answers: list[dict] = []
     for sentence in sentences:

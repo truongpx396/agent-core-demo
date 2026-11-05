@@ -1,4 +1,4 @@
-# Custom CPU inference microservice (the `ml_service` package under docker/ml-service/, entry point main.py) — hosts
+# Custom CPU inference microservice (the `ml_service` package under services/ml-service/, entry point main.py) — hosts
 # this app's small, latency-critical ONNX models: reranking (originally
 # the only one) and prompt-injection classification (added alongside it,
 # reusing the same container/batching engine rather than standing up a
@@ -14,7 +14,7 @@
 # Built like the root Dockerfile, for the same reasons (ENGINEERING_PATTERNS.md pattern 76): the base image and uv are pinned by
 # digest in their own stages, the dependencies are installed by uv into a virtualenv in a throwaway `builder` stage with a cache
 # mount, and the LAST stage, `runtime`, copies that virtualenv in and ships no installer (not uv, not pip). The two digests below
-# are the root Dockerfile's: bump them together. Needs BuildKit.
+# are the root Dockerfile's: bump them together. Needs BuildKit. The build context is this directory (`docker build services/ml-service`).
 
 # ---- base: the Python image, pinned by digest (see the root Dockerfile for why and how it is bumped) ------------------------
 FROM python:3.13-slim@sha256:57b29a7c050c4e679e4bea572e14b3965cf4b5839de2da49d55e49ffc4024f39 AS base
@@ -39,7 +39,7 @@ RUN uv venv --python /usr/local/bin/python "$VIRTUAL_ENV"
 
 # requirements.txt is bind-mounted, not COPY'd, so the step reruns exactly when it changes; the wheel cache persists between builds.
 RUN --mount=type=cache,target=/root/.cache/uv \
-    --mount=type=bind,source=docker/ml-service/requirements.txt,target=/tmp/requirements.txt \
+    --mount=type=bind,source=requirements.txt,target=/tmp/requirements.txt \
     uv pip install -r /tmp/requirements.txt
 
 # ---- runtime: what ships ----------------------------------------------------------------------------------------------------
@@ -71,7 +71,7 @@ ENV HOME=/home/appuser
 # The whole service directory: the `ml_service` package, the `main.py` shim `uvicorn main:app` imports, `models.toml` (the declared
 # text models) and `labelsets/` (the reviewed choices `POST /v1/decide` matches against, specs/015-016). It used to be the single file
 # main.py; the logic became an importable package so tests and the evaluation harness can use the very code the service serves with.
-COPY docker/ml-service/ ./
+COPY . ./
 
 # The named volume mounted at /home/appuser/.cache (docker-compose.yml)
 # only inherits this chown correctly if the directory already exists at

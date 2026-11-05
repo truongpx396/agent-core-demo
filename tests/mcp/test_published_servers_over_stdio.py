@@ -24,7 +24,7 @@ from mcp import ClientSession
 from mcp.client.stdio import StdioServerParameters, stdio_client
 
 REPO = Path(__file__).resolve().parents[2]
-_PYTHONPATH = os.pathsep.join(str(REPO / p) for p in (".", "packages/billing/src", "docker/ml-service"))
+_PYTHONPATH = os.pathsep.join(str(REPO / p) for p in (".", "packages/billing/src", "services/ml-service"))
 
 
 def _env(**mcp: str) -> dict[str, str]:

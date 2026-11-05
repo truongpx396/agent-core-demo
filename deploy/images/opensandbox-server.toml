@@ -43,7 +43,7 @@ level = "INFO"
 
 [runtime]
 type = "docker"
-# The execd and egress images are on the SAME release line as the server (docker/opensandbox-server.Dockerfile), the SDK and the MCP
+# The execd and egress images are on the SAME release line as the server (deploy/images/opensandbox-server.Dockerfile), the SDK and the MCP
 # bridge (requirements-lock.txt): since 1.1.0 OpenSandbox ships every artifact at one version from one tag (`release-1.1.1`), with
 # a Sigstore-signed BOM (docs/releases/1.1.1.yaml in the OpenSandbox repo) as the authority for the image digests used below.
 # `name:tag@sha256:...` keeps the version readable and the content immutable; the daemon resolves it by digest.
@@ -62,7 +62,7 @@ volume_default_size = "1Gi"
 [store]
 type = "sqlite"
 path = "/data/opensandbox.db"   # docker-compose's opensandbox-data named
-# volume is mounted at /data — see docker/opensandbox-server.Dockerfile —
+# volume is mounted at /data — see deploy/images/opensandbox-server.Dockerfile —
 # so this survives a container restart instead of living in the
 # container's own ephemeral filesystem.
 

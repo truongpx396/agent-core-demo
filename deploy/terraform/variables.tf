@@ -77,7 +77,7 @@ variable "domain_name" {
 }
 
 variable "enable_backups" {
-  description = "DigitalOcean's own weekly droplet-image backups (adds ~20% to droplet cost). Off by default: this app's actual data lives in Docker volumes (postgres/qdrant/redis), which a droplet-image backup does capture, but point-in-time DB dumps are a better fit for those than a whole-image snapshot — see infra/README.md's backup section for that alternative. Turn this on for a simpler, coarser safety net instead/as well."
+  description = "DigitalOcean's own weekly droplet-image backups (adds ~20% to droplet cost). Off by default: this app's actual data lives in Docker volumes (postgres/qdrant/redis), which a droplet-image backup does capture, but point-in-time DB dumps are a better fit for those than a whole-image snapshot — see deploy/README.md's backup section for that alternative. Turn this on for a simpler, coarser safety net instead/as well."
   type        = bool
   default     = false
 }

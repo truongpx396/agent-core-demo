@@ -210,7 +210,7 @@ class TestStartingAndStopping:
             "asyncio.run(main())\n"
         )
         repo = Path(__file__).resolve().parents[2]
-        env = {**os.environ, "PYTHONPATH": os.pathsep.join(str(repo / p) for p in (".", "packages/billing/src", "docker/ml-service"))}
+        env = {**os.environ, "PYTHONPATH": os.pathsep.join(str(repo / p) for p in (".", "packages/billing/src", "services/ml-service"))}
         proc = await asyncio.create_subprocess_exec(sys.executable, "-c", script, env=env, cwd=tmp_path)
         assert await asyncio.wait_for(proc.wait(), 90) == 0
 

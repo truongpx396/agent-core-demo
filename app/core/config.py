@@ -98,7 +98,7 @@ class Settings(BillingSettings):
     # bottleneck in-process (each call held a thread-pool slot plus ONNX's
     # own all-cores default under a 50-concurrent-turn burst). Moved to a
     # dedicated container (docker-compose.yml's `ml-service`,
-    # docker/ml-service/main.py) to get it off agent-worker's GIL entirely.
+    # services/ml-service/main.py) to get it off agent-worker's GIL entirely.
     #
     # Hand-rolled FastAPI + onnxruntime, not TEI — TEI was tried
     # (BAAI/bge-reranker-base) and measured against this workload first:
@@ -107,7 +107,7 @@ class Settings(BillingSettings):
     # rejections, ~14s sustainably, ~200-420MiB. Also hosts a second ONNX
     # model (Llama Prompt Guard 2, app/core/moderation.py's ML injection layer) in
     # the same container, hence the generic name — see
-    # docker/ml-service/main.py for full reasoning and measured numbers.
+    # services/ml-service/main.py for full reasoning and measured numbers.
     ml_service_url: str = "http://localhost:8083"
 
     # Model routing (specs/014, specs/015, GRAPH_PATTERNS pattern 68). OFF by default and inert: with `router_mode` "off" nothing is asked of the classifier
@@ -359,7 +359,7 @@ class Settings(BillingSettings):
     # ops/support/sales, pattern 50) — image and lifetime for the one
     # OpenSandbox sandbox each investigation thread lazily creates and
     # reuses. A fresh sandbox has NO network egress by default, so needed
-    # packages are baked into a custom image instead (docker/sandbox.Dockerfile,
+    # packages are baked into a custom image instead (deploy/images/sandbox.Dockerfile,
     # `make sandbox-build`, currently python:3.12-slim + numpy + pandas) —
     # bump both if a real deployment needs more. No domain prefix: sandbox
     # creation was never ops-specific, only its original wiring was.

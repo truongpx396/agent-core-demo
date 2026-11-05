@@ -1,4 +1,4 @@
-"""The model registry: spec validation and the load state machine (docker/ml-service/ml_service/registry.py). The clock is injected,
+"""The model registry: spec validation and the load state machine (services/ml-service/ml_service/registry.py). The clock is injected,
 so the whole backoff sequence runs without sleeping."""
 import asyncio
 import threading

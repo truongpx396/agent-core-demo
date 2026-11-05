@@ -22,7 +22,7 @@ attributed. Each call carries:
 None of these reaches the model provider: checked against the pinned 1.94.1 image with a stub backend, on the
 Ollama route and an OpenAI-compatible one. That is an assumption about LiteLLM (a person's email has no
 business reaching a third party), so the image is pinned by digest and a bump re-runs the check
-(infra/README.md).
+(deploy/README.md).
 
 ## Reading "stop"
 

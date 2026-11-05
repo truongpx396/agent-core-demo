@@ -53,7 +53,7 @@ def test_a_label_set_candidate_is_exactly_the_model_the_ml_service_serves_for_th
     import tomllib
     from pathlib import Path
 
-    models = {m["name"]: m for m in tomllib.loads((Path(cli.REPO) / "docker" / "ml-service" / "models.toml").read_text())["model"]}
+    models = {m["name"]: m for m in tomllib.loads((Path(cli.REPO) / "services" / "ml-service" / "models.toml").read_text())["model"]}
     candidates = [c for c in cli.declared("classifier") if c.name.startswith(("labelset-", "rules-and-labels-"))]
 
     assert candidates

@@ -8,7 +8,7 @@ output "droplet_ipv4" {
 }
 
 output "reserved_ip" {
-  description = "Stable IP that survives a droplet replacement. Point domain_name's A record here, and set this as the DROPLET_HOST GitHub Actions secret (see infra/README.md)."
+  description = "Stable IP that survives a droplet replacement. Point domain_name's A record here, and set this as the DROPLET_HOST GitHub Actions secret (see deploy/README.md)."
   value       = digitalocean_reserved_ip.app.ip_address
 }
 

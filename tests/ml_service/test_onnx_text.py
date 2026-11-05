@@ -1,4 +1,4 @@
-"""The shared tokenise -> run -> pool path (docker/ml-service/ml_service/onnx_text.py).
+"""The shared tokenise -> run -> pool path (services/ml-service/ml_service/onnx_text.py).
 
 Every expected vector below is worked out by hand from `FakeSession`'s hidden state: a token with id `i` has the vector
 [i, 2i, 3i, 4i]. "hello world" is ids [2, 3]; "foo" is [4] padded with the pad id.

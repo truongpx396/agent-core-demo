@@ -5,7 +5,7 @@
 # smaller observability droplet (docker-compose.observability.prod.yml).
 # Deliberately NOT the full dev stack (docker-compose.yml) — no local Ollama
 # (litellm-config.prod.yaml points at a real hosted OpenAI-compatible
-# endpoint instead), no Langfuse/MinIO/open-webui. See infra/README.md for
+# endpoint instead), no Langfuse/MinIO/open-webui. See deploy/README.md for
 # the full tradeoff and how to add any of those back.
 terraform {
   required_version = ">= 1.6.0"
@@ -21,8 +21,8 @@ terraform {
   # workflow this repo already uses for other impactful commands (`make
   # eval`/`garak-full`/`strix`, see .github/workflows/ci.yml's own header).
   # `terraform apply` here is likewise a human, manual action (see
-  # infra/README.md) — CI never runs it, only `terraform plan` for
-  # visibility on PRs touching infra/terraform/**.
+  # deploy/README.md) — CI never runs it, only `terraform plan` for
+  # visibility on PRs touching deploy/terraform/**.
   #
   # For a team (more than one operator applying) or if you ever want CI to
   # apply too, switch to a remote backend — DigitalOcean Spaces is

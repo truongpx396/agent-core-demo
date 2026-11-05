@@ -1,10 +1,10 @@
 # Checkov IaC scan config — see .github/workflows/ci.yml's `checkov` job and
-# `make checkov`. Scoped to infra/terraform: the only Terraform in this repo,
+# `make checkov`. Scoped to deploy/terraform: the only Terraform in this repo,
 # and deliberately NOT re-scanning Dockerfile/docker-compose*.yml here —
 # ci.yml's existing `trivy` job's misconfig scanner already covers those
 # (see that job's own header comment), so this stays non-redundant with it.
 directory:
-  - infra/terraform
+  - deploy/terraform
 framework:
   - terraform
 compact: true

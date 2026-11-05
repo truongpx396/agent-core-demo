@@ -276,7 +276,7 @@ def cmd_labelset_calibrate(args: argparse.Namespace) -> int:
     result = topics.calibration_for(candidate, settings, name=args.labelset, keep=args.keep)
     sys.stdout.write(json.dumps(result, indent=2, sort_keys=True) + "\n")
     sys.stdout.write(
-        f"\nput this under `calibration` in docker/ml-service/labelsets/{args.labelset}.json (it keeps {result['in_scope_kept']:.1%} of {result['n_in_scope']} in-scope dev "
+        f"\nput this under `calibration` in services/ml-service/labelsets/{args.labelset}.json (it keeps {result['in_scope_kept']:.1%} of {result['n_in_scope']} in-scope dev "
         f"sentences and rejects {result['none_rejected']:.1%} of {result['n_none']} none sentences):\n  "
         + json.dumps(result["calibration_line"])[1:-1] + "\n"
     )

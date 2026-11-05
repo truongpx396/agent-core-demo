@@ -37,7 +37,7 @@ class State(str, Enum):
 
 @dataclass(frozen=True)
 class ModelSpec:
-    """One entry of docker/ml-service/models.toml."""
+    """One entry of services/ml-service/models.toml."""
 
     name: str
     roles: tuple[str, ...]

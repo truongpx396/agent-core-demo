@@ -2,27 +2,27 @@
 
 # --- Scanners ---
 
-semgrep:  ## SAST over app/ scripts/ docker/ Dockerfile via Docker; same rulesets and hard gate as CI's `semgrep` job (the p/* configs need no `semgrep login`)
+semgrep:  ## SAST over app/ scripts/ services/ml-service/ deploy/images/ Dockerfile via Docker; same rulesets and hard gate as CI's `semgrep` job (the p/* configs need no `semgrep login`)
 	docker run --rm -v $(PWD):/src -w /src semgrep/semgrep:1.177.0 semgrep scan --error --metrics=off \
 		--config p/security-audit --config p/secrets --config p/python --config p/dockerfile \
-		app/ scripts/ docker/ Dockerfile
+		app/ scripts/ services/ml-service/ deploy/images/ Dockerfile
 
 trivy:  ## Scan dependencies, Dockerfile/compose and secrets for known vulnerabilities via Docker; same policy as CI's `trivy` job
 	# Scans requirements-lock.txt, not requirements.txt: version ranges resolve to no installed version, so that finds nothing
 	# (the lock file found 5 fixable HIGH CVEs on first run, incl. an RCE in langgraph-checkpoint, CVE-2025-64439).
-	# Check garak/requirements-garak.txt before bumping pins. infra/terraform is Checkov's: Trivy flags the necessary public
+	# Check garak/requirements-garak.txt before bumping pins. deploy/terraform is Checkov's: Trivy flags the necessary public
 	# 80/443 ingress there as CRITICAL (see CI's `trivy` job).
 	docker run --rm -v $(PWD):/repo aquasec/trivy:0.74.0 fs \
 		--scanners vuln,secret,misconfig --severity HIGH,CRITICAL --ignore-unfixed \
 		--file-patterns 'pip:requirements-lock\.txt$$' \
-		--skip-dirs .venv,**/node_modules,.git,.mypy_cache,.ruff_cache,.pytest_cache,infra/terraform /repo
+		--skip-dirs .venv,**/node_modules,.git,.mypy_cache,.ruff_cache,.pytest_cache,deploy/terraform /repo
 
 trivy-image:  ## Build the app image and scan it for OS/library vulnerabilities
 	docker build -t graph-agent-core:trivy .
 	docker run --rm -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy:0.74.0 image \
 		--severity HIGH,CRITICAL --ignore-unfixed graph-agent-core:trivy
 
-checkov:  ## IaC misconfiguration scan of infra/terraform; same config and gate as CI's `checkov` job. pip, not Docker: the bridgecrewio/checkov image no longer pulls
+checkov:  ## IaC misconfiguration scan of deploy/terraform; same config and gate as CI's `checkov` job. pip, not Docker: the bridgecrewio/checkov image no longer pulls
 	pip install -q checkov==3.3.17
 	checkov --config-file .checkov.yaml
 

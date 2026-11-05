@@ -7,7 +7,7 @@
 # application code or secrets; .github/workflows/deploy.yml pushes compose
 # files + config + (for the app droplet) the built image via SSH/GHCR after
 # this has run, and the operator creates <app_dir>/.env by hand on first
-# deploy (see infra/README.md) — secrets never pass through user_data,
+# deploy (see deploy/README.md) — secrets never pass through user_data,
 # which DigitalOcean stores as plain, retrievable droplet metadata.
 package_update: true
 package_upgrade: true
@@ -50,7 +50,7 @@ runcmd:
   - usermod -aG docker ${deploy_user}
 
   # --- Host firewall — second enforcement layer behind the DO cloud
-  # firewall (infra/terraform's digitalocean_firewall); see that resource's
+  # firewall (deploy/terraform's digitalocean_firewall); see that resource's
   # own comment for why this isn't redundant. ---
   - ufw default deny incoming
   - ufw default allow outgoing

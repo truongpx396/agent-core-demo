@@ -1,6 +1,6 @@
 # Copy to terraform.tfvars (gitignored) and fill in, OR skip this file
 # entirely and export TF_VAR_* / DIGITALOCEAN_TOKEN env vars instead
-# (preferred if you ever run `terraform plan` in CI — see infra/README.md).
+# (preferred if you ever run `terraform plan` in CI — see deploy/README.md).
 
 do_token = "" # https://cloud.digitalocean.com/account/api/tokens — scope: read+write
 
@@ -24,7 +24,7 @@ droplet_size = "s-4vcpu-8gb"
 
 # Optional, informational only (this module's `app_url` output) — the
 # droplet's actual DOMAIN_NAME is set independently in its own .env, see
-# infra/README.md.
+# deploy/README.md.
 domain_name = ""
 
 # Separate, smaller droplet for Prometheus/Loki/Grafana/Alertmanager (see

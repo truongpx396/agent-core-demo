@@ -11,7 +11,7 @@
 # Everything gets forwarded on to the observability droplet's gateway
 # collector over OTLP — this is the ONLY thing that crosses the two
 # droplets' firewall, rather than opening node-exporter/cadvisor's ports
-# individually (see infra/terraform/main.tf's digitalocean_firewall.observability
+# individually (see deploy/terraform/main.tf's digitalocean_firewall.observability
 # comment).
 #
 # Qdrant's and LiteLLM's own internal /metrics are NOT scraped here yet —
@@ -63,7 +63,7 @@ exporters:
   # plain `http://<obs-private-ip>:4318` URL (this directory's own
   # `config.yaml` gateway only opens an HTTP OTLP receiver on 4318, no TLS:
   # the DO VPC's private network is the trust boundary here, never the
-  # public internet — see infra/terraform/main.tf's
+  # public internet — see deploy/terraform/main.tf's
   # digitalocean_firewall.observability comment).
   otlphttp/gateway:
     endpoint: ${env:OBS_COLLECTOR_ENDPOINT}

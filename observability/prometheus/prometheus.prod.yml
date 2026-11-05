@@ -5,7 +5,7 @@
 # all arrive here already, relayed through that gateway's OTLP receiver,
 # see observability/otel-collector/config.agent.yaml). No
 # `host.docker.internal`/cross-droplet static_configs here at all — that's
-# the whole point of the agent+gateway split (infra/terraform/main.tf's
+# the whole point of the agent+gateway split (deploy/terraform/main.tf's
 # digitalocean_firewall.observability comment).
 #
 # Qdrant's and LiteLLM's own internal /metrics aren't in this pipeline yet

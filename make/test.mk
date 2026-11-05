@@ -86,7 +86,7 @@ authlimit-latency:  ## Time the front door's check adds to a request: a checked 
 authlimit-mutants:  ## Apply each deliberate defect of the authlimit mutation list and require a test to fail (specs/018 SC-010). Edits the source in place and restores it: run on a clean tree; needs Go
 	python scripts/authlimit_mutants.py
 
-gateway-check:  ## Run the PINNED LiteLLM image on the shipped dev config and a stub backend: every alias priced, spend = tokens x price, nothing identifying reaches the backend. Needs Docker only; re-run after bumping the image (infra/README.md)
+gateway-check:  ## Run the PINNED LiteLLM image on the shipped dev config and a stub backend: every alias priced, spend = tokens x price, nothing identifying reaches the backend. Needs Docker only; re-run after bumping the image (deploy/README.md)
 	python -m scripts.gateway_check
 
 web-search-check:  ## Does SERPER_API_KEY work? One real search; spends ONE serper.dev credit, prints the outcome and first result, never the key. Exit 0 ok / 1 failed / 2 no key (GRAPH_PATTERNS.md 87)

@@ -93,7 +93,7 @@ until the stronger model wins clearly somewhere, with a judge that is not itself
 
 ## Label sets (a different question from routing)
 
-A **label set** (`docker/ml-service/labelsets/<name>.json`, specs/015) lists a few choices with example sentences, and the ML service answers
+A **label set** (`services/ml-service/labelsets/<name>.json`, specs/015) lists a few choices with example sentences, and the ML service answers
 `POST /v1/decide` (a `choice` question named after the set) with the choice a text is nearest to, or "none of these" below a cutoff that is stored per model. That is a
 classification task with a known right answer, so it is judged on sentences whose topic is known, not on routing outcomes:
 
@@ -105,7 +105,7 @@ make model-eval KIND=classifier CANDIDATE=labelset-bge-small-en-v1.5 DATASET=rou
 The report gives in-scope accuracy and macro-F1 (is the nearest label right?), `oos_recall@thr` (the share of "none of these" sentences the cutoff
 rejects) and `in_scope_reject@thr` (the share of real topics it wrongly rejects), the per-topic results and the commonest mix-ups, and the shuffled-
 predictions control. It runs the service's own code on the model in-process, so it needs the model cached and `PYTHONPATH` to include
-`docker/ml-service` (the Makefile sets it). `ece_in_scope` treats a similarity as a probability and is not meaningful for this matcher.
+`services/ml-service` (the Makefile sets it). `ece_in_scope` treats a similarity as a probability and is not meaningful for this matcher.
 `evals/datasets/route-topics` is authored, unreviewed and small (96 test sentences), so every report is PROVISIONAL and two good models cannot be
 ranked by a point; what it can tell is a matcher that works from one that does not, and which topics get confused (`specs/015/research.md`).
 

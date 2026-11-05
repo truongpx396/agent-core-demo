@@ -1,11 +1,11 @@
 # Running the billing package: operator runbook
 
-How to turn credit billing on, change a wallet, reconcile it, and sell a credit pack with Stripe or Polar. It moved here from the agent app's `infra/README.md`, because it is
+How to turn credit billing on, change a wallet, reconcile it, and sell a credit pack with Stripe or Polar. It moved here from the agent app's `deploy/README.md`, because it is
 about the package and not about the droplets. Everything here is optional: with `CREDITS_PER_USD` unset the whole feature is off and nothing below applies.
 
 Commands are written as this repository's `make` targets (`make credits`, `make credit-reconcile`, `make billing-migrate`, ...); each runs a command the package installs
 (`credit-billing`, `credit-billing-reconcile`, `credit-billing-migrate`, ...), listed in the package [README](../README.md). The things that belong to the agent app and not to
-billing (its spend caps, its comparison with the LLM gateway, running the workers on the Digital Ocean droplets) stay in the app's [`infra/README.md`](../../../infra/README.md).
+billing (its spend caps, its comparison with the LLM gateway, running the workers on the Digital Ocean droplets) stay in the app's [`deploy/README.md`](../../../deploy/README.md).
 
 ## Three records of the same spending
 
@@ -26,7 +26,7 @@ The agent checks the first against the third (`make usage-reconcile`); the packa
 2. Set `CREDITS_PER_USD` (no default: the price is your decision) and leave `CREDITS_ENFORCEMENT=false`. This is **shadow mode**:
    tenants with a wallet are debited and nobody is refused, so you can watch balances move first (dashboard "Credit Billing").
 3. Give a tenant a wallet and credits: `make credits ARGS="grant --tenant acme --amount 500 --by <you> --reason '<why>'"`.
-4. Start the reconciliation workers (`make credit-reconcile-worker`, and the agent's `make usage-reconcile-worker`; the droplet commands are in the app's `infra/README.md`), watch a few days of `make credit-reconcile` and `make usage-reconcile` come back clean, **then** set `CREDITS_ENFORCEMENT=true`.
+4. Start the reconciliation workers (`make credit-reconcile-worker`, and the agent's `make usage-reconcile-worker`; the droplet commands are in the app's `deploy/README.md`), watch a few days of `make credit-reconcile` and `make usage-reconcile` come back clean, **then** set `CREDITS_ENFORCEMENT=true`.
 
 ## Changing a wallet by hand
 
@@ -58,7 +58,7 @@ It needs only the database (`APPDATA_DATABASE_URL`). A finding names the tenant,
 and can never double-charge: `make credits ARGS="adjust --tenant <t> --amount=-<the event's credits> --key <event_id> --by <you> --reason 'uncharged event <event_id>'"`
 (the credits are in `billing_usage_events.credits`; the report lists the count and total per tenant-day). It books as kind `adjust`, by you, not as a `debit`. A repair job is not built (disclosed).
 
-No worker is a compose service yet (disclosed). On the droplets they run from the app image; the commands are in the app's [`infra/README.md`](../../../infra/README.md).
+No worker is a compose service yet (disclosed). On the droplets they run from the app image; the commands are in the app's [`deploy/README.md`](../../../deploy/README.md).
 
 ## Trimming the billing usage events
 

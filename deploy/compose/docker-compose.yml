@@ -74,7 +74,7 @@ services:
   litellm:
     # Pinned by digest: the gateway holds the provider keys and decides what a call costs, and its behaviour moves between releases (the stop status
     # went from 400 to 429; a LiteLLM PyPI release was compromised in 2026-03). This is the multi-arch index of `main-stable` on 2026-07-30 (1.94.1),
-    # the image COST_GOVERNANCE.md's checks ran on. To move it: infra/README.md ("Bumping the LiteLLM image"); docker-compose.prod.yml carries the same one.
+    # the image COST_GOVERNANCE.md's checks ran on. To move it: deploy/README.md ("Bumping the LiteLLM image"); docker-compose.prod.yml carries the same one.
     image: ghcr.io/berriai/litellm:main-stable@sha256:28b10a635296730007097390939b55f8696ece548530d4ddda3e31c708b4dc81
     command: ["--config", "/app/config.yaml", "--port", "4000"]
     ports:
@@ -124,7 +124,7 @@ services:
       - qdrant:/qdrant/storage
 
   # --- ML service: the reranker (app/retrieval/embeddings.py `rerank`, on every retrieval), Llama Prompt Guard 2 (app/core/moderation.py), the
-  # embedding endpoint and the label sets, in one CPU container (design: docker/ml-service/main.py).
+  # embedding endpoint and the label sets, in one CPU container (design: services/ml-service/main.py).
   # Rerank used to run in the worker's process and oversubscribed its threads and cores under a 50-turn burst. This service coalesces concurrent
   # calls into one ONNX pass (batches of up to 256 pairs from ~12 callers) and served a 100-request burst with no rejections; Hugging Face TEI
   # (bge-reranker-base) rejected ~94% of the same burst and idled at 2.26 GiB against 200-420 MiB here.
@@ -134,13 +134,12 @@ services:
     tmpfs:
       - /tmp:size=128m  # the models live in the named volume below, not in tmpfs
     build:
-      context: .
-      dockerfile: docker/ml-service.Dockerfile
+      context: ./services/ml-service
       target: runtime
     ports:
       - "8083:80"
     environment:
-      # Which text models (docker/ml-service/models.toml) to load and the embedding endpoint's ceilings; empty = the defaults.
+      # Which text models (services/ml-service/models.toml) to load and the embedding endpoint's ceilings; empty = the defaults.
       ML_MODELS_ENABLED: ${ML_MODELS_ENABLED:-}
       ML_EMBED_MAX_ITEMS: ${ML_EMBED_MAX_ITEMS:-256}
       ML_EMBED_MAX_CHARS: ${ML_EMBED_MAX_CHARS:-8000}
@@ -278,12 +277,12 @@ services:
       start_period: 40s   # crawl4ai's own docs: allow up to 40s startup
 
   # --- OpenSandbox server for every domain's sandbox tools (app/adapters/mcp/sandbox_tools.py, pattern 50). Upstream publishes no image, so this
-  # repo builds one (docker/opensandbox-server.{Dockerfile,toml}). Own opt-in `sandbox` profile (`make sandbox-up`): it bind-mounts the Docker
+  # repo builds one (deploy/images/opensandbox-server.{Dockerfile,toml}). Own opt-in `sandbox` profile (`make sandbox-up`): it bind-mounts the Docker
   # socket to start sibling sandbox containers on the host daemon, the privilege `uvx opensandbox-server` had as a host process. ---
   opensandbox-server:
     build:
       context: .
-      dockerfile: docker/opensandbox-server.Dockerfile
+      dockerfile: deploy/images/opensandbox-server.Dockerfile
     profiles: ["sandbox"]
     restart: unless-stopped
     ports:

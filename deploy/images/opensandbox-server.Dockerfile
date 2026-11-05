@@ -9,7 +9,7 @@
 #
 # The version is the SAME release line as the SDK and the MCP bridge in
 # requirements-lock.txt and as the execd/egress images in
-# docker/opensandbox-server.toml: the vendor supports a server and an SDK on
+# deploy/images/opensandbox-server.toml: the vendor supports a server and an SDK on
 # one line only ("±1 minor warns"), so they move together. Not 1.1.0: that release's server wheel does not
 # import (the FastPath gRPC stubs were left out of it; fixed in 1.1.1).
 #
@@ -20,7 +20,7 @@ FROM python:3.13-slim
 
 RUN pip install --no-cache-dir opensandbox-server==1.1.1
 
-COPY docker/opensandbox-server.toml /config/sandbox.toml
+COPY deploy/images/opensandbox-server.toml /config/sandbox.toml
 
 # Non-root, but still able to reach /var/run/docker.sock — verified
 # directly (`docker run -v /var/run/docker.sock:... alpine ls -la

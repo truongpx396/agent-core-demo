@@ -1,17 +1,17 @@
 name: Deploy
 
-# Automated CD to the Digital Ocean droplet infra/terraform provisions —
+# Automated CD to the Digital Ocean droplet deploy/terraform provisions —
 # triggered by the CI workflow's own completion on main (`workflow_run`),
 # not directly by `push`, so a deploy can never start on a commit CI hasn't
 # actually passed for. Terraform itself (creating/destroying the droplet)
 # is NOT run here — that stays a deliberate, human-run `terraform apply`
-# (infra/README.md), same "maintainer runs this deliberately" framing this
+# (deploy/README.md), same "maintainer runs this deliberately" framing this
 # repo already uses for garak/strix/eval; this workflow only ever updates
 # what's running on a droplet that already exists.
 #
-# Needs these repo secrets (infra/README.md has the full setup):
-#   DROPLET_HOST     — infra/terraform's reserved_ip output
-#   OBS_DROPLET_HOST — infra/terraform's observability_reserved_ip output
+# Needs these repo secrets (deploy/README.md has the full setup):
+#   DROPLET_HOST     — deploy/terraform's reserved_ip output
+#   OBS_DROPLET_HOST — deploy/terraform's observability_reserved_ip output
 #   DEPLOY_SSH_KEY   — private half of terraform.tfvars' deploy_ssh_public_key,
 #                      authorized on BOTH droplets (same CI deploy identity)
 # GHCR auth uses the workflow's own GITHUB_TOKEN (packages: write below) —
@@ -70,8 +70,7 @@ jobs:
 
       - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
-          context: .
-          file: docker/ml-service.Dockerfile
+          context: services/ml-service
           push: true
           tags: |
             ghcr.io/${{ github.repository_owner }}/graph-agent-core-ml-service:${{ steps.tag.outputs.value }}
@@ -172,7 +171,7 @@ jobs:
   # Independent of build-and-push/deploy above — this stack (Prometheus/
   # Loki/Grafana/Alertmanager/otel-collector) only ever uses off-the-shelf
   # images, nothing built from this repo, and runs on the SEPARATE
-  # observability droplet (infra/terraform's digitalocean_droplet.observability).
+  # observability droplet (deploy/terraform's digitalocean_droplet.observability).
   # Reuses the same DEPLOY_SSH_KEY as the app droplet's deploy job — see
   # this workflow's own header on why that's not a separate secret.
   deploy-observability:
@@ -193,7 +192,7 @@ jobs:
           ssh-keyscan -H "${{ secrets.OBS_DROPLET_HOST }}" >> ~/.ssh/known_hosts
 
       # Never .env here either — GRAFANA_ADMIN_PASSWORD/OBS_DOMAIN_NAME are
-      # created once by hand on this droplet too (infra/README.md), same
+      # created once by hand on this droplet too (deploy/README.md), same
       # posture as the app droplet's own .env.
       - name: Sync compose/config files to the droplet
         run: |

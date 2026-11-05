@@ -52,7 +52,7 @@ name: CI
 # somebody else's PR the way a `push`/`pull_request` trigger could.
 #
 # `semgrep` (SAST over this app's own Python/Dockerfile source) and
-# `checkov` (IaC misconfiguration scanning over infra/terraform/**) are per-
+# `checkov` (IaC misconfiguration scanning over deploy/terraform/**) are per-
 # push jobs, same reasoning as `trivy`: no live services, deterministic
 # given a commit, cheap enough to gate every push rather than needing a
 # human to trigger them. Each hard-gates on any finding — both were run
@@ -66,7 +66,7 @@ name: CI
 # already covers (Dockerfile/docker-compose misconfig, dependency CVEs,
 # secrets) — semgrep's rulesets target source-code patterns trivy's
 # scanners don't parse at all, and checkov here is scoped to
-# infra/terraform only (see .checkov.yaml), the one IaC surface trivy's
+# deploy/terraform only (see .checkov.yaml), the one IaC surface trivy's
 # own filesystem walk has nothing meaningful to say about beyond generic
 # misconfig heuristics.
 #
@@ -81,7 +81,7 @@ name: CI
 # coordinating around `services:`' own startup-before-any-step ordering).
 # Ephemeral means no cross-run history/trend dashboards — a real
 # always-on SonarQube server would need its own persistent deployment,
-# out of scope here (see infra/README.md) — but static analysis + the
+# out of scope here (see deploy/README.md) — but static analysis + the
 # quality gate itself are still fully real and still hard-gate the build.
 #
 # All jobs below are independent (no `needs:` edges) and run fully in
@@ -137,7 +137,7 @@ jobs:
         with:
           python-version: "3.13"
       # pyarrow and prometheus-client are not in the lock file (they are dev/aux-image dependencies, specs/014), so the hermetic suite
-      # that imports them needs them named here (keep the pins equal to requirements-dev.txt and docker/ml-service).
+      # that imports them needs them named here (keep the pins equal to requirements-dev.txt and services/ml-service).
       - run: pip install -r requirements-lock.txt pytest-xdist==3.8.0 pyarrow==26.0.0 prometheus-client==0.26.0
       - run: pytest -n auto -q
 
@@ -798,7 +798,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      # infra/terraform excluded below: Checkov (the `checkov` job,
+      # deploy/terraform excluded below: Checkov (the `checkov` job,
       # .checkov.yaml) owns IaC misconfig scanning for that directory —
       # verified directly this exclusion is needed, not preemptive: Trivy's
       # own DigitalOcean firewall policies (DIG-0001/DIG-0003) flag ANY
@@ -821,7 +821,7 @@ jobs:
           # Dated, reasoned exceptions only (see the file); the report step below does not read it.
           trivyignores: .trivyignore.yaml
           exit-code: "1"
-          skip-dirs: .venv,**/node_modules,.mypy_cache,.ruff_cache,.pytest_cache,infra/terraform
+          skip-dirs: .venv,**/node_modules,.mypy_cache,.ruff_cache,.pytest_cache,deploy/terraform
 
       - name: Trivy fs — full report (HIGH+CRITICAL, incl. unfixed) → SARIF
         if: always()
@@ -836,7 +836,7 @@ jobs:
           format: sarif
           output: trivy-fs-results.sarif
           exit-code: "0"
-          skip-dirs: .venv,**/node_modules,.mypy_cache,.ruff_cache,.pytest_cache,infra/terraform
+          skip-dirs: .venv,**/node_modules,.mypy_cache,.ruff_cache,.pytest_cache,deploy/terraform
           skip-setup-trivy: true
 
       - name: Upload fs report to the Security tab
@@ -914,7 +914,7 @@ jobs:
         run: >
           semgrep scan --error --metrics=off
           --config p/security-audit --config p/secrets --config p/python --config p/dockerfile
-          app/ scripts/ docker/ Dockerfile
+          app/ scripts/ services/ml-service/ deploy/images/ Dockerfile
 
       - name: Semgrep — SARIF report
         if: always()
@@ -922,7 +922,7 @@ jobs:
           semgrep scan --metrics=off
           --config p/security-audit --config p/secrets --config p/python --config p/dockerfile
           --sarif --output semgrep-results.sarif
-          app/ scripts/ docker/ Dockerfile
+          app/ scripts/ services/ml-service/ deploy/images/ Dockerfile
 
       - name: Upload report to the Security tab
         if: always()
@@ -933,7 +933,7 @@ jobs:
         continue-on-error: true
 
   checkov:
-    # Scoped to infra/terraform only — see .checkov.yaml's own header on why
+    # Scoped to deploy/terraform only — see .checkov.yaml's own header on why
     # this doesn't re-cover Dockerfile/docker-compose (trivy's job already
     # does). .checkov.yaml's one skip-check (CKV_DIO_2) is a verified false
     # positive, not a suppressed real finding — see that file's comment.
@@ -976,7 +976,7 @@ jobs:
     # guarantees more simply than coordinating around `services:`' own
     # start-before-any-step ordering). Ephemeral means no cross-run
     # history/trend dashboards — a persistent server is a separate,
-    # deliberately out-of-scope deployment (see infra/README.md) — but the
+    # deliberately out-of-scope deployment (see deploy/README.md) — but the
     # static analysis and quality gate below are still fully real and still
     # hard-gate the build.
     #
