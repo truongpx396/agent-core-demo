@@ -29,6 +29,16 @@ class SearchHit:
     payload: dict[str, Any] = field(default_factory=dict)
 
 
+@dataclass(frozen=True)
+class IdentityStatus:
+    """Where a collection stands against the embedding identity this process is configured for (`absent | adopted | mismatch | verified | unverified`),
+    with the two identities when they are known."""
+
+    state: str
+    expected: str | None = None
+    found: str | None = None
+
+
 class DocumentIndex(Protocol):
     async def search(
         self,
@@ -48,6 +58,14 @@ class DocumentIndex(Protocol):
 
     async def search_catalog(self, query: str, *, collection: str, k: int | None = None) -> list[SearchHit]:
         """Search a catalog collection that holds no tenant data (the skills and subagents indexes). Never use it for tenant data."""
+        ...
+
+    async def ping(self) -> None:
+        """Raises if the index's server is unreachable (the readiness probe)."""
+        ...
+
+    async def identity_status(self, collection: str | None = None) -> IdentityStatus:
+        """An observation for the readiness report, not an access: it never raises over a mismatch and counts nothing."""
         ...
 
 

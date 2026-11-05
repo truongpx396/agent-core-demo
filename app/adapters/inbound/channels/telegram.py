@@ -52,13 +52,13 @@ from app.adapters.inbound.channels.telegram_inbox import Dispatcher, Inbox
 from app.adapters.inbound.channels.telegram_link import LinkedAuth, LinkFlow, LinkStore
 from app.adapters.inbound.channels.telegram_people import TelegramPeople
 from app.adapters.inbound.channels.telegram_reply import ReplySink
-
-# Redis for the channel's OWN small state (offset, inbox, approvals, link records), through the one client factory and nothing else from that module.
-from app.adapters.outbound.redis.queue import get_client as get_redis_client
 from app.agent.runtime.sessions import TELEGRAM_THREAD_PREFIX
 from app.core import metrics
 from app.core.config import AGENT_DOMAIN, DEFAULT_TENANT, TELEGRAM_BOT_TOKEN, settings
 from app.core.logging_config import configure_logging
+
+# Redis for the channel's OWN small state (offset, inbox, approvals, link records), through the one client factory and nothing else from that module.
+from app.core.redis_client import get_client as get_redis_client
 from app.core.telemetry import configure_telemetry
 from app.domains.registry import DOMAINS
 

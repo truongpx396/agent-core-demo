@@ -41,7 +41,7 @@ async def reserve_budget(ctx: SecurityCtx | None, amount_usd: float) -> str | No
     Closes the gap between "checked" and "recorded": this turn's remaining calls aren't events yet, so without
     a hold a sibling turn racing the same tenant reads nearly the same "spent so far" and passes too. Always
     paired with `release_budget_reservation` in a `finally`, as with
-    `app/adapters/outbound/redis/queue.py::acquire_thread_lock`.
+    `app/adapters/inbound/workers/streams.py::acquire_thread_lock`.
 
     Returns the hold id, or None if nothing was reserved (invalid ctx, non-positive amount, write failed).
     Best-effort and fail-open like every write here: a failure just leaves this turn unprotected against a

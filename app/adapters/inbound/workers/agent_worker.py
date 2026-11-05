@@ -1,5 +1,5 @@
 """Redis Streams consumer: the "agent worker" half of the SSE-service/agent-worker split (GRAPH_PATTERNS.md
-pattern 43). Consumer-group delivery hands each request on a domain's stream (`queue.py::requests_stream_key`)
+pattern 43). Consumer-group delivery hands each request on a domain's stream (`jobs.py::requests_stream_key`)
 to exactly one worker, so more workers means more capacity.
 
 ## Domains
@@ -23,14 +23,14 @@ are safe: a turn holds no in-process state a sibling could corrupt (state is in 
 `bind_request_id`'s `ContextVar` is copied per task).
 
 The SAME thread_id is not: two jobs would read the same checkpoint as parent and the last commit would
-silently win. `process_request` therefore takes `queue.py::acquire_thread_lock` first (across tasks and
+silently win. `process_request` therefore takes `streams.py::acquire_thread_lock` first (across tasks and
 replicas) and rejects the loser with `ErrorCode.THREAD_BUSY`.
 
 ## Job kinds (`payload["kind"]`, default `"turn"`)
 
 Producers (`queue.py::publish_request`/`publish_resume_request`/`publish_cancel_request`) create the first
 three; `"turn_continue"` comes only from this module's reclaim path.
-- `"turn"`: a new turn via `astream_events_turn`, with `cancel_check` (polls `queue.py::is_cancelled`) so
+- `"turn"`: a new turn via `astream_events_turn`, with `cancel_check` (polls `streams.py::is_cancelled`) so
   `POST /chat/cancel` can stop it mid-stream.
 - `"resume"`: continues a turn paused at `human_approval` via `astream_events_resume`. Any worker can take it
   (the checkpoint is in Postgres); the same `cancel_check` applies, and a flag left from the streaming phase
@@ -43,7 +43,7 @@ three; `"turn_continue"` comes only from this module's reclaim path.
 ## Ack and crash reclaim
 
 A job publishes every event to the results stream, then acks. A worker that dies before the ack leaves the
-request pending; `_reclaim_loop` (every worker runs one) sweeps those via `queue.py::reclaim_stale_entries`
+request pending; `_reclaim_loop` (every worker runs one) sweeps those via `streams.py::reclaim_stale_entries`
 (XAUTOCLAIM) and `_handle_reclaimed_job` decides per job whether re-running is provably safe:
 - `"cancel"`: always (idempotent).
 - `"resume"`: always, because `app/core/tool_idempotency.py` guards every `mutating`/`outward` tool and a
@@ -58,9 +58,9 @@ request pending; `_reclaim_loop` (every worker runs one) sweeps those via `queue
   - `"retry_continue"` (republished as `"turn_continue"`): checkpointed and unfinished. Safe even if a
     mutating tool already ran, because `astream_events_continue_turn` continues the checkpointed Pregel run,
     which never re-executes a task whose write is recorded (a fresh turn would mint new `tool_call_id`s).
-- Everything but `dead_letter` is republished via `queue.py::republish_job` up to `MAX_AUTO_RECLAIM_RETRIES`.
+- Everything but `dead_letter` is republished via `streams.py::republish_job` up to `MAX_AUTO_RECLAIM_RETRIES`.
   Beyond that, or on `dead_letter`, a `WORKER_LOST` error goes on the results stream and the job to a
-  dead-letter stream (`queue.py::dead_letter_stream_key`).
+  dead-letter stream (`streams.py::dead_letter_stream_key`).
 
 ## Who publishes
 
@@ -80,22 +80,17 @@ from typing import cast
 
 from langchain_core.messages import AIMessage
 
-from app.adapters.outbound.redis.queue import (
-    CONSUMER_GROUP,
+from app.adapters.inbound.workers.streams import (
     RECLAIM_ATTEMPTS_FIELD,
-    TERMINAL_EVENT_TYPES,
-    StreamReadResponse,
     acquire_thread_lock,
     clear_cancel_flag,
     ensure_consumer_group,
-    get_client,
     is_cancelled,
     publish_dead_letter,
     publish_result,
     reclaim_stale_entries,
     release_thread_lock,
     republish_job,
-    requests_stream_key,
 )
 from app.agent.graph.messages import is_retry_artifact, is_user_message
 from app.agent.runtime.core import (
@@ -128,8 +123,14 @@ from app.core.errors import (
 )
 from app.core.logging_config import bind_request_id, configure_logging
 from app.core.profiling import start_profiling
+from app.core.redis_client import StreamReadResponse, get_client
 from app.core.telemetry import configure_telemetry
 from app.ports.outbound.domains import domain_catalog
+from app.ports.outbound.jobs import (
+    CONSUMER_GROUP,
+    TERMINAL_EVENT_TYPES,
+    requests_stream_key,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -233,7 +234,7 @@ async def _process_turn_continue(client, request_id: str, payload: dict, release
     what makes this retry safe. `text`/`images`/`require_approval` on the
     payload go unused here (the graph already has this turn's own
     `HumanMessage` checkpointed); kept on the payload rather than stripped,
-    since `queue.py::republish_job` mutates only `kind`/the retry counter."""
+    since `streams.py::republish_job` mutates only `kind`/the retry counter."""
     thread_id = payload["thread_id"]
     await clear_cancel_flag(client, thread_id)  # see _process_turn's own comment on this
 
@@ -297,7 +298,7 @@ async def process_request(client, entry_id: str, fields: dict, *, domain: str) -
     `domain`'s stream), even on failure: a redelivered, already-attempted request would re-run the same
     side-effecting tool calls.
 
-    Every job kind first acquires `queue.py::acquire_thread_lock` for its `thread_id`. The module docstring
+    Every job kind first acquires `streams.py::acquire_thread_lock` for its `thread_id`. The module docstring
     notes a turn holds no IN-PROCESS state a sibling could corrupt, which is true of this process's memory but
     not of the shared Postgres checkpointer: two jobs on the SAME thread_id (a double-submit, a retry, or a
     resume racing a fresh turn, possibly on different worker replicas) both write through it, and nothing

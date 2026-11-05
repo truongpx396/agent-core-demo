@@ -15,6 +15,7 @@ Only the expiry counts: a job that was picked up, however slow, is not "unreacha
 """
 import pytest
 
+from app.adapters.inbound.workers import ingest_streams, streams
 from app.adapters.outbound.redis import ingest_queue, queue
 from app.core import metrics
 from tests.conftest import metric_value
@@ -57,7 +58,7 @@ async def test_each_queue_counts_under_its_own_label():
 
 @pytest.mark.parametrize(
     ("module", "publish", "kind"),
-    [(queue, queue.publish_result, "agent"), (ingest_queue, ingest_queue.publish_result, "ingest")],
+    [(queue, streams.publish_result, "agent"), (ingest_queue, ingest_streams.publish_result, "ingest")],
     ids=["agent", "ingest"],
 )
 async def test_a_job_that_was_picked_up_is_never_counted_however_the_deadline_compares(module, publish, kind):
@@ -75,7 +76,7 @@ async def test_a_job_that_was_picked_up_is_never_counted_however_the_deadline_co
 
 async def test_a_read_with_no_deadline_never_counts_anything():
     client = FakeRedis()
-    await queue.publish_result(client, "r1", {"type": "done"})
+    await streams.publish_result(client, "r1", {"type": "done"})
     before = _unreachable("agent")
 
     await _drain(queue.read_results(client, "r1"))

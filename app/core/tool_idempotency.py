@@ -93,7 +93,7 @@ async def idempotent(
     double run is possible in that exact window. Accepted because nothing today can put two callers there
     concurrently: the only real caller (`app/adapters/inbound/workers/agent_worker.py`'s reclaim path) retries a job only
     well after `AGENT_WORKER_RECLAIM_IDLE_SECONDS` of the ORIGINAL attempt going silent (presumed dead, not
-    concurrently running), and `queue.py::acquire_thread_lock` already rules out two jobs for the same
+    concurrently running), and `streams.py::acquire_thread_lock` already rules out two jobs for the same
     thread_id, hence the same tool_call_id. A future caller invoking this concurrently would need to close
     that window (block-and-poll, or a proper `SELECT ... FOR UPDATE`).
     """

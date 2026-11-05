@@ -11,10 +11,10 @@ import json
 import threading
 import time
 
-from app.adapters.inbound.workers import ingest_worker
+from app.adapters.inbound.workers import ingest_streams, ingest_worker
+from app.adapters.inbound.workers.streams import dead_letter_stream_key
 from app.adapters.outbound.minio import object_store as minio_object_store
-from app.adapters.outbound.redis import ingest_queue
-from app.adapters.outbound.redis.queue import dead_letter_stream_key
+from app.ports.outbound import jobs
 from tests.conftest import metric_value as _count
 from tests.job_queue.test_queue import FakeRedis
 
@@ -80,7 +80,7 @@ class TestProcessJob:
         assert captured["topic"] == "company"
         assert captured["ctx"] == TEST_CTX
 
-        events = [json.loads(f["payload"]) for _, f in client.streams[ingest_queue.results_stream_key("j1")]]
+        events = [json.loads(f["payload"]) for _, f in client.streams[jobs.ingest_results_stream_key("j1")]]
         assert events == [{"type": "started"}, {"type": "done", "chunks": 3}]
         assert client.acked == [entry_id]
 
@@ -108,7 +108,7 @@ class TestProcessJob:
 
         await ingest_worker.process_job(client, entry_id, fields)
 
-        events = [json.loads(f["payload"]) for _, f in client.streams[ingest_queue.results_stream_key("j8")]]
+        events = [json.loads(f["payload"]) for _, f in client.streams[jobs.ingest_results_stream_key("j8")]]
         assert events == [
             {"type": "started"},
             {"type": "progress", "done": 200, "total": 570},
@@ -137,7 +137,7 @@ class TestProcessJob:
 
         await ingest_worker.process_job(client, entry_id, fields)
 
-        events = [json.loads(f["payload"]) for _, f in client.streams[ingest_queue.results_stream_key("j3")]]
+        events = [json.loads(f["payload"]) for _, f in client.streams[jobs.ingest_results_stream_key("j3")]]
         assert events[0] == {"type": "started"}
         assert events[1]["type"] == "error"
         assert ".xlsx" in events[1]["content"]
@@ -154,7 +154,7 @@ class TestProcessJob:
 
         await ingest_worker.process_job(client, entry_id, fields)
 
-        events = [json.loads(f["payload"]) for _, f in client.streams[ingest_queue.results_stream_key("j4")]]
+        events = [json.loads(f["payload"]) for _, f in client.streams[jobs.ingest_results_stream_key("j4")]]
         assert events[-1] == {"type": "error", "content": "MinIO unreachable"}
         assert client.acked == [entry_id]
 
@@ -173,7 +173,7 @@ class TestProcessJob:
 
         await ingest_worker.process_job(client, entry_id, fields)
 
-        events = [json.loads(f["payload"]) for _, f in client.streams[ingest_queue.results_stream_key("j5")]]
+        events = [json.loads(f["payload"]) for _, f in client.streams[jobs.ingest_results_stream_key("j5")]]
         assert events[-1]["type"] == "error"
         assert "could not parse PDF" in events[-1]["content"]
         assert client.acked == [entry_id]
@@ -198,7 +198,7 @@ class TestProcessJob:
 
         await ingest_worker.process_job(client, entry_id, fields)
 
-        events = [json.loads(f["payload"]) for _, f in client.streams[ingest_queue.results_stream_key("j6")]]
+        events = [json.loads(f["payload"]) for _, f in client.streams[jobs.ingest_results_stream_key("j6")]]
         assert events[-1]["type"] == "error"
         assert client.acked == [entry_id]
 
@@ -212,13 +212,13 @@ class TestRunLoop:
         monkeypatch.setattr(ingest_worker, "get_client", lambda: client)
 
         async def _run_one_iteration():
-            await ingest_queue.ensure_consumer_group(client)
+            await ingest_streams.ensure_consumer_group(client)
             entry_id, fields = _entry(job_id="j7")
-            client.streams[ingest_queue.INGEST_REQUESTS_STREAM].append((entry_id, fields))
+            client.streams[jobs.INGEST_REQUESTS_STREAM].append((entry_id, fields))
             response = await client.xreadgroup(
-                ingest_queue.INGEST_CONSUMER_GROUP,
+                jobs.INGEST_CONSUMER_GROUP,
                 ingest_worker.CONSUMER_NAME,
-                {ingest_queue.INGEST_REQUESTS_STREAM: ">"},
+                {jobs.INGEST_REQUESTS_STREAM: ">"},
                 count=1,
             )
             _, entries = response[0]
@@ -227,7 +227,7 @@ class TestRunLoop:
 
         await _run_one_iteration()
 
-        events = [json.loads(f["payload"]) for _, f in client.streams[ingest_queue.results_stream_key("j7")]]
+        events = [json.loads(f["payload"]) for _, f in client.streams[jobs.ingest_results_stream_key("j7")]]
         assert events == [{"type": "started"}, {"type": "done", "chunks": 5}]
 
     async def test_sizes_the_default_executor_to_max_concurrency(self, monkeypatch):
@@ -335,12 +335,12 @@ class TestConcurrentDispatch:
         assert peak == max_concurrency
         assert len(client.acked) == num_jobs
         for i in range(num_jobs):
-            events = [json.loads(f["payload"]) for _, f in client.streams[ingest_queue.results_stream_key(f"j{i}")]]
+            events = [json.loads(f["payload"]) for _, f in client.streams[jobs.ingest_results_stream_key(f"j{i}")]]
             assert events == [{"type": "started"}, {"type": "done", "chunks": 1}]
 
 
 class TestHandleReclaimedJob:
-    """`_handle_reclaimed_job` is what `_reclaim_loop` calls for every entry `queue.py::reclaim_stale_entries`
+    """`_handle_reclaimed_job` is what `_reclaim_loop` calls for every entry `streams.py::reclaim_stale_entries`
     finds abandoned by a dead worker.
     """
 
@@ -356,11 +356,11 @@ class TestHandleReclaimedJob:
         # No error surfaced, nothing dead-lettered — the caller listening on
         # j9's results stream stays blocked, transparently waiting for the
         # retry's own real outcome instead.
-        assert ingest_queue.results_stream_key("j9") not in client.streams
-        assert dead_letter_stream_key(ingest_queue.INGEST_REQUESTS_STREAM) not in client.streams
+        assert jobs.ingest_results_stream_key("j9") not in client.streams
+        assert dead_letter_stream_key(jobs.INGEST_REQUESTS_STREAM) not in client.streams
         assert client.acked == [entry_id]
 
-        republished = client.streams[ingest_queue.INGEST_REQUESTS_STREAM]
+        republished = client.streams[jobs.INGEST_REQUESTS_STREAM]
         assert len(republished) == 1
         new_payload = json.loads(republished[0][1]["payload"])
         assert new_payload["job_id"] == "j9"
@@ -380,11 +380,11 @@ class TestHandleReclaimedJob:
 
         await ingest_worker._handle_reclaimed_job(client, entry_id, fields)
 
-        events = [json.loads(f["payload"]) for _, f in client.streams[ingest_queue.results_stream_key("j11")]]
+        events = [json.loads(f["payload"]) for _, f in client.streams[jobs.ingest_results_stream_key("j11")]]
         assert len(events) == 1
         assert events[0]["type"] == "error"
 
-        dead = client.streams[dead_letter_stream_key(ingest_queue.INGEST_REQUESTS_STREAM)]
+        dead = client.streams[dead_letter_stream_key(jobs.INGEST_REQUESTS_STREAM)]
         assert len(dead) == 1
         assert dead[0][1]["original_entry_id"] == entry_id
         assert json.loads(dead[0][1]["payload"])["job_id"] == "j11"
@@ -398,7 +398,7 @@ class TestHandleReclaimedJob:
         await ingest_worker._handle_reclaimed_job(client, entry_id, fields)  # must not raise
 
         assert client.acked == [entry_id]
-        dead = client.streams[dead_letter_stream_key(ingest_queue.INGEST_REQUESTS_STREAM)]
+        dead = client.streams[dead_letter_stream_key(jobs.INGEST_REQUESTS_STREAM)]
         assert len(dead) == 1
 
 
@@ -413,8 +413,8 @@ class TestReclaimLoop:
         # the same stream, and a collision with `entry_id` would make the
         # two indistinguishable (same reasoning as agent_worker.py's own
         # equivalent test).
-        entry_id = await client.xadd(ingest_queue.INGEST_REQUESTS_STREAM, fields)
-        await client.xreadgroup("some-other-group", "dead-consumer", {ingest_queue.INGEST_REQUESTS_STREAM: ">"})
+        entry_id = await client.xadd(jobs.INGEST_REQUESTS_STREAM, fields)
+        await client.xreadgroup("some-other-group", "dead-consumer", {jobs.INGEST_REQUESTS_STREAM: ">"})
         client._delivered[entry_id] = 999_999_999  # already long abandoned
 
         stop_event = asyncio.Event()
@@ -424,9 +424,9 @@ class TestReclaimLoop:
         await asyncio.wait_for(task, timeout=1)
 
         assert entry_id in client.acked
-        assert ingest_queue.results_stream_key("j10") not in client.streams  # no error surfaced
+        assert jobs.ingest_results_stream_key("j10") not in client.streams  # no error surfaced
         republished = [
-            f for eid, f in client.streams[ingest_queue.INGEST_REQUESTS_STREAM] if eid != entry_id
+            f for eid, f in client.streams[jobs.INGEST_REQUESTS_STREAM] if eid != entry_id
         ]
         assert len(republished) == 1
         assert json.loads(republished[0]["payload"])["job_id"] == "j10"

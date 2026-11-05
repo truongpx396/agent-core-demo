@@ -477,7 +477,7 @@ agent_moderation_total = Counter(
 agent_worker_job_reclaimed_total = Counter(
     "agent_worker_job_reclaimed_total",
     "Jobs reclaimed via XAUTOCLAIM after their original worker died mid-job "
-    "(app/adapters/outbound/redis/queue.py::reclaim_stale_entries). 'retried' means the "
+    "(app/adapters/inbound/workers/streams.py::reclaim_stale_entries). 'retried' means the "
     "job was judged safe to run again (app/adapters/inbound/workers/agent_worker.py::"
     "_classify_reclaimed_turn — an unfinished turn is continued from its "
     "checkpoint, not restarted) and was silently republished; "

@@ -24,7 +24,7 @@ One class per angle:
 - TestQdrantReadWriteUnderConcurrency: N TENANTS searching a seeded collection must hit only their own
   documents (the semantic-cache question asked of Qdrant's tenant filter).
 - TestSameThreadTurnsAreSerializedNotCorrupted: the complement; the same thread_id must not fork its
-  checkpoint when two "turn" jobs race through the real queue. Before `queue.py::acquire_thread_lock` the last
+  checkpoint when two "turn" jobs race through the real queue. Before `streams.py::acquire_thread_lock` the last
   commit silently won and the other message vanished; no class above put two jobs on one thread_id.
 
 No embedding backend is needed (`_fake_embed_text`): the real `embed_text` needs a reachable OPENAI_API_BASE,
@@ -45,7 +45,7 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMe
 from langchain_core.outputs import ChatGeneration, ChatResult
 from qdrant_client.models import FieldCondition, Filter, MatchValue
 
-from app.adapters.inbound.workers import agent_worker
+from app.adapters.inbound.workers import agent_worker, streams
 from app.adapters.outbound.embeddings import embeddings as embeddings_module
 from app.adapters.outbound.embeddings.embedding_identity import EmbeddingIdentity
 from app.adapters.outbound.postgres import checkpointing as pg_checkpointing
@@ -56,12 +56,14 @@ from app.agent.runtime import core as agent_module
 from app.agent.runtime import stream as stream_module
 from app.agent.tools import builtin as tools_module
 from app.agent.tools import run_subagent as subagent_tools
-from app.core import metrics
+from app.core import metrics, redis_client
 from app.domains.ecorp import store as ecorp_store
 from app.ports.outbound import checkpointing as checkpointing_port
+from app.ports.outbound import jobs
 from tests.conftest import metric_value as _count
 from tests.containers import ensure_postgres, ensure_qdrant, ensure_redis
 from tests.ecorp import build_graph
+from tests.redis_streams import use_private_requests_stream
 
 pytestmark = pytest.mark.integration
 
@@ -370,22 +372,15 @@ class TestWorkerConcurrencyAgainstTheRealQueue:
         fixture, applied to BOTH `queue`'s and `agent_worker`'s own
         requests-stream/`CONSUMER_GROUP` bindings — `agent_worker.py` imports
         `requests_stream_key` by name, a separate reference from the
-        `queue.requests_stream_key` rebinding below, so it needs its own
+        `jobs.requests_stream_key` rebinding below, so it needs its own
         direct patch (`process_request`'s `finally: client.xack(...)` calls
         it). Both are patched (not a fixed constant, now that the key is
         domain-parameterized) to always return this same `stream`
         regardless of domain — this test only ever exercises "ecorp"."""
         info = ensure_redis()
-        stream = f"agent:requests:test:{uuid.uuid4()}"
-        group = f"agent-workers:test:{uuid.uuid4()}"
-        monkeypatch.setattr(queue, "REDIS_URL", info["redis_url"])
-        monkeypatch.setattr(queue, "_client", None)
-        monkeypatch.setattr(queue, "requests_stream_key", lambda domain="ecorp": stream)
-        monkeypatch.setattr(queue, "CONSUMER_GROUP", group)
-        monkeypatch.setattr(agent_worker, "requests_stream_key", lambda domain="ecorp": stream)
-        monkeypatch.setattr(agent_worker, "CONSUMER_GROUP", group)
+        use_private_requests_stream(monkeypatch, info["redis_url"])
         yield
-        queue._client = None
+        redis_client._client = None
 
     async def test_n_queued_turns_run_concurrently_not_back_to_back(self, monkeypatch):
         n = 5
@@ -395,7 +390,7 @@ class TestWorkerConcurrencyAgainstTheRealQueue:
         async def _run():
             await agent_module.init_graph_async()
             client = queue.get_client()
-            await queue.ensure_consumer_group(client)
+            await streams.ensure_consumer_group(client)
 
             request_ids = [str(uuid.uuid4()) for _ in range(n)]
             for i, rid in enumerate(request_ids):
@@ -417,7 +412,7 @@ class TestWorkerConcurrencyAgainstTheRealQueue:
             response = await client.xreadgroup(
                 agent_worker.CONSUMER_GROUP,
                 "test-consumer",
-                {queue.requests_stream_key(): ">"},
+                {jobs.requests_stream_key(): ">"},
                 count=n,
             )
             _, entries = response[0]
@@ -479,7 +474,7 @@ class TestSameThreadTurnsAreSerializedNotCorrupted:
     put N turns on N DIFFERENT thread_ids/tenants and check they stay
     isolated. This puts TWO real "turn" jobs on the SAME thread_id through
     the real queue/worker dispatch at the same real moment — before
-    `app/adapters/outbound/redis/queue.py::acquire_thread_lock` existed, both would read
+    `app/adapters/inbound/workers/streams.py::acquire_thread_lock` existed, both would read
     the checkpointer's latest state as their own parent and both write a
     child from it, so whichever committed last would silently win and the
     other job's message would vanish from the thread's visible history.
@@ -494,16 +489,9 @@ class TestSameThreadTurnsAreSerializedNotCorrupted:
         TestWorkerConcurrencyAgainstTheRealQueue's own fixture above — see
         that one's docstring for why each binding needs its own patch."""
         info = ensure_redis()
-        stream = f"agent:requests:test:{uuid.uuid4()}"
-        group = f"agent-workers:test:{uuid.uuid4()}"
-        monkeypatch.setattr(queue, "REDIS_URL", info["redis_url"])
-        monkeypatch.setattr(queue, "_client", None)
-        monkeypatch.setattr(queue, "requests_stream_key", lambda domain="ecorp": stream)
-        monkeypatch.setattr(queue, "CONSUMER_GROUP", group)
-        monkeypatch.setattr(agent_worker, "requests_stream_key", lambda domain="ecorp": stream)
-        monkeypatch.setattr(agent_worker, "CONSUMER_GROUP", group)
+        use_private_requests_stream(monkeypatch, info["redis_url"])
         yield
-        queue._client = None
+        redis_client._client = None
 
     async def test_two_concurrent_turns_on_one_thread_one_wins_one_is_rejected(self, monkeypatch):
         # delay=0.05 (same technique as TestWorkerConcurrencyAgainstTheRealQueue
@@ -516,7 +504,7 @@ class TestSameThreadTurnsAreSerializedNotCorrupted:
         async def _run():
             graph = await agent_module.init_graph_async()
             client = queue.get_client()
-            await queue.ensure_consumer_group(client)
+            await streams.ensure_consumer_group(client)
 
             thread_id = str(uuid.uuid4())
             request_ids = [str(uuid.uuid4()) for _ in range(2)]
@@ -532,7 +520,7 @@ class TestSameThreadTurnsAreSerializedNotCorrupted:
             response = await client.xreadgroup(
                 agent_worker.CONSUMER_GROUP,
                 "test-consumer",
-                {queue.requests_stream_key(): ">"},
+                {jobs.requests_stream_key(): ">"},
                 count=2,
             )
             _, entries = response[0]

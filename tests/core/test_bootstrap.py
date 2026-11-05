@@ -83,3 +83,17 @@ def test_verify_wired_names_what_is_missing():
             raise AssertionError("verify_wired accepted an unbound port")
     finally:
         slot._adapter = original
+
+
+async def test_close_adapters_ends_the_mcp_connections_a_process_opened(monkeypatch):
+    """The API and the agent worker call this where they stop, instead of importing the MCP module themselves."""
+    closed = []
+
+    async def close_all():
+        closed.append("mcp")
+
+    monkeypatch.setattr(bootstrap, "close_all_connections", close_all)
+
+    await bootstrap.close_adapters()
+
+    assert closed == ["mcp"]

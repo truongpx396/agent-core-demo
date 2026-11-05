@@ -18,15 +18,15 @@ import pytest
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 from app.adapters.inbound.workers import agent_worker
-from app.adapters.outbound.redis.queue import (
-    CONSUMER_GROUP,
-    dead_letter_stream_key,
-    requests_stream_key,
-    results_stream_key,
-)
+from app.adapters.inbound.workers.streams import dead_letter_stream_key
 from app.agent.graph.messages import RETRY_ARTIFACT_KEY
 from app.agent.runtime.core import current_domain
 from app.core import metrics
+from app.ports.outbound.jobs import (
+    CONSUMER_GROUP,
+    requests_stream_key,
+    results_stream_key,
+)
 from tests.conftest import metric_value as _count
 from tests.job_queue.test_queue import FakeRedis
 
@@ -133,7 +133,8 @@ class TestProcessRequestTurn:
         """A flag left over from a PRIOR turn on this thread_id (e.g. /chat/cancel raced with that turn already
         finishing on its own) must not spuriously cancel this brand-new one.
         """
-        from app.adapters.outbound.redis.queue import is_cancelled, set_cancel_flag
+        from app.adapters.inbound.workers.streams import is_cancelled
+        from app.adapters.outbound.redis.queue import set_cancel_flag
 
         seen_cancelled = []
 
@@ -659,7 +660,7 @@ class TestRunLoop:
         monkeypatch.setattr(agent_worker, "get_client", lambda: client)
 
         async def _run_one_iteration():
-            from app.adapters.outbound.redis.queue import ensure_consumer_group
+            from app.adapters.inbound.workers.streams import ensure_consumer_group
 
             await ensure_consumer_group(client)
             entry_id, fields = _entry(request_id="r3")
@@ -736,7 +737,7 @@ class TestConcurrentDispatch:
 
 
 class TestSameThreadJobsAreSerialized:
-    """process_request's per-thread lock (queue.py::acquire_thread_lock) —
+    """process_request's per-thread lock (streams.py::acquire_thread_lock) —
     the fix for the checkpoint-fork race two jobs on the SAME thread_id
     used to be able to hit (see agent_worker.py's own module docstring):
     both would read the checkpointer's latest state as their parent and
@@ -1062,7 +1063,7 @@ class TestClassifyReclaimedTurn:
 
 
 class TestHandleReclaimedJob:
-    """`_handle_reclaimed_job` is what `_reclaim_loop` calls for every entry `queue.py::reclaim_stale_entries`
+    """`_handle_reclaimed_job` is what `_reclaim_loop` calls for every entry `streams.py::reclaim_stale_entries`
     finds abandoned by a dead worker — see this module's own docstring for the full per-kind policy.
     """
 

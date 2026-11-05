@@ -17,8 +17,6 @@ from collections.abc import Awaitable, Callable
 import httpx
 import psycopg
 
-from app.adapters.outbound.qdrant import qdrant_store
-from app.adapters.outbound.redis import queue
 from app.core import sql_store
 from app.core.config import (
     CHECKPOINTER_DATABASE_URL,
@@ -26,6 +24,8 @@ from app.core.config import (
     ML_SERVICE_URL,
     SKILLS_COLLECTION,
 )
+from app.ports.outbound.jobs import turn_queue
+from app.ports.outbound.retrieval import document_index
 
 logger = logging.getLogger(__name__)
 
@@ -50,11 +50,11 @@ async def _check_checkpointer_postgres() -> None:
 
 
 async def _check_qdrant() -> None:
-    await qdrant_store.get_client().get_collections()
+    await document_index.get().ping()
 
 
 async def _check_redis() -> None:
-    await queue.get_client().ping()
+    await turn_queue.get().ping()
 
 
 async def _check_ml_service() -> None:
@@ -113,7 +113,7 @@ _WARNINGS_TIMEOUT_SECONDS = 3.0
 async def _embedding_identity_warnings() -> list[str]:
     warnings: list[str] = []
     for logical in (COLLECTION, SKILLS_COLLECTION):
-        status = await qdrant_store.identity_status(logical)
+        status = await document_index.get().identity_status(logical)
         if status.state == "mismatch":
             warnings.append(
                 f"embedding identity mismatch: {logical} holds {status.found}, this process is configured for {status.expected}; "

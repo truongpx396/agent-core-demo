@@ -10,9 +10,13 @@ each wrapping its own call in `asyncio.run(...)`.
 """
 import json
 
+import pytest
 from redis.exceptions import ResponseError
 
+from app.adapters.inbound.workers import streams
 from app.adapters.outbound.redis import queue
+from app.core import redis_client
+from app.ports.outbound import jobs
 
 
 def _id_gt(a: str, b: str) -> bool:
@@ -81,7 +85,7 @@ class FakeRedis:
         return result
 
     async def xautoclaim(self, stream, group, consumer, min_idle_time, start_id="0-0", count=None):
-        """Just enough of real XAUTOCLAIM for queue.py::reclaim_stale_entries: claims (and returns) every
+        """Just enough of real XAUTOCLAIM for streams.py::reclaim_stale_entries: claims (and returns) every
         pending, unacked entry whose simulated idle time (see `_delivered`'s own docstring) is at least
         `min_idle_time` ms.
         """
@@ -99,6 +103,9 @@ class FakeRedis:
     async def xack(self, stream, group, entry_id):
         self.acked.append(entry_id)
         self.ack_calls.append((stream, entry_id))
+
+    async def ping(self):
+        return True
 
     async def expire(self, key, seconds):
         self.expiries[key] = seconds
@@ -138,7 +145,7 @@ class TestGetClient:
         redis.exceptions.TimeoutError before Redis's own block window ever elapsed, on every real blocking
         read.
         """
-        monkeypatch.setattr(queue, "_client", None)
+        monkeypatch.setattr(redis_client, "_client", None)
         captured = {}
 
         class _FakeRedisClient:
@@ -160,20 +167,20 @@ class TestGetClient:
 class TestEnsureConsumerGroup:
     async def test_creates_the_group_on_first_call(self):
         client = FakeRedis()
-        await queue.ensure_consumer_group(client)
-        assert queue.CONSUMER_GROUP in client.groups[queue.requests_stream_key("ecorp")]
+        await streams.ensure_consumer_group(client)
+        assert jobs.CONSUMER_GROUP in client.groups[jobs.requests_stream_key("ecorp")]
 
     async def test_a_different_domain_gets_its_own_group_on_its_own_stream(self):
         client = FakeRedis()
-        await queue.ensure_consumer_group(client, "support")
-        assert queue.CONSUMER_GROUP in client.groups[queue.requests_stream_key("support")]
+        await streams.ensure_consumer_group(client, "support")
+        assert jobs.CONSUMER_GROUP in client.groups[jobs.requests_stream_key("support")]
         # Never touched Ecorp's own stream/group at all.
-        assert queue.requests_stream_key("ecorp") not in client.groups
+        assert jobs.requests_stream_key("ecorp") not in client.groups
 
     async def test_is_idempotent_a_second_call_does_not_raise(self):
         client = FakeRedis()
-        await queue.ensure_consumer_group(client)
-        await queue.ensure_consumer_group(client)  # must not raise BUSYGROUP
+        await streams.ensure_consumer_group(client)
+        await streams.ensure_consumer_group(client)  # must not raise BUSYGROUP
 
 
 class TestPublishRequest:
@@ -187,7 +194,7 @@ class TestPublishRequest:
             ctx={"tenant": "ecorp", "principal": "p1", "claims": {}},
             require_approval=True,
         )
-        entries = client.streams[queue.requests_stream_key("ecorp")]
+        entries = client.streams[jobs.requests_stream_key("ecorp")]
         assert len(entries) == 1
         payload = json.loads(entries[0][1]["payload"])
         assert payload == {
@@ -213,7 +220,7 @@ class TestPublishRequest:
             ctx={"tenant": "ecorp", "principal": "p1", "claims": {}},
             unattended=True,
         )
-        payload = json.loads(client.streams[queue.requests_stream_key("ecorp")][0][1]["payload"])
+        payload = json.loads(client.streams[jobs.requests_stream_key("ecorp")][0][1]["payload"])
         assert payload["unattended"] is True
 
     async def test_carries_images_when_attached(self):
@@ -226,7 +233,7 @@ class TestPublishRequest:
             ctx={"tenant": "ecorp", "principal": "p1", "claims": {}},
             images=["data:image/png;base64,abc123"],
         )
-        payload = json.loads(client.streams[queue.requests_stream_key("ecorp")][0][1]["payload"])
+        payload = json.loads(client.streams[jobs.requests_stream_key("ecorp")][0][1]["payload"])
         assert payload["images"] == ["data:image/png;base64,abc123"]
 
     async def test_a_non_default_domain_lands_on_its_own_stream_not_ecorps(self):
@@ -239,8 +246,8 @@ class TestPublishRequest:
             ctx={"tenant": "ecorp", "principal": "p1", "claims": {}},
             domain="support",
         )
-        assert queue.requests_stream_key("ecorp") not in client.streams
-        entries = client.streams[queue.requests_stream_key("support")]
+        assert jobs.requests_stream_key("ecorp") not in client.streams
+        entries = client.streams[jobs.requests_stream_key("support")]
         assert len(entries) == 1
         assert json.loads(entries[0][1]["payload"])["request_id"] == "r3"
 
@@ -258,7 +265,7 @@ class TestPublishResumeRequest:
             approved=True,
             ctx={"tenant": "ecorp", "principal": "p1", "claims": {}},
         )
-        entries = client.streams[queue.requests_stream_key("ecorp")]
+        entries = client.streams[jobs.requests_stream_key("ecorp")]
         assert len(entries) == 1
         payload = json.loads(entries[0][1]["payload"])
         assert payload == {
@@ -279,7 +286,7 @@ class TestPublishCancelRequest:
             thread_id="t1",
             ctx={"tenant": "ecorp", "principal": "p1", "claims": {}},
         )
-        entries = client.streams[queue.requests_stream_key("ecorp")]
+        entries = client.streams[jobs.requests_stream_key("ecorp")]
         assert len(entries) == 1
         payload = json.loads(entries[0][1]["payload"])
         assert payload == {
@@ -297,27 +304,27 @@ class TestCancelFlag:
 
     async def test_is_cancelled_false_before_anything_is_set(self):
         client = FakeRedis()
-        assert await queue.is_cancelled(client, "t1") is False
+        assert await streams.is_cancelled(client, "t1") is False
 
     async def test_set_then_is_cancelled_true(self):
         client = FakeRedis()
         await queue.set_cancel_flag(client, "t1")
-        assert await queue.is_cancelled(client, "t1") is True
+        assert await streams.is_cancelled(client, "t1") is True
 
     async def test_set_flag_is_scoped_to_its_own_thread_id(self):
         client = FakeRedis()
         await queue.set_cancel_flag(client, "t1")
-        assert await queue.is_cancelled(client, "t2") is False
+        assert await streams.is_cancelled(client, "t2") is False
 
     async def test_clear_removes_the_flag(self):
         client = FakeRedis()
         await queue.set_cancel_flag(client, "t1")
-        await queue.clear_cancel_flag(client, "t1")
-        assert await queue.is_cancelled(client, "t1") is False
+        await streams.clear_cancel_flag(client, "t1")
+        assert await streams.is_cancelled(client, "t1") is False
 
     async def test_clear_on_a_never_set_thread_id_does_not_raise(self):
         client = FakeRedis()
-        await queue.clear_cancel_flag(client, "never-set")  # must not raise
+        await streams.clear_cancel_flag(client, "never-set")  # must not raise
 
 
 class TestThreadLock:
@@ -327,53 +334,53 @@ class TestThreadLock:
 
     async def test_acquire_succeeds_when_free(self):
         client = FakeRedis()
-        assert await queue.acquire_thread_lock(client, "t1", "token-a") is True
+        assert await streams.acquire_thread_lock(client, "t1", "token-a") is True
 
     async def test_a_second_acquire_while_held_fails(self):
         client = FakeRedis()
-        assert await queue.acquire_thread_lock(client, "t1", "token-a") is True
-        assert await queue.acquire_thread_lock(client, "t1", "token-b") is False
+        assert await streams.acquire_thread_lock(client, "t1", "token-a") is True
+        assert await streams.acquire_thread_lock(client, "t1", "token-b") is False
 
     async def test_acquire_sets_a_ttl_so_a_crashed_holder_self_heals(self):
         client = FakeRedis()
-        await queue.acquire_thread_lock(client, "t1", "token-a")
-        assert client.expiries[queue.thread_lock_key("t1")] == queue.THREAD_LOCK_TTL_SECONDS
+        await streams.acquire_thread_lock(client, "t1", "token-a")
+        assert client.expiries[jobs.thread_lock_key("t1")] == jobs.THREAD_LOCK_TTL_SECONDS
 
     async def test_release_then_acquire_by_someone_else_succeeds(self):
         client = FakeRedis()
-        await queue.acquire_thread_lock(client, "t1", "token-a")
-        await queue.release_thread_lock(client, "t1", "token-a")
-        assert await queue.acquire_thread_lock(client, "t1", "token-b") is True
+        await streams.acquire_thread_lock(client, "t1", "token-a")
+        await streams.release_thread_lock(client, "t1", "token-a")
+        assert await streams.acquire_thread_lock(client, "t1", "token-b") is True
 
     async def test_release_with_the_wrong_token_does_not_remove_a_different_holders_lock(self):
         """The scenario the compare-and-delete script exists for: token-a's
         own lock already expired and token-b legitimately acquired it —
         token-a's (late) release must not evict token-b."""
         client = FakeRedis()
-        await queue.acquire_thread_lock(client, "t1", "token-a")
-        del client.kv[queue.thread_lock_key("t1")]  # simulate TTL expiry
-        await queue.acquire_thread_lock(client, "t1", "token-b")
+        await streams.acquire_thread_lock(client, "t1", "token-a")
+        del client.kv[jobs.thread_lock_key("t1")]  # simulate TTL expiry
+        await streams.acquire_thread_lock(client, "t1", "token-b")
 
-        await queue.release_thread_lock(client, "t1", "token-a")
+        await streams.release_thread_lock(client, "t1", "token-a")
 
-        assert client.kv[queue.thread_lock_key("t1")] == "token-b"
+        assert client.kv[jobs.thread_lock_key("t1")] == "token-b"
 
     async def test_locks_are_scoped_to_their_own_thread_id(self):
         client = FakeRedis()
-        await queue.acquire_thread_lock(client, "t1", "token-a")
-        assert await queue.acquire_thread_lock(client, "t2", "token-b") is True
+        await streams.acquire_thread_lock(client, "t1", "token-a")
+        assert await streams.acquire_thread_lock(client, "t2", "token-b") is True
 
     async def test_release_on_a_never_acquired_thread_id_does_not_raise(self):
         client = FakeRedis()
-        await queue.release_thread_lock(client, "never-locked", "token-a")  # must not raise
+        await streams.release_thread_lock(client, "never-locked", "token-a")  # must not raise
 
 
 class TestPublishResultAndReadResults:
     async def test_read_results_yields_events_in_order_and_stops_at_done(self):
         client = FakeRedis()
-        await queue.publish_result(client, "r1", {"type": "token", "content": "Hel"})
-        await queue.publish_result(client, "r1", {"type": "token", "content": "lo"})
-        await queue.publish_result(client, "r1", {"type": "done"})
+        await streams.publish_result(client, "r1", {"type": "token", "content": "Hel"})
+        await streams.publish_result(client, "r1", {"type": "token", "content": "lo"})
+        await streams.publish_result(client, "r1", {"type": "done"})
         events = [event async for event in queue.read_results(client, "r1")]
         assert events == [
             {"type": "token", "content": "Hel"},
@@ -383,7 +390,7 @@ class TestPublishResultAndReadResults:
 
     async def test_read_results_stops_at_an_error_event_too(self):
         client = FakeRedis()
-        await queue.publish_result(client, "r1", {"type": "error", "content": "boom"})
+        await streams.publish_result(client, "r1", {"type": "error", "content": "boom"})
         events = [event async for event in queue.read_results(client, "r1")]
         assert events == [{"type": "error", "content": "boom"}]
 
@@ -395,8 +402,8 @@ class TestPublishResultAndReadResults:
         that will never come on THIS results stream (resuming is a
         separate job with its own — see publish_resume_request above)."""
         client = FakeRedis()
-        await queue.publish_result(client, "r1", {"type": "token", "content": "hi"})
-        await queue.publish_result(
+        await streams.publish_result(client, "r1", {"type": "token", "content": "hi"})
+        await streams.publish_result(
             client, "r1", {"type": "approval_required", "tool_calls": []}
         )
         events = [event async for event in queue.read_results(client, "r1")]
@@ -407,16 +414,16 @@ class TestPublishResultAndReadResults:
 
     async def test_read_results_ignores_events_from_a_different_request(self):
         client = FakeRedis()
-        await queue.publish_result(client, "other", {"type": "token", "content": "nope"})
-        await queue.publish_result(client, "r1", {"type": "done"})
+        await streams.publish_result(client, "other", {"type": "token", "content": "nope"})
+        await streams.publish_result(client, "r1", {"type": "done"})
         events = [event async for event in queue.read_results(client, "r1")]
         assert events == [{"type": "done"}]
 
     async def test_publish_result_refreshes_the_ttl_on_every_write(self):
         client = FakeRedis()
-        await queue.publish_result(client, "r1", {"type": "token", "content": "a"})
-        await queue.publish_result(client, "r1", {"type": "done"})
-        assert client.expiries[queue.results_stream_key("r1")] == queue.RESULTS_STREAM_TTL_SECONDS
+        await streams.publish_result(client, "r1", {"type": "token", "content": "a"})
+        await streams.publish_result(client, "r1", {"type": "done"})
+        assert client.expiries[jobs.results_stream_key("r1")] == jobs.RESULTS_STREAM_TTL_SECONDS
 
     async def test_without_a_deadline_never_publishing_anything_would_hang(self):
         """Documents the exact bug first_event_deadline_seconds exists to
@@ -425,7 +432,7 @@ class TestPublishResultAndReadResults:
         truly blocking, which is what makes the no-deadline loop below
         spin forever instead of eventually timing out on its own."""
         client = FakeRedis()
-        response = await client.xread({queue.results_stream_key("nobody-publishes-here"): "0"}, block=5000, count=10)
+        response = await client.xread({jobs.results_stream_key("nobody-publishes-here"): "0"}, block=5000, count=10)
         assert response == []  # instant, not a real 5s block — see docstring above
 
     async def test_a_first_event_deadline_yields_one_error_event_and_stops(self):
@@ -443,8 +450,8 @@ class TestPublishResultAndReadResults:
         once one real event has landed, a slow-but-genuinely-running job
         must not be cut short partway through."""
         client = FakeRedis()
-        await queue.publish_result(client, "r1", {"type": "token", "content": "a"})
-        await queue.publish_result(client, "r1", {"type": "done"})
+        await streams.publish_result(client, "r1", {"type": "token", "content": "a"})
+        await streams.publish_result(client, "r1", {"type": "done"})
 
         events = [
             event
@@ -460,7 +467,7 @@ class TestPublishResultAndReadResults:
         """Default (`first_event_deadline_seconds=None`) — every existing
         caller that doesn't opt in keeps its exact prior behavior."""
         client = FakeRedis()
-        await queue.publish_result(client, "r1", {"type": "done"})
+        await streams.publish_result(client, "r1", {"type": "done"})
         events = [event async for event in queue.read_results(client, "r1")]
         assert events == [{"type": "done"}]
 
@@ -468,9 +475,9 @@ class TestPublishResultAndReadResults:
 class TestDeleteResultsStream:
     async def test_deletes_the_key(self):
         client = FakeRedis()
-        await queue.publish_result(client, "r1", {"type": "done"})
+        await streams.publish_result(client, "r1", {"type": "done"})
         await queue.delete_results_stream(client, "r1")
-        assert queue.results_stream_key("r1") in client.deleted
+        assert jobs.results_stream_key("r1") in client.deleted
 
     async def test_never_raises_even_if_the_client_errors(self):
         class _RaisingClient(FakeRedis):
@@ -493,7 +500,7 @@ class TestReclaimStaleEntries:
         await client.xreadgroup("g", "c1", {"s": ">"})  # delivered, now pending
         client._delivered[entry_id] = 999_999  # simulate: abandoned a long time ago
 
-        claimed = await queue.reclaim_stale_entries(
+        claimed = await streams.reclaim_stale_entries(
             client, stream="s", group="g", consumer="c2", min_idle_ms=100
         )
 
@@ -508,7 +515,7 @@ class TestReclaimStaleEntries:
         await client.xreadgroup("g", "c1", {"s": ">"})
         client._delivered[entry_id] = 50  # only just delivered
 
-        claimed = await queue.reclaim_stale_entries(
+        claimed = await streams.reclaim_stale_entries(
             client, stream="s", group="g", consumer="c2", min_idle_ms=100_000
         )
 
@@ -521,7 +528,7 @@ class TestReclaimStaleEntries:
         client._delivered[entry_id] = 999_999
         await client.xack("s", "g", entry_id)
 
-        claimed = await queue.reclaim_stale_entries(
+        claimed = await streams.reclaim_stale_entries(
             client, stream="s", group="g", consumer="c2", min_idle_ms=100
         )
 
@@ -533,7 +540,7 @@ class TestReclaimStaleEntries:
         client = FakeRedis()
         await client.xadd("s", {"payload": "p1"})
 
-        claimed = await queue.reclaim_stale_entries(
+        claimed = await streams.reclaim_stale_entries(
             client, stream="s", group="g", consumer="c2", min_idle_ms=0
         )
 
@@ -543,14 +550,14 @@ class TestReclaimStaleEntries:
 class TestPublishDeadLetter:
     async def test_archives_the_payload_under_the_streams_own_dead_letter_key(self):
         client = FakeRedis()
-        await queue.publish_dead_letter(
+        await streams.publish_dead_letter(
             client,
-            requests_stream=queue.requests_stream_key("ecorp"),
+            requests_stream=jobs.requests_stream_key("ecorp"),
             entry_id="7-0",
             payload={"kind": "turn", "request_id": "r1"},
             reason="worker_lost",
         )
-        entries = client.streams[queue.dead_letter_stream_key(queue.requests_stream_key("ecorp"))]
+        entries = client.streams[streams.dead_letter_stream_key(jobs.requests_stream_key("ecorp"))]
         assert len(entries) == 1
         fields = entries[0][1]
         assert fields["original_entry_id"] == "7-0"
@@ -559,15 +566,15 @@ class TestPublishDeadLetter:
 
     async def test_is_capped_by_maxlen(self):
         client = FakeRedis()
-        for i in range(queue.DEAD_LETTER_MAXLEN + 10):
-            await queue.publish_dead_letter(
+        for i in range(streams.DEAD_LETTER_MAXLEN + 10):
+            await streams.publish_dead_letter(
                 client,
                 requests_stream="s",
                 entry_id=f"{i}-0",
                 payload={},
                 reason="worker_lost",
             )
-        assert len(client.streams[queue.dead_letter_stream_key("s")]) <= queue.DEAD_LETTER_MAXLEN
+        assert len(client.streams[streams.dead_letter_stream_key("s")]) <= streams.DEAD_LETTER_MAXLEN
 
 
 class TestRepublishJob:
@@ -579,7 +586,7 @@ class TestRepublishJob:
         client = FakeRedis()
         payload = {"kind": "turn", "request_id": "r1", "thread_id": "t1"}
 
-        await queue.republish_job(client, requests_stream="s", payload=payload)
+        await streams.republish_job(client, requests_stream="s", payload=payload)
 
         entries = client.streams["s"]
         assert len(entries) == 1
@@ -591,16 +598,16 @@ class TestRepublishJob:
         client = FakeRedis()
         payload = {"kind": "turn", "request_id": "r1"}
 
-        await queue.republish_job(client, requests_stream="s", payload=payload)
+        await streams.republish_job(client, requests_stream="s", payload=payload)
         first = json.loads(client.streams["s"][0][1]["payload"])
-        assert first[queue.RECLAIM_ATTEMPTS_FIELD] == 1
+        assert first[streams.RECLAIM_ATTEMPTS_FIELD] == 1
 
         # A second retry (e.g. a still-crashing worker) increments again,
         # rather than resetting — this is what agent_worker.py's own
         # MAX_AUTO_RECLAIM_RETRIES cap compares against.
-        await queue.republish_job(client, requests_stream="s", payload=first)
+        await streams.republish_job(client, requests_stream="s", payload=first)
         second = json.loads(client.streams["s"][1][1]["payload"])
-        assert second[queue.RECLAIM_ATTEMPTS_FIELD] == 2
+        assert second[streams.RECLAIM_ATTEMPTS_FIELD] == 2
 
     async def test_mutates_the_passed_in_payload_dict_in_place(self):
         """agent_worker.py relies on this: it reads payload["kind"]/
@@ -609,6 +616,71 @@ class TestRepublishJob:
         client = FakeRedis()
         payload = {"kind": "cancel", "request_id": "r1"}
 
-        await queue.republish_job(client, requests_stream="s", payload=payload)
+        await streams.republish_job(client, requests_stream="s", payload=payload)
 
-        assert payload[queue.RECLAIM_ATTEMPTS_FIELD] == 1
+        assert payload[streams.RECLAIM_ATTEMPTS_FIELD] == 1
+
+
+class TestTurnQueueAdapter:
+    """`RedisTurnQueue` is the `TurnQueue` port (`app/ports/outbound/jobs.py`) over this module's functions: the API reaches the queue only through it."""
+
+    CTX = {"tenant": "ecorp", "principal": "p1", "claims": {}}
+
+    @pytest.fixture
+    def adapter(self, monkeypatch):
+        client = FakeRedis()
+        monkeypatch.setattr(queue, "get_client", lambda: client)
+        return queue.RedisTurnQueue(), client
+
+    async def test_a_published_turn_lands_on_its_domains_requests_stream(self, adapter):
+        turn_queue, client = adapter
+
+        await turn_queue.publish_request(request_id="r1", text="hi", thread_id="t1", ctx=self.CTX, domain="support", unattended=True)
+
+        payload = json.loads(client.streams[jobs.requests_stream_key("support")][0][1]["payload"])
+        assert (payload["kind"], payload["request_id"], payload["unattended"]) == ("turn", "r1", True)
+        assert jobs.requests_stream_key("ecorp") not in client.streams
+
+    async def test_a_resume_and_a_cancel_are_jobs_on_the_same_stream(self, adapter):
+        turn_queue, client = adapter
+
+        await turn_queue.publish_resume_request(request_id="r2", thread_id="t1", approved=False, ctx=self.CTX)
+        await turn_queue.publish_cancel_request(request_id="r3", thread_id="t1", ctx=self.CTX)
+
+        kinds = [json.loads(fields["payload"])["kind"] for _, fields in client.streams[jobs.requests_stream_key("ecorp")]]
+        assert kinds == ["resume", "cancel"]
+
+    async def test_the_events_a_worker_publishes_come_back_through_read_results(self, adapter):
+        turn_queue, client = adapter
+        await streams.publish_result(client, "r1", {"type": "token", "content": "a"})
+        await streams.publish_result(client, "r1", {"type": "done"})
+
+        assert [event["type"] async for event in turn_queue.read_results("r1")] == ["token", "done"]
+
+    async def test_a_cancel_flag_set_through_the_port_is_seen_by_the_worker(self, adapter):
+        turn_queue, client = adapter
+
+        await turn_queue.set_cancel_flag("t1")
+
+        assert await streams.is_cancelled(client, "t1")
+        assert not await streams.is_cancelled(client, "another-thread")
+
+    async def test_a_repeated_submission_reuses_the_first_attempts_request_id_until_it_is_released(self, adapter):
+        turn_queue, _ = adapter
+        claim = dict(thread_id="t", digest="d", ttl_seconds=60)
+
+        assert await turn_queue.claim_or_get_existing_submission(request_id="r1", **claim) == ("r1", True)
+        assert await turn_queue.claim_or_get_existing_submission(request_id="r2", **claim) == ("r1", False)
+        await turn_queue.release_submission_claim(thread_id="t", digest="d")
+        assert await turn_queue.claim_or_get_existing_submission(request_id="r3", **claim) == ("r3", True)
+
+    async def test_ping_reaches_the_server_and_a_dead_one_raises(self, adapter, monkeypatch):
+        turn_queue, client = adapter
+        await turn_queue.ping()
+
+        async def down():
+            raise ConnectionError("redis is down")
+
+        monkeypatch.setattr(client, "ping", down)
+        with pytest.raises(ConnectionError):
+            await turn_queue.ping()

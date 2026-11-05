@@ -11,9 +11,11 @@ import pytest
 
 from app.adapters.inbound.api.main import app
 from app.adapters.inbound.channels.door import Door, HeaderAuth
+from app.adapters.inbound.workers import streams
 from app.adapters.outbound.redis import queue
 from app.agent.runtime import sessions
 from app.core.config import settings
+from app.ports.outbound import jobs
 from tests.job_queue.test_queue import FakeRedis
 
 
@@ -29,11 +31,11 @@ class AnsweringRedis(FakeRedis):
         if stream.startswith("agent:requests:"):
             request_id = json.loads(fields["payload"])["request_id"]
             for event in self.events:
-                await queue.publish_result(self, request_id, event)
+                await streams.publish_result(self, request_id, event)
         return entry_id
 
     def jobs(self, domain="ecorp"):
-        return [json.loads(f["payload"]) for _, f in self.streams.get(queue.requests_stream_key(domain), [])]
+        return [json.loads(f["payload"]) for _, f in self.streams.get(jobs.requests_stream_key(domain), [])]
 
 
 class _Sessions:
@@ -119,8 +121,8 @@ async def test_a_resume_and_a_cancel_reach_the_routes_for_the_owner(world):
     await door.cancel_turn("t1")
     await world.http.aclose()
 
-    assert await queue.is_cancelled(world.redis, "t1") is True  # the API set the flag before it began to stream
-    kinds = [json.loads(f["payload"])["kind"] for _, f in world.redis.streams[queue.requests_stream_key("ecorp")]]
+    assert await streams.is_cancelled(world.redis, "t1") is True  # the API set the flag before it began to stream
+    kinds = [json.loads(f["payload"])["kind"] for _, f in world.redis.streams[jobs.requests_stream_key("ecorp")]]
     assert kinds == ["turn", "resume", "cancel"]
 
 
@@ -131,7 +133,7 @@ async def test_a_cancel_for_someone_elses_conversation_is_refused_and_sets_no_fl
         await world.door("intruder").cancel_turn("t1")
     await world.http.aclose()
 
-    assert await queue.is_cancelled(world.redis, "t1") is False
+    assert await streams.is_cancelled(world.redis, "t1") is False
 
 
 async def test_the_domain_header_picks_the_pool_the_job_lands_on(world):

@@ -21,9 +21,13 @@ import uuid
 
 import pytest
 
+from app.adapters.inbound.workers import streams
 from app.adapters.outbound.redis import queue
+from app.core import redis_client
+from app.ports.outbound import jobs
 from tests.conftest import TEST_CTX
 from tests.containers import ensure_redis
+from tests.redis_streams import use_private_requests_stream
 
 pytestmark = pytest.mark.integration
 
@@ -50,19 +54,15 @@ def real_redis(monkeypatch):
     ever exercises the default ("ecorp") domain, so collapsing every domain
     onto the same unique test stream changes nothing it actually asserts."""
     info = ensure_redis()
-    monkeypatch.setattr(queue, "REDIS_URL", info["redis_url"])
-    monkeypatch.setattr(queue, "_client", None)  # get_client() is a lazy singleton — see its own docstring
-    test_stream = f"agent:requests:test:{uuid.uuid4()}"
-    monkeypatch.setattr(queue, "requests_stream_key", lambda domain="ecorp": test_stream)
-    monkeypatch.setattr(queue, "CONSUMER_GROUP", f"agent-workers:test:{uuid.uuid4()}")
+    use_private_requests_stream(monkeypatch, info["redis_url"])
     yield
-    queue._client = None
+    redis_client._client = None
 
 
 async def test_a_turn_request_round_trips_from_producer_through_a_real_consumer_group():
     async def _run():
         client = queue.get_client()
-        await queue.ensure_consumer_group(client)
+        await streams.ensure_consumer_group(client)
 
         request_id = str(uuid.uuid4())
         thread_id = str(uuid.uuid4())
@@ -77,7 +77,7 @@ async def test_a_turn_request_round_trips_from_producer_through_a_real_consumer_
         # Consumer side: the same XREADGROUP shape app/adapters/inbound/workers/agent_worker.py's
         # own dispatch loop reads (see that module's `run()`).
         response = await client.xreadgroup(
-            queue.CONSUMER_GROUP, "test-consumer", {queue.requests_stream_key(): ">"}, count=1
+            jobs.CONSUMER_GROUP, "test-consumer", {jobs.requests_stream_key(): ">"}, count=1
         )
         [(_, entries)] = response
         [(entry_id, fields)] = entries
@@ -92,12 +92,12 @@ async def test_a_turn_request_round_trips_from_producer_through_a_real_consumer_
             "images": [],
             "unattended": False,
         }
-        await client.xack(queue.requests_stream_key(), queue.CONSUMER_GROUP, entry_id)
+        await client.xack(jobs.requests_stream_key(), jobs.CONSUMER_GROUP, entry_id)
 
         # Results leg: the worker publishes events, the producer drains them
         # via read_results until a terminal one.
-        await queue.publish_result(client, request_id, {"type": "token", "content": "42"})
-        await queue.publish_result(client, request_id, {"type": "done"})
+        await streams.publish_result(client, request_id, {"type": "token", "content": "42"})
+        await streams.publish_result(client, request_id, {"type": "done"})
 
         events = [event async for event in queue.read_results(client, request_id)]
         return events
@@ -115,16 +115,16 @@ async def test_a_second_worker_in_the_same_group_never_gets_a_message_already_de
 
     async def _run():
         client = queue.get_client()
-        await queue.ensure_consumer_group(client)
+        await streams.ensure_consumer_group(client)
         await queue.publish_request(
             client, request_id="req-2", text="hi", thread_id="thread-2", ctx=TEST_CTX
         )
 
         first = await client.xreadgroup(
-            queue.CONSUMER_GROUP, "worker-a", {queue.requests_stream_key(): ">"}, count=1
+            jobs.CONSUMER_GROUP, "worker-a", {jobs.requests_stream_key(): ">"}, count=1
         )
         second = await client.xreadgroup(
-            queue.CONSUMER_GROUP, "worker-b", {queue.requests_stream_key(): ">"}, count=1, block=100
+            jobs.CONSUMER_GROUP, "worker-b", {jobs.requests_stream_key(): ">"}, count=1, block=100
         )
         return first, second
 

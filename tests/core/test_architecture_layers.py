@@ -16,8 +16,8 @@ The rings, inside out:
               into the agent, not the other way round).
 - adapters    everything else: `app/adapters/**`, `app/ingestion` (the ingest pipeline), the platform modules in `app/core`, and the per-domain
               `store.py` (the domain's repository, by the `store.py` + `tools.py` + `domain.py` convention). They may import anything inside
-              them. `app/adapters/` has two sides: `inbound/` DRIVES the application (API, channels, MCP servers, workers) and is a leaf;
-              `outbound/` is DRIVEN by it (one package per technology, each implementing a port) and never imports `inbound/`.
+              them. `app/adapters/` has two sides: `inbound/` DRIVES the application (API, channels, MCP servers, workers), is a leaf and imports
+              nothing from `outbound/`; `outbound/` is DRIVEN by it (one package per technology, each implementing a port) and imports nothing from `inbound/`.
 
 Accepted in the application ring, on purpose: LangGraph and LangChain core (the agent IS a LangGraph graph; `ARCHITECTURE.md` says why that
 is a framework choice and not a leak), and the observability libraries (OpenTelemetry, Langfuse, structlog), which are cross-cutting.
@@ -44,7 +44,7 @@ INFRASTRUCTURE = frozenset({
 
 # Modules that live in `app/core` but are adapters or process plumbing, not kernel.
 PLATFORM_CORE = frozenset({
-    "sql_store", "internal_identity", "telemetry", "logging_config", "job_runtime", "profiling",
+    "sql_store", "redis_client", "internal_identity", "telemetry", "logging_config", "job_runtime", "profiling",
 })
 
 # Application-ring files that are adapters by convention.
@@ -188,22 +188,6 @@ def test_a_driving_adapter_is_a_leaf_nothing_else_in_the_app_imports_it(package)
 INBOUND = "app/adapters/inbound/"
 OUTBOUND = "app/adapters/outbound/"
 
-# Where the driving side reaches a driven adapter directly, because no port stands between them yet: the Streams queue the API and the Telegram channel
-# publish to and the workers consume, the object store an upload goes to, the MCP connection a process closes at shutdown, and the probes behind /health.
-# Each is a port not written (ARCHITECTURE.md, "Not done"). The test fails on a crossing that is NOT listed and on a listed one that is gone, so it only shrinks.
-INBOUND_REACHES_OUTBOUND: frozenset[tuple[str, str]] = frozenset({
-    ("app/adapters/inbound/api/health.py", "app.adapters.outbound.qdrant.qdrant_store"),
-    ("app/adapters/inbound/api/health.py", "app.adapters.outbound.redis.queue"),
-    ("app/adapters/inbound/api/routers/chat.py", "app.adapters.outbound.redis.queue"),
-    ("app/adapters/inbound/api/routers/ingest.py", "app.adapters.outbound.redis.ingest_queue"),
-    ("app/adapters/inbound/api/routers/ingest.py", "app.adapters.outbound.redis.queue"),
-    ("app/adapters/inbound/channels/telegram.py", "app.adapters.outbound.redis.queue"),
-    ("app/adapters/inbound/workers/agent_worker.py", "app.adapters.outbound.redis.queue"),
-    ("app/adapters/inbound/workers/ingest_worker.py", "app.adapters.outbound.redis.ingest_queue"),
-    ("app/adapters/inbound/workers/ingest_worker.py", "app.adapters.outbound.redis.queue"),
-})
-
-
 def driven_modules_reached(source: str) -> set[str]:
     """The `app.adapters.outbound.<technology>.<module>` modules `source` imports, however the import is spelled."""
     return {
@@ -223,12 +207,14 @@ def test_the_driven_side_never_imports_the_driving_side():
     assert offenders == [], "an outbound adapter is called by the application and knows nothing about who drives it"
 
 
-def test_the_driving_side_reaches_a_driven_adapter_only_where_listed():
+def test_the_driving_side_never_imports_the_driven_side():
     files = _files_under(INBOUND)
     assert len(files) > 30, "a floor against a vacuous pass: the inbound adapters moved"
-    now = {(rel, module) for rel, src in files.items() for module in driven_modules_reached(src)}
-    assert sorted(now - INBOUND_REACHES_OUTBOUND) == [], "an inbound adapter reaches a driven adapter directly: go through a port in app/ports/"
-    assert sorted(INBOUND_REACHES_OUTBOUND - now) == [], "these crossings are gone: delete them from INBOUND_REACHES_OUTBOUND so the ratchet tightens"
+    crossings = sorted((rel, module) for rel, src in files.items() for module in driven_modules_reached(src))
+    assert crossings == [], (
+        "an inbound adapter imports an outbound one: go through a port in app/ports/outbound/ (the application's side), or, for a consumer's own "
+        "broker technology, keep it in the inbound adapter (app/adapters/inbound/workers/streams.py); a connection factory shared by both sides is a platform module in app/core"
+    )
 
 
 def test_the_driven_scanner_sees_every_spelling_of_an_import():

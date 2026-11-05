@@ -16,7 +16,6 @@ from fastapi.responses import StreamingResponse
 
 from app.adapters.inbound.api.deps import get_ctx
 from app.adapters.inbound.api.schemas import IngestUploadResult
-from app.adapters.outbound.redis import ingest_queue, queue
 from app.core import metrics
 from app.core.config import (
     INGEST_FIRST_RESPONSE_DEADLINE_SECONDS,
@@ -25,6 +24,7 @@ from app.core.config import (
 )
 from app.core.security import SecurityCtx
 from app.ingestion.extractors import EXTRACTORS_BY_SUFFIX
+from app.ports.outbound.jobs import ingest_queue
 from app.ports.outbound.storage import object_store
 
 logger = logging.getLogger(__name__)
@@ -94,7 +94,6 @@ async def ingest_upload(
             detail=f"{len(files)} files exceeds the {MAX_UPLOAD_FILES_PER_REQUEST}-file "
             "limit per upload — split into multiple submissions",
         )
-    client = queue.get_client()  # ingest_queue reuses this same Redis client — see its module docstring
     results = []
     for upload in files:
         filename = Path(upload.filename or "").name  # strip any path component a client might send
@@ -131,8 +130,7 @@ async def ingest_upload(
                 data,
                 upload.content_type or "application/octet-stream",
             )
-            await ingest_queue.publish_ingest_request(
-                client,
+            await ingest_queue.get().publish_ingest_request(
                 job_id=job_id,
                 object_key=object_key,
                 filename=filename,
@@ -175,16 +173,14 @@ async def ingest_stream(job_id: str) -> StreamingResponse:
     (this pipeline keeps no job directory) — `job_id` is a `uuid4().hex`,
     unguessable in practice, same posture as the chat results streams.
     """
-    client = ingest_queue.get_client()
-
     async def generate():
         try:
-            async for event in ingest_queue.read_results(
-                client, job_id, first_event_deadline_seconds=INGEST_FIRST_RESPONSE_DEADLINE_SECONDS
+            async for event in ingest_queue.get().read_results(
+                job_id, first_event_deadline_seconds=INGEST_FIRST_RESPONSE_DEADLINE_SECONDS
             ):
                 yield f"data: {json.dumps(event)}\n\n"
         finally:
-            await ingest_queue.delete_results_stream(client, job_id)
+            await ingest_queue.get().delete_results_stream(job_id)
 
     return StreamingResponse(
         generate(),

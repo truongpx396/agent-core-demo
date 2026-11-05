@@ -345,7 +345,7 @@ class Settings(BillingSettings):
     agent_domain: str = "ecorp"
 
     # The domains ONE agent_worker.py process serves: comma-separated registry names, or `all`. It reads each one's requests stream
-    # (queue.py::requests_stream_key) and runs the job on that domain's graph, all under `agent_worker_max_concurrency` below.
+    # (jobs.py::requests_stream_key) and runs the job on that domain's graph, all under `agent_worker_max_concurrency` below.
     # An unknown name fails at startup.
     agent_worker_domains: str = "ecorp"
 
@@ -447,7 +447,7 @@ class Settings(BillingSettings):
     ingest_worker_max_concurrency: int = 10
 
     # How often agent_worker.py/ingest_worker.py each poll XAUTOCLAIM for entries abandoned by a worker that
-    # died mid-job (queue.py::reclaim_stale_entries); a crash otherwise leaves the entry PENDING, unacked and
+    # died mid-job (streams.py::reclaim_stale_entries); a crash otherwise leaves the entry PENDING, unacked and
     # never redelivered, silently losing the request. Silently republished, up to MAX_AUTO_RECLAIM_RETRIES
     # times: reclaimed "cancel" and "resume" jobs, ingest jobs (idempotent by construction), and "turn" jobs
     # the checkpoint says are unfinished (`_classify_reclaimed_turn`: a turn whose own HumanMessage is

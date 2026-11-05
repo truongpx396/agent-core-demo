@@ -37,7 +37,6 @@ import asyncio
 import logging
 import re
 import time
-from dataclasses import dataclass
 from typing import cast
 from uuid import UUID
 
@@ -79,7 +78,7 @@ from app.core.config import (
     RERANK_TOP_K,
 )
 from app.core.security import AccessScope
-from app.ports.outbound.retrieval import SearchHit
+from app.ports.outbound.retrieval import IdentityStatus, SearchHit
 
 logger = logging.getLogger(__name__)
 
@@ -201,13 +200,6 @@ async def check_identity(collection: str | None = None, *, write: bool) -> str:
     if refreshed:
         metrics.agent_embedding_identity_total.labels(outcome="verified" if identity.verified else "unverified", collection=logical).inc()
     return alias
-
-
-@dataclass(frozen=True)
-class IdentityStatus:
-    state: str  # absent | adopted | mismatch | verified | unverified
-    expected: str | None = None
-    found: str | None = None
 
 
 async def identity_status(collection: str | None = None) -> IdentityStatus:
@@ -508,3 +500,9 @@ class QdrantDocumentIndex:
 
     async def search_catalog(self, query: str, *, collection: str, k: int | None = None) -> list[SearchHit]:
         return [_hit(point) for point in await hybrid_search(query, collection=collection, k=k)]
+
+    async def ping(self) -> None:
+        await get_client().get_collections()
+
+    async def identity_status(self, collection: str | None = None) -> IdentityStatus:
+        return await identity_status(collection)

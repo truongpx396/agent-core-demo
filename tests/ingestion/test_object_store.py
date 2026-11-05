@@ -195,3 +195,23 @@ class TestDeleteObject:
         monkeypatch.setattr(object_store, "get_client", lambda: _RaisingClient())
 
         object_store.delete_object("k1")  # must not raise
+
+
+class TestObjectStoreAdapter:
+    """`MinioObjectStore` is the `ObjectStore` port (`app/ports/outbound/storage.py`) over this module's functions."""
+
+    def test_each_call_reaches_the_module_function_with_its_arguments(self, monkeypatch):
+        calls = []
+        monkeypatch.setattr(object_store, "upload_bytes", lambda key, data, content_type: calls.append(("up", key, data, content_type)))
+        monkeypatch.setattr(object_store, "delete_object", lambda key: calls.append(("del", key)))
+        monkeypatch.setattr(object_store, "download_bytes", lambda key: (calls.append(("down", key)), b"x")[1])
+        store = object_store.MinioObjectStore()
+
+        store.upload_bytes("k", b"data", "text/plain")
+        store.upload_bytes("k2", b"d2")
+        store.delete_object("k")
+
+        assert store.download_bytes("k") == b"x"
+        assert calls == [
+            ("up", "k", b"data", "text/plain"), ("up", "k2", b"d2", "application/octet-stream"), ("del", "k"), ("down", "k"),
+        ]

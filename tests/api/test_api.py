@@ -22,10 +22,12 @@ from app.adapters.inbound.api.routers import system as system_router
 from app.adapters.inbound.api.routers import usage as usage_router
 from app.adapters.inbound.api.routers.system import ui
 from app.adapters.inbound.api.schemas import CancelRequest, ChatRequest, ResumeRequest
+from app.adapters.inbound.workers import ingest_streams, streams
 from app.adapters.outbound.minio import object_store as minio_object_store
 from app.adapters.outbound.redis import ingest_queue, queue
 from app.agent.runtime import sessions
 from app.core import metrics
+from app.ports.outbound import jobs
 from credit_billing import credits
 from tests.conftest import TEST_CTX
 from tests.conftest import metric_value as _count
@@ -319,7 +321,7 @@ class TestChatStreamQueued:
             # own generator has even started) — StreamingResponse's async
             # generator is lazy, so nothing has been read from the results
             # stream yet at this point.
-            published = client.streams[queue.requests_stream_key("ecorp")]
+            published = client.streams[jobs.requests_stream_key("ecorp")]
             assert len(published) == 1
             payload = json.loads(published[0][1]["payload"])
             assert payload["text"] == "hello"
@@ -328,8 +330,8 @@ class TestChatStreamQueued:
             request_id = payload["request_id"]
 
             # Simulate app/adapters/inbound/workers/agent_worker.py publishing this turn's events.
-            await queue.publish_result(client, request_id, {"type": "token", "content": "hi"})
-            await queue.publish_result(client, request_id, {"type": "done"})
+            await streams.publish_result(client, request_id, {"type": "token", "content": "hi"})
+            await streams.publish_result(client, request_id, {"type": "done"})
 
             chunks = [chunk async for chunk in response.body_iterator]
             return chunks, request_id
@@ -354,17 +356,17 @@ class TestChatStreamQueued:
         async def _run():
             req = ChatRequest(message="hi", thread_id="t2")
             response = await chat_router.chat_stream_queued(req, ctx=TEST_CTX, domain="ecorp")
-            request_id = json.loads(client.streams[queue.requests_stream_key("ecorp")][0][1]["payload"])[
+            request_id = json.loads(client.streams[jobs.requests_stream_key("ecorp")][0][1]["payload"])[
                 "request_id"
             ]
-            await queue.publish_result(client, request_id, {"type": "done"})
+            await streams.publish_result(client, request_id, {"type": "done"})
             async for _ in response.body_iterator:
                 pass
             return request_id
 
         request_id = await _run()
-        assert queue.results_stream_key(request_id) not in client.deleted
-        assert queue.results_stream_key(request_id) in client.expiries  # TTL still governs cleanup
+        assert jobs.results_stream_key(request_id) not in client.deleted
+        assert jobs.results_stream_key(request_id) in client.expiries  # TTL still governs cleanup
 
     async def test_publishes_attached_images_onto_the_request(self, monkeypatch):
         """GRAPH_PATTERNS.md pattern 44 — images ride the same request
@@ -377,9 +379,9 @@ class TestChatStreamQueued:
                 message="what is this?", thread_id="t3", images=["https://example.com/cat.png"]
             )
             response = await chat_router.chat_stream_queued(req, ctx=TEST_CTX, domain="ecorp")
-            payload = json.loads(client.streams[queue.requests_stream_key("ecorp")][0][1]["payload"])
+            payload = json.loads(client.streams[jobs.requests_stream_key("ecorp")][0][1]["payload"])
             request_id = payload["request_id"]
-            await queue.publish_result(client, request_id, {"type": "done"})
+            await streams.publish_result(client, request_id, {"type": "done"})
             async for _ in response.body_iterator:
                 pass
             return payload
@@ -400,7 +402,7 @@ class TestChatStreamQueued:
             await chat_router.chat_stream_queued(req, ctx=TEST_CTX, domain="support")
 
         await _run()
-        assert queue.requests_stream_key("ecorp") not in client.streams
+        assert jobs.requests_stream_key("ecorp") not in client.streams
 
 
 class TestChatStreamQueuedSubmissionDedup:
@@ -420,7 +422,7 @@ class TestChatStreamQueuedSubmissionDedup:
         await chat_router.chat_stream_queued(req, ctx=TEST_CTX, domain="ecorp")
         await chat_router.chat_stream_queued(req, ctx=TEST_CTX, domain="ecorp")
 
-        published = client.streams[queue.requests_stream_key("ecorp")]
+        published = client.streams[jobs.requests_stream_key("ecorp")]
         assert len(published) == 1  # the second call never published a second job
 
     async def test_a_different_message_on_the_same_thread_is_not_deduplicated(self, monkeypatch):
@@ -434,7 +436,7 @@ class TestChatStreamQueuedSubmissionDedup:
             ChatRequest(message="goodbye", thread_id="t1"), ctx=TEST_CTX, domain="ecorp"
         )
 
-        published = client.streams[queue.requests_stream_key("ecorp")]
+        published = client.streams[jobs.requests_stream_key("ecorp")]
         assert len(published) == 2
 
     async def test_the_same_message_on_a_different_thread_is_not_deduplicated(self, monkeypatch):
@@ -448,7 +450,7 @@ class TestChatStreamQueuedSubmissionDedup:
             ChatRequest(message="hello", thread_id="t2"), ctx=TEST_CTX, domain="ecorp"
         )
 
-        published = client.streams[queue.requests_stream_key("ecorp")]
+        published = client.streams[jobs.requests_stream_key("ecorp")]
         assert len(published) == 2
 
     async def test_a_different_images_list_is_not_deduplicated(self, monkeypatch):
@@ -464,7 +466,7 @@ class TestChatStreamQueuedSubmissionDedup:
             domain="ecorp",
         )
 
-        published = client.streams[queue.requests_stream_key("ecorp")]
+        published = client.streams[jobs.requests_stream_key("ecorp")]
         assert len(published) == 2
 
     async def test_the_resubmission_streams_the_same_underlying_turns_events(self, monkeypatch):
@@ -478,11 +480,11 @@ class TestChatStreamQueuedSubmissionDedup:
         first_response = await chat_router.chat_stream_queued(req, ctx=TEST_CTX, domain="ecorp")
         second_response = await chat_router.chat_stream_queued(req, ctx=TEST_CTX, domain="ecorp")
 
-        request_id = json.loads(client.streams[queue.requests_stream_key("ecorp")][0][1]["payload"])[
+        request_id = json.loads(client.streams[jobs.requests_stream_key("ecorp")][0][1]["payload"])[
             "request_id"
         ]
-        await queue.publish_result(client, request_id, {"type": "token", "content": "hi"})
-        await queue.publish_result(client, request_id, {"type": "done"})
+        await streams.publish_result(client, request_id, {"type": "token", "content": "hi"})
+        await streams.publish_result(client, request_id, {"type": "done"})
 
         first_chunks = [chunk async for chunk in first_response.body_iterator]
         second_chunks = [chunk async for chunk in second_response.body_iterator]
@@ -505,7 +507,7 @@ class TestChatStreamQueuedSubmissionDedup:
 
         await chat_router.chat_stream_queued(req, ctx=TEST_CTX, domain="ecorp")
 
-        published = client.streams[queue.requests_stream_key("ecorp")]
+        published = client.streams[jobs.requests_stream_key("ecorp")]
         assert len(published) == 2
 
 
@@ -555,7 +557,7 @@ class TestChatStreamQueuedPublishFailure:
         # was ever published under).
         await chat_router.chat_stream_queued(req, ctx=TEST_CTX, domain="ecorp")
 
-        published = client.streams[queue.requests_stream_key("ecorp")]
+        published = client.streams[jobs.requests_stream_key("ecorp")]
         assert len(published) == 1
 
 
@@ -574,7 +576,7 @@ class TestChatResume:
             req = ResumeRequest(thread_id="t1", approved=True)
             response = await chat_router.chat_resume(req, ctx=TEST_CTX, domain="ecorp")
 
-            published = client.streams[queue.requests_stream_key("ecorp")]
+            published = client.streams[jobs.requests_stream_key("ecorp")]
             assert len(published) == 1
             payload = json.loads(published[0][1]["payload"])
             assert payload["kind"] == "resume"
@@ -583,7 +585,7 @@ class TestChatResume:
             assert payload["ctx"] == TEST_CTX
             request_id = payload["request_id"]
 
-            await queue.publish_result(client, request_id, {"type": "done"})
+            await streams.publish_result(client, request_id, {"type": "done"})
             return [chunk async for chunk in response.body_iterator]
 
         chunks = await _run()
@@ -597,7 +599,7 @@ class TestChatResume:
         async def _run():
             req = ResumeRequest(thread_id="t2", approved=False)
             await chat_router.chat_resume(req, ctx=TEST_CTX, domain="ecorp")
-            return json.loads(client.streams[queue.requests_stream_key("ecorp")][0][1]["payload"])
+            return json.loads(client.streams[jobs.requests_stream_key("ecorp")][0][1]["payload"])
 
         payload = await _run()
         assert payload["approved"] is False
@@ -617,9 +619,9 @@ class TestChatCancel:
             req = CancelRequest(thread_id="t1")
             response = await chat_router.chat_cancel(req, ctx=TEST_CTX, domain="ecorp")
 
-            assert await queue.is_cancelled(client, "t1") is True
+            assert await streams.is_cancelled(client, "t1") is True
 
-            published = client.streams[queue.requests_stream_key("ecorp")]
+            published = client.streams[jobs.requests_stream_key("ecorp")]
             assert len(published) == 1
             payload = json.loads(published[0][1]["payload"])
             assert payload["kind"] == "cancel"
@@ -627,7 +629,7 @@ class TestChatCancel:
             assert payload["ctx"] == TEST_CTX
             request_id = payload["request_id"]
 
-            await queue.publish_result(client, request_id, {"type": "done"})
+            await streams.publish_result(client, request_id, {"type": "done"})
             return [chunk async for chunk in response.body_iterator]
 
         chunks = await _run()
@@ -656,7 +658,7 @@ class TestConversationOwnership:
 
     @staticmethod
     def _nothing_was_published(client):
-        return not client.streams.get(queue.requests_stream_key("ecorp"))
+        return not client.streams.get(jobs.requests_stream_key("ecorp"))
 
     async def test_a_new_thread_id_is_claimed_by_its_first_sender_who_can_keep_using_it(
         self, redis, ownership
@@ -665,7 +667,7 @@ class TestConversationOwnership:
         await chat_router.chat_stream_queued(ChatRequest(message="and again", thread_id="fresh"), ctx=TEST_CTX, domain="ecorp")
 
         assert ownership.rows["fresh"] == (TEST_CTX["tenant"], TEST_CTX["principal"], "ecorp")
-        assert len(redis.streams[queue.requests_stream_key("ecorp")]) == 2
+        assert len(redis.streams[jobs.requests_stream_key("ecorp")]) == 2
 
     @pytest.mark.parametrize("intruder", [OTHER_PRINCIPAL, OTHER_TENANT], ids=["other-principal", "other-tenant"])
     async def test_sending_on_someone_elses_thread_is_refused_and_enqueues_nothing(
@@ -702,7 +704,7 @@ class TestConversationOwnership:
             )
 
         assert exc.value.status_code == 404
-        assert len(redis.streams[queue.requests_stream_key("ecorp")]) == 1, "only the owner's job exists"
+        assert len(redis.streams[jobs.requests_stream_key("ecorp")]) == 1, "only the owner's job exists"
 
     async def test_the_same_principal_under_another_domain_does_not_own_the_thread(self, redis, ownership):
         await ownership.claim(TEST_CTX, "owned", domain="support")
@@ -738,7 +740,7 @@ class TestConversationOwnership:
             await chat_router.chat_cancel(CancelRequest(thread_id="owned"), ctx=OTHER_PRINCIPAL, domain="ecorp")
 
         assert exc.value.status_code == 404
-        assert await queue.is_cancelled(redis, "owned") is False
+        assert await streams.is_cancelled(redis, "owned") is False
         assert self._nothing_was_published(redis)
 
     async def test_the_owner_can_still_cancel(self, redis, ownership):
@@ -746,7 +748,7 @@ class TestConversationOwnership:
 
         await chat_router.chat_cancel(CancelRequest(thread_id="owned"), ctx=TEST_CTX, domain="ecorp")
 
-        assert await queue.is_cancelled(redis, "owned") is True
+        assert await streams.is_cancelled(redis, "owned") is True
 
     async def test_the_telegram_namespace_cannot_be_claimed_over_http(self, redis, ownership):
         """`telegram:<chat id>` ids are derived by the chat channel, not
@@ -770,7 +772,7 @@ class TestConversationOwnership:
             ChatRequest(message="hi", thread_id="telegram:123456"), ctx=telegram_ctx, domain="ecorp"
         )
 
-        assert len(redis.streams[queue.requests_stream_key("ecorp")]) == 1
+        assert len(redis.streams[jobs.requests_stream_key("ecorp")]) == 1
 
 
     async def test_a_telegram_id_is_claimable_only_by_the_caller_it_names(self, redis, ownership):
@@ -808,7 +810,7 @@ class TestTheStricterOnlyRequestFields:
 
     @staticmethod
     def _job(client):
-        (entry,) = client.streams[queue.requests_stream_key("ecorp")]
+        (entry,) = client.streams[jobs.requests_stream_key("ecorp")]
         return json.loads(entry[1]["payload"])
 
     async def test_an_ordinary_request_is_neither_unattended_nor_gated_on_every_call(self, redis):
@@ -831,7 +833,7 @@ class TestTheStricterOnlyRequestFields:
                 ChatRequest(message=words, thread_id="t1", replay_key="telegram:ecorp:update:7"), ctx=TEST_CTX, domain="ecorp"
             )
 
-        assert len(redis.streams[queue.requests_stream_key("ecorp")]) == 1
+        assert len(redis.streams[jobs.requests_stream_key("ecorp")]) == 1
 
     async def test_two_different_keys_with_the_same_words_are_two_turns(self, redis):
         """Replay is by KEY, not by text: a person who sends "yes" twice means both."""
@@ -840,7 +842,7 @@ class TestTheStricterOnlyRequestFields:
                 ChatRequest(message="yes", thread_id="t1", replay_key=key), ctx=TEST_CTX, domain="ecorp"
             )
 
-        assert len(redis.streams[queue.requests_stream_key("ecorp")]) == 2
+        assert len(redis.streams[jobs.requests_stream_key("ecorp")]) == 2
 
     async def test_a_replay_claim_lasts_as_long_as_the_results_stream(self, redis):
         """A hit must find the first attempt's events, never a stream that expired under a live claim: the claim's TTL is the stream's, not the
@@ -850,7 +852,7 @@ class TestTheStricterOnlyRequestFields:
         )
         digest = hashlib.sha256(json.dumps(["replay", "k"]).encode()).hexdigest()
 
-        assert redis.expiries[queue._submission_dedup_key("t1", digest)] == queue.RESULTS_STREAM_TTL_SECONDS
+        assert redis.expiries[queue._submission_dedup_key("t1", digest)] == jobs.RESULTS_STREAM_TTL_SECONDS
 
     async def test_another_person_cannot_replay_into_the_owners_turn(self, redis, ownership):
         """The key is scoped to the conversation, which only its owner can reach: the ownership check comes before the claim."""
@@ -864,7 +866,7 @@ class TestTheStricterOnlyRequestFields:
             )
 
         assert exc.value.status_code == 404
-        assert len(redis.streams[queue.requests_stream_key("ecorp")]) == 1
+        assert len(redis.streams[jobs.requests_stream_key("ecorp")]) == 1
 
     async def test_a_replay_whose_publish_failed_is_released_so_the_key_can_be_sent_again(self, redis, monkeypatch):
         real = queue.publish_request
@@ -883,7 +885,7 @@ class TestTheStricterOnlyRequestFields:
             await chat_router.chat_stream_queued(request, ctx=TEST_CTX, domain="ecorp")
         await chat_router.chat_stream_queued(request, ctx=TEST_CTX, domain="ecorp")
 
-        assert len(redis.streams[queue.requests_stream_key("ecorp")]) == 1
+        assert len(redis.streams[jobs.requests_stream_key("ecorp")]) == 1
 
     def test_an_empty_or_oversized_replay_key_is_refused_at_the_boundary(self):
         for bad in ("", "x" * 201):
@@ -1047,9 +1049,9 @@ class TestIngestUpload:
                 }
             )
 
-        monkeypatch.setattr(ingest_router.ingest_queue, "publish_ingest_request", fake_publish)
+        monkeypatch.setattr(ingest_queue, "publish_ingest_request", fake_publish)
         client = FakeRedis()
-        monkeypatch.setattr(queue, "get_client", lambda: client)
+        monkeypatch.setattr(ingest_queue, "get_client", lambda: client)
 
         files = [_upload_file("report.pdf", b"pdf-bytes", "application/pdf")]
 
@@ -1078,8 +1080,8 @@ class TestIngestUpload:
         async def fake_publish(client, **kw):
             pass
 
-        monkeypatch.setattr(ingest_router.ingest_queue, "publish_ingest_request", fake_publish)
-        monkeypatch.setattr(queue, "get_client", lambda: FakeRedis())
+        monkeypatch.setattr(ingest_queue, "publish_ingest_request", fake_publish)
+        monkeypatch.setattr(ingest_queue, "get_client", lambda: FakeRedis())
 
         files = [
             _upload_file("report.pdf", b"a", "application/pdf"),
@@ -1120,8 +1122,8 @@ class TestIngestUpload:
         async def fake_publish(client, **kw):
             pass
 
-        monkeypatch.setattr(ingest_router.ingest_queue, "publish_ingest_request", fake_publish)
-        monkeypatch.setattr(queue, "get_client", lambda: FakeRedis())
+        monkeypatch.setattr(ingest_queue, "publish_ingest_request", fake_publish)
+        monkeypatch.setattr(ingest_queue, "get_client", lambda: FakeRedis())
 
         files = [
             _upload_file("spreadsheet.xlsx", b"data", "application/vnd.ms-excel"),
@@ -1148,8 +1150,8 @@ class TestIngestUpload:
         async def failing_publish(client, **kw):
             raise ConnectionError("redis unreachable")
 
-        monkeypatch.setattr(ingest_router.ingest_queue, "publish_ingest_request", failing_publish)
-        monkeypatch.setattr(queue, "get_client", lambda: FakeRedis())
+        monkeypatch.setattr(ingest_queue, "publish_ingest_request", failing_publish)
+        monkeypatch.setattr(ingest_queue, "get_client", lambda: FakeRedis())
 
         before = _count(metrics.agent_upload_failed_total, reason="storage_error")
 
@@ -1175,8 +1177,8 @@ class TestIngestUpload:
         async def fake_publish(client, **kw):
             pass
 
-        monkeypatch.setattr(ingest_router.ingest_queue, "publish_ingest_request", fake_publish)
-        monkeypatch.setattr(queue, "get_client", lambda: FakeRedis())
+        monkeypatch.setattr(ingest_queue, "publish_ingest_request", fake_publish)
+        monkeypatch.setattr(ingest_queue, "get_client", lambda: FakeRedis())
 
         files = [_upload_file("../../etc/passwd.pdf", b"x", "application/pdf")]
         await ingest_router.ingest_upload(files=files, topic=None, ctx=TEST_CTX)
@@ -1236,8 +1238,8 @@ class TestIngestUpload:
         async def fake_publish(client, **kw):
             pass
 
-        monkeypatch.setattr(ingest_router.ingest_queue, "publish_ingest_request", fake_publish)
-        monkeypatch.setattr(queue, "get_client", lambda: FakeRedis())
+        monkeypatch.setattr(ingest_queue, "publish_ingest_request", fake_publish)
+        monkeypatch.setattr(ingest_queue, "get_client", lambda: FakeRedis())
 
         files = [_upload_file("report.pdf", b"x" * 100, "application/pdf")]
         await ingest_router.ingest_upload(files=files, topic=None, ctx=TEST_CTX)
@@ -1252,8 +1254,8 @@ class TestIngestStream:
 
         async def _run():
             response = await ingest_router.ingest_stream("j1")
-            await ingest_queue.publish_result(client, "j1", {"type": "started"})
-            await ingest_queue.publish_result(client, "j1", {"type": "done", "chunks": 4})
+            await ingest_streams.publish_result(client, "j1", {"type": "started"})
+            await ingest_streams.publish_result(client, "j1", {"type": "done", "chunks": 4})
             return [chunk async for chunk in response.body_iterator]
 
         chunks = await _run()
@@ -1266,9 +1268,9 @@ class TestIngestStream:
 
         async def _run():
             response = await ingest_router.ingest_stream("j2")
-            await ingest_queue.publish_result(client, "j2", {"type": "error", "content": "bad file"})
+            await ingest_streams.publish_result(client, "j2", {"type": "error", "content": "bad file"})
             async for _ in response.body_iterator:
                 pass
 
         await _run()
-        assert ingest_queue.results_stream_key("j2") in client.deleted
+        assert jobs.ingest_results_stream_key("j2") in client.deleted

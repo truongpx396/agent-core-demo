@@ -31,6 +31,8 @@ from app.adapters.outbound.postgres.sessions import PgSessionStore
 from app.adapters.outbound.postgres.tool_idempotency import PgToolCallLedger
 from app.adapters.outbound.postgres.usage_events import PgUsageEventStore
 from app.adapters.outbound.qdrant.qdrant_store import QdrantDocumentIndex
+from app.adapters.outbound.redis.ingest_queue import RedisIngestQueue
+from app.adapters.outbound.redis.queue import RedisTurnQueue
 from app.adapters.outbound.redis.semantic_cache import RedisAnswerCache
 from app.adapters.outbound.web.serper import SerperWebSearch
 from app.core.errors import register_store_error
@@ -47,6 +49,7 @@ from app.ports.outbound import (
     domains,
     ecorp,
     idempotency,
+    jobs,
     llm,
     models,
     notify,
@@ -85,6 +88,8 @@ def adapters() -> dict[Slot, object]:
         web.page_renderer: Crawl4aiPageRenderer(),
         notify.team_channel: LocalAndSlackTeamChannel(),
         storage.object_store: MinioObjectStore(),
+        jobs.turn_queue: RedisTurnQueue(),
+        jobs.ingest_queue: RedisIngestQueue(),
         sandbox.sandbox_catalog: OpenSandboxCatalog(),
         # A domain's `store.py` is its adapter: the MODULE is bound (its functions are looked up at call time, which is how the module's tests patch them).
         support.ticket_store: support_store,
