@@ -1,6 +1,6 @@
 """POST /v1/decide against the REAL image: real models, real Hub cache layout, the label set baked into the image.
 
-The hermetic tests (tests/ml_service/test_labelsets.py) prove the matcher, the cutoffs, the failover and the wire with fake models. What only a
+The hermetic tests (tests/services/ml_service/test_labelsets.py) prove the matcher, the cutoffs, the failover and the wire with fake models. What only a
 real container can show, and this file does:
 
 - the shipped `route-topics` set is served by both real models through the real tokenisers, and the similarity it reports is reproduced by an

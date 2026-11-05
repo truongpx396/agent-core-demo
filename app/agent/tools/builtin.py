@@ -52,7 +52,7 @@ from app.core.config import (
 from app.core.security import DEFAULT_POLICY, SecurityCtx, valid_ctx
 from app.core.tool_runtime import NO_CTX_REFUSAL, arun_with_timeout, ctx_or_refuse
 from app.core.tool_schema import ToolArgs
-from app.ports.retrieval import SearchHit, document_index
+from app.ports.outbound.retrieval import SearchHit, document_index
 
 logger = logging.getLogger(__name__)
 

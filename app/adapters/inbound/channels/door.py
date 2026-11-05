@@ -1,7 +1,7 @@
 """How the CLI and the Telegram channel reach the agent: as HTTP clients of the chat API through the front door (specs/020), exactly like the
 web page. They never touch the work queue: the door proves who is calling and meters it, the API publishes the turn and relays the worker's
 events as SSE, and the worker's guarantees (the per-conversation lock, crash reclaim, the dead-letter archive) cover the turn as for any client
-(GRAPH_PATTERNS.md 89). `tests/channels/test_channels_use_the_door.py` fails the build if a channel can reach the queue again.
+(GRAPH_PATTERNS.md 89). `tests/adapters/inbound/channels/test_channels_use_the_door.py` fails the build if a channel can reach the queue again.
 
 `Door` yields the SAME event vocabulary the API streams (token, tool_start, tool_end, citations, followups, approval_required, error, done).
 Anything that stops a request from being served (a refused sign-in, a rate limit, the door not answering) becomes ONE `error` event with words a

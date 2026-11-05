@@ -37,7 +37,7 @@ import asyncio
 import logging
 import re
 import time
-from dataclasses import dataclass
+from collections.abc import Sequence
 from typing import cast
 from uuid import UUID
 
@@ -79,7 +79,7 @@ from app.core.config import (
     RERANK_TOP_K,
 )
 from app.core.security import AccessScope
-from app.ports.retrieval import SearchHit
+from app.ports.outbound.retrieval import DocumentPoint, IdentityStatus, SearchHit
 
 logger = logging.getLogger(__name__)
 
@@ -203,13 +203,6 @@ async def check_identity(collection: str | None = None, *, write: bool) -> str:
     return alias
 
 
-@dataclass(frozen=True)
-class IdentityStatus:
-    state: str  # absent | adopted | mismatch | verified | unverified
-    expected: str | None = None
-    found: str | None = None
-
-
 async def identity_status(collection: str | None = None) -> IdentityStatus:
     """Where a collection stands against the configured identity, for the readiness report. Unlike `check_identity` it never raises over a
     mismatch and counts nothing: it is an observation, not an access."""
@@ -324,7 +317,7 @@ def scope_filter(scope: AccessScope) -> Filter:
 
     A point with no `created_at` never satisfies a range filter in Qdrant, so a memory written before the field existed is excluded by the
     cutoff: invisible until re-written, not just a future-only guarantee. This is the translation Principle I rests on, so
-    tests/retrieval/test_qdrant_store.py pins each condition and tests/integration/test_tenant_isolation_real_qdrant.py proves the result
+    tests/adapters/outbound/qdrant/test_qdrant_store.py pins each condition and tests/integration/test_tenant_isolation_real_qdrant.py proves the result
     against a real Qdrant."""
     must: list[Condition] = [
         FieldCondition(key="tenant", match=MatchValue(value=scope.tenant)),
@@ -487,7 +480,7 @@ def _hit(point) -> SearchHit:
 
 
 class QdrantDocumentIndex:
-    """The `DocumentIndex` adapter (`app/ports/retrieval.py`): `hybrid_search` behind the port. The module function is looked up at CALL time, so
+    """The `DocumentIndex` adapter (`app/ports/outbound/retrieval.py`): `hybrid_search` behind the port. The module function is looked up at CALL time, so
     a test that patches `qdrant_store.hybrid_search` is seen."""
 
     async def search(
@@ -508,3 +501,18 @@ class QdrantDocumentIndex:
 
     async def search_catalog(self, query: str, *, collection: str, k: int | None = None) -> list[SearchHit]:
         return [_hit(point) for point in await hybrid_search(query, collection=collection, k=k)]
+
+    async def ping(self) -> None:
+        await get_client().get_collections()
+
+    async def identity_status(self, collection: str | None = None) -> IdentityStatus:
+        return await identity_status(collection)
+
+
+class QdrantDocumentWriter:
+    """The `DocumentWriter` adapter (`app/ports/outbound/retrieval.py`). The module's functions are looked up at call time."""
+
+    async def upsert(self, points: Sequence[DocumentPoint]) -> None:
+        await upsert(
+            [build_point(point_id=p.point_id, dense_vector=p.dense_vector, payload=p.payload, sparse_vector=p.sparse_vector) for p in points]
+        )

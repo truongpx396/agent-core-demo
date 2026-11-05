@@ -694,11 +694,11 @@ class TestSkillSearch:
             lambda: {
                 "onboarding-brief": SkillRecord(
                     name="onboarding-brief", description="d", body="b", domains=None,
-                    path=Path("app/domains/shared/skills/onboarding-brief/SKILL.md"),
+                    path=Path("app/domains/ecorp/skills/onboarding-brief/SKILL.md"),
                 ),
                 "expense-summary": SkillRecord(
                     name="expense-summary", description="d", body="b", domains=None,
-                    path=Path("app/domains/shared/skills/expense-summary/SKILL.md"),
+                    path=Path("app/domains/ecorp/skills/expense-summary/SKILL.md"),
                 ),
             },
         )
@@ -739,7 +739,7 @@ class TestUseSkill:
             description="Compose a new-hire brief.",
             body="# Onboarding Brief\n1. Call query_employees...",
             domains=None,
-            path=Path("app/domains/shared/skills/onboarding-brief/SKILL.md"),
+            path=Path("app/domains/ecorp/skills/onboarding-brief/SKILL.md"),
         )
         monkeypatch.setattr(skills_module, "get_skills", lambda: {"onboarding-brief": record})
 

@@ -1,6 +1,6 @@
 """The answer cache's tenant/principal filter against a REAL Redis Stack.
 
-tests/retrieval/test_semantic_cache_tag_escaping.py pins the query STRING the
+tests/adapters/outbound/redis/test_semantic_cache_tag_escaping.py pins the query STRING the
 cache builds. What a string test cannot prove is how RediSearch reads it — that
 `|` inside a tag block is an OR, and that an escaped `\\|` is a literal that
 still matches the value stored under it. Both are third-party behavior

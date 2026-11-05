@@ -25,8 +25,6 @@ from app.adapters.inbound.api.schemas import (
     SessionMessage,
     SessionSummary,
 )
-from app.adapters.outbound.redis import queue
-from app.adapters.outbound.redis.queue import RESULTS_STREAM_TTL_SECONDS
 from app.agent.runtime import sessions
 from app.agent.runtime.stream import get_pending_approval, get_session_messages
 from app.core.config import (
@@ -34,12 +32,13 @@ from app.core.config import (
     CHAT_SUBMIT_DEDUP_TTL_SECONDS,
 )
 from app.core.security import SecurityCtx
+from app.ports.outbound.jobs import RESULTS_STREAM_TTL_SECONDS, turn_queue
 
 router = APIRouter()
 
 
 def _queued_sse_response(
-    client, request_id: str, *, first_event_deadline_seconds: float = CHAT_FIRST_RESPONSE_DEADLINE_SECONDS
+    request_id: str, *, first_event_deadline_seconds: float = CHAT_FIRST_RESPONSE_DEADLINE_SECONDS
 ) -> StreamingResponse:
     """Shared by every queue-backed endpoint below (new turn, resume, cancel): relay one job's results stream as
     SSE frames.
@@ -50,7 +49,7 @@ def _queued_sse_response(
     well after the other. Eager deletion assumed one reader per `request_id`, so whichever saw the terminal
     event first deleted the stream out from under the other, which then read an empty stream forever (a real
     client would time out; the hermetic test, using a non-blocking fake Redis, hung outright).
-    `RESULTS_STREAM_TTL_SECONDS` already bounds a stream's life (`queue.py::publish_result` refreshes it on
+    `RESULTS_STREAM_TTL_SECONDS` already bounds a stream's life (`streams.py::publish_result` refreshes it on
     every write); relying on that costs a few minutes of idle Redis memory per turn and stays correct when a
     second reader arrives any time before the TTL.
 
@@ -62,8 +61,8 @@ def _queued_sse_response(
     """
 
     async def generate():
-        async for event in queue.read_results(
-            client, request_id, first_event_deadline_seconds=first_event_deadline_seconds
+        async for event in turn_queue.get().read_results(
+            request_id, first_event_deadline_seconds=first_event_deadline_seconds
         ):
             yield f"data: {json.dumps(event)}\n\n"
 
@@ -143,7 +142,6 @@ async def chat_stream_queued(
     doesn't already cover this.
     """
     await _require_conversation_owner(ctx, req.thread_id, domain, claim_with=req.message)
-    client = queue.get_client()
     # A replay key names the attempt (a channel that is redelivered its input: GRAPH_PATTERNS.md 89) and holds for as long as the results
     # stream lives, so a hit finds the first attempt's events and never a stream that expired under a live claim. Without one, identical content
     # in a short window is the same attempt. Both claims are scoped to `thread_id`, which the check above made this caller's.
@@ -154,8 +152,7 @@ async def chat_stream_queued(
         digest = hashlib.sha256(json.dumps([req.message, req.images or []]).encode()).hexdigest()
         claim_ttl = CHAT_SUBMIT_DEDUP_TTL_SECONDS
     candidate_request_id = uuid.uuid4().hex
-    request_id, is_new = await queue.claim_or_get_existing_submission(
-        client,
+    request_id, is_new = await turn_queue.get().claim_or_get_existing_submission(
         thread_id=req.thread_id,
         digest=digest,
         request_id=candidate_request_id,
@@ -163,8 +160,7 @@ async def chat_stream_queued(
     )
     if is_new:
         try:
-            await queue.publish_request(
-                client,
+            await turn_queue.get().publish_request(
                 request_id=request_id,
                 text=req.message,
                 thread_id=req.thread_id,
@@ -180,9 +176,9 @@ async def chat_stream_queued(
             # within CHAT_SUBMIT_DEDUP_TTL_SECONDS would get is_new=False
             # and stream a results stream nobody will ever write to.
             # Release it so a retry claims fresh instead.
-            await queue.release_submission_claim(client, thread_id=req.thread_id, digest=digest)
+            await turn_queue.get().release_submission_claim(thread_id=req.thread_id, digest=digest)
             raise
-    return _queued_sse_response(client, request_id)
+    return _queued_sse_response(request_id)
 
 
 @router.post("/chat/resume")
@@ -205,17 +201,15 @@ async def chat_resume(
     approving, rejecting or running another caller's paused action is a 404.
     """
     await _require_conversation_owner(ctx, req.thread_id, domain)
-    client = queue.get_client()
     request_id = uuid.uuid4().hex
-    await queue.publish_resume_request(
-        client,
+    await turn_queue.get().publish_resume_request(
         request_id=request_id,
         thread_id=req.thread_id,
         approved=req.approved,
         ctx=ctx,
         domain=domain,
     )
-    return _queued_sse_response(client, request_id)
+    return _queued_sse_response(request_id)
 
 
 @router.post("/chat/cancel")
@@ -243,13 +237,12 @@ async def chat_cancel(
     # BEFORE the flag: this endpoint writes the flag straight to Redis, keyed by
     # thread id alone, so without the check anyone could stop anyone's turn.
     await _require_conversation_owner(ctx, req.thread_id, domain)
-    client = queue.get_client()
-    await queue.set_cancel_flag(client, req.thread_id)
+    await turn_queue.get().set_cancel_flag(req.thread_id)
     request_id = uuid.uuid4().hex
-    await queue.publish_cancel_request(
-        client, request_id=request_id, thread_id=req.thread_id, ctx=ctx, domain=domain
+    await turn_queue.get().publish_cancel_request(
+        request_id=request_id, thread_id=req.thread_id, ctx=ctx, domain=domain
     )
-    return _queued_sse_response(client, request_id)
+    return _queued_sse_response(request_id)
 
 
 @router.get("/chat/sessions", response_model=list[SessionSummary])
@@ -261,7 +254,7 @@ async def chat_sessions(
     never tenant alone: a session belongs to whoever started it, same axis
     as Policy.lower's memory scoping (pattern 49 added the domain part), so
     switching domains in the web UI also switches which sessions list."""
-    return await sessions.list_sessions(ctx, domain)  # type: ignore[return-value]  # response_model coerces dict -> SessionSummary at the HTTP boundary; a direct Python call (see tests/api/test_api.py) intentionally gets the raw dicts back
+    return await sessions.list_sessions(ctx, domain)  # type: ignore[return-value]  # response_model coerces dict -> SessionSummary at the HTTP boundary; a direct Python call (see tests/adapters/inbound/api/test_api.py) intentionally gets the raw dicts back
 
 
 @router.get("/chat/sessions/{thread_id}/messages", response_model=list[SessionMessage])

@@ -17,7 +17,9 @@ import socket
 import httpx
 import pytest
 
+from app.adapters.outbound.embeddings import embeddings
 from app.adapters.outbound.qdrant import qdrant_store
+from app.adapters.outbound.web import page_fetch
 from app.ingestion import ingestor
 from tests.conftest import TEST_CTX, metric_value
 
@@ -26,9 +28,9 @@ def _mock_embeddings(monkeypatch):
     async def fake_embed_texts(texts):
         return [[0.1, 0.2] for _ in texts]
 
-    monkeypatch.setattr(ingestor, "embed_documents", fake_embed_texts)
+    monkeypatch.setattr(embeddings, "embed_documents", fake_embed_texts)
     monkeypatch.setattr(
-        ingestor, "embed_sparse_batch", lambda texts: [([1, 2], [0.5, 0.5]) for _ in texts]
+        embeddings, "embed_sparse_batch", lambda texts: [([1, 2], [0.5, 0.5]) for _ in texts]
     )
 
 
@@ -150,12 +152,12 @@ class TestIngestText:
         async def fake_embed_texts(texts):
             return [[0.1] for _ in texts]
 
-        monkeypatch.setattr(ingestor, "embed_documents", fake_embed_texts)
+        monkeypatch.setattr(embeddings, "embed_documents", fake_embed_texts)
 
         def failing_sparse_batch(texts):
             raise RuntimeError("model not loaded")
 
-        monkeypatch.setattr(ingestor, "embed_sparse_batch", failing_sparse_batch)
+        monkeypatch.setattr(embeddings, "embed_sparse_batch", failing_sparse_batch)
         captured = {}
         _mock_upsert(monkeypatch, captured)
 
@@ -176,9 +178,9 @@ class TestIngestText:
             dense_calls.append(texts)
             return [[0.1] for _ in texts]
 
-        monkeypatch.setattr(ingestor, "embed_documents", fake_embed_texts)
+        monkeypatch.setattr(embeddings, "embed_documents", fake_embed_texts)
         monkeypatch.setattr(
-            ingestor,
+            embeddings,
             "embed_sparse_batch",
             lambda texts: sparse_calls.append(texts) or [([1], [0.5]) for _ in texts],
         )
@@ -352,7 +354,7 @@ class TestIngestUrl:
             headers={"content-type": "text/html"},
         )
         monkeypatch.setattr(
-            ingestor.httpx, "AsyncClient", lambda **kw: _FakeClient(fake_response)
+            page_fetch.httpx, "AsyncClient", lambda **kw: _FakeClient(fake_response)
         )
         captured = {}
 
@@ -375,7 +377,7 @@ class TestIngestUrl:
         big = b"x" * (ingestor._MAX_URL_BYTES + 1)
         fake_response = _FakeResponse(status_code=200, content=big, text="x", headers={})
         monkeypatch.setattr(
-            ingestor.httpx, "AsyncClient", lambda **kw: _FakeClient(fake_response)
+            page_fetch.httpx, "AsyncClient", lambda **kw: _FakeClient(fake_response)
         )
 
         with pytest.raises(ingestor.IngestRefused):
@@ -385,7 +387,7 @@ class TestIngestUrl:
         monkeypatch.setattr(ingestor, "_assert_safe_url", _allow_any_url)
         fake_response = _FakeResponse(status_code=404, content=b"", text="", headers={})
         monkeypatch.setattr(
-            ingestor.httpx, "AsyncClient", lambda **kw: _FakeClient(fake_response)
+            page_fetch.httpx, "AsyncClient", lambda **kw: _FakeClient(fake_response)
         )
 
         with pytest.raises(ingestor.IngestRefused):
@@ -394,7 +396,7 @@ class TestIngestUrl:
     async def test_refuses_on_transport_error(self, monkeypatch):
         monkeypatch.setattr(ingestor, "_assert_safe_url", _allow_any_url)
         monkeypatch.setattr(
-            ingestor.httpx,
+            page_fetch.httpx,
             "AsyncClient",
             lambda **kw: _FakeClient(None, raise_on_get=httpx.ConnectError("refused")),
         )
@@ -412,7 +414,7 @@ class TestIngestUrl:
             captured_kwargs.update(kwargs)
             return _FakeClient(_FakeResponse(status_code=200, content=b"x", text="x"))
 
-        monkeypatch.setattr(ingestor.httpx, "AsyncClient", fake_client)
+        monkeypatch.setattr(page_fetch.httpx, "AsyncClient", fake_client)
 
         async def fake_ingest_text(*a, **kw):
             return 0
@@ -422,3 +424,33 @@ class TestIngestUrl:
         await ingestor.ingest_url("https://example.com/page", ctx=TEST_CTX)
 
         assert captured_kwargs["follow_redirects"] is False
+
+
+class _FakeEmbedder:
+    async def embed_documents(self, texts):
+        return [[0.1, 0.2] for _ in texts]
+
+    def embed_sparse_batch(self, texts):
+        return [([1], [0.5]) for _ in texts]
+
+
+class _RecordingWriter:
+    def __init__(self):
+        self.points = []
+
+    async def upsert(self, points):
+        self.points.extend(points)
+
+
+async def test_the_pipeline_needs_only_its_ports_and_stamps_every_chunk_with_the_callers_tenant():
+    """No adapter module is involved: with a fake bound to each port, the pipeline chunks, embeds and writes, and every point carries the tenant."""
+    from app.ports.outbound.retrieval import DocumentPoint, document_writer, embedder
+
+    writer = _RecordingWriter()
+    with embedder.overriding(_FakeEmbedder()), document_writer.overriding(writer):
+        count = await ingestor.ingest_text("A sentence. " * 40, title="T", ctx=TEST_CTX, source="text")
+
+    assert count == len(writer.points) > 0
+    assert all(isinstance(p, DocumentPoint) for p in writer.points)
+    assert {p.payload["tenant"] for p in writer.points} == {TEST_CTX["tenant"]}
+    assert len({p.point_id for p in writer.points}) == len(writer.points)

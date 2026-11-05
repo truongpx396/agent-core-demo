@@ -36,17 +36,12 @@ import uuid
 from pathlib import Path
 from typing import cast
 
-from app.adapters.outbound.minio import object_store
-from app.adapters.outbound.redis.ingest_queue import (
-    INGEST_CONSUMER_GROUP,
-    INGEST_REQUESTS_STREAM,
+from app.adapters.inbound.workers.ingest_streams import (
     ensure_consumer_group,
-    get_client,
     publish_result,
 )
-from app.adapters.outbound.redis.queue import (
+from app.adapters.inbound.workers.streams import (
     RECLAIM_ATTEMPTS_FIELD,
-    StreamReadResponse,
     publish_dead_letter,
     reclaim_stale_entries,
     republish_job,
@@ -61,9 +56,12 @@ from app.core.config import (
 )
 from app.core.logging_config import bind_request_id, configure_logging
 from app.core.profiling import start_profiling
+from app.core.redis_client import StreamReadResponse, get_client
 from app.core.telemetry import configure_telemetry
 from app.ingestion import ingestor
 from app.ingestion.extractors import EXTRACTORS_BY_SUFFIX, ExtractionFailed
+from app.ports.outbound.jobs import INGEST_CONSUMER_GROUP, INGEST_REQUESTS_STREAM
+from app.ports.outbound.storage import object_store
 
 logger = logging.getLogger(__name__)
 
@@ -120,7 +118,7 @@ async def process_job(client, entry_id: str, fields: dict) -> None:
             # Both offloaded via asyncio.to_thread — see module docstring:
             # a blocking call on the event loop would stall every OTHER
             # in-flight job's I/O.
-            data = await asyncio.to_thread(object_store.download_bytes, payload["object_key"])
+            data = await asyncio.to_thread(object_store.get().download_bytes, payload["object_key"])
             text = await asyncio.to_thread(extractor, data)
             on_progress = _make_progress_reporter(client, job_id)
             chunks = await ingestor.ingest_text(
@@ -168,7 +166,7 @@ async def _handle_reclaimed_job(client, entry_id: str, fields: dict) -> None:
     `INGEST_WORKER_RECLAIM_IDLE_SECONDS` — its original worker almost
     certainly died mid-job (crashed, OOM-killed) before ever reaching
     `process_job`'s own ack. Always safe to silently republish now
-    (`queue.py::republish_job`, capped by `MAX_AUTO_RECLAIM_RETRIES`, same
+    (`streams.py::republish_job`, capped by `MAX_AUTO_RECLAIM_RETRIES`, same
     poison-pill protection as `agent_worker.py`'s own version): every point
     `ingestor.ingest_text` writes has an id derived entirely from its own
     content (`_content_point_id`), never a random draw, so re-running the

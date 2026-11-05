@@ -52,7 +52,7 @@ from langchain_core.runnables import RunnableConfig
 from app.core import metrics
 from app.core.errors import ErrorCode, ErrorEnvelope
 from app.core.security import SecurityCtx, valid_ctx
-from app.ports.llm import ContentBlock, llm_failures
+from app.ports.outbound.llm import ContentBlock, llm_failures
 
 
 def end_user_id(tenant: str, principal: str) -> str:

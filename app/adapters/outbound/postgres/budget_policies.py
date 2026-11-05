@@ -1,4 +1,4 @@
-"""The `BudgetPolicyStore` adapter (`app/ports/cost.py`) over the appdata Postgres: the `budget_policies` table
+"""The `BudgetPolicyStore` adapter (`app/ports/outbound/cost.py`) over the appdata Postgres: the `budget_policies` table
 (postgres-init/18-budget-policies.sql).
 
 Statements only. The cache, the validation of a write (`period`, a negative limit) and the posture on a failed read are the application's
@@ -8,7 +8,12 @@ Statements only. The cache, the validation of a write (`period`, a negative limi
 from psycopg import errors as pg_errors
 
 from app.core.sql_store import get_connection
-from app.ports.cost import ALL_PRINCIPALS, TENANT_SUBJECT, Override, PolicyTableMissing
+from app.ports.outbound.cost import (
+    ALL_PRINCIPALS,
+    TENANT_SUBJECT,
+    Override,
+    PolicyTableMissing,
+)
 
 
 def _override(row) -> Override:

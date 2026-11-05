@@ -1,4 +1,4 @@
-"""The `SessionStore` adapter (`app/ports/sessions.py`) over the appdata Postgres: the `chat_sessions` table
+"""The `SessionStore` adapter (`app/ports/outbound/sessions.py`) over the appdata Postgres: the `chat_sessions` table
 (postgres-init/06-chat-sessions.sql).
 
 It is not the usage table (that one no-ops on a zero-token or rejected turn and carries no title, so a session with no billable tokens would

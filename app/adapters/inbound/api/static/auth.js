@@ -10,7 +10,7 @@
 // smaller than a second request the page would have to wait for before it could send its first one. The tag carries no secret: the authorization
 // server's address, the API's audience, the scope, and the prefix a tenant's client id has.
 //
-// Properties this file keeps, each pinned by a test (tests/api/test_web_ui_auth.py) and by a run in a real browser (scripts/checks/authlimit_web_check.py):
+// Properties this file keeps, each pinned by a test (tests/adapters/inbound/api/test_web_ui_auth.py) and by a run in a real browser (scripts/checks/authlimit_web_check.py):
 //   * no third-party script, no library: the Web Crypto API and fetch only;
 //   * the token lives in sessionStorage (this tab, gone when it closes), never in localStorage, a cookie or a URL, and is sent ONLY to this origin;
 //   * the authorization code is exchanged with a PKCE verifier (S256) and a `state` that must come back unchanged, and is removed from the address

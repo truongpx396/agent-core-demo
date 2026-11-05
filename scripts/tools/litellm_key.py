@@ -51,7 +51,7 @@ import httpx
 from app.adapters.outbound.litellm.model_catalog import admin_base_url
 from app.core.gateway import end_user_id, legacy_end_user_id
 
-# Every alias deploy/litellm/litellm-config.prod.yaml defines (tests/scripts/test_litellm_key.py keeps the two in step). A key lists the
+# Every alias deploy/litellm/litellm-config.prod.yaml defines (tests/scripts/tools/test_litellm_key.py keeps the two in step). A key lists the
 # aliases it may call, and an alias missing here is refused for the app, so the tiers an operator attaches later would fail with
 # "key not allowed to access model" until the key was re-minted. Naming one the app does not use yet grants nothing: the budget still applies.
 DEFAULT_MODELS = "chat,chat-medium,chat-strong,embed"

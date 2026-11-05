@@ -4,7 +4,7 @@ pending at its `human_approval` pause under the SAME `tool_call_id`s (the pause 
 `Command(resume=...)` continues that exact state). Without this, a retry risked re-sending an email or
 re-creating a ticket.
 
-The claims live behind the `ToolCallLedger` port (`app/ports/idempotency.py`; the Postgres adapter keys them by
+The claims live behind the `ToolCallLedger` port (`app/ports/outbound/idempotency.py`; the Postgres adapter keys them by
 `tool_call_id` alone: the provider assigns a fresh one per tool call, so two invocations sharing an id are, by
 construction, the SAME invocation attempted again).
 
@@ -30,7 +30,7 @@ from langchain_core.runnables import RunnableConfig
 
 from app.core import metrics
 from app.core.security import SecurityCtx
-from app.ports.idempotency import tool_call_ledger
+from app.ports.outbound.idempotency import tool_call_ledger
 
 logger = logging.getLogger(__name__)
 
@@ -93,7 +93,7 @@ async def idempotent(
     double run is possible in that exact window. Accepted because nothing today can put two callers there
     concurrently: the only real caller (`app/adapters/inbound/workers/agent_worker.py`'s reclaim path) retries a job only
     well after `AGENT_WORKER_RECLAIM_IDLE_SECONDS` of the ORIGINAL attempt going silent (presumed dead, not
-    concurrently running), and `queue.py::acquire_thread_lock` already rules out two jobs for the same
+    concurrently running), and `streams.py::acquire_thread_lock` already rules out two jobs for the same
     thread_id, hence the same tool_call_id. A future caller invoking this concurrently would need to close
     that window (block-and-poll, or a proper `SELECT ... FOR UPDATE`).
     """

@@ -26,9 +26,9 @@ from app.core.untrusted import frame_untrusted
 from app.domains import sandbox_session
 from app.domains.policy import ActionAllowlistPolicy
 from app.domains.web_search import make_web_search_tool
-from app.ports.notify import team_channel
-from app.ports.sales import lead_store
-from app.ports.web import CRAWL_TOOL_TIMEOUT_SECONDS, page_renderer
+from app.ports.outbound.notify import team_channel
+from app.ports.outbound.sales import lead_store
+from app.ports.outbound.web import CRAWL_TOOL_TIMEOUT_SECONDS, page_renderer
 
 NO_CTX_REFUSAL = (
     "Refused: no valid tenant/principal context for this request. "

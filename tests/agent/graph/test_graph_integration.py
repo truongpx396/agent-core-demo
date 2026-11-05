@@ -30,7 +30,7 @@ from app.agent.graph.state import (
 )
 from app.agent.runtime import core as runtime_module
 from app.agent.runtime import stream as stream_module
-from app.ports.domains import AgentManifest
+from app.ports.outbound.domains import AgentManifest
 from tests.agent.fakes import Domain, call, cfg, orphan_tool_call_ids, queue_llm
 from tests.conftest import TEST_CTX
 from tests.ecorp import build_graph

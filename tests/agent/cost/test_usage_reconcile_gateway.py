@@ -14,7 +14,7 @@ from app.adapters.outbound.litellm.spend_logs import (
     GATEWAY_PAGE_SIZE,
     fetch_gateway_spend,
 )
-from app.ports.cost import Window
+from app.ports.outbound.cost import Window
 from tests.agent.fake_gateway import API_KEY, FakeGateway, spend_row
 
 START = datetime(2026, 10, 6, 0, 0, 0, tzinfo=UTC)

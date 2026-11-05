@@ -28,9 +28,9 @@ import uuid
 from app.agent.cost.pricing import PricedCall
 from app.core import metrics
 from app.core.security import SecurityCtx, valid_ctx
-from app.ports import cost as ports
-from app.ports import models as model_ports
-from app.ports.cost import UsageEventRow, UsageTableMissing
+from app.ports.outbound import cost as ports
+from app.ports.outbound import models as model_ports
+from app.ports.outbound.cost import UsageEventRow, UsageTableMissing
 
 logger = logging.getLogger(__name__)
 

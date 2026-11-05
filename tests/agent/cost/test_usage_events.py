@@ -12,7 +12,7 @@ Four things are proven here, each against the cheapest tier that can prove it:
 
 The primary key and the `ON CONFLICT` the duplicate story depends on are real-Postgres behaviour:
 tests/integration/test_usage_events_real_postgres.py; the statement's text and parameters are the adapter's, in
-tests/adapters/postgres/test_usage_events.py. Here the store is a fake (tests/fakes/cost.py).
+tests/adapters/outbound/postgres/test_usage_events.py. Here the store is a fake (tests/fakes/cost.py).
 """
 import uuid
 from typing import Annotated, TypedDict
@@ -29,9 +29,9 @@ from langgraph.graph.message import add_messages
 from app.agent.cost import metering, pricing, usage_events
 from app.agent.graph.build import GraphDeps
 from app.core import metrics
-from app.ports import cost as cost_ports
-from app.ports import models as model_ports
-from app.ports.cost import UsageTableMissing
+from app.ports.outbound import cost as cost_ports
+from app.ports.outbound import models as model_ports
+from app.ports.outbound.cost import UsageTableMissing
 from tests.agent.fakes import make_agent_node
 from tests.agent.graph.test_graph_integration import _config
 from tests.conftest import TEST_CTX, metric_value

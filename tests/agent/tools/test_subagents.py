@@ -18,7 +18,7 @@ from app.agent.tools.subagent_catalog import (
     _parse_subagent_file,
     load_subagents,
 )
-from app.ports.domains import AgentManifest
+from app.ports.outbound.domains import AgentManifest
 from tests.agent.fakes import Domain, call, cfg, scripted_llm
 from tests.ecorp import build_graph
 

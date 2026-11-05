@@ -1,5 +1,5 @@
 """A real Qdrant + real embedding-model round trip for app/adapters/outbound/qdrant/qdrant_store.py: the fake-free counterpart
-to tests/retrieval/test_qdrant_store.py, which (correctly, for a fast hermetic suite) mocks `get_client()` and
+to tests/adapters/outbound/qdrant/test_qdrant_store.py, which (correctly, for a fast hermetic suite) mocks `get_client()` and
 proves only that the right `collection_name`/args reach a fake client. What that can't catch is a
 qdrant-client/qdrant-server wire-protocol mismatch (named dense+sparse vectors,
 `FusionQuery(fusion=Fusion.RRF)`, `Prefetch`) breaking silently across a dependency bump. That needs a real

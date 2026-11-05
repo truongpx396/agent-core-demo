@@ -49,8 +49,8 @@ from app.adapters.outbound.embeddings.embedding_identity import EmbeddingIdentit
 from app.adapters.outbound.mlservice import classification as ml_classification
 from app.agent.graph import build as graph_build
 from app.core.config import settings
-from app.ports import classification as classification_ports
-from app.ports import screening as screening_ports
+from app.ports.outbound import classification as classification_ports
+from app.ports.outbound import screening as screening_ports
 from tests.fakes.ml import ConstantScorer, NoAnswerClassifier
 
 TEST_CTX = {"tenant": "ecorp", "principal": "test-user", "claims": {}}
@@ -141,7 +141,7 @@ def fixed_embedding_identity(monkeypatch):
     """The embedding identity is read on every Qdrant read and write (app/adapters/outbound/qdrant/qdrant_store.py::check_identity), and computing the
     real one asks LiteLLM which model the `embed` alias resolves to and probes the embedding model for its dimension: two live-service
     calls. A hermetic test gets a fixed identity instead, and a clean per-process target cache so one test's alias answers never leak
-    into the next. A test that exercises the identity itself (tests/retrieval/test_qdrant_identity.py) supplies its own."""
+    into the next. A test that exercises the identity itself (tests/adapters/outbound/qdrant/test_qdrant_identity.py) supplies its own."""
     from app.adapters.outbound.embeddings import embedding_identity
     from app.adapters.outbound.qdrant import qdrant_store
 
@@ -177,7 +177,7 @@ def mock_ml_moderation():
         yield
 
 
-# Kept so the tests of the ML-service ADAPTER (tests/adapters/mlservice/) can call the real function the suite's guard keeps off the turn path.
+# Kept so the tests of the ML-service ADAPTER (tests/adapters/outbound/mlservice/) can call the real function the suite's guard keeps off the turn path.
 REAL_CHOOSE = ml_classification.choose
 
 
@@ -243,8 +243,8 @@ def usage_event_sink():
     the test (`tests/fakes/cost.py`); the fixture yields the list of events the test's turn wrote, with the table's `event_id` dedup.
     """
     from app.agent.cost import usage_events
-    from app.ports import cost as cost_ports
-    from app.ports import models as model_ports
+    from app.ports.outbound import cost as cost_ports
+    from app.ports.outbound import models as model_ports
     from tests.fakes.cost import InMemoryUsageEventStore, NoGatewayModelCatalog
 
     store = InMemoryUsageEventStore()
@@ -320,7 +320,7 @@ def header_auth_mode(monkeypatch):
 
 @pytest.fixture
 def identity_mode(monkeypatch):
-    """Opt a test back in to the default: identity mode, with no verifier built yet, so the test installs its own (tests/api/test_deps_auth_modes.py
+    """Opt a test back in to the default: identity mode, with no verifier built yet, so the test installs its own (tests/adapters/inbound/api/test_deps_auth_modes.py
     shows how) and none leaks into the next test."""
     monkeypatch.setattr(settings, "auth_mode", "identity")
     monkeypatch.setattr(identity, "_verifier", None)

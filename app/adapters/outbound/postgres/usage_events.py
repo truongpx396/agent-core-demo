@@ -1,4 +1,4 @@
-"""The `UsageEventStore` adapter (`app/ports/cost.py`) over the appdata Postgres: the `usage_events` table
+"""The `UsageEventStore` adapter (`app/ports/outbound/cost.py`) over the appdata Postgres: the `usage_events` table
 (postgres-init/19-usage-events.sql), the agent's meter and the spend its caps sum.
 
 Statements only. What to write, when to skip, what a failed write costs the turn (nothing: it is counted) and how an event is priced are the
@@ -15,7 +15,7 @@ from psycopg import errors as pg_errors
 
 from app.billing_integration import port as billing_port
 from app.core.sql_store import get_connection
-from app.ports.cost import (
+from app.ports.outbound.cost import (
     EventsByTenantDay,
     UsageEventRow,
     UsageTableMissing,

@@ -1,4 +1,4 @@
-"""The `BudgetHoldStore` adapter (`app/ports/cost.py`) over the appdata Postgres: the `tenant_budget_holds` table
+"""The `BudgetHoldStore` adapter (`app/ports/outbound/cost.py`) over the appdata Postgres: the `tenant_budget_holds` table
 (postgres-init/16-tenant-budget-holds.sql).
 
 Statements only. Whether a hold is taken at all, what an unreachable table means (the turn proceeds, unprotected, and a metric counts it)

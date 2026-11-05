@@ -1,4 +1,4 @@
-"""The Ecorp domain's data access, as the adapter of its two ports (`app/ports/ecorp.py`): the knowledge-base writes behind `add_note`/`remember`
+"""The Ecorp domain's data access, as the adapter of its two ports (`app/ports/outbound/ecorp.py`): the knowledge-base writes behind `add_note`/`remember`
 (embed, then upsert one Qdrant point) and the employee directory read behind `query_employees` (SQL).
 
 This module is bound at the composition root as `KnowledgeBase` and `EmployeeDirectory`: the module itself is the adapter, its functions looked up at call

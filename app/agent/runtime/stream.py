@@ -145,7 +145,7 @@ async def _iterate_with_timeout(aiter, timeout_seconds: float, cancel_check=None
     True, raises `TurnCancelled`. Cancellation only takes effect at the
     next event boundary, not mid-flight on an already-running tool/model
     call. Wired by `app/adapters/inbound/workers/agent_worker.py` to a Redis cancel flag
-    (`POST /chat/cancel` → `queue.py::is_cancelled`); other callers pass
+    (`POST /chat/cancel` → `streams.py::is_cancelled`); other callers pass
     nothing and keep timeout-only behavior.
     """
     aiter = aiter.__aiter__()
@@ -703,7 +703,7 @@ def _release_turn_budget_in_background(ctx: SecurityCtx | None, budget_hold: str
     """Release a turn's budget hold without awaiting it.
 
     Fire-and-forget on purpose: the generator's caller (agent_worker.py::_process_turn) releases its
-    per-thread lock (queue.py::acquire_thread_lock) only once THAT generator is exhausted, so awaiting a
+    per-thread lock (streams.py::acquire_thread_lock) only once THAT generator is exhausted, so awaiting a
     Postgres round trip in its `finally` would sit between "terminal event published" and "thread lock
     released". A caller reacting to that event at once (POST /chat/resume the instant a client sees
     approval_required) can land in that window and be spuriously rejected as THREAD_BUSY. Reproduced:

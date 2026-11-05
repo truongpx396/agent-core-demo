@@ -2,7 +2,7 @@
 
 Each of these already had a test that the failure does NOT reach the turn (see
 test_usage_events.py, test_budget_holds.py, test_tenant_budget.py,
-tests/adapters/litellm/test_model_catalog.py). What none of them asserted is that the failure leaves a
+tests/adapters/outbound/litellm/test_model_catalog.py). What none of them asserted is that the failure leaves a
 trace anywhere but a log line — and a lost usage event is committed spend that a
 human will not learn about from a log (the usage-event write's own counter is pinned in test_usage_events.py). Constitution Principle V: a
 degrade-and-continue path MUST increment a metric.

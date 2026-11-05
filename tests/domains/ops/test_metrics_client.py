@@ -2,7 +2,7 @@
 `format_readings` are pure functions, tested directly against synthetic
 readings — no network. `_query_one`/`fetch_readings` mock
 `httpx.AsyncClient` (same "patch the low-level client constructor"
-convention as tests/api/test_health.py) so these stay hermetic (no live
+convention as tests/adapters/inbound/api/test_health.py) so these stay hermetic (no live
 Prometheus). Both are `async def` now, so calls run through
 `asyncio.run(...)`.
 """

@@ -76,10 +76,10 @@ from app.agent.graph.utils import friendly_tool_error, instrumented, make_llm
 from app.agent.tools import builtin
 from app.core.config import CHAT_MODEL, MAX_COST_USD_PER_TURN
 from app.core.security import SecurityCtx
-from app.ports.retrieval import answer_cache
+from app.ports.outbound.retrieval import answer_cache
 
 if TYPE_CHECKING:
-    from app.ports.domains import AgentManifest, DomainPlugin
+    from app.ports.outbound.domains import AgentManifest, DomainPlugin
 
 
 async def default_cache_get(ctx: SecurityCtx | None, query: str) -> tuple[str, list[dict]] | None:

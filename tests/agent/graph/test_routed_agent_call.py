@@ -25,7 +25,7 @@ from app.agent.graph.build import GraphDeps
 from app.agent.graph.model_route import routed_unreachable
 from app.core import gateway
 from app.domains.ecorp import tools as ecorp_tools
-from app.ports.classification import Labelled
+from app.ports.outbound.classification import Labelled
 from tests.agent.fakes import call, cfg, make_agent_node, queue_llm
 from tests.conftest import TEST_CTX
 from tests.ecorp import build_graph

@@ -53,11 +53,11 @@ from app.core import metrics
 from app.core.config import MCP_TOOL_OUTPUT_MAX_CHARS
 from app.core.output_limits import bound_output
 from app.core.scrubbing import scrub
-from app.ports.sandbox import REMOTE_ERROR_PREFIX
+from app.ports.outbound.sandbox import REMOTE_ERROR_PREFIX
 
 logger = logging.getLogger(__name__)
 
-# `REMOTE_ERROR_PREFIX` (app/ports/sandbox.py) is what a failed remote call starts with, so a caller that parses replies (the sandbox) can tell a
+# `REMOTE_ERROR_PREFIX` (app/ports/outbound/sandbox.py) is what a failed remote call starts with, so a caller that parses replies (the sandbox) can tell a
 # failure from a payload.
 
 

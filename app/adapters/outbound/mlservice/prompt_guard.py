@@ -1,4 +1,4 @@
-"""The `InjectionScorer` adapter (`app/ports/screening.py`): `POST /prompt-guard` on the `ml-service` container.
+"""The `InjectionScorer` adapter (`app/ports/outbound/screening.py`): `POST /prompt-guard` on the `ml-service` container.
 
 A fresh `httpx.AsyncClient` per call, not shared: a client shared across event loops (the worker has several) breaks on the loop that did not
 create it, the same loop-affinity reasoning as the reranker. Adds about 25-100 ms per call; viable because `ml-service` is already local and

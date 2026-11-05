@@ -26,7 +26,7 @@ from app.agent.cost import pricing
 from app.agent.runtime import core as runtime_module
 from app.agent.runtime import stream as stream_module
 from app.core import errors, metrics
-from app.ports import models as model_ports
+from app.ports.outbound import models as model_ports
 from tests.agent.fakes import make_agent_node
 from tests.conftest import TEST_CTX, metric_value
 

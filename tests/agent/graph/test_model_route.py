@@ -17,7 +17,7 @@ from langgraph.types import Command
 from app.agent.graph import model_route
 from app.agent.graph.build import GraphDeps
 from app.agent.graph.model_route import make_route_model_node
-from app.ports.classification import NO_ANSWER, Labelled
+from app.ports.outbound.classification import NO_ANSWER, Labelled
 from tests.agent.fakes import call, cfg, queue_llm
 from tests.ecorp import build_graph, build_subagent_graph
 from tests.fakes.ml import use_classifier

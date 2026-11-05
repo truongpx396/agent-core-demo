@@ -38,7 +38,7 @@ from app.core.security import Policy
 from app.domains.ops.tools import OPS_POLICY
 from app.domains.ops.tools import TOOL_CAPABILITIES as _OPS_TOOL_CAPABILITIES
 from app.domains.ops.tools import TOOLS as _OPS_TOOLS
-from app.ports.domains import AgentManifest, DomainPlugin
+from app.ports.outbound.domains import AgentManifest, DomainPlugin
 
 _SKILL_SEARCH, _USE_SKILL = make_skill_tools("ops")
 

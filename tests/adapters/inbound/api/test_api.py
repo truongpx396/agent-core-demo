@@ -1,0 +1,1276 @@
+"""Tests for the plain, dependency-free route handlers behind app/adapters/inbound/api/main.py (app/adapters/inbound/api/routers/, app/adapters/inbound/api/deps.py).
+
+Deliberately NOT using FastAPI's TestClient here: exercising the app
+through it would trigger the real `lifespan` (a real durable checkpointer
+file, a real Qdrant/embedding call the first time a turn runs) — this
+suite calls the handler functions directly instead, the same "test the
+function, not the framework wiring" approach the rest of this codebase
+already takes for graph nodes (see tests/agent/graph/test_nodes.py's module docstring).
+"""
+import hashlib
+import io
+import json
+from decimal import Decimal
+
+import pytest
+from fastapi import HTTPException, Response
+
+from app.adapters.inbound.api import deps
+from app.adapters.inbound.api.routers import chat as chat_router
+from app.adapters.inbound.api.routers import ingest as ingest_router
+from app.adapters.inbound.api.routers import system as system_router
+from app.adapters.inbound.api.routers import usage as usage_router
+from app.adapters.inbound.api.routers.system import ui
+from app.adapters.inbound.api.schemas import CancelRequest, ChatRequest, ResumeRequest
+from app.adapters.inbound.workers import ingest_streams, streams
+from app.adapters.outbound.minio import object_store as minio_object_store
+from app.adapters.outbound.redis import ingest_queue, queue
+from app.agent.runtime import sessions
+from app.core import metrics
+from app.ports.outbound import jobs
+from credit_billing import credits
+from tests.adapters.outbound.redis.test_queue import FakeRedis
+from tests.conftest import TEST_CTX
+from tests.conftest import metric_value as _count
+
+
+class _Ownership:
+    """An in-memory stand-in for `chat_sessions` with the SAME semantics the
+    real queries have — first claimant of a thread id owns it, ownership is
+    (tenant, principal, domain) — so these tests exercise the endpoints'
+    use of the check, not Postgres. `claim_session`'s own query shape is
+    pinned in tests/agent/runtime/test_sessions.py."""
+
+    def __init__(self):
+        self.rows: dict[str, tuple[str, str, str]] = {}
+
+    @staticmethod
+    def _key(ctx, domain):
+        return (ctx["tenant"], ctx["principal"], domain)
+
+    async def claim(self, ctx, thread_id, title=None, domain="ecorp"):
+        return self.rows.setdefault(thread_id, self._key(ctx, domain)) == self._key(ctx, domain)
+
+    async def belongs(self, ctx, thread_id, domain="ecorp"):
+        return self.rows.get(thread_id) == self._key(ctx, domain)
+
+
+@pytest.fixture(autouse=True)
+def ownership(monkeypatch):
+    """Every test here drives the handlers directly; without this, the
+    ownership check would reach the (test-suite-blocked) appdata Postgres
+    and fail closed. A test that cares claims a thread first via
+    `ownership.rows[...]` / `await ownership.claim(...)`."""
+    fake = _Ownership()
+    monkeypatch.setattr(sessions, "claim_session", fake.claim)
+    monkeypatch.setattr(sessions, "session_belongs_to", fake.belongs)
+    return fake
+
+
+class TestHealthReady:
+    """GET /health/ready — see app/adapters/inbound/api/health.py's own tests for
+    check_dependencies() itself; this just checks the HTTP-shape mapping
+    (status code + body) on top of it."""
+
+    async def test_200_and_ready_when_every_dependency_is_up(self, monkeypatch):
+        async def fake_check_dependencies():
+            return {"qdrant": True, "appdata_postgres": True, "checkpointer_postgres": True, "redis": True}
+
+        monkeypatch.setattr(system_router.health_checks, "check_dependencies", fake_check_dependencies)
+        response = Response()
+
+        result = await system_router.health_ready(response)
+
+        assert response.status_code == 200
+        assert result.status == "ready"
+        assert result.checks["qdrant"] is True
+
+    async def test_503_and_degraded_when_any_dependency_is_down(self, monkeypatch):
+        async def fake_check_dependencies():
+            return {"qdrant": False, "appdata_postgres": True, "checkpointer_postgres": True, "redis": True}
+
+        monkeypatch.setattr(system_router.health_checks, "check_dependencies", fake_check_dependencies)
+        response = Response()
+
+        result = await system_router.health_ready(response)
+
+        assert response.status_code == 503
+        assert result.status == "degraded"
+        assert result.checks["qdrant"] is False
+
+
+class TestUsage:
+    """GET /usage — a thin pass-through to app/agent/cost/spend.py::usage_summary,
+    called once all-time and once scoped to the rolling 24h window
+    app/agent/cost/budgets.py::check_allowance itself checks."""
+
+    async def test_reports_all_time_and_rolling_24h_figures(self, monkeypatch):
+        calls = []
+
+        async def fake_usage_summary(tenant, principal=None, since=None):
+            calls.append({"tenant": tenant, "since": since})
+            if since is None:
+                return {"total_tokens": 5000, "total_cost_usd": 3.5}
+            return {"total_tokens": 200, "total_cost_usd": 0.1}
+
+        monkeypatch.setattr(usage_router.spend, "usage_summary", fake_usage_summary)
+        monkeypatch.setattr(usage_router, "MAX_COST_USD_PER_TENANT_PER_DAY", 20.0)
+
+        result = await usage_router.usage(ctx=TEST_CTX)
+
+        assert result.total_tokens == 5000
+        assert result.total_cost_usd == 3.5
+        assert result.last_24h_cost_usd == 0.1
+        assert result.daily_budget_usd == 20.0
+        assert len(calls) == 3  # all-time, rolling 24h, and the tenant/day status
+        assert calls[0]["tenant"] == TEST_CTX["tenant"]
+        assert calls[1]["since"] is not None
+
+    async def test_lists_the_budgets_that_apply_to_this_caller_with_how_much_is_left(self, monkeypatch):
+        async def fake_usage_summary(tenant, principal=None, since=None):
+            return {"total_tokens": 0, "total_cost_usd": 1.0 if principal else 8.0}
+
+        monkeypatch.setattr(usage_router.spend, "usage_summary", fake_usage_summary)
+        monkeypatch.setattr(usage_router, "MAX_COST_USD_PER_TENANT_PER_DAY", 20.0)
+        monkeypatch.setattr(usage_router, "MAX_COST_USD_PER_PRINCIPAL_PER_DAY", 5.0)
+        monkeypatch.setattr(usage_router, "MAX_COST_USD_PER_TENANT_PER_MONTH", 400.0)
+
+        result = await usage_router.usage(ctx=TEST_CTX)
+
+        by_key = {(b.scope, b.window): b for b in result.budgets}
+        assert set(by_key) == {("tenant", "day"), ("tenant", "month"), ("principal", "day")}
+        assert by_key[("tenant", "day")].remaining_usd == 12.0
+        assert (by_key[("principal", "day")].spent_usd, by_key[("principal", "day")].remaining_usd) == (1.0, 4.0)
+        assert by_key[("tenant", "month")].resets_at is not None
+        assert by_key[("tenant", "day")].resets_at is None
+
+    async def test_an_unconfigured_deployment_lists_only_the_always_on_tenant_daily_limit(self, monkeypatch):
+        async def fake_usage_summary(tenant, principal=None, since=None):
+            return {"total_tokens": 0, "total_cost_usd": 0.0}
+
+        monkeypatch.setattr(usage_router.spend, "usage_summary", fake_usage_summary)
+        monkeypatch.setattr(usage_router, "MAX_COST_USD_PER_TENANT_PER_DAY", 20.0)
+        monkeypatch.setattr(usage_router, "MAX_COST_USD_PER_TENANT_PER_MONTH", 0.0)
+        monkeypatch.setattr(usage_router, "MAX_COST_USD_PER_PRINCIPAL_PER_DAY", 0.0)
+        monkeypatch.setattr(usage_router, "MAX_COST_USD_PER_PRINCIPAL_PER_MONTH", 0.0)
+
+        result = await usage_router.usage(ctx=TEST_CTX)
+
+        assert [(b.scope, b.window) for b in result.budgets] == [("tenant", "day")]
+
+
+class TestUsageCredits:
+    """`GET /usage` shows what the billing port says of the tenant's wallet (specs/010 T016, specs/013): the port returns None when the deployment
+    has credits off or the tenant has no wallet, so a deployment that never set a rate must not read a table it may not have, and a tenant with
+    no wallet is not "at zero". The router only maps what it is given; the rule is the package's (packages/billing/tests/test_port.py)."""
+
+    @pytest.fixture(autouse=True)
+    def quiet_ledger(self, monkeypatch):
+        async def usage_summary(tenant, principal=None, since=None):
+            return {"total_tokens": 0, "total_cost_usd": 0.0}
+
+        monkeypatch.setattr(usage_router.spend, "usage_summary", usage_summary)
+        monkeypatch.setattr(usage_router, "MAX_COST_USD_PER_TENANT_PER_DAY", 20.0)
+
+    @pytest.fixture
+    def wallet(self, monkeypatch):
+        reads = []
+        state = {"summary": usage_router.billing_port.CreditSummary(
+            credits.Balance(Decimal("12.500000"), Decimal("12.500000"), Decimal("0")), enforced=False
+        )}
+
+        async def credit_summary(tenant):
+            reads.append(tenant)
+            return state["summary"]
+
+        monkeypatch.setattr(usage_router.billing_port, "credit_summary", credit_summary)
+        state["reads"] = reads
+        return state
+
+    async def test_it_is_null_when_the_port_has_nothing_to_show(self, monkeypatch, wallet):
+        wallet["summary"] = None
+
+        result = await usage_router.usage(ctx=TEST_CTX)
+
+        assert result.credits is None
+
+    async def test_it_reports_the_tenants_own_balance_and_whether_it_is_enforced(self, monkeypatch, wallet):
+        wallet["summary"] = usage_router.billing_port.CreditSummary(
+            credits.Balance(available=Decimal("-3.5"), ledger=Decimal("-3.5"), debt=Decimal("3.5")), enforced=True
+        )
+
+        result = await usage_router.usage(ctx=TEST_CTX)
+
+        assert (result.credits.available, result.credits.debt, result.credits.enforced) == (Decimal("-3.5"), Decimal("3.5"), True)
+        assert wallet["reads"] == [TEST_CTX["tenant"]], "only the caller's own tenant is ever asked about"
+
+    async def test_shadow_mode_reports_the_balance_with_enforced_false(self, monkeypatch, wallet):
+        result = await usage_router.usage(ctx=TEST_CTX)
+
+        assert result.credits.enforced is False and result.credits.available == Decimal("12.5")
+
+    async def test_amounts_are_serialised_as_exact_strings_never_floats(self, monkeypatch, wallet):
+        wallet["summary"] = usage_router.billing_port.CreditSummary(
+            credits.Balance(Decimal("0.300000"), Decimal("0.300000"), Decimal("0")), enforced=False
+        )
+
+        body = (await usage_router.usage(ctx=TEST_CTX)).model_dump(mode="json")
+
+        assert body["credits"]["available"] == "0.300000", "a JSON number would round-trip through a float"
+
+    async def test_an_unreadable_wallet_is_an_error_not_a_calm_null(self, monkeypatch, wallet):
+        """Unlike the gate, a status endpoint must not report "no wallet" when it simply could not look."""
+
+        async def broken(tenant):
+            raise ConnectionError("wallet unreachable")
+
+        monkeypatch.setattr(usage_router.billing_port, "credit_summary", broken)
+
+        with pytest.raises(ConnectionError):
+            await usage_router.usage(ctx=TEST_CTX)
+
+    async def test_through_the_real_port_a_deployment_with_credits_off_never_reads_a_wallet(self, monkeypatch):
+        """The whole path, with only the package's wallet read replaced: credits off means the table is never touched."""
+        from credit_billing import port as package_port
+
+        reads = []
+
+        async def account_balance(tenant):
+            reads.append(tenant)
+            return None
+
+        monkeypatch.setattr(credits, "account_balance", account_balance)
+        monkeypatch.setattr(package_port, "CREDITS_PER_USD", None)
+
+        result = await usage_router.usage(ctx=TEST_CTX)
+
+        assert result.credits is None and reads == []
+
+
+class TestUi:
+    def test_returns_html_referencing_the_documented_sse_vocabulary(self):
+        """The page must talk to the one published endpoint/event
+        vocabulary (POST /chat/stream/queued) — never a special-cased
+        endpoint of its own (see ui()'s own docstring)."""
+        html = ui()
+        assert "<title>" in html
+        assert "/chat/stream/queued" in html
+        for event_type in ("token", "tool_start", "tool_end", "citations", "approval_required", "error"):
+            assert event_type in html
+
+    def test_sends_the_trusted_identity_headers(self):
+        """The UI must send X-Tenant-Id/X-Principal-Id itself — POST
+        /chat/stream/queued fails closed (422) without both (see
+        app/adapters/inbound/api/deps.py's get_ctx)."""
+        html = ui()
+        assert "X-Tenant-Id" in html
+        assert "X-Principal-Id" in html
+
+    def test_sends_a_domain_selector_for_the_queued_endpoints(self):
+        """The page must send X-Domain on the queued path — see
+        app/adapters/inbound/api/deps.py's get_domain, which the three queued endpoints
+        (chat_stream_queued/chat_resume/chat_cancel) depend on."""
+        html = ui()
+        assert "X-Domain" in html
+        assert 'id="domainSelect"' in html
+
+    def test_changing_the_caller_identity_starts_a_fresh_conversation(self):
+        """A conversation belongs to the tenant+principal that started it and
+        the server 404s any other caller's send on it, so switching identity
+        mid-conversation must not keep sending on the old thread id."""
+        html = ui()
+        assert "function startFreshConversation()" in html
+        for select in ("tenantEl", "principalEl"):
+            line = next(ln for ln in html.splitlines() if f"setupIdentitySelect({select}," in ln)
+            assert "onIdentityChange" in line
+        assert "startFreshConversation();" in html.split("function onIdentityChange()")[1].split("}")[0]
+
+
+class TestGetDomain:
+    """app/adapters/inbound/api/deps.py::get_domain's own runtime branch: an unknown domain name must fail loud, the same
+    discipline app/domains/registry.py::resolve_domain already applies at process start, just surfaced as a
+    422 here since this is a per-request value rather than a per-process one.
+    """
+
+    async def test_passes_through_a_known_domain(self):
+        assert await deps.get_domain(x_domain="support") == "support"
+
+    async def test_rejects_an_unknown_domain_with_422(self):
+        with pytest.raises(HTTPException) as exc_info:
+            await deps.get_domain(x_domain="not-a-real-domain")
+        assert exc_info.value.status_code == 422
+        assert "not-a-real-domain" in exc_info.value.detail
+
+
+class TestChatStreamQueued:
+    """POST /chat/stream/queued (GRAPH_PATTERNS.md pattern 43) — the producer half of the Redis Streams
+    SSE-service/agent-worker split.
+    """
+
+    async def test_publishes_a_request_then_streams_back_whatever_a_worker_publishes(
+        self, monkeypatch
+    ):
+        client = FakeRedis()
+        monkeypatch.setattr(queue, "get_client", lambda: client)
+
+        async def _run():
+            req = ChatRequest(message="hello", thread_id="t1")
+            response = await chat_router.chat_stream_queued(req, ctx=TEST_CTX, domain="ecorp")
+
+            # The request was published immediately (before the response's
+            # own generator has even started) — StreamingResponse's async
+            # generator is lazy, so nothing has been read from the results
+            # stream yet at this point.
+            published = client.streams[jobs.requests_stream_key("ecorp")]
+            assert len(published) == 1
+            payload = json.loads(published[0][1]["payload"])
+            assert payload["text"] == "hello"
+            assert payload["thread_id"] == "t1"
+            assert payload["ctx"] == TEST_CTX
+            request_id = payload["request_id"]
+
+            # Simulate app/adapters/inbound/workers/agent_worker.py publishing this turn's events.
+            await streams.publish_result(client, request_id, {"type": "token", "content": "hi"})
+            await streams.publish_result(client, request_id, {"type": "done"})
+
+            chunks = [chunk async for chunk in response.body_iterator]
+            return chunks, request_id
+
+        chunks, request_id = await _run()
+
+        assert any('"type": "token"' in c and '"content": "hi"' in c for c in chunks)
+        assert any('"type": "done"' in c for c in chunks)
+
+    async def test_does_not_delete_the_results_stream_after_a_terminal_event(self, monkeypatch):
+        """Deliberately the OPPOSITE of what this used to assert — see
+        _queued_sse_response's own docstring for the real bug an eager
+        delete here caused once POST /chat/stream/queued's submission
+        dedup could give two independent callers the same request_id: the
+        first to see the terminal event would delete the stream out from
+        under a second, still-reading (or not-yet-started) caller, which
+        then read an empty stream forever. Relies on
+        RESULTS_STREAM_TTL_SECONDS for eventual cleanup instead."""
+        client = FakeRedis()
+        monkeypatch.setattr(queue, "get_client", lambda: client)
+
+        async def _run():
+            req = ChatRequest(message="hi", thread_id="t2")
+            response = await chat_router.chat_stream_queued(req, ctx=TEST_CTX, domain="ecorp")
+            request_id = json.loads(client.streams[jobs.requests_stream_key("ecorp")][0][1]["payload"])[
+                "request_id"
+            ]
+            await streams.publish_result(client, request_id, {"type": "done"})
+            async for _ in response.body_iterator:
+                pass
+            return request_id
+
+        request_id = await _run()
+        assert jobs.results_stream_key(request_id) not in client.deleted
+        assert jobs.results_stream_key(request_id) in client.expiries  # TTL still governs cleanup
+
+    async def test_publishes_attached_images_onto_the_request(self, monkeypatch):
+        """GRAPH_PATTERNS.md pattern 44 — images ride the same request
+        payload all the way to app/adapters/inbound/workers/agent_worker.py."""
+        client = FakeRedis()
+        monkeypatch.setattr(queue, "get_client", lambda: client)
+
+        async def _run():
+            req = ChatRequest(
+                message="what is this?", thread_id="t3", images=["https://example.com/cat.png"]
+            )
+            response = await chat_router.chat_stream_queued(req, ctx=TEST_CTX, domain="ecorp")
+            payload = json.loads(client.streams[jobs.requests_stream_key("ecorp")][0][1]["payload"])
+            request_id = payload["request_id"]
+            await streams.publish_result(client, request_id, {"type": "done"})
+            async for _ in response.body_iterator:
+                pass
+            return payload
+
+        payload = await _run()
+        assert payload["images"] == ["https://example.com/cat.png"]
+
+    async def test_a_non_ecorp_domain_publishes_onto_its_own_stream(self, monkeypatch):
+        """The whole point of threading `domain` through — an X-Domain:
+        support turn must land where ONLY an `AGENT_DOMAIN=support`
+        app/adapters/inbound/workers/agent_worker.py pool is listening, never on Ecorp's own
+        stream (see app/adapters/outbound/redis/queue.py::publish_request's own docstring)."""
+        client = FakeRedis()
+        monkeypatch.setattr(queue, "get_client", lambda: client)
+
+        async def _run():
+            req = ChatRequest(message="where is my order?", thread_id="t4")
+            await chat_router.chat_stream_queued(req, ctx=TEST_CTX, domain="support")
+
+        await _run()
+        assert jobs.requests_stream_key("ecorp") not in client.streams
+
+
+class TestChatStreamQueuedSubmissionDedup:
+    """The fix for a real gap the thread lock alone doesn't cover: a
+    double-submit that arrives AFTER the first attempt already finished
+    races nothing, so without this it would run as a second, independent
+    turn — see queue.py::claim_or_get_existing_submission's own
+    docstring."""
+
+    async def test_an_identical_resubmission_reuses_the_same_request_id_and_publishes_only_once(
+        self, monkeypatch
+    ):
+        client = FakeRedis()
+        monkeypatch.setattr(queue, "get_client", lambda: client)
+
+        req = ChatRequest(message="hello", thread_id="t1")
+        await chat_router.chat_stream_queued(req, ctx=TEST_CTX, domain="ecorp")
+        await chat_router.chat_stream_queued(req, ctx=TEST_CTX, domain="ecorp")
+
+        published = client.streams[jobs.requests_stream_key("ecorp")]
+        assert len(published) == 1  # the second call never published a second job
+
+    async def test_a_different_message_on_the_same_thread_is_not_deduplicated(self, monkeypatch):
+        client = FakeRedis()
+        monkeypatch.setattr(queue, "get_client", lambda: client)
+
+        await chat_router.chat_stream_queued(
+            ChatRequest(message="hello", thread_id="t1"), ctx=TEST_CTX, domain="ecorp"
+        )
+        await chat_router.chat_stream_queued(
+            ChatRequest(message="goodbye", thread_id="t1"), ctx=TEST_CTX, domain="ecorp"
+        )
+
+        published = client.streams[jobs.requests_stream_key("ecorp")]
+        assert len(published) == 2
+
+    async def test_the_same_message_on_a_different_thread_is_not_deduplicated(self, monkeypatch):
+        client = FakeRedis()
+        monkeypatch.setattr(queue, "get_client", lambda: client)
+
+        await chat_router.chat_stream_queued(
+            ChatRequest(message="hello", thread_id="t1"), ctx=TEST_CTX, domain="ecorp"
+        )
+        await chat_router.chat_stream_queued(
+            ChatRequest(message="hello", thread_id="t2"), ctx=TEST_CTX, domain="ecorp"
+        )
+
+        published = client.streams[jobs.requests_stream_key("ecorp")]
+        assert len(published) == 2
+
+    async def test_a_different_images_list_is_not_deduplicated(self, monkeypatch):
+        client = FakeRedis()
+        monkeypatch.setattr(queue, "get_client", lambda: client)
+
+        await chat_router.chat_stream_queued(
+            ChatRequest(message="what is this?", thread_id="t1"), ctx=TEST_CTX, domain="ecorp"
+        )
+        await chat_router.chat_stream_queued(
+            ChatRequest(message="what is this?", thread_id="t1", images=["https://example.com/cat.png"]),
+            ctx=TEST_CTX,
+            domain="ecorp",
+        )
+
+        published = client.streams[jobs.requests_stream_key("ecorp")]
+        assert len(published) == 2
+
+    async def test_the_resubmission_streams_the_same_underlying_turns_events(self, monkeypatch):
+        """The whole point, not just an internal bookkeeping detail: a
+        caller that double-submitted must still get the REAL turn's actual
+        events back on its own SSE connection, not an empty/orphaned one."""
+        client = FakeRedis()
+        monkeypatch.setattr(queue, "get_client", lambda: client)
+
+        req = ChatRequest(message="hello", thread_id="t1")
+        first_response = await chat_router.chat_stream_queued(req, ctx=TEST_CTX, domain="ecorp")
+        second_response = await chat_router.chat_stream_queued(req, ctx=TEST_CTX, domain="ecorp")
+
+        request_id = json.loads(client.streams[jobs.requests_stream_key("ecorp")][0][1]["payload"])[
+            "request_id"
+        ]
+        await streams.publish_result(client, request_id, {"type": "token", "content": "hi"})
+        await streams.publish_result(client, request_id, {"type": "done"})
+
+        first_chunks = [chunk async for chunk in first_response.body_iterator]
+        second_chunks = [chunk async for chunk in second_response.body_iterator]
+
+        for chunks in (first_chunks, second_chunks):
+            assert any('"content": "hi"' in c for c in chunks)
+            assert any('"type": "done"' in c for c in chunks)
+
+    async def test_after_the_dedup_window_a_resubmission_is_treated_as_fresh(self, monkeypatch):
+        client = FakeRedis()
+        monkeypatch.setattr(queue, "get_client", lambda: client)
+        monkeypatch.setattr(chat_router, "CHAT_SUBMIT_DEDUP_TTL_SECONDS", 10)
+
+        req = ChatRequest(message="hello", thread_id="t1")
+        await chat_router.chat_stream_queued(req, ctx=TEST_CTX, domain="ecorp")
+
+        # Simulate the dedup key's own TTL having already expired.
+        digest = chat_router.hashlib.sha256(json.dumps(["hello", []]).encode()).hexdigest()
+        del client.kv[queue._submission_dedup_key("t1", digest)]
+
+        await chat_router.chat_stream_queued(req, ctx=TEST_CTX, domain="ecorp")
+
+        published = client.streams[jobs.requests_stream_key("ecorp")]
+        assert len(published) == 2
+
+
+class TestChatStreamQueuedPublishFailure:
+    """A failed publish_request AFTER the submission-dedup claim already
+    landed must not leave that claim pointing at a request_id no job was
+    ever published under — see queue.py::release_submission_claim's own
+    docstring for the hang this would otherwise cause a retry into."""
+
+    async def test_a_failed_publish_releases_the_claim_and_still_raises(self, monkeypatch):
+        client = FakeRedis()
+        monkeypatch.setattr(queue, "get_client", lambda: client)
+
+        async def _broken_publish(*args, **kwargs):
+            raise ConnectionError("redis unreachable")
+
+        monkeypatch.setattr(queue, "publish_request", _broken_publish)
+
+        req = ChatRequest(message="hello", thread_id="t1")
+        with pytest.raises(ConnectionError):
+            await chat_router.chat_stream_queued(req, ctx=TEST_CTX, domain="ecorp")
+
+        digest = chat_router.hashlib.sha256(json.dumps(["hello", []]).encode()).hexdigest()
+        assert queue._submission_dedup_key("t1", digest) not in client.kv
+
+    async def test_a_retry_after_the_failure_is_treated_as_a_fresh_submission(self, monkeypatch):
+        client = FakeRedis()
+        monkeypatch.setattr(queue, "get_client", lambda: client)
+
+        calls = {"n": 0}
+        real_publish = queue.publish_request
+
+        async def _fails_once_then_works(*args, **kwargs):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise ConnectionError("redis unreachable")
+            return await real_publish(*args, **kwargs)
+
+        monkeypatch.setattr(queue, "publish_request", _fails_once_then_works)
+
+        req = ChatRequest(message="hello", thread_id="t1")
+        with pytest.raises(ConnectionError):
+            await chat_router.chat_stream_queued(req, ctx=TEST_CTX, domain="ecorp")
+
+        # The retry must publish a real job under a fresh claim, not reuse
+        # the poisoned request_id from the failed attempt (which no job
+        # was ever published under).
+        await chat_router.chat_stream_queued(req, ctx=TEST_CTX, domain="ecorp")
+
+        published = client.streams[jobs.requests_stream_key("ecorp")]
+        assert len(published) == 1
+
+
+class TestChatResume:
+    """POST /chat/resume — publishes a `"resume"` job onto the SAME
+    Redis Stream a new turn uses (app/adapters/outbound/redis/queue.py::publish_resume_request),
+    not a separate queue; app/adapters/inbound/workers/agent_worker.py dispatches on
+    `payload["kind"]`."""
+
+    async def test_publishes_a_resume_job_with_approved_and_thread_id(self, monkeypatch, ownership):
+        client = FakeRedis()
+        monkeypatch.setattr(queue, "get_client", lambda: client)
+        await ownership.claim(TEST_CTX, "t1")
+
+        async def _run():
+            req = ResumeRequest(thread_id="t1", approved=True)
+            response = await chat_router.chat_resume(req, ctx=TEST_CTX, domain="ecorp")
+
+            published = client.streams[jobs.requests_stream_key("ecorp")]
+            assert len(published) == 1
+            payload = json.loads(published[0][1]["payload"])
+            assert payload["kind"] == "resume"
+            assert payload["thread_id"] == "t1"
+            assert payload["approved"] is True
+            assert payload["ctx"] == TEST_CTX
+            request_id = payload["request_id"]
+
+            await streams.publish_result(client, request_id, {"type": "done"})
+            return [chunk async for chunk in response.body_iterator]
+
+        chunks = await _run()
+        assert any('"type": "done"' in c for c in chunks)
+
+    async def test_a_rejection_carries_approved_false(self, monkeypatch, ownership):
+        client = FakeRedis()
+        monkeypatch.setattr(queue, "get_client", lambda: client)
+        await ownership.claim(TEST_CTX, "t2")
+
+        async def _run():
+            req = ResumeRequest(thread_id="t2", approved=False)
+            await chat_router.chat_resume(req, ctx=TEST_CTX, domain="ecorp")
+            return json.loads(client.streams[jobs.requests_stream_key("ecorp")][0][1]["payload"])
+
+        payload = await _run()
+        assert payload["approved"] is False
+
+
+class TestChatCancel:
+    """POST /chat/cancel — two independent mechanisms fired unconditionally
+    (app/adapters/inbound/api/routers/chat.py's `chat_cancel` docstring): a Redis cancel-flag AND a `"cancel"` job
+    published onto the same queue."""
+
+    async def test_sets_the_cancel_flag_and_publishes_a_cancel_job(self, monkeypatch, ownership):
+        client = FakeRedis()
+        monkeypatch.setattr(queue, "get_client", lambda: client)
+        await ownership.claim(TEST_CTX, "t1")
+
+        async def _run():
+            req = CancelRequest(thread_id="t1")
+            response = await chat_router.chat_cancel(req, ctx=TEST_CTX, domain="ecorp")
+
+            assert await streams.is_cancelled(client, "t1") is True
+
+            published = client.streams[jobs.requests_stream_key("ecorp")]
+            assert len(published) == 1
+            payload = json.loads(published[0][1]["payload"])
+            assert payload["kind"] == "cancel"
+            assert payload["thread_id"] == "t1"
+            assert payload["ctx"] == TEST_CTX
+            request_id = payload["request_id"]
+
+            await streams.publish_result(client, request_id, {"type": "done"})
+            return [chunk async for chunk in response.body_iterator]
+
+        chunks = await _run()
+        assert any('"type": "done"' in c for c in chunks)
+
+
+OTHER_PRINCIPAL = {"tenant": "ecorp", "principal": "mallory", "claims": {}}
+OTHER_TENANT = {"tenant": "evil-co", "principal": TEST_CTX["principal"], "claims": {}}
+
+
+class TestConversationOwnership:
+    """Real defect (fixed): a conversation's state is keyed by `thread_id`
+    alone, and only the two GET endpoints checked who owned it. Send, resume
+    and cancel did not, so whoever supplied an id continued that
+    conversation — read its history through the model, approve or reject its
+    pending action (which then ran under the *resumer's* identity), or stop
+    it. Reproduced at the graph level when the gap was found; these pin the
+    HTTP boundary. Every refusal is the same 404 the GET endpoints give, so a
+    caller can't tell "someone else's" from "doesn't exist"."""
+
+    @pytest.fixture
+    def redis(self, monkeypatch):
+        client = FakeRedis()
+        monkeypatch.setattr(queue, "get_client", lambda: client)
+        return client
+
+    @staticmethod
+    def _nothing_was_published(client):
+        return not client.streams.get(jobs.requests_stream_key("ecorp"))
+
+    async def test_a_new_thread_id_is_claimed_by_its_first_sender_who_can_keep_using_it(
+        self, redis, ownership
+    ):
+        await chat_router.chat_stream_queued(ChatRequest(message="hello", thread_id="fresh"), ctx=TEST_CTX, domain="ecorp")
+        await chat_router.chat_stream_queued(ChatRequest(message="and again", thread_id="fresh"), ctx=TEST_CTX, domain="ecorp")
+
+        assert ownership.rows["fresh"] == (TEST_CTX["tenant"], TEST_CTX["principal"], "ecorp")
+        assert len(redis.streams[jobs.requests_stream_key("ecorp")]) == 2
+
+    @pytest.mark.parametrize("intruder", [OTHER_PRINCIPAL, OTHER_TENANT], ids=["other-principal", "other-tenant"])
+    async def test_sending_on_someone_elses_thread_is_refused_and_enqueues_nothing(
+        self, redis, ownership, intruder
+    ):
+        await ownership.claim(TEST_CTX, "owned")
+
+        with pytest.raises(HTTPException) as exc:
+            await chat_router.chat_stream_queued(ChatRequest(message="hi", thread_id="owned"), ctx=intruder, domain="ecorp")
+
+        assert exc.value.status_code == 404
+        assert self._nothing_was_published(redis)
+        assert ownership.rows["owned"] == (
+            TEST_CTX["tenant"],
+            TEST_CTX["principal"],
+            "ecorp",
+        ), "a refused send must not take the thread over"
+
+    async def test_a_resubmission_of_the_owners_exact_message_does_not_hand_over_their_stream(
+        self, redis, ownership
+    ):
+        """The submission-dedup key is (thread_id, digest) with no caller in
+        it, so an identical (thread, message) from another caller used to
+        come back with the OWNER's request_id — and read the owner's reply
+        off their results stream. The check must come before that claim."""
+        owner_response = await chat_router.chat_stream_queued(
+            ChatRequest(message="what is my salary?", thread_id="owned"), ctx=TEST_CTX, domain="ecorp"
+        )
+        assert owner_response is not None
+
+        with pytest.raises(HTTPException) as exc:
+            await chat_router.chat_stream_queued(
+                ChatRequest(message="what is my salary?", thread_id="owned"), ctx=OTHER_PRINCIPAL, domain="ecorp"
+            )
+
+        assert exc.value.status_code == 404
+        assert len(redis.streams[jobs.requests_stream_key("ecorp")]) == 1, "only the owner's job exists"
+
+    async def test_the_same_principal_under_another_domain_does_not_own_the_thread(self, redis, ownership):
+        await ownership.claim(TEST_CTX, "owned", domain="support")
+
+        with pytest.raises(HTTPException) as exc:
+            await chat_router.chat_stream_queued(ChatRequest(message="hi", thread_id="owned"), ctx=TEST_CTX, domain="sales")
+
+        assert exc.value.status_code == 404
+
+    async def test_resuming_someone_elses_paused_turn_is_refused_and_enqueues_nothing(self, redis, ownership):
+        await ownership.claim(TEST_CTX, "owned")
+
+        with pytest.raises(HTTPException) as exc:
+            await chat_router.chat_resume(ResumeRequest(thread_id="owned", approved=True), ctx=OTHER_PRINCIPAL, domain="ecorp")
+
+        assert exc.value.status_code == 404
+        assert self._nothing_was_published(redis)
+
+    async def test_resuming_a_thread_nobody_owns_is_refused_not_run(self, redis):
+        with pytest.raises(HTTPException) as exc:
+            await chat_router.chat_resume(ResumeRequest(thread_id="never-seen", approved=True), ctx=TEST_CTX, domain="ecorp")
+
+        assert exc.value.status_code == 404
+        assert self._nothing_was_published(redis)
+
+    async def test_cancelling_someone_elses_turn_sets_no_flag_and_enqueues_nothing(self, redis, ownership):
+        """The cancel flag is written by the API itself, straight to Redis, keyed by thread id alone — it
+        bypasses anything the worker checks, so a foreign caller could stop the owner's streaming turn.
+        """
+        await ownership.claim(TEST_CTX, "owned")
+
+        with pytest.raises(HTTPException) as exc:
+            await chat_router.chat_cancel(CancelRequest(thread_id="owned"), ctx=OTHER_PRINCIPAL, domain="ecorp")
+
+        assert exc.value.status_code == 404
+        assert await streams.is_cancelled(redis, "owned") is False
+        assert self._nothing_was_published(redis)
+
+    async def test_the_owner_can_still_cancel(self, redis, ownership):
+        await ownership.claim(TEST_CTX, "owned")
+
+        await chat_router.chat_cancel(CancelRequest(thread_id="owned"), ctx=TEST_CTX, domain="ecorp")
+
+        assert await streams.is_cancelled(redis, "owned") is True
+
+    async def test_the_telegram_namespace_cannot_be_claimed_over_http(self, redis, ownership):
+        """`telegram:<chat id>` ids are derived by the chat channel, not
+        chosen. If an HTTP caller could claim an unused one first, the real
+        chat user's later messages would continue the squatter's history
+        (the Telegram path has no ownership step of its own)."""
+        with pytest.raises(HTTPException) as exc:
+            await chat_router.chat_stream_queued(
+                ChatRequest(message="hi", thread_id="telegram:123456"), ctx=OTHER_PRINCIPAL, domain="ecorp"
+            )
+
+        assert exc.value.status_code == 404
+        assert "telegram:123456" not in ownership.rows
+        assert self._nothing_was_published(redis)
+
+    async def test_the_owner_of_a_telegram_thread_can_still_continue_it_over_http(self, redis, ownership):
+        telegram_ctx = {"tenant": "ecorp", "principal": "telegram:42", "claims": {}}
+        await ownership.claim(telegram_ctx, "telegram:123456")
+
+        await chat_router.chat_stream_queued(
+            ChatRequest(message="hi", thread_id="telegram:123456"), ctx=telegram_ctx, domain="ecorp"
+        )
+
+        assert len(redis.streams[jobs.requests_stream_key("ecorp")]) == 1
+
+
+    async def test_a_telegram_id_is_claimable_only_by_the_caller_it_names(self, redis, ownership):
+        """The channel sends `telegram:<person>:<chat>` (specs/020): the reserved namespace stays unsquattable, now that the Telegram channel is an
+        HTTP client and so has to be able to CLAIM its conversations. Nobody can take an id that names someone else."""
+        person = {"tenant": "ecorp", "principal": "abc-123", "claims": {}}
+
+        await chat_router.chat_stream_queued(ChatRequest(message="hi", thread_id="telegram:abc-123:555"), ctx=person, domain="ecorp")
+        assert ownership.rows["telegram:abc-123:555"] == ("ecorp", "abc-123", "ecorp")
+
+        with pytest.raises(HTTPException) as exc:
+            await chat_router.chat_stream_queued(
+                ChatRequest(message="hi", thread_id="telegram:abc-123:777"), ctx=OTHER_PRINCIPAL, domain="ecorp"
+            )
+        assert exc.value.status_code == 404
+        assert "telegram:abc-123:777" not in ownership.rows
+
+    async def test_a_prefix_that_merely_starts_like_the_callers_id_is_not_theirs(self, redis, ownership):
+        """`telegram:abc` must not unlock `telegram:abc-123:...` (the id is compared with its separator)."""
+        short = {"tenant": "ecorp", "principal": "abc", "claims": {}}
+
+        with pytest.raises(HTTPException):
+            await chat_router.chat_stream_queued(ChatRequest(message="hi", thread_id="telegram:abc-123:555"), ctx=short, domain="ecorp")
+
+
+class TestTheStricterOnlyRequestFields:
+    """`unattended`, `require_approval` and `replay_key` (specs/020): what the CLI and the Telegram channel need from a request that used to be
+    decided in their own process. Each can only make a turn stricter or safer to repeat, so none needs an authority a caller lacks."""
+
+    @pytest.fixture
+    def redis(self, monkeypatch):
+        client = FakeRedis()
+        monkeypatch.setattr(queue, "get_client", lambda: client)
+        return client
+
+    @staticmethod
+    def _job(client):
+        (entry,) = client.streams[jobs.requests_stream_key("ecorp")]
+        return json.loads(entry[1]["payload"])
+
+    async def test_an_ordinary_request_is_neither_unattended_nor_gated_on_every_call(self, redis):
+        await chat_router.chat_stream_queued(ChatRequest(message="hi", thread_id="t1"), ctx=TEST_CTX, domain="ecorp")
+
+        job = self._job(redis)
+        assert (job["unattended"], job["require_approval"]) == (False, False)
+
+    async def test_unattended_and_require_approval_reach_the_job(self, redis):
+        await chat_router.chat_stream_queued(
+            ChatRequest(message="hi", thread_id="t1", unattended=True, require_approval=True), ctx=TEST_CTX, domain="ecorp"
+        )
+
+        job = self._job(redis)
+        assert (job["unattended"], job["require_approval"]) == (True, True)
+
+    async def test_a_replay_key_makes_a_repeat_one_turn_even_when_the_words_differ(self, redis):
+        for words in ("hello", "hello again"):
+            await chat_router.chat_stream_queued(
+                ChatRequest(message=words, thread_id="t1", replay_key="telegram:ecorp:update:7"), ctx=TEST_CTX, domain="ecorp"
+            )
+
+        assert len(redis.streams[jobs.requests_stream_key("ecorp")]) == 1
+
+    async def test_two_different_keys_with_the_same_words_are_two_turns(self, redis):
+        """Replay is by KEY, not by text: a person who sends "yes" twice means both."""
+        for key in ("telegram:ecorp:update:7", "telegram:ecorp:update:8"):
+            await chat_router.chat_stream_queued(
+                ChatRequest(message="yes", thread_id="t1", replay_key=key), ctx=TEST_CTX, domain="ecorp"
+            )
+
+        assert len(redis.streams[jobs.requests_stream_key("ecorp")]) == 2
+
+    async def test_a_replay_claim_lasts_as_long_as_the_results_stream(self, redis):
+        """A hit must find the first attempt's events, never a stream that expired under a live claim: the claim's TTL is the stream's, not the
+        ten seconds an unkeyed duplicate gets."""
+        await chat_router.chat_stream_queued(
+            ChatRequest(message="hi", thread_id="t1", replay_key="k"), ctx=TEST_CTX, domain="ecorp"
+        )
+        digest = hashlib.sha256(json.dumps(["replay", "k"]).encode()).hexdigest()
+
+        assert redis.expiries[queue._submission_dedup_key("t1", digest)] == jobs.RESULTS_STREAM_TTL_SECONDS
+
+    async def test_another_person_cannot_replay_into_the_owners_turn(self, redis, ownership):
+        """The key is scoped to the conversation, which only its owner can reach: the ownership check comes before the claim."""
+        await chat_router.chat_stream_queued(
+            ChatRequest(message="private", thread_id="owned", replay_key="k"), ctx=TEST_CTX, domain="ecorp"
+        )
+
+        with pytest.raises(HTTPException) as exc:
+            await chat_router.chat_stream_queued(
+                ChatRequest(message="private", thread_id="owned", replay_key="k"), ctx=OTHER_PRINCIPAL, domain="ecorp"
+            )
+
+        assert exc.value.status_code == 404
+        assert len(redis.streams[jobs.requests_stream_key("ecorp")]) == 1
+
+    async def test_a_replay_whose_publish_failed_is_released_so_the_key_can_be_sent_again(self, redis, monkeypatch):
+        real = queue.publish_request
+        calls = {"n": 0}
+
+        async def fails_once(*args, **kwargs):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise ConnectionError("redis went away")
+            return await real(*args, **kwargs)
+
+        monkeypatch.setattr(queue, "publish_request", fails_once)
+        request = ChatRequest(message="hi", thread_id="t1", replay_key="k")
+
+        with pytest.raises(ConnectionError):
+            await chat_router.chat_stream_queued(request, ctx=TEST_CTX, domain="ecorp")
+        await chat_router.chat_stream_queued(request, ctx=TEST_CTX, domain="ecorp")
+
+        assert len(redis.streams[jobs.requests_stream_key("ecorp")]) == 1
+
+    def test_an_empty_or_oversized_replay_key_is_refused_at_the_boundary(self):
+        for bad in ("", "x" * 201):
+            with pytest.raises(ValueError):
+                ChatRequest(message="hi", thread_id="t1", replay_key=bad)
+
+
+class TestChatSessions:
+    """GET /chat/sessions — a thin pass-through to app/agent/runtime/sessions.py::list_sessions,
+    scoped by whatever ctx get_ctx resolved (not a caller-supplied field)
+    AND by the X-Domain-derived `domain` (GRAPH_PATTERNS.md pattern 49)."""
+
+    async def test_returns_whatever_list_sessions_reports(self, monkeypatch):
+        rows = [
+            {
+                "thread_id": "t1",
+                "title": "Refund question",
+                "created_at": "2026-01-01T00:00:00Z",
+                "last_active_at": "2026-01-02T00:00:00Z",
+            }
+        ]
+        captured = {}
+
+        async def fake_list_sessions(ctx, domain):
+            captured["ctx"] = ctx
+            captured["domain"] = domain
+            return rows
+
+        monkeypatch.setattr(sessions, "list_sessions", fake_list_sessions)
+
+        result = await chat_router.chat_sessions(ctx=TEST_CTX, domain="ecorp")
+
+        # Calling the handler directly (this file's established
+        # convention) bypasses FastAPI's response_model coercion — that
+        # only happens through the real ASGI request/response cycle, so
+        # this is the raw list[dict] list_sessions itself returned.
+        assert captured["ctx"] == TEST_CTX
+        assert captured["domain"] == "ecorp"
+        assert [r["thread_id"] for r in result] == ["t1"]
+        assert result[0]["title"] == "Refund question"
+
+    async def test_a_different_domain_is_passed_through_too(self, monkeypatch):
+        captured = {}
+
+        async def fake_list_sessions(ctx, domain):
+            captured["domain"] = domain
+            return []
+
+        monkeypatch.setattr(sessions, "list_sessions", fake_list_sessions)
+
+        await chat_router.chat_sessions(ctx=TEST_CTX, domain="support")
+
+        assert captured["domain"] == "support"
+
+
+class TestChatSessionMessages:
+    """GET /chat/sessions/{thread_id}/messages — session_belongs_to is the
+    ENTIRE authorization boundary (the shared checkpointer
+    get_session_messages reads has no tenant/principal/domain of its own)."""
+
+    async def test_returns_the_transcript_when_owned(self, monkeypatch):
+        async def fake_session_belongs_to(ctx, thread_id, domain):
+            return True
+
+        monkeypatch.setattr(sessions, "session_belongs_to", fake_session_belongs_to)
+
+        async def fake_get_session_messages(thread_id):
+            assert thread_id == "t1"
+            return [{"role": "user", "text": "hi"}, {"role": "assistant", "text": "hello"}]
+
+        monkeypatch.setattr(chat_router, "get_session_messages", fake_get_session_messages)
+
+        result = await chat_router.chat_session_messages("t1", ctx=TEST_CTX, domain="ecorp")
+
+        # Same note as TestChatSessions above — raw dicts, not
+        # response_model-coerced Pydantic objects, when called directly.
+        assert [m["role"] for m in result] == ["user", "assistant"]
+        assert result[0]["text"] == "hi"
+
+    async def test_404s_when_not_owned_never_reading_the_transcript(self, monkeypatch):
+        import pytest
+        from fastapi import HTTPException
+
+        async def fake_session_belongs_to(ctx, thread_id, domain):
+            return False
+
+        monkeypatch.setattr(sessions, "session_belongs_to", fake_session_belongs_to)
+
+        async def fail_if_called(thread_id):
+            raise AssertionError("get_session_messages should not be called")
+
+        monkeypatch.setattr(chat_router, "get_session_messages", fail_if_called)
+
+        with pytest.raises(HTTPException) as exc_info:
+            await chat_router.chat_session_messages("someone-elses-thread", ctx=TEST_CTX, domain="ecorp")
+
+        assert exc_info.value.status_code == 404
+
+    async def test_404s_when_owned_by_a_different_domain(self, monkeypatch):
+        """The exact scenario this pattern exists to prevent: a thread
+        opened under "support" must not be readable while "sales" is the
+        selected domain, even for its own owner."""
+        import pytest
+        from fastapi import HTTPException
+
+        captured = {}
+
+        async def fake_session_belongs_to(ctx, thread_id, domain):
+            captured["domain"] = domain
+            return False
+
+        monkeypatch.setattr(sessions, "session_belongs_to", fake_session_belongs_to)
+
+        async def fail_if_called(thread_id):
+            raise AssertionError("get_session_messages should not be called")
+
+        monkeypatch.setattr(chat_router, "get_session_messages", fail_if_called)
+
+        with pytest.raises(HTTPException) as exc_info:
+            await chat_router.chat_session_messages("t1", ctx=TEST_CTX, domain="sales")
+
+        assert exc_info.value.status_code == 404
+        assert captured["domain"] == "sales"
+
+
+def _upload_file(filename, data, content_type):
+    from fastapi import UploadFile
+    from starlette.datastructures import Headers
+
+    return UploadFile(
+        file=io.BytesIO(data), filename=filename, headers=Headers({"content-type": content_type})
+    )
+
+
+class TestIngestUpload:
+    """POST /ingest/upload — MinIO upload + a job published onto
+    app/adapters/outbound/redis/ingest_queue.py's SEPARATE queue from chat turns. Both
+    object_store.upload_bytes and ingest_queue.publish_ingest_request are
+    monkeypatched, matching this file's "test the function, not live
+    services" convention."""
+
+    async def test_uploads_to_minio_and_publishes_a_job_per_file(self, monkeypatch):
+        uploaded = []
+        published = []
+
+        monkeypatch.setattr(
+            minio_object_store,
+            "upload_bytes",
+            lambda key, data, content_type: uploaded.append((key, data, content_type)),
+        )
+
+        async def fake_publish(client, *, job_id, object_key, filename, content_type, ctx, topic=None):
+            published.append(
+                {
+                    "job_id": job_id,
+                    "object_key": object_key,
+                    "filename": filename,
+                    "content_type": content_type,
+                    "ctx": ctx,
+                    "topic": topic,
+                }
+            )
+
+        monkeypatch.setattr(ingest_queue, "publish_ingest_request", fake_publish)
+        client = FakeRedis()
+        monkeypatch.setattr(ingest_queue, "get_client", lambda: client)
+
+        files = [_upload_file("report.pdf", b"pdf-bytes", "application/pdf")]
+
+        result = await ingest_router.ingest_upload(files=files, topic="company", ctx=TEST_CTX)
+
+        assert len(uploaded) == 1
+        key, data, content_type = uploaded[0]
+        assert key.startswith(f"{TEST_CTX['tenant']}/")
+        assert key.endswith("-report.pdf")
+        assert data == b"pdf-bytes"
+        assert content_type == "application/pdf"
+
+        assert len(published) == 1
+        assert published[0]["filename"] == "report.pdf"
+        assert published[0]["topic"] == "company"
+        assert published[0]["ctx"] == TEST_CTX
+        assert published[0]["object_key"] == key
+
+        assert len(result) == 1
+        assert result[0].filename == "report.pdf"
+        assert result[0].job_id == published[0]["job_id"]
+
+    async def test_multiple_files_each_get_their_own_job(self, monkeypatch):
+        monkeypatch.setattr(minio_object_store, "upload_bytes", lambda *a, **kw: None)
+
+        async def fake_publish(client, **kw):
+            pass
+
+        monkeypatch.setattr(ingest_queue, "publish_ingest_request", fake_publish)
+        monkeypatch.setattr(ingest_queue, "get_client", lambda: FakeRedis())
+
+        files = [
+            _upload_file("report.pdf", b"a", "application/pdf"),
+            _upload_file(
+                "notes.docx",
+                b"b",
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            ),
+        ]
+
+        result = await ingest_router.ingest_upload(files=files, topic=None, ctx=TEST_CTX)
+
+        assert [r.filename for r in result] == ["report.pdf", "notes.docx"]
+        assert result[0].job_id != result[1].job_id
+
+    async def test_an_unsupported_extension_is_reported_per_file_not_raised(self, monkeypatch):
+        """Changed behavior: a bad extension is now a per-file error entry,
+        not a whole-request 400 — see ingest_upload's own docstring on why
+        one file's problem must not discard another file's already-queued
+        job in the SAME request."""
+        uploaded = []
+        monkeypatch.setattr(minio_object_store, "upload_bytes", lambda *a, **kw: uploaded.append(a))
+
+        files = [_upload_file("spreadsheet.xlsx", b"data", "application/vnd.ms-excel")]
+
+        result = await ingest_router.ingest_upload(files=files, topic=None, ctx=TEST_CTX)
+
+        assert uploaded == []  # never reached MinIO
+        assert len(result) == 1
+        assert result[0].filename == "spreadsheet.xlsx"
+        assert result[0].job_id is None
+        assert "xlsx" in result[0].error
+
+    async def test_a_bad_file_alongside_a_good_one_still_queues_the_good_one(self, monkeypatch):
+        uploaded = []
+        monkeypatch.setattr(minio_object_store, "upload_bytes", lambda key, *a, **kw: uploaded.append(key))
+
+        async def fake_publish(client, **kw):
+            pass
+
+        monkeypatch.setattr(ingest_queue, "publish_ingest_request", fake_publish)
+        monkeypatch.setattr(ingest_queue, "get_client", lambda: FakeRedis())
+
+        files = [
+            _upload_file("spreadsheet.xlsx", b"data", "application/vnd.ms-excel"),
+            _upload_file("report.pdf", b"pdf-bytes", "application/pdf"),
+        ]
+
+        result = await ingest_router.ingest_upload(files=files, topic=None, ctx=TEST_CTX)
+
+        assert len(uploaded) == 1  # only the good file ever reached MinIO
+        assert [r.filename for r in result] == ["spreadsheet.xlsx", "report.pdf"]
+        assert result[0].job_id is None and result[0].error
+        assert result[1].job_id is not None and result[1].error is None
+
+    async def test_a_publish_failure_deletes_the_already_uploaded_object_and_reports_the_file_failed(
+        self, monkeypatch
+    ):
+        """The gap this closes: without cleanup, a file that reached MinIO
+        but never got a job published is an orphaned blob nothing will
+        ever ingest or remove."""
+        deleted = []
+        monkeypatch.setattr(minio_object_store, "upload_bytes", lambda *a, **kw: None)
+        monkeypatch.setattr(minio_object_store, "delete_object", lambda key: deleted.append(key))
+
+        async def failing_publish(client, **kw):
+            raise ConnectionError("redis unreachable")
+
+        monkeypatch.setattr(ingest_queue, "publish_ingest_request", failing_publish)
+        monkeypatch.setattr(ingest_queue, "get_client", lambda: FakeRedis())
+
+        before = _count(metrics.agent_upload_failed_total, reason="storage_error")
+
+        files = [_upload_file("report.pdf", b"pdf-bytes", "application/pdf")]
+        result = await ingest_router.ingest_upload(files=files, topic=None, ctx=TEST_CTX)
+
+        assert len(deleted) == 1
+        assert deleted[0].endswith("-report.pdf")
+        assert len(result) == 1
+        assert result[0].job_id is None
+        assert result[0].error
+        assert _count(metrics.agent_upload_failed_total, reason="storage_error") == before + 1
+
+    async def test_a_path_component_in_the_filename_is_stripped(self, monkeypatch):
+        """A client-supplied filename is untrusted input — the object key
+        it feeds into must never carry a caller-controlled directory
+        component, even though S3-style object keys aren't literal
+        filesystem paths (no real traversal risk), just for a sane,
+        predictable key shape."""
+        uploaded = []
+        monkeypatch.setattr(minio_object_store, "upload_bytes", lambda key, *a, **kw: uploaded.append(key))
+
+        async def fake_publish(client, **kw):
+            pass
+
+        monkeypatch.setattr(ingest_queue, "publish_ingest_request", fake_publish)
+        monkeypatch.setattr(ingest_queue, "get_client", lambda: FakeRedis())
+
+        files = [_upload_file("../../etc/passwd.pdf", b"x", "application/pdf")]
+        await ingest_router.ingest_upload(files=files, topic=None, ctx=TEST_CTX)
+
+        assert "../" not in uploaded[0]
+        assert uploaded[0].endswith("-passwd.pdf")
+
+    async def test_too_many_files_in_one_request_is_rejected_before_any_upload(self, monkeypatch):
+        """MAX_UPLOAD_FILES_PER_REQUEST (app/core/config.py) — a per-request
+        batch-size guard, distinct from app/adapters/inbound/workers/ingest_worker.py's own
+        concurrency setting (see WORKER_CONCURRENCY.md): this caps how many
+        jobs ONE submission may create, checked before any file in the
+        batch is touched, so a 6th file never reaches MinIO just because
+        the first 5 would have been fine."""
+        monkeypatch.setattr(ingest_router, "MAX_UPLOAD_FILES_PER_REQUEST", 2)
+        uploaded = []
+        monkeypatch.setattr(minio_object_store, "upload_bytes", lambda *a, **kw: uploaded.append(a))
+
+        files = [
+            _upload_file("a.pdf", b"x", "application/pdf"),
+            _upload_file("b.pdf", b"x", "application/pdf"),
+            _upload_file("c.pdf", b"x", "application/pdf"),
+        ]
+
+        with pytest.raises(HTTPException) as exc_info:
+            await ingest_router.ingest_upload(files=files, topic=None, ctx=TEST_CTX)
+
+        assert exc_info.value.status_code == 400
+        assert uploaded == []  # never reached MinIO, not even the first two
+
+    async def test_a_file_over_the_size_cap_is_reported_per_file_not_raised(self, monkeypatch):
+        """_read_bounded (app/adapters/inbound/api/routers/ingest.py) checks the running total WHILE reading, not after — this
+        only has to prove the outcome (never reaches MinIO, reported as this file's own error), not the
+        memory-bounding mechanism itself.
+        """
+        monkeypatch.setattr(ingest_router, "_MAX_UPLOAD_BYTES", 10)  # tiny, so the test payload need not be huge
+        monkeypatch.setattr(ingest_router, "_UPLOAD_READ_CHUNK_BYTES", 4)
+        uploaded = []
+        monkeypatch.setattr(minio_object_store, "upload_bytes", lambda *a, **kw: uploaded.append(a))
+
+        files = [_upload_file("report.pdf", b"x" * 100, "application/pdf")]
+
+        result = await ingest_router.ingest_upload(files=files, topic=None, ctx=TEST_CTX)
+
+        assert uploaded == []  # never reached MinIO
+        assert len(result) == 1
+        assert result[0].job_id is None
+        assert result[0].error
+
+    async def test_a_file_within_the_size_cap_still_uploads(self, monkeypatch):
+        monkeypatch.setattr(ingest_router, "_MAX_UPLOAD_BYTES", 1000)
+        uploaded = []
+        monkeypatch.setattr(
+            minio_object_store, "upload_bytes", lambda key, data, ct: uploaded.append(data)
+        )
+
+        async def fake_publish(client, **kw):
+            pass
+
+        monkeypatch.setattr(ingest_queue, "publish_ingest_request", fake_publish)
+        monkeypatch.setattr(ingest_queue, "get_client", lambda: FakeRedis())
+
+        files = [_upload_file("report.pdf", b"x" * 100, "application/pdf")]
+        await ingest_router.ingest_upload(files=files, topic=None, ctx=TEST_CTX)
+
+        assert uploaded == [b"x" * 100]
+
+
+class TestIngestStream:
+    async def test_streams_back_whatever_a_worker_publishes(self, monkeypatch):
+        client = FakeRedis()
+        monkeypatch.setattr(ingest_queue, "get_client", lambda: client)
+
+        async def _run():
+            response = await ingest_router.ingest_stream("j1")
+            await ingest_streams.publish_result(client, "j1", {"type": "started"})
+            await ingest_streams.publish_result(client, "j1", {"type": "done", "chunks": 4})
+            return [chunk async for chunk in response.body_iterator]
+
+        chunks = await _run()
+        assert any('"type": "started"' in c for c in chunks)
+        assert any('"type": "done"' in c and '"chunks": 4' in c for c in chunks)
+
+    async def test_deletes_the_results_stream_once_terminal(self, monkeypatch):
+        client = FakeRedis()
+        monkeypatch.setattr(ingest_queue, "get_client", lambda: client)
+
+        async def _run():
+            response = await ingest_router.ingest_stream("j2")
+            await ingest_streams.publish_result(client, "j2", {"type": "error", "content": "bad file"})
+            async for _ in response.body_iterator:
+                pass
+
+        await _run()
+        assert jobs.ingest_results_stream_key("j2") in client.deleted

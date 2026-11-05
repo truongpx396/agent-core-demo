@@ -42,7 +42,7 @@ from app.agent.graph.state import (
 )
 from app.core import metrics, moderation
 from app.core.security import valid_ctx
-from app.ports.llm import llm_failures
+from app.ports.outbound.llm import llm_failures
 
 if TYPE_CHECKING:
     pass

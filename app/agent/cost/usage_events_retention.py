@@ -26,7 +26,7 @@ import logging
 from dataclasses import dataclass
 
 from app.core.config import USAGE_EVENT_MIN_RETENTION_DAYS
-from app.ports import cost as ports
+from app.ports.outbound import cost as ports
 
 logger = logging.getLogger(__name__)
 

@@ -78,7 +78,7 @@ class TestTenantIsolationPolicyPermit:
 
 class TestTenantIsolationPolicyLower:
     """`lower` gives a store-neutral `AccessScope`; that the Qdrant adapter turns it into the right pre-filter is
-    tests/retrieval/test_qdrant_store.py::TestScopeFilter."""
+    tests/adapters/outbound/qdrant/test_qdrant_store.py::TestScopeFilter."""
 
     def test_documents_target_scopes_to_tenant_and_kind_document(self):
         scope = TenantIsolationPolicy().lower(FULL_CTX, "documents")

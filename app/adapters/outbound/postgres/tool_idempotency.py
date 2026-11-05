@@ -1,4 +1,4 @@
-"""The `ToolCallLedger` adapter (`app/ports/idempotency.py`) over the appdata Postgres: `tool_call_dedup`
+"""The `ToolCallLedger` adapter (`app/ports/outbound/idempotency.py`) over the appdata Postgres: `tool_call_dedup`
 (postgres-init/13-tool-call-dedup.sql), keyed by `tool_call_id` alone. The provider assigns a fresh id per tool call, so two invocations sharing
 one are, by construction, the SAME invocation attempted again.
 

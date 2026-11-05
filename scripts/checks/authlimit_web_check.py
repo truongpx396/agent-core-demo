@@ -1,7 +1,7 @@
 """Can a person sign in to the built-in web page and chat, in a real browser, through the front door? `make
 authlimit-web-check` (specs/018, T062/T068).
 
-`tests/api/test_web_ui_auth.py` runs the sign-in script against a DOM stub; this runs the real page in
+`tests/adapters/inbound/api/test_web_ui_auth.py` runs the sign-in script against a DOM stub; this runs the real page in
 Chromium (Playwright) against the real stack: the real Casdoor login form, the code exchange across origins
 (CORS), the front door, the API in identity mode and a worker. For each of two tenants it creates a throwaway
 user and then:

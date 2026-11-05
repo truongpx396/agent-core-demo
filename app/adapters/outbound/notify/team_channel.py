@@ -1,4 +1,4 @@
-"""The `TeamChannel` adapter (`app/ports/notify.py`): team-channel notifications shared by every example domain (ops's
+"""The `TeamChannel` adapter (`app/ports/outbound/notify.py`): team-channel notifications shared by every example domain (ops's
 `post_to_team_channel` tool, support/sales's escalation/handoff side
 effects) — one implementation instead of three copies.
 

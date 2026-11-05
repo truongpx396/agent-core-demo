@@ -11,13 +11,13 @@ The rings, inside out:
 - ports       `app/ports/**`. Protocols and plain data. Imports the standard library, `pydantic`, the kernel and other ports.
 - kernel      `app/core/*.py` except the platform modules below. Security context, errors, scrubbing, the tool wrapper, metrics, settings.
               Imports no infrastructure client and nothing outside the kernel and the ports.
-- application `app/agent/**` and `app/domains/**` except the adapter files below (a domain's `store.py`, and the registry that names every domain). The graph, the runtime, the cost policy, the tools.
+- application `app/agent/**`, `app/domains/**` and `app/ingestion/**` except the adapter files below (a domain's `store.py`, and the registry that names every domain). The graph, the runtime, the cost policy, the tools, the ingest pipeline.
               Imports no infrastructure client, no adapter and no inbound adapter; `app/agent` never imports `app/domains` (a domain plugs
               into the agent, not the other way round).
-- adapters    everything else: `app/adapters/**`, `app/ingestion` (the ingest pipeline), the platform modules in `app/core`, and the per-domain
+- adapters    everything else: `app/adapters/**`, the platform modules in `app/core`, and the per-domain
               `store.py` (the domain's repository, by the `store.py` + `tools.py` + `domain.py` convention). They may import anything inside
-              them. `app/adapters/` has two sides: `inbound/` DRIVES the application (API, channels, MCP servers, workers) and is a leaf;
-              `outbound/` is DRIVEN by it (one package per technology, each implementing a port) and never imports `inbound/`.
+              them. `app/adapters/` has two sides: `inbound/` DRIVES the application (API, channels, MCP servers, workers), is a leaf and imports
+              nothing from `outbound/`; `outbound/` is DRIVEN by it (one package per technology, each implementing a port) and imports nothing from `inbound/`.
 
 Accepted in the application ring, on purpose: LangGraph and LangChain core (the agent IS a LangGraph graph; `ARCHITECTURE.md` says why that
 is a framework choice and not a leak), and the observability libraries (OpenTelemetry, Langfuse, structlog), which are cross-cutting.
@@ -44,13 +44,13 @@ INFRASTRUCTURE = frozenset({
 
 # Modules that live in `app/core` but are adapters or process plumbing, not kernel.
 PLATFORM_CORE = frozenset({
-    "sql_store", "internal_identity", "telemetry", "logging_config", "job_runtime", "profiling",
+    "sql_store", "redis_client", "internal_identity", "telemetry", "logging_config", "job_runtime", "profiling",
 })
 
 # Application-ring files that are adapters by convention.
 ADAPTER_FILE_GLOBS = ("app/domains/*/store.py", "app/domains/ops/metrics_client.py", "app/domains/registry.py")
 
-OUTER_PACKAGES = ("app.adapters", "app.ingestion", "app.bootstrap")
+OUTER_PACKAGES = ("app.adapters", "app.bootstrap")
 
 # The one adapter-ring module the application may import: billing's port facade (specs/011), whose boundary has two tests of its own.
 ALLOWED_OUTER = frozenset({"app.billing_integration.port"})
@@ -69,7 +69,7 @@ def ring_of(rel: str) -> str:
     if rel.startswith("app/core/"):
         stem = Path(rel).stem
         return "adapter" if stem in PLATFORM_CORE else "kernel"
-    if rel.startswith(("app/agent/", "app/domains/")):
+    if rel.startswith(("app/agent/", "app/domains/", "app/ingestion/")):
         return "application"
     return "adapter"
 
@@ -188,26 +188,6 @@ def test_a_driving_adapter_is_a_leaf_nothing_else_in_the_app_imports_it(package)
 INBOUND = "app/adapters/inbound/"
 OUTBOUND = "app/adapters/outbound/"
 
-# Where the driving side reaches a driven adapter directly, because no port stands between them yet: the Streams queue the API and the Telegram channel
-# publish to and the workers consume, the object store an upload goes to, the MCP connection a process closes at shutdown, and the probes behind /health.
-# Each is a port not written (ARCHITECTURE.md, "Not done"). The test fails on a crossing that is NOT listed and on a listed one that is gone, so it only shrinks.
-INBOUND_REACHES_OUTBOUND: frozenset[tuple[str, str]] = frozenset({
-    ("app/adapters/inbound/api/health.py", "app.adapters.outbound.qdrant.qdrant_store"),
-    ("app/adapters/inbound/api/health.py", "app.adapters.outbound.redis.queue"),
-    ("app/adapters/inbound/api/main.py", "app.adapters.outbound.mcp.connection"),
-    ("app/adapters/inbound/api/routers/chat.py", "app.adapters.outbound.redis.queue"),
-    ("app/adapters/inbound/api/routers/ingest.py", "app.adapters.outbound.minio.object_store"),
-    ("app/adapters/inbound/api/routers/ingest.py", "app.adapters.outbound.redis.ingest_queue"),
-    ("app/adapters/inbound/api/routers/ingest.py", "app.adapters.outbound.redis.queue"),
-    ("app/adapters/inbound/channels/telegram.py", "app.adapters.outbound.redis.queue"),
-    ("app/adapters/inbound/workers/agent_worker.py", "app.adapters.outbound.mcp.connection"),
-    ("app/adapters/inbound/workers/agent_worker.py", "app.adapters.outbound.redis.queue"),
-    ("app/adapters/inbound/workers/ingest_worker.py", "app.adapters.outbound.minio.object_store"),
-    ("app/adapters/inbound/workers/ingest_worker.py", "app.adapters.outbound.redis.ingest_queue"),
-    ("app/adapters/inbound/workers/ingest_worker.py", "app.adapters.outbound.redis.queue"),
-})
-
-
 def driven_modules_reached(source: str) -> set[str]:
     """The `app.adapters.outbound.<technology>.<module>` modules `source` imports, however the import is spelled."""
     return {
@@ -227,12 +207,14 @@ def test_the_driven_side_never_imports_the_driving_side():
     assert offenders == [], "an outbound adapter is called by the application and knows nothing about who drives it"
 
 
-def test_the_driving_side_reaches_a_driven_adapter_only_where_listed():
+def test_the_driving_side_never_imports_the_driven_side():
     files = _files_under(INBOUND)
     assert len(files) > 30, "a floor against a vacuous pass: the inbound adapters moved"
-    now = {(rel, module) for rel, src in files.items() for module in driven_modules_reached(src)}
-    assert sorted(now - INBOUND_REACHES_OUTBOUND) == [], "an inbound adapter reaches a driven adapter directly: go through a port in app/ports/"
-    assert sorted(INBOUND_REACHES_OUTBOUND - now) == [], "these crossings are gone: delete them from INBOUND_REACHES_OUTBOUND so the ratchet tightens"
+    crossings = sorted((rel, module) for rel, src in files.items() for module in driven_modules_reached(src))
+    assert crossings == [], (
+        "an inbound adapter imports an outbound one: go through a port in app/ports/outbound/ (the application's side), or, for a consumer's own "
+        "broker technology, keep it in the inbound adapter (app/adapters/inbound/workers/streams.py); a connection factory shared by both sides is a platform module in app/core"
+    )
 
 
 def test_the_driven_scanner_sees_every_spelling_of_an_import():
@@ -242,7 +224,7 @@ def test_the_driven_scanner_sees_every_spelling_of_an_import():
         "import app.adapters.outbound.redis.queue as q\n",
     ):
         assert driven_modules_reached(source) == {"app.adapters.outbound.redis.queue"}, source
-    assert driven_modules_reached("from app.adapters.outbound import postgres\nfrom app.ports import cost\n") == set()
+    assert driven_modules_reached("from app.adapters.outbound import postgres\nfrom app.ports.outbound import cost\n") == set()
 
 
 def test_only_process_entrypoints_import_the_composition_root():
@@ -314,20 +296,23 @@ def test_the_framework_scanner_can_fail():
         ("app/agent/graph/x.py", "from app.adapters.outbound.redis import semantic_cache", {"app.adapters"}),
         ("app/domains/support/tools.py", "from app.domains.support import store", {"app.domains.support.store"}),
         ("app/domains/support/tools.py", "from app.adapters.outbound.crawl4ai.web_crawler import render_url_to_markdown", {"app.adapters"}),
+        ("app/ingestion/ingestor.py", "import httpx", {"httpx"}),
+        ("app/ingestion/ingestor.py", "from app.adapters.outbound.qdrant import qdrant_store", {"app.adapters"}),
+        ("app/ingestion/ingestor.py", "from app.ports.outbound.retrieval import embedder", set()),
         ("app/agent/runtime/x.py", "from app.domains.registry import resolve_domain", {"app.domains"}),
         # application: what is allowed
-        ("app/agent/cost/x.py", "from app.ports.cost import UsageEventStore", set()),
+        ("app/agent/cost/x.py", "from app.ports.outbound.cost import UsageEventStore", set()),
         ("app/agent/cost/x.py", "from app.billing_integration import port as billing_port", set()),
         ("app/agent/graph/x.py", "from langgraph.graph import StateGraph\nfrom langchain_core.messages import AIMessage", set()),
         ("app/agent/graph/x.py", "from app.core import metrics\nfrom app.core.security import SecurityCtx", set()),
-        ("app/domains/support/tools.py", "from app.ports.domains import AgentManifest", set()),
+        ("app/domains/support/tools.py", "from app.ports.outbound.domains import AgentManifest", set()),
         # kernel and ports: inward only
         ("app/core/security.py", "from qdrant_client.models import Filter", {"qdrant_client"}),
         ("app/core/tool_idempotency.py", "from app.core.sql_store import get_connection", {"app.core.sql_store"}),
         ("app/core/errors.py", "from app.agent.graph import state", {"app.agent"}),
-        ("app/ports/cost.py", "from app.core.security import SecurityCtx", set()),
-        ("app/ports/cost.py", "import psycopg", {"psycopg"}),
-        ("app/ports/cost.py", "from app.adapters.outbound.qdrant import qdrant_store", {"app.adapters"}),
+        ("app/ports/outbound/cost.py", "from app.core.security import SecurityCtx", set()),
+        ("app/ports/outbound/cost.py", "import psycopg", {"psycopg"}),
+        ("app/ports/outbound/cost.py", "from app.adapters.outbound.qdrant import qdrant_store", {"app.adapters"}),
         # adapters may import anything
         ("app/adapters/outbound/postgres/x.py", "import psycopg\nfrom app.agent.cost import budgets", set()),
         ("app/domains/support/store.py", "from app.core.sql_store import get_connection", set()),

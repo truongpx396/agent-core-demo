@@ -5,8 +5,8 @@ doc — one ingest pipeline, one place it can drift.
 
 Every item is chunked (`app/ingestion/chunking.py`'s parent-child, sliding-
 window strategy) and embedded the way `hybrid_search` expects (dense+sparse,
-via `app/adapters/outbound/embeddings/embeddings.py`, through `qdrant_store.build_point` — same
-shape `add_note`/`remember` use), so ingested content shares the same
+through the `Embedder` and `DocumentWriter` ports — the same
+shape `add_note`/`remember` store), so ingested content shares the same
 retrieval path as everything else.
 
 Every item is stamped with `tenant`/`principal` from a `SecurityCtx` and
@@ -21,25 +21,23 @@ import uuid
 from collections.abc import Awaitable, Callable, Sequence
 from pathlib import Path
 
-import httpx
-
-from app.adapters.outbound.embeddings.embeddings import (
-    EMBED_BATCH_SIZE,
-    embed_documents,
-    embed_sparse_batch,
-)
-from app.adapters.outbound.qdrant import qdrant_store
 from app.core import metrics
 from app.core.security import SecurityCtx, valid_ctx
 from app.core.url_safety import UnsafeURLError
 from app.core.url_safety import assert_safe_url_async as _assert_safe_url_impl
 from app.ingestion.chunking import chunk_text
+from app.ports.outbound.retrieval import (
+    EMBED_BATCH_SIZE,
+    DocumentPoint,
+    document_writer,
+    embedder,
+)
+from app.ports.outbound.web import PageFetchFailed, page_fetcher
 
 logger = logging.getLogger(__name__)
 
 _ALLOWED_FILE_SUFFIXES = {".txt", ".md"}
 _MAX_URL_BYTES = 2_000_000  # 2 MB — bounded fetch size, part of the SSRF/DoS guard
-_URL_TIMEOUT_SECONDS = 10
 
 # Fixed, arbitrary namespace for uuid5's content-addressed point ids below —
 # any constant works (uuid5 only needs SOME namespace to combine with the
@@ -52,7 +50,7 @@ def _content_point_id(tenant: str, source: str, index: int, text: str) -> str:
     """A point id derived entirely from WHAT is being written, not a random
     draw — re-ingesting byte-identical content (a retried/reclaimed job, or
     a client's double-submitted upload) always recomputes the exact same
-    id at the exact same position, so `qdrant_store.upsert`'s upsert-by-id
+    id at the exact same position, so `DocumentWriter.upsert`'s upsert-by-id
     semantics silently overwrite the earlier write instead of duplicating
     it. `index` (this chunk's position in the document) is included
     alongside a hash of `text` itself: position alone would already be
@@ -95,7 +93,7 @@ async def _sparse_vectors_or_none(
     invariant (mypy can't treat `list[X]` as `list[X | None]`), `Sequence`
     is covariant; the one caller only reads this by index."""
     try:
-        return await asyncio.to_thread(embed_sparse_batch, texts)
+        return await asyncio.to_thread(embedder.get().embed_sparse_batch, texts)
     except Exception as exc:  # noqa: BLE001
         logger.warning(
             "sparse embedding unavailable for this ingest; writing dense-only",
@@ -123,7 +121,7 @@ async def ingest_text(
 
     `on_progress(chunks_embedded, chunks_total)`, if given, is awaited after each dense batch (the upload UI's
     progress bar, via `ingest_worker.py`) and never called for 0 chunks. It is a plain `async def`, awaited
-    directly, since this function and `embed_documents`/`qdrant_store.upsert` all run on the caller's event
+    directly, since this function and `Embedder`/`DocumentWriter` all run on the caller's event
     loop.
 
     Safe to call twice with byte-identical `text`/`source`/`ctx`: every point id is derived from that content
@@ -145,7 +143,7 @@ async def ingest_text(
 
     dense_vectors: list[list[float]] = []
     for start in range(0, total, EMBED_BATCH_SIZE):
-        dense_vectors.extend(await embed_documents(child_texts[start : start + EMBED_BATCH_SIZE]))
+        dense_vectors.extend(await embedder.get().embed_documents(child_texts[start : start + EMBED_BATCH_SIZE]))
         if on_progress is not None:
             await on_progress(len(dense_vectors), total)
 
@@ -166,7 +164,7 @@ async def ingest_text(
             if topic:
                 payload["topic"] = topic
             points.append(
-                qdrant_store.build_point(
+                DocumentPoint(
                     point_id=_content_point_id(ctx["tenant"], source, i, child_text),
                     dense_vector=dense_vectors[i],
                     payload=payload,
@@ -175,7 +173,7 @@ async def ingest_text(
             )
             i += 1
 
-    await qdrant_store.upsert(points)
+    await document_writer.get().upsert(points)
     metrics.agent_ingest_total.labels(source=source.split(":")[0]).inc()
     return len(points)
 
@@ -243,27 +241,23 @@ async def ingest_url(url: str, ctx: SecurityCtx | None, topic: str | None = None
     the exact SSRF surface the guard exists to close."""
     await _assert_safe_url(url)
     try:
-        async with httpx.AsyncClient(follow_redirects=False, timeout=_URL_TIMEOUT_SECONDS) as client:
-            response = await client.get(
-                url, headers={"User-Agent": "agent-core-demo-ingestor/1.0"}
-            )
-    except httpx.HTTPError as exc:
+        page = await page_fetcher.get().fetch(url, max_bytes=_MAX_URL_BYTES)
+    except PageFetchFailed as exc:
         metrics.agent_ingest_refused_total.labels(reason="fetch_failed").inc()
         raise IngestRefused(f"fetch failed: {exc}") from exc
 
-    if response.status_code >= 400:
+    if page.status_code >= 400:
         metrics.agent_ingest_refused_total.labels(reason="fetch_failed").inc()
-        raise IngestRefused(f"fetch failed with status {response.status_code}")
-    if len(response.content) > _MAX_URL_BYTES:
+        raise IngestRefused(f"fetch failed with status {page.status_code}")
+    if page.size > _MAX_URL_BYTES:
         metrics.agent_ingest_refused_total.labels(reason="too_large").inc()
         raise IngestRefused(f"response exceeds the {_MAX_URL_BYTES}-byte fetch limit")
 
-    content_type = response.headers.get("content-type", "")
-    if "html" in content_type:
+    if "html" in page.content_type:
         extractor = _TextExtractor()
-        extractor.feed(response.text)
+        extractor.feed(page.text)
         text = extractor.text()
     else:
-        text = response.text
+        text = page.text
 
     return await ingest_text(text, title=url, ctx=ctx, source=f"url:{url}", topic=topic)

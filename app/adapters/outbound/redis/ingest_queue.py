@@ -1,19 +1,10 @@
-"""Redis Streams queue for the production ingestion pipeline — a SEPARATE
-stream/consumer group from `app/adapters/outbound/redis/queue.py`'s chat-turn queue
-(`agent:requests`). Deliberate: chat turns are short/latency-sensitive,
-while an ingest job (parsing a large PDF) can run for many seconds, and a
-shared consumer group round-robins without job-type priority, so a burst
-of ingest jobs would delay chat turns — same "independently scalable"
-split `app/adapters/outbound/redis/queue.py` already applies between the SSE and
-agent-executing tiers.
+"""The `IngestQueue` adapter (`app/ports/outbound/jobs.py`): Redis Streams for the ingestion pipeline, a SEPARATE stream and consumer group from the chat-turn queue
+(`queue.py`). Deliberate: chat turns are short and latency-sensitive, an ingest job (parsing a large PDF) can run for many seconds, and a shared consumer group
+round-robins without priority, so a burst of ingest jobs would delay chat turns. Same Redis server and client as `queue.py` (`app/core/redis_client.py`); only the
+stream and group names and the payloads are separate.
 
-Reuses `app/adapters/outbound/redis/queue.py`'s `get_client()` (same Redis server/settings)
-rather than a second connection pool — only the stream/group names and
-payload shapes here are actually separate.
-
-Producer: `app/adapters/inbound/api/routers/ingest.py` (`POST /ingest/upload`). Consumer:
-`app/adapters/inbound/workers/ingest_worker.py`, the only place that downloads from MinIO
-and runs extraction/ingestion.
+This module is the PRODUCER half: enqueue a job and read its events back, for `app/adapters/inbound/api/routers/ingest.py` (`POST /ingest/upload`). The consumer is
+`app/adapters/inbound/workers/ingest_worker.py` (with `ingest_streams.py`), the only place that downloads from the object store and runs extraction.
 """
 import json
 import logging
@@ -22,32 +13,12 @@ from typing import cast
 
 import redis.asyncio as redis
 
-from app.adapters.outbound.redis.queue import (
-    StreamReadResponse,
-    get_client,  # noqa: F401 - re-exported for callers that only need one import
-)
 from app.core import metrics
+from app.core.redis_client import StreamReadResponse, get_client
 from app.core.security import SecurityCtx
+from app.ports.outbound.jobs import INGEST_REQUESTS_STREAM, ingest_results_stream_key
 
 logger = logging.getLogger(__name__)
-
-INGEST_REQUESTS_STREAM = "ingest:requests"
-INGEST_CONSUMER_GROUP = "ingest-workers"
-RESULTS_STREAM_TTL_SECONDS = 300  # same TTL reasoning as app/adapters/outbound/redis/queue.py's chat-results streams
-
-
-def results_stream_key(job_id: str) -> str:
-    return f"ingest:results:{job_id}"
-
-
-async def ensure_consumer_group(client: redis.Redis) -> None:
-    """Idempotent — same shape as app/adapters/outbound/redis/queue.py::ensure_consumer_group,
-    against this module's own stream/group instead."""
-    try:
-        await client.xgroup_create(INGEST_REQUESTS_STREAM, INGEST_CONSUMER_GROUP, id="0", mkstream=True)
-    except redis.ResponseError as exc:
-        if "BUSYGROUP" not in str(exc):
-            raise
 
 
 async def publish_ingest_request(
@@ -77,16 +48,6 @@ async def publish_ingest_request(
     await client.xadd(INGEST_REQUESTS_STREAM, {"payload": payload})
 
 
-async def publish_result(client: redis.Redis, job_id: str, event: dict) -> None:
-    """Consumer side: append one typed event (see
-    app/adapters/inbound/workers/ingest_worker.py::process_job for the shapes — started, done,
-    error) to this job's results stream, refreshing its TTL on every
-    write so a slow extraction doesn't let the stream expire mid-job."""
-    key = results_stream_key(job_id)
-    await client.xadd(key, {"payload": json.dumps(event)})
-    await client.expire(key, RESULTS_STREAM_TTL_SECONDS)
-
-
 async def read_results(
     client: redis.Redis,
     job_id: str,
@@ -103,7 +64,7 @@ async def read_results(
     job's own real duration — an ingest job's `started` event arrives
     almost immediately after pickup, well before extraction/embedding,
     which can legitimately run for minutes on a large file."""
-    key = results_stream_key(job_id)
+    key = ingest_results_stream_key(job_id)
     last_id = "0"
     deadline = (
         time.monotonic() + first_event_deadline_seconds
@@ -140,6 +101,24 @@ async def delete_results_stream(client: redis.Redis, job_id: str) -> None:
     why this isn't required for correctness, only for not waiting out the
     full TTL on the common path."""
     try:
-        await client.delete(results_stream_key(job_id))
+        await client.delete(ingest_results_stream_key(job_id))
     except Exception as exc:  # noqa: BLE001 - cleanup is optional, never worth failing a job over
         logger.warning("ingest_queue_results_cleanup_failed", extra={"error_class": type(exc).__name__})
+
+
+class RedisIngestQueue:
+    """The `IngestQueue` adapter. The module's functions are looked up at call time, which is how their tests patch `get_client`."""
+
+    async def publish_ingest_request(
+        self, *, job_id: str, object_key: str, filename: str, content_type: str, ctx: SecurityCtx, topic: str | None = None
+    ) -> None:
+        await publish_ingest_request(
+            get_client(), job_id=job_id, object_key=object_key, filename=filename, content_type=content_type, ctx=ctx, topic=topic
+        )
+
+    async def read_results(self, job_id: str, *, first_event_deadline_seconds: float | None = None):
+        async for event in read_results(get_client(), job_id, first_event_deadline_seconds=first_event_deadline_seconds):
+            yield event
+
+    async def delete_results_stream(self, job_id: str) -> None:
+        await delete_results_stream(get_client(), job_id)

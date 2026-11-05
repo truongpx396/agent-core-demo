@@ -31,6 +31,7 @@ from app.core.config import (
     OPENAI_API_KEY,
     SPARSE_MODEL,
 )
+from app.ports.outbound.retrieval import EMBED_BATCH_SIZE, SparseVector
 
 embeddings = OpenAIEmbeddings(
     model=EMBED_MODEL,
@@ -42,7 +43,7 @@ embeddings = OpenAIEmbeddings(
 # Embedding a QUESTION and embedding a stored PASSAGE are two different operations (specs/014 FR-015). Models trained with task
 # prefixes (nomic-embed-text: `search_query:` / `search_document:`) place the two in different regions on purpose, so one function
 # serving both roles, which is what this module used to do (`embed_text`), cannot be made right by any prefix. The old names are
-# DELETED rather than deprecated: a caller that still uses one is an ImportError, and tests/retrieval/test_embedding_roles.py fails if
+# DELETED rather than deprecated: a caller that still uses one is an ImportError, and tests/adapters/outbound/embeddings/test_embedding_roles.py fails if
 # any module under app/ or scripts/ calls the underlying client around these functions.
 #
 # Both prefixes default to empty (settings: EMBED_QUERY_PREFIX / EMBED_DOCUMENT_PREFIX), so the text sent is byte-identical to before
@@ -59,17 +60,6 @@ async def embed_document(text: str) -> list[float]:
     return (await embeddings.aembed_documents([EMBED_DOCUMENT_PREFIX + text], chunk_size=EMBED_BATCH_SIZE))[0]
 
 
-# OpenAIEmbeddings.embed_documents sub-batches at `chunk_size` (1000/request
-# default) — tuned for real OpenAI infra, a proven bad fit for the local
-# Ollama backend: 1000 real chunks against `ollama_chat/nomic-embed-text`
-# broke the endpoint outright (OllamaException: tokenize EOF, litellm
-# retries exhausted), and 700 hung past a minute. Swept 100/200/300/500,
-# all succeeded (11-29ms/chunk, no clear win past ~200) — 200 is
-# comfortably below the last known-good size and clear of the 700+ hang
-# zone. Public: `app/ingestion/ingestor.py::ingest_text` reuses this value
-# to drive its own batching loop, one `embed_documents` call per batch, for a
-# natural per-batch progress checkpoint.
-EMBED_BATCH_SIZE = 200
 
 
 async def embed_documents(texts: list[str]) -> list[list[float]]:
@@ -161,3 +151,13 @@ async def rerank(query: str, candidates: list[str]) -> list[float]:
     for item in resp.json():
         scores[item["index"]] = item["score"]
     return scores
+
+
+class HybridEmbedder:
+    """The `Embedder` adapter (`app/ports/outbound/retrieval.py`): dense vectors through the gateway, sparse ones locally. The module's functions are looked up at call time."""
+
+    async def embed_documents(self, texts: list[str]) -> list[list[float]]:
+        return await embed_documents(texts)
+
+    def embed_sparse_batch(self, texts: list[str]) -> list[SparseVector]:
+        return embed_sparse_batch(texts)

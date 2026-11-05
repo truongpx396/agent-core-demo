@@ -1,4 +1,4 @@
-"""The `ChatModels` adapter (`app/ports/llm.py`): LangChain's `ChatOpenAI` pointed at the LiteLLM gateway's OpenAI-compatible endpoint.
+"""The `ChatModels` adapter (`app/ports/outbound/llm.py`): LangChain's `ChatOpenAI` pointed at the LiteLLM gateway's OpenAI-compatible endpoint.
 
 `temperature=0`, and `stream_usage=True`: `astream_events` (app/agent/runtime/stream.py's `astream_events_turn`) forces this model through its
 streaming code path even though the agent node calls `.invoke()`, and OpenAI-compatible streaming only includes token usage in the final chunk

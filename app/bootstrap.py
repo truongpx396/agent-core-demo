@@ -6,7 +6,7 @@ network, so it is cheap and safe to call twice. `verify_wired()` is the startup 
 binding stops the process at boot instead of failing the first request that happens to need it.
 
 Adding a port is three edits, and `tests/core/test_bootstrap.py` fails on the first one without the other two:
-1. the Protocol and its `Slot` in `app/ports/<capability>.py`;
+1. the Protocol and its `Slot` in `app/ports/outbound/<capability>.py`;
 2. the adapter in `app/adapters/<technology>/`;
 3. one entry in `adapters()` here.
 
@@ -15,10 +15,13 @@ A test that wants a different adapter for one port uses `Slot.overriding` (or bi
 import psycopg
 
 from app.adapters.outbound.crawl4ai.web_crawler import Crawl4aiPageRenderer
+from app.adapters.outbound.embeddings.embeddings import HybridEmbedder
 from app.adapters.outbound.litellm.chat_model import OpenAiChatModels
 from app.adapters.outbound.litellm.failures import OpenAiFailures
 from app.adapters.outbound.litellm.model_catalog import LiteLLMModelCatalog
+from app.adapters.outbound.mcp.connection import close_all_connections
 from app.adapters.outbound.mcp.sandbox_tools import OpenSandboxCatalog
+from app.adapters.outbound.minio.object_store import MinioObjectStore
 from app.adapters.outbound.mlservice.classification import MlServiceClassifier
 from app.adapters.outbound.mlservice.prompt_guard import MlServicePromptGuard
 from app.adapters.outbound.notify.team_channel import LocalAndSlackTeamChannel
@@ -28,8 +31,14 @@ from app.adapters.outbound.postgres.checkpointing import PgCheckpointing
 from app.adapters.outbound.postgres.sessions import PgSessionStore
 from app.adapters.outbound.postgres.tool_idempotency import PgToolCallLedger
 from app.adapters.outbound.postgres.usage_events import PgUsageEventStore
-from app.adapters.outbound.qdrant.qdrant_store import QdrantDocumentIndex
+from app.adapters.outbound.qdrant.qdrant_store import (
+    QdrantDocumentIndex,
+    QdrantDocumentWriter,
+)
+from app.adapters.outbound.redis.ingest_queue import RedisIngestQueue
+from app.adapters.outbound.redis.queue import RedisTurnQueue
 from app.adapters.outbound.redis.semantic_cache import RedisAnswerCache
+from app.adapters.outbound.web.page_fetch import HttpxPageFetcher
 from app.adapters.outbound.web.serper import SerperWebSearch
 from app.core.errors import register_store_error
 from app.domains.ecorp import store as ecorp_store
@@ -38,13 +47,14 @@ from app.domains.ops import store as ops_store
 from app.domains.registry import RegistryDomainCatalog
 from app.domains.sales import store as sales_store
 from app.domains.support import store as support_store
-from app.ports import (
+from app.ports.outbound import (
     checkpointing,
     classification,
     cost,
     domains,
     ecorp,
     idempotency,
+    jobs,
     llm,
     models,
     notify,
@@ -54,6 +64,7 @@ from app.ports import (
     sandbox,
     screening,
     sessions,
+    storage,
     support,
     web,
 )
@@ -73,6 +84,8 @@ def adapters() -> dict[Slot, object]:
         checkpointing.checkpointing: PgCheckpointing(),
         domains.domain_catalog: RegistryDomainCatalog(),
         retrieval.document_index: QdrantDocumentIndex(),
+        retrieval.document_writer: QdrantDocumentWriter(),
+        retrieval.embedder: HybridEmbedder(),
         retrieval.answer_cache: RedisAnswerCache(),
         llm.llm_failures: OpenAiFailures(),
         llm.chat_models: OpenAiChatModels(),
@@ -80,7 +93,11 @@ def adapters() -> dict[Slot, object]:
         screening.injection_scorer: MlServicePromptGuard(),
         web.web_search: SerperWebSearch(),
         web.page_renderer: Crawl4aiPageRenderer(),
+        web.page_fetcher: HttpxPageFetcher(),
         notify.team_channel: LocalAndSlackTeamChannel(),
+        storage.object_store: MinioObjectStore(),
+        jobs.turn_queue: RedisTurnQueue(),
+        jobs.ingest_queue: RedisIngestQueue(),
         sandbox.sandbox_catalog: OpenSandboxCatalog(),
         # A domain's `store.py` is its adapter: the MODULE is bound (its functions are looked up at call time, which is how the module's tests patch them).
         support.ticket_store: support_store,
@@ -105,3 +122,9 @@ def verify_wired() -> None:
     missing = unbound()
     if missing:
         raise PortNotBound("ports with no adapter: " + ", ".join(sorted(missing)) + " (add them to app/bootstrap.py::adapters)")
+
+
+async def close_adapters() -> None:
+    """Ends what the adapters hold open on the running loop: the MCP connections, each a child process (the sandbox bridge). Call it where a
+    process stops, on the loop that served the requests, before it closes the pools the application opened. A no-op if nothing was opened."""
+    await close_all_connections()

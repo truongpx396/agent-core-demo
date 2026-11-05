@@ -1,4 +1,4 @@
-"""The `Checkpointing` adapter (`app/ports/checkpointing.py`): LangGraph's `AsyncPostgresSaver` over a connection pool, in a dedicated
+"""The `Checkpointing` adapter (`app/ports/outbound/checkpointing.py`): LangGraph's `AsyncPostgresSaver` over a connection pool, in a dedicated
 checkpointer database.
 
 Postgres, not `build_graph()`'s default `MemorySaver` and not a SQLite file: it is safe under concurrent access from several processes

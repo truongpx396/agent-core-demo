@@ -3,7 +3,7 @@
 The hermetic suite binds fakes for the usage-event port and guards `get_connection` in every adapter (tests/conftest.py), so an integration
 test that wants the real path has to undo both. One helper does it, so a new adapter is added in one place."""
 from app.adapters.outbound.postgres import budget_holds, budget_policies, usage_events
-from app.ports import cost as cost_ports
+from app.ports.outbound import cost as cost_ports
 
 
 def use_real_postgres(monkeypatch, get_connection) -> None:

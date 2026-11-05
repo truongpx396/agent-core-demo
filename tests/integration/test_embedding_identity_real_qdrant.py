@@ -1,6 +1,6 @@
 """The embedding-identity guard, the alias swap and the re-embed against a REAL Qdrant and a REAL Redis (specs/014 T057).
 
-The hermetic tests (tests/retrieval/test_qdrant_identity.py, tests/scripts/test_reembed.py) use an in-memory fake that models Qdrant's alias
+The hermetic tests (tests/adapters/outbound/qdrant/test_qdrant_identity.py, tests/scripts/tools/test_reembed.py) use an in-memory fake that models Qdrant's alias
 rules. A fake can drift from the server it imitates, so the claims the design rests on are proved here, once, against the real thing:
 
   * an alias swap (delete + create in ONE request) never lets a concurrent search fail;
