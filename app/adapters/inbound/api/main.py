@@ -77,7 +77,7 @@ async def lifespan(app: FastAPI):
     # configure_logging() above: OTel's set_meter_provider is call-once, so
     # module level would make the first-importing test module under pytest
     # win that race instead. Lifespan never runs under this app's test suite
-    # (see tests/api/test_api.py), so this is safe here.
+    # (see tests/adapters/inbound/api/test_api.py), so this is safe here.
     configure_telemetry("agent-core-api")
     start_profiling("agent-core-api")
     # FIRST, before anything is opened: an API that cannot verify anyone must not come up, and a refusal here leaves no pool to close. Raises

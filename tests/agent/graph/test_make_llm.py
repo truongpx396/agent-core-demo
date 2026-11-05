@@ -1,5 +1,5 @@
 """`make_llm` (app/agent/graph/utils.py): the application decides WHAT to build (the configured alias, endpoint, key and the tool shape), the
-`ChatModels` port builds it. Against a recording fake here; what the real adapter builds is tests/adapters/litellm/test_chat_model.py."""
+`ChatModels` port builds it. Against a recording fake here; what the real adapter builds is tests/adapters/outbound/litellm/test_chat_model.py."""
 from langchain_core.tools import tool
 
 from app.agent.graph import utils

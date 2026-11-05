@@ -635,7 +635,7 @@ jobs:
       # `tests/deepeval` (2026-09-17) — a real, disclosed noise finding,
       # not a style preference: without a path argument, `-m deepeval`
       # still COLLECTS (imports) every file under `testpaths = ["tests"]`
-      # before filtering by marker, and `tests/api/test_api.py`/
+      # before filtering by marker, and `tests/adapters/inbound/api/test_api.py`/
       # `test_health.py`/`test_rate_limit.py`/`tests/agent/graph/test_multimodal.py`
       # import `app.adapters.inbound.api.main` at module level — which calls
       # `configure_logging()` UNCONDITIONALLY at import time (unlike

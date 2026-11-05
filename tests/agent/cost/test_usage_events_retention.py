@@ -1,7 +1,7 @@
 """`app/agent/cost/usage_events_retention.py`: the floor and the control flow of the usage-event retention sweep (specs/010 T030c3).
 
 Hermetic, against a fake `UsageEventStore`: that proves when the loop stops and what it adds up. What is SENT to the database (the delete
-permission, that no tenant narrows it) is the adapter's, tested in tests/adapters/postgres/test_usage_events.py; what the database DOES with
+permission, that no tenant narrows it) is the adapter's, tested in tests/adapters/outbound/postgres/test_usage_events.py; what the database DOES with
 the statements (the append-only trigger, the batch counts) is proven against a real Postgres in
 tests/integration/test_usage_events_retention_real_postgres.py. (The billing package's own events have their own sweep and tests, since specs/013.)"""
 import pytest

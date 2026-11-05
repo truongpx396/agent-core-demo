@@ -1,5 +1,5 @@
 """A real `opensandbox-mcp` round trip for app/adapters/outbound/mcp/sandbox_tools.py (GRAPH_PATTERNS.md pattern 50): the
-fake-free counterpart to tests/adapters/mcp/test_sandbox_tools.py, which (correctly, for a fast hermetic suite)
+fake-free counterpart to tests/adapters/outbound/mcp/test_sandbox_tools.py, which (correctly, for a fast hermetic suite)
 mocks `app.adapters.outbound.mcp.client.load_remote_tools`. What that can't catch: the packaged `opensandbox-mcp` CLI (`python
 -m opensandbox_mcp --use-server-proxy`, what this module spawns) actually starting and listing its real tool
 catalog over stdio, through the also-real `app/adapters/outbound/mcp/client.py::load_remote_tools` (pattern 28). It needs

@@ -1,5 +1,5 @@
 """A real crawl4ai-server round trip for app/adapters/outbound/crawl4ai/web_crawler.py (GRAPH_PATTERNS.md pattern 50): the
-fake-free counterpart to tests/ingestion/test_web_crawler.py, which (correctly, for a fast hermetic suite)
+fake-free counterpart to tests/adapters/outbound/crawl4ai/test_web_crawler.py, which (correctly, for a fast hermetic suite)
 mocks the `Crawl4aiDockerClient`/`_crawl` boundary. What that can't catch needs a real server, hence
 `@pytest.mark.integration`: a real container launching a browser, navigating, and returning the
 `result.markdown`/`result.success`/`result.error_message` shape this module depends on, over a real
@@ -21,12 +21,12 @@ static heading.
 
 Only the SUCCESS path is exercised live. A genuine browser-level navigation failure (unlike this app's
 pre-flight SSRF guard, which never reaches a browser and is covered hermetically in
-tests/ingestion/test_web_crawler.py) needs a target that resolves in DNS yet fails to load, which no stable
+tests/adapters/outbound/crawl4ai/test_web_crawler.py) needs a target that resolves in DNS yet fails to load, which no stable
 internet host can provide long-term. That path was verified once against a real `.invalid` TLD (guaranteed
 non-resolving) during development (see GRAPH_PATTERNS.md pattern 50 on the resulting
 `net::ERR_NAME_NOT_RESOLVED` and first-line-only `CrawlFailed` message) and is covered deterministically by
-tests/ingestion/test_web_crawler.py::TestCrawl. This is the "verified once live, tested hermetically
-thereafter" posture of tests/mcp/test_mcp_server.py's docstring for FastMCP's in-process call_tool.
+tests/adapters/outbound/crawl4ai/test_web_crawler.py::TestCrawl. This is the "verified once live, tested hermetically
+thereafter" posture of tests/adapters/inbound/mcp/test_mcp_server.py's docstring for FastMCP's in-process call_tool.
 """
 import pytest
 

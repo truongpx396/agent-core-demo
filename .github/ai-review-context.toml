@@ -11,7 +11,7 @@
 #              path::name           a top-level def / class / assignment in a .py file
 #              path#Heading         a markdown section
 # Each snippet is capped (see scripts/ai_review/review.py), and a spec that stops resolving is skipped
-# with a warning. tests/scripts/test_ai_review.py fails if any spec here does not resolve, so a
+# with a warning. tests/scripts/ai_review/test_ai_review.py fails if any spec here does not resolve, so a
 # rename can't quietly turn a rule into a no-op.
 #
 # The exemplars are the ones .claude/rules/side-effect-tools.md already names as the reference

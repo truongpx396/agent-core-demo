@@ -317,7 +317,7 @@ def scope_filter(scope: AccessScope) -> Filter:
 
     A point with no `created_at` never satisfies a range filter in Qdrant, so a memory written before the field existed is excluded by the
     cutoff: invisible until re-written, not just a future-only guarantee. This is the translation Principle I rests on, so
-    tests/retrieval/test_qdrant_store.py pins each condition and tests/integration/test_tenant_isolation_real_qdrant.py proves the result
+    tests/adapters/outbound/qdrant/test_qdrant_store.py pins each condition and tests/integration/test_tenant_isolation_real_qdrant.py proves the result
     against a real Qdrant."""
     must: list[Condition] = [
         FieldCondition(key="tenant", match=MatchValue(value=scope.tenant)),

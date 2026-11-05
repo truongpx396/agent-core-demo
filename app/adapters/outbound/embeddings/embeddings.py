@@ -43,7 +43,7 @@ embeddings = OpenAIEmbeddings(
 # Embedding a QUESTION and embedding a stored PASSAGE are two different operations (specs/014 FR-015). Models trained with task
 # prefixes (nomic-embed-text: `search_query:` / `search_document:`) place the two in different regions on purpose, so one function
 # serving both roles, which is what this module used to do (`embed_text`), cannot be made right by any prefix. The old names are
-# DELETED rather than deprecated: a caller that still uses one is an ImportError, and tests/retrieval/test_embedding_roles.py fails if
+# DELETED rather than deprecated: a caller that still uses one is an ImportError, and tests/adapters/outbound/embeddings/test_embedding_roles.py fails if
 # any module under app/ or scripts/ calls the underlying client around these functions.
 #
 # Both prefixes default to empty (settings: EMBED_QUERY_PREFIX / EMBED_DOCUMENT_PREFIX), so the text sent is byte-identical to before

@@ -2,7 +2,7 @@
 
 The split is a pure refactor: `/rerank` and `/prompt-guard` keep the wire contracts the app reads (app/adapters/outbound/embeddings/embeddings.py::rerank,
 app/core/moderation.py::_ml_malicious_score), `/health` is still plain liveness, and `uvicorn main:app` is still the entry point. The
-hermetic tests in tests/ml_service prove the logic with fakes; this proves the image actually builds with the package in it and the two
+hermetic tests in tests/services/ml_service prove the logic with fakes; this proves the image actually builds with the package in it and the two
 real models load, run and answer in the same shapes.
 
 Self-skips (never fails) without Docker, like every `integration` test.

@@ -7,7 +7,7 @@ Three layers, each with the collaborator faked and nothing else:
   * the public-key cache, with a clock the test moves and a front door that can be told to fail.
 
 No network and no real clock. PyJWT reads the wall clock inside `jwt.api_jwt`, so the golden-identity test replaces the `datetime` it
-imports with one that answers the file's `now` (tests/mcp/test_gateway_vectors.py does the same for the external-token vectors).
+imports with one that answers the file's `now` (tests/adapters/inbound/mcp/test_gateway_vectors.py does the same for the external-token vectors).
 """
 import json
 import logging

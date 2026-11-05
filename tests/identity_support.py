@@ -2,7 +2,7 @@
 identities it would sign, and the key endpoint that publishes it.
 
 Nothing here touches a network. `InternalKeys` is handed an `httpx.AsyncClient` over a `MockTransport`, so a test exercises the real verifier,
-the real key cache and (tests/api/test_deps_auth_modes.py) the real dependency and exception handler; only the front door is a stand-in.
+the real key cache and (tests/adapters/inbound/api/test_deps_auth_modes.py) the real dependency and exception handler; only the front door is a stand-in.
 """
 import json
 import time

@@ -141,7 +141,7 @@ def fixed_embedding_identity(monkeypatch):
     """The embedding identity is read on every Qdrant read and write (app/adapters/outbound/qdrant/qdrant_store.py::check_identity), and computing the
     real one asks LiteLLM which model the `embed` alias resolves to and probes the embedding model for its dimension: two live-service
     calls. A hermetic test gets a fixed identity instead, and a clean per-process target cache so one test's alias answers never leak
-    into the next. A test that exercises the identity itself (tests/retrieval/test_qdrant_identity.py) supplies its own."""
+    into the next. A test that exercises the identity itself (tests/adapters/outbound/qdrant/test_qdrant_identity.py) supplies its own."""
     from app.adapters.outbound.embeddings import embedding_identity
     from app.adapters.outbound.qdrant import qdrant_store
 
@@ -177,7 +177,7 @@ def mock_ml_moderation():
         yield
 
 
-# Kept so the tests of the ML-service ADAPTER (tests/adapters/mlservice/) can call the real function the suite's guard keeps off the turn path.
+# Kept so the tests of the ML-service ADAPTER (tests/adapters/outbound/mlservice/) can call the real function the suite's guard keeps off the turn path.
 REAL_CHOOSE = ml_classification.choose
 
 
@@ -320,7 +320,7 @@ def header_auth_mode(monkeypatch):
 
 @pytest.fixture
 def identity_mode(monkeypatch):
-    """Opt a test back in to the default: identity mode, with no verifier built yet, so the test installs its own (tests/api/test_deps_auth_modes.py
+    """Opt a test back in to the default: identity mode, with no verifier built yet, so the test installs its own (tests/adapters/inbound/api/test_deps_auth_modes.py
     shows how) and none leaks into the next test."""
     monkeypatch.setattr(settings, "auth_mode", "identity")
     monkeypatch.setattr(identity, "_verifier", None)

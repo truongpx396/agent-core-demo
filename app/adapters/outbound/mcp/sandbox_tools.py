@@ -67,7 +67,7 @@ OPEN_SANDBOX_API_KEY_ENV = "OPEN_SANDBOX_API_KEY"
 # input schema as `opensandbox-mcp==1.1.1` offers it (app/adapters/outbound/mcp/client.py::tool_fingerprint). The client keeps exactly these and
 # only while they still match: the other fourteen (kill, renew, move, delete, replace, ...) are never offered to the model, and
 # a release that rewrites one of these five's description, which is text the model obeys, is left out and counted until a
-# person reads the change and updates the hash. tests/adapters/mcp/test_sandbox_tool_pins.py fails on the same drift in CI, and
+# person reads the change and updates the hash. tests/adapters/outbound/mcp/test_sandbox_tool_pins.py fails on the same drift in CI, and
 # prints the new values, so this is a two-line change with the diff of the bridge's descriptions next to it.
 PINNED_SANDBOX_TOOLS = {
     "command_run": "a85c41d3e5e85d5ce01c32baa41708a66c953dc4912bab907227242dce177a5e",

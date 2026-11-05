@@ -1,5 +1,5 @@
 """A real Redis Stack round trip for app/adapters/outbound/redis/queue.py — the fake-free
-counterpart to tests/job_queue/test_queue.py, which (correctly, for a fast/
+counterpart to tests/adapters/outbound/redis/test_queue.py, which (correctly, for a fast/
 hermetic suite) drives the exact same functions against a hand-rolled
 `FakeRedis` covering just the Streams commands this app uses. What that
 can't catch — a real redis-py/Redis Stack server version mismatch in

@@ -254,7 +254,7 @@ async def chat_sessions(
     never tenant alone: a session belongs to whoever started it, same axis
     as Policy.lower's memory scoping (pattern 49 added the domain part), so
     switching domains in the web UI also switches which sessions list."""
-    return await sessions.list_sessions(ctx, domain)  # type: ignore[return-value]  # response_model coerces dict -> SessionSummary at the HTTP boundary; a direct Python call (see tests/api/test_api.py) intentionally gets the raw dicts back
+    return await sessions.list_sessions(ctx, domain)  # type: ignore[return-value]  # response_model coerces dict -> SessionSummary at the HTTP boundary; a direct Python call (see tests/adapters/inbound/api/test_api.py) intentionally gets the raw dicts back
 
 
 @router.get("/chat/sessions/{thread_id}/messages", response_model=list[SessionMessage])

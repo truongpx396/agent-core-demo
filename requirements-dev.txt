@@ -89,7 +89,7 @@ locust==2.46.4
 # Reads the public parquet datasets in scripts/model_eval (BEIR, deepset/prompt-injections, CLINC150). Dev only: never in
 # requirements.txt or the lock file, so the app image does not carry it.
 pyarrow==26.0.0
-# Imported by services/ml-service/ml_service/metrics.py, which tests/ml_service imports from the root environment; the service image
+# Imported by services/ml-service/ml_service/metrics.py, which tests/services/ml_service imports from the root environment; the service image
 # gets it from services/ml-service/requirements.txt.
 prometheus-client==0.26.0
 # Validates reports against specs/014 contracts/model-eval.report.schema.json. Already pinned transitively in requirements-lock.txt

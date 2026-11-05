@@ -78,7 +78,7 @@ HUGE_MESSAGE = "x " * 17000
 WHITESPACE_ONLY_MESSAGE = " "
 
 # Bytes content genuinely doesn't matter at the API layer for any of these
-# (this project's own tests/api/test_api.py uploads use plain placeholder
+# (this project's own tests/adapters/inbound/api/test_api.py uploads use plain placeholder
 # bytes too, e.g. b"pdf-bytes" — the endpoint's own checks are purely
 # size/extension-based, before any real parsing happens). Whether the
 # "normal" upload below survives real extraction inside ingest_worker.py

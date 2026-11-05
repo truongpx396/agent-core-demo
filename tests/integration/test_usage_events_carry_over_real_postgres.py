@@ -1,5 +1,5 @@
 """The ledger-to-events carry-over against a REAL Postgres (scripts/tools/usage_events_carry_over.py, specs/010 T030).
-tests/scripts/test_usage_events_carry_over.py proves the loop through a scripted connection; the cutover's
+tests/scripts/tools/test_usage_events_carry_over.py proves the loop through a scripted connection; the cutover's
 safety rests on what the statements DO:
 - history older than the first real event is copied and NOTHING newer (those turns already have events;
   copying would count them twice and double a tenant's spend the day it is switched on);

@@ -9,7 +9,7 @@ worker.
 Call `configure_telemetry(service_name)` once, at real process startup (app/adapters/inbound/api/main.py's `lifespan`, or a
 worker/channel's `__main__`), NEVER at import time. Unlike `logging_config.configure_logging()` (freely
 re-callable), OTel's `set_meter_provider` is call-once; a second call just warns and is ignored. Keeping it
-inside `lifespan` (never entered under pytest, see tests/api/test_api.py) stops a real network-bound
+inside `lifespan` (never entered under pytest, see tests/adapters/inbound/api/test_api.py) stops a real network-bound
 OTLPMetricExporter from winning that race against a test's own MeterProvider during `pytest -q`.
 
 Import order against app/core/metrics.py doesn't matter: `get_meter(...)`, called at that module's import

@@ -2,7 +2,7 @@
 matching, no I/O) and the ML layer (a real HTTP call to ml-service's
 /prompt-guard, mocked here via `_ml_malicious_score` directly — same
 "patch the inner async function, not the network" approach
-tests/retrieval/test_qdrant_store.py already uses for `embeddings.rerank`).
+tests/adapters/outbound/qdrant/test_qdrant_store.py already uses for `embeddings.rerank`).
 
 `screen` is `async def` (it awaits the ML layer's HTTP call), so every
 call below runs through `asyncio.run(...)`, this repo's established
