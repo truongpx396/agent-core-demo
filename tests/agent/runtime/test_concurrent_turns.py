@@ -58,7 +58,7 @@ from app.agent.tools import builtin as tools_module
 from app.agent.tools import run_subagent as subagent_tools
 from app.core import metrics
 from app.domains.ecorp import store as ecorp_store
-from app.ports import checkpointing as checkpointing_port
+from app.ports.outbound import checkpointing as checkpointing_port
 from tests.conftest import metric_value as _count
 from tests.containers import ensure_postgres, ensure_qdrant, ensure_redis
 from tests.ecorp import build_graph

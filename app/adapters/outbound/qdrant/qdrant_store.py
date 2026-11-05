@@ -79,7 +79,7 @@ from app.core.config import (
     RERANK_TOP_K,
 )
 from app.core.security import AccessScope
-from app.ports.retrieval import SearchHit
+from app.ports.outbound.retrieval import SearchHit
 
 logger = logging.getLogger(__name__)
 
@@ -487,7 +487,7 @@ def _hit(point) -> SearchHit:
 
 
 class QdrantDocumentIndex:
-    """The `DocumentIndex` adapter (`app/ports/retrieval.py`): `hybrid_search` behind the port. The module function is looked up at CALL time, so
+    """The `DocumentIndex` adapter (`app/ports/outbound/retrieval.py`): `hybrid_search` behind the port. The module function is looked up at CALL time, so
     a test that patches `qdrant_store.hybrid_search` is seen."""
 
     async def search(

@@ -61,7 +61,7 @@ from app.billing_integration import port as billing_port
 from app.core import metrics
 from app.core.errors import ErrorCode, ErrorEnvelope
 from app.core.security import SecurityCtx, valid_ctx
-from app.ports.cost import ALL_PRINCIPALS, TENANT_SUBJECT, Override
+from app.ports.outbound.cost import ALL_PRINCIPALS, TENANT_SUBJECT, Override
 
 logger = logging.getLogger(__name__)
 

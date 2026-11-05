@@ -130,7 +130,7 @@ from app.core.errors import (
 from app.core.logging_config import bind_request_id, configure_logging
 from app.core.profiling import start_profiling
 from app.core.telemetry import configure_telemetry
-from app.ports.domains import domain_catalog
+from app.ports.outbound.domains import domain_catalog
 
 logger = logging.getLogger(__name__)
 

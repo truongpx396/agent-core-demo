@@ -34,8 +34,8 @@ from app.agent.graph.state import STATE_SCHEMA_VERSION
 from app.agent.runtime import core as agent_module
 from app.agent.runtime import stream as stream_module
 from app.core import metrics
-from app.ports import checkpointing as checkpointing_port
-from app.ports.domains import AgentManifest
+from app.ports.outbound import checkpointing as checkpointing_port
+from app.ports.outbound.domains import AgentManifest
 from tests.agent.fakes import cfg, scripted_llm
 from tests.conftest import TEST_CTX
 from tests.conftest import metric_value as _count

@@ -1,4 +1,4 @@
-"""The `WebSearch` adapter (`app/ports/web.py`): the client for serper.dev, a Google Search API, the backend of the `web_search` tool
+"""The `WebSearch` adapter (`app/ports/outbound/web.py`): the client for serper.dev, a Google Search API, the backend of the `web_search` tool
 (`app/domains/web_search.py`).
 
 Measured against the live API (2026-10-28), because the rest of this module rests on it:
@@ -37,7 +37,7 @@ from app.core import metrics
 from app.core.config import SERPER_API_KEY, WEB_SEARCH_MAX_RESULTS
 from app.core.resilience import CircuitBreaker, CircuitOpenError
 from app.core.scrubbing import scrub
-from app.ports.web import SearchFailed, SearchHit, SearchNotConfigured
+from app.ports.outbound.web import SearchFailed, SearchHit, SearchNotConfigured
 
 logger = logging.getLogger(__name__)
 
@@ -195,7 +195,7 @@ async def search(query: str, *, client: httpx.AsyncClient | None = None) -> list
 
 
 class SerperWebSearch:
-    """The `WebSearch` adapter (`app/ports/web.py`): `search` behind the port, looked up at CALL time so a test that patches the module function is seen."""
+    """The `WebSearch` adapter (`app/ports/outbound/web.py`): `search` behind the port, looked up at CALL time so a test that patches the module function is seen."""
 
     async def search(self, query: str) -> list[SearchHit]:
         return await search(query)

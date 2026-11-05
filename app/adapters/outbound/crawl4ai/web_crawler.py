@@ -41,7 +41,7 @@ from crawl4ai.docker_client import RequestError as Crawl4aiRequestError
 from app.core.config import CRAWL4AI_API_TOKEN, CRAWL4AI_SERVER_URL
 from app.core.resilience import CircuitBreaker, CircuitOpenError
 from app.core.url_safety import assert_safe_url_async
-from app.ports.web import (
+from app.ports.outbound.web import (
     CRAWL_RENDER_TIMEOUT_SECONDS,
     CRAWL_TOOL_TIMEOUT_SECONDS,
     CrawlFailed,
@@ -123,7 +123,7 @@ async def render_url_to_markdown(url: str) -> str:
 
 
 class Crawl4aiPageRenderer:
-    """The `PageRenderer` adapter (`app/ports/web.py`): `render_url_to_markdown` behind the port, looked up at CALL time. `CrawlFailed` propagates up like any
+    """The `PageRenderer` adapter (`app/ports/outbound/web.py`): `render_url_to_markdown` behind the port, looked up at CALL time. `CrawlFailed` propagates up like any
     other exception (`app/agent/graph/core.py`'s handle_tool_errors turns it into a ToolMessage); no domain tool catches it itself."""
 
     async def render(self, url: str) -> str:

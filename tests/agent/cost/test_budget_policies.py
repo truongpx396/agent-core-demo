@@ -17,7 +17,7 @@ from app.adapters.outbound.postgres import budget_policies as pg_budget_policies
 from app.agent.cost import budget_policies, budgets
 from app.agent.runtime import core as runtime_module
 from app.core import errors, metrics
-from app.ports.cost import Override
+from app.ports.outbound.cost import Override
 from tests.conftest import TEST_CTX, metric_value
 
 _REAL_OVERRIDES_FOR = budget_policies.overrides_for

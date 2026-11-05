@@ -30,7 +30,7 @@ from app.core.config import (
     EMBED_QUERY_PREFIX,
 )
 from app.core.errors import ErrorCode
-from app.ports import models as ports
+from app.ports.outbound import models as ports
 
 HASH_LENGTH = 8
 

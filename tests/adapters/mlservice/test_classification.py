@@ -14,7 +14,7 @@ import httpx
 import pytest
 
 from app.adapters.outbound.mlservice import classification
-from app.ports.classification import NO_ANSWER, Choice, Labelled
+from app.ports.outbound.classification import NO_ANSWER, Choice, Labelled
 
 REAL_CLIENT = httpx.AsyncClient
 QUESTION = Choice(

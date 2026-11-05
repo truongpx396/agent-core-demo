@@ -1,8 +1,8 @@
-"""Fakes for the ports in `app/ports/cost.py`."""
+"""Fakes for the ports in `app/ports/outbound/cost.py`."""
 from collections.abc import Mapping
 from datetime import datetime
 
-from app.ports.cost import (
+from app.ports.outbound.cost import (
     ALL_PRINCIPALS,
     TENANT_SUBJECT,
     EventsByTenantDay,

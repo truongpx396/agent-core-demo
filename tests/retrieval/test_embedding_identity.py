@@ -9,7 +9,7 @@ from app.adapters.outbound.embeddings.embedding_identity import (
 from app.adapters.outbound.embeddings.embedding_identity import (
     current_identity as real_current_identity,  # captured before the autouse fixture replaces it
 )
-from app.ports import models as model_ports
+from app.ports.outbound import models as model_ports
 
 
 def _identity(**overrides) -> EmbeddingIdentity:

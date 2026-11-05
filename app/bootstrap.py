@@ -6,7 +6,7 @@ network, so it is cheap and safe to call twice. `verify_wired()` is the startup 
 binding stops the process at boot instead of failing the first request that happens to need it.
 
 Adding a port is three edits, and `tests/core/test_bootstrap.py` fails on the first one without the other two:
-1. the Protocol and its `Slot` in `app/ports/<capability>.py`;
+1. the Protocol and its `Slot` in `app/ports/outbound/<capability>.py`;
 2. the adapter in `app/adapters/<technology>/`;
 3. one entry in `adapters()` here.
 
@@ -38,7 +38,7 @@ from app.domains.ops import store as ops_store
 from app.domains.registry import RegistryDomainCatalog
 from app.domains.sales import store as sales_store
 from app.domains.support import store as support_store
-from app.ports import (
+from app.ports.outbound import (
     checkpointing,
     classification,
     cost,

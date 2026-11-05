@@ -1,5 +1,5 @@
 """The agent's own money, as the application sees it: usage events, budget holds, budget overrides and the gateway's spend log.
-(The gateway's price list is `app/ports/models.py`.)
+(The gateway's price list is `app/ports/outbound/models.py`.)
 
 The policy (what a window is, which limit applies, what a failed read means, what is counted when a write fails) stays in
 `app/agent/cost/`. What these ports hide is where the numbers live: Postgres for the events, the holds and the overrides

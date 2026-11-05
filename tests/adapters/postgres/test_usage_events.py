@@ -11,7 +11,7 @@ import pytest
 from psycopg import errors as pg_errors
 
 from app.adapters.outbound.postgres import usage_events as adapter
-from app.ports.cost import UsageTableMissing
+from app.ports.outbound.cost import UsageTableMissing
 
 
 class _Cursor:

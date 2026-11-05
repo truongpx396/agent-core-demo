@@ -12,7 +12,7 @@ from app.agent.cost.usage_reconcile import (
     default_window,
 )
 from app.core.gateway import end_user_id, legacy_end_user_id
-from app.ports.cost import Window
+from app.ports.outbound.cost import Window
 
 DAY = date(2026, 10, 6)
 NEXT = date(2026, 10, 7)

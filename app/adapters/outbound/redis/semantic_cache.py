@@ -199,7 +199,7 @@ async def set(ctx: SecurityCtx | None, query: str, answer: str, citations: list[
 
 
 class RedisAnswerCache:
-    """The `AnswerCache` adapter (`app/ports/retrieval.py`): this module's `get` and `set` behind the port, looked up at CALL time."""
+    """The `AnswerCache` adapter (`app/ports/outbound/retrieval.py`): this module's `get` and `set` behind the port, looked up at CALL time."""
 
     async def get(self, ctx: SecurityCtx | None, query: str) -> tuple[str, list[dict]] | None:
         return await get(ctx, query)

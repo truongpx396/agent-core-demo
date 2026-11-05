@@ -1,4 +1,4 @@
-"""The `GatewaySpendLog` adapter (`app/ports/cost.py`): the LLM gateway's spend log, read over its admin API.
+"""The `GatewaySpendLog` adapter (`app/ports/outbound/cost.py`): the LLM gateway's spend log, read over its admin API.
 
 The read is `GET /spend/logs/v2` with `start_date`/`end_date`, paginated (checked against LiteLLM 1.104: UTC window on `startTime`, both
 ends inclusive, `page_size` at most 1000, `total` capped at 10 000 so the page count never comes from it). The sort has no tie-breaker, so
@@ -16,7 +16,7 @@ from decimal import Decimal
 import httpx
 
 from app.core.config import USAGE_RECONCILE_GATEWAY_MAX_PAGES
-from app.ports.cost import GatewaySpend, Window
+from app.ports.outbound.cost import GatewaySpend, Window
 
 ZERO = Decimal(0)
 GATEWAY_PAGE_SIZE = 1000  # the most `/spend/logs/v2` accepts (`le=1000`)

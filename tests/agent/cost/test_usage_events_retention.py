@@ -8,7 +8,7 @@ import pytest
 
 from app.agent.cost import usage_events_retention as retention
 from app.core.config import USAGE_EVENT_MIN_RETENTION_DAYS
-from app.ports import cost as cost_ports
+from app.ports.outbound import cost as cost_ports
 from tests.fakes.cost import InMemoryUsageEventStore
 
 

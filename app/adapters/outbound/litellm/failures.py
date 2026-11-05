@@ -1,4 +1,4 @@
-"""The `LlmFailures` adapter (`app/ports/llm.py`): what the `openai` SDK's exceptions mean, for a model reached through the LiteLLM gateway.
+"""The `LlmFailures` adapter (`app/ports/outbound/llm.py`): what the `openai` SDK's exceptions mean, for a model reached through the LiteLLM gateway.
 
 Moved here from `app/core/gateway.py` so the kernel names no SDK class. The recognition is unchanged:
 
@@ -14,7 +14,7 @@ Moved here from `app/core/gateway.py` so the kernel names no SDK class. The reco
 """
 import openai
 
-from app.ports.llm import ContentBlock
+from app.ports.outbound.llm import ContentBlock
 
 # Client errors that can pass on a second try: a request timeout, a conflict with a concurrent change, "too early" and a rate limit. Every
 # other 4xx says the request itself is refused, and the same request is refused again.

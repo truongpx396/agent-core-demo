@@ -4,7 +4,7 @@ anything is written); tests/integration/test_budget_policies_real_postgres.py ru
 import pytest
 
 from app.agent.cost import budget_policies
-from app.ports.cost import Override
+from app.ports.outbound.cost import Override
 from scripts.tools import budget_policy
 
 

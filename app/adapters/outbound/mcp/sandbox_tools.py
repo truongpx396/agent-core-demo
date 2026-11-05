@@ -1,4 +1,4 @@
-"""The `SandboxCatalog` adapter (`app/ports/sandbox.py`): OpenSandbox (github.com/opensandbox-group/OpenSandbox) consumed over MCP (pattern 50) through the unmodified
+"""The `SandboxCatalog` adapter (`app/ports/outbound/sandbox.py`): OpenSandbox (github.com/opensandbox-group/OpenSandbox) consumed over MCP (pattern 50) through the unmodified
 `app/adapters/outbound/mcp/client.py::load_remote_tools` (pattern 28). `opensandbox-mcp` is a stdio MCP server bridging to a
 containerized `opensandbox-server` (`make sandbox-up`), run as `python -m opensandbox_mcp ...
 --use-server-proxy`. Since release 1.1 that flag is what a sandbox call needs: without it the call hangs 40+
@@ -39,7 +39,7 @@ from app.core import metrics
 from app.core.config import OPENSANDBOX_API_KEY, OPENSANDBOX_MCP_DOMAIN
 from app.core.resilience import CircuitBreaker, CircuitOpenError
 from app.core.tool_runtime import arun_with_timeout
-from app.ports.sandbox import SANDBOX_DEPENDENCY
+from app.ports.outbound.sandbox import SANDBOX_DEPENDENCY
 
 logger = logging.getLogger(__name__)
 

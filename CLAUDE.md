@@ -62,7 +62,7 @@ they delete volumes or kill running processes.
   streaming turns (`core.py`, `stream.py`) plus the session directory. `tools/` is `builtin.py` (the tools
   several domains share, with `SHARED_TOOL_CAPABILITIES`), `idempotency.py`, the skill and subagent catalogs
   (one shared `frontmatter.py` loader) and `run_subagent`. `cost/` is the spend meter and caps
-  (`COST_GOVERNANCE.md`). `AgentManifest`/`DomainPlugin` (the plugin contract) are in `app/ports/domains.py`.
+  (`COST_GOVERNANCE.md`). `AgentManifest`/`DomainPlugin` (the plugin contract) are in `app/ports/outbound/domains.py`.
 - `app/domains/{ecorp,support,ops,sales}/` — each is `store.py` + `tools.py` + `domain.py`, and
   `registry.py` looks them up by name. Ecorp is the default but has no standing in the graph: `build_graph`
   requires a manifest and a domain. A new use case follows that shape; it never forks `build_graph()`. A domain's skills and subagents are

@@ -35,7 +35,7 @@ is a cap that is off.
 """
 from datetime import datetime
 
-from app.ports import cost as ports
+from app.ports.outbound import cost as ports
 
 
 async def usage_summary(tenant: str, principal: str | None = None, since: datetime | None = None) -> dict:

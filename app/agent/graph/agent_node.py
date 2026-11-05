@@ -26,7 +26,7 @@ from app.agent.graph.state import State
 from app.core import gateway, metrics
 from app.core.config import CHAT_MODEL
 from app.core.untrusted import frame_untrusted
-from app.ports.llm import ContentBlock
+from app.ports.outbound.llm import ContentBlock
 
 logger = logging.getLogger(__name__)
 

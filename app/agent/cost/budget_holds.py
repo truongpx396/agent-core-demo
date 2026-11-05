@@ -19,7 +19,7 @@ import uuid
 
 from app.core import metrics
 from app.core.security import SecurityCtx, valid_ctx
-from app.ports import cost as ports
+from app.ports.outbound import cost as ports
 
 logger = logging.getLogger(__name__)
 

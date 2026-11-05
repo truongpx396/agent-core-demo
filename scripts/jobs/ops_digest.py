@@ -21,8 +21,8 @@ from app.core.config import CHAT_MODEL, DEFAULT_TENANT, OPENAI_API_BASE, OPENAI_
 from app.core.job_runtime import scheduled_job
 from app.core.security import SecurityCtx
 from app.domains.ops import metric_checks
-from app.ports.notify import team_channel
-from app.ports.ops import metrics_reader
+from app.ports.outbound.notify import team_channel
+from app.ports.outbound.ops import metrics_reader
 
 # The automated job's own identity — never a real person's — so usage-event
 # rows and team-channel posts from this script are attributable to "the

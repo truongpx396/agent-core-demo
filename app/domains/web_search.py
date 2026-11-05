@@ -36,7 +36,7 @@ from app.core.security import Policy, SecurityCtx, valid_ctx
 from app.core.tool_idempotency import idempotent
 from app.core.tool_runtime import NO_CTX_REFUSAL, arun_with_timeout, ctx_from_config
 from app.core.untrusted import frame_untrusted
-from app.ports.web import SearchHit, SearchNotConfigured, web_search
+from app.ports.outbound.web import SearchHit, SearchNotConfigured, web_search
 
 ACTION = "web_search"
 _MAX_QUERY_CHARS = 300

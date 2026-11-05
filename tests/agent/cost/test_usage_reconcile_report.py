@@ -15,8 +15,8 @@ from app.agent.cost import usage_reconcile as reconcile
 from app.agent.cost.usage_reconcile import Report, Tolerance
 from app.core import metrics
 from app.core.gateway import end_user_id
-from app.ports import cost as cost_ports
-from app.ports.cost import EventsByTenantDay, Window
+from app.ports.outbound import cost as cost_ports
+from app.ports.outbound.cost import EventsByTenantDay, Window
 from tests.agent.fake_gateway import FakeGateway, spend_row
 from tests.conftest import metric_value
 from tests.fakes.cost import InMemoryUsageEventStore

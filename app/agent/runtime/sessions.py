@@ -1,7 +1,7 @@
 """Session directory for the web UI's session switcher — lets a user list
 and switch between their own past conversation threads.
 
-Where the rows live is the `SessionStore` port (`app/ports/sessions.py`; the Postgres adapter explains why it is its own table).
+Where the rows live is the `SessionStore` port (`app/ports/outbound/sessions.py`; the Postgres adapter explains why it is its own table).
 
 Every row is tenant+principal scoped (SecurityCtx) and, since pattern 49,
 domain-scoped too: a session belongs to whichever domain actually ran on
@@ -14,7 +14,7 @@ like `title`.
 import logging
 
 from app.core.security import SecurityCtx, valid_ctx
-from app.ports.sessions import session_store
+from app.ports.outbound.sessions import session_store
 
 logger = logging.getLogger(__name__)
 

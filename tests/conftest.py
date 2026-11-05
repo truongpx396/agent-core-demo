@@ -49,8 +49,8 @@ from app.adapters.outbound.embeddings.embedding_identity import EmbeddingIdentit
 from app.adapters.outbound.mlservice import classification as ml_classification
 from app.agent.graph import build as graph_build
 from app.core.config import settings
-from app.ports import classification as classification_ports
-from app.ports import screening as screening_ports
+from app.ports.outbound import classification as classification_ports
+from app.ports.outbound import screening as screening_ports
 from tests.fakes.ml import ConstantScorer, NoAnswerClassifier
 
 TEST_CTX = {"tenant": "ecorp", "principal": "test-user", "claims": {}}
@@ -243,8 +243,8 @@ def usage_event_sink():
     the test (`tests/fakes/cost.py`); the fixture yields the list of events the test's turn wrote, with the table's `event_id` dedup.
     """
     from app.agent.cost import usage_events
-    from app.ports import cost as cost_ports
-    from app.ports import models as model_ports
+    from app.ports.outbound import cost as cost_ports
+    from app.ports.outbound import models as model_ports
     from tests.fakes.cost import InMemoryUsageEventStore, NoGatewayModelCatalog
 
     store = InMemoryUsageEventStore()

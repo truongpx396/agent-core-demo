@@ -1,4 +1,4 @@
-"""The `ModelCatalog` adapter (`app/ports/models.py`): what LiteLLM's `GET /model/info` admin endpoint says about the models behind the
+"""The `ModelCatalog` adapter (`app/ports/outbound/models.py`): what LiteLLM's `GET /model/info` admin endpoint says about the models behind the
 gateway's aliases. It answers two questions for the application, the price list (`model_info`, read by `app/agent/cost/pricing.py`)
 and the model an alias resolves to (`resolve`, read by the usage-event writer).
 
@@ -27,7 +27,7 @@ import httpx
 
 from app.core import metrics
 from app.core.config import OPENAI_API_BASE, OPENAI_API_KEY
-from app.ports.models import FAILED_LOOKUP_RETRY_SECONDS
+from app.ports.outbound.models import FAILED_LOOKUP_RETRY_SECONDS
 
 logger = logging.getLogger(__name__)
 

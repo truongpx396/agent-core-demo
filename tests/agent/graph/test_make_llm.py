@@ -5,7 +5,7 @@ from langchain_core.tools import tool
 from app.agent.graph import utils
 from app.core.config import CHAT_MODEL, OPENAI_API_BASE, OPENAI_API_KEY
 from app.core.tool_schema import strict_tool_schema
-from app.ports.llm import chat_models
+from app.ports.outbound.llm import chat_models
 
 
 class _Recorder:

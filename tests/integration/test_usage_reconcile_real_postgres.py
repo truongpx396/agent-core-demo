@@ -24,7 +24,7 @@ from app.agent.cost import usage_reconcile as reconcile
 from app.agent.cost.pricing import ModelPrice, PricedCall
 from app.agent.cost.usage_reconcile import Tolerance
 from app.core.gateway import end_user_id, legacy_end_user_id
-from app.ports.cost import Window
+from app.ports.outbound.cost import Window
 from tests.agent.fake_gateway import FakeGateway, spend_row
 from tests.containers import ensure_postgres
 from tests.integration.postgres_adapters import use_real_postgres

@@ -2,7 +2,7 @@
 
 Each function takes the `SecurityCtx` the tool layer already validated and scopes by its `tenant` (and `principal` for memories); none is ever handed a
 tenant by the model. `tools.py` is the tool layer (argument schemas, `ctx_or_refuse` / `idempotent()` wrapping); `.claude/rules/side-effect-tools.md` is the
-checklist both follow. WHERE the data goes is two ports, `KnowledgeBase` and `EmployeeDirectory` (`app/ports/ecorp.py`; the adapter is `store.py`).
+checklist both follow. WHERE the data goes is two ports, `KnowledgeBase` and `EmployeeDirectory` (`app/ports/outbound/ecorp.py`; the adapter is `store.py`).
 
 ## Cross-session memory
 
@@ -18,7 +18,7 @@ from enum import Enum
 
 from app.agent.tools.builtin import Topic
 from app.core.security import SecurityCtx
-from app.ports.ecorp import employee_directory, knowledge_base
+from app.ports.outbound.ecorp import employee_directory, knowledge_base
 
 # Length budget for add_note/remember: bounds the BM25 sparse-embedding cost
 # per write (embed_sparse has no internal truncation, unlike the ml-service

@@ -1,11 +1,11 @@
 """The fakes in `tests/fakes/` are interchangeable with the adapters: they match the Protocol, and they behave as the contract says."""
 import pytest
 
-from app.ports import classification as classification_ports
-from app.ports import cost as cost_ports
-from app.ports import models as model_ports
-from app.ports import screening as screening_ports
-from app.ports.cost import Override
+from app.ports.outbound import classification as classification_ports
+from app.ports.outbound import cost as cost_ports
+from app.ports.outbound import models as model_ports
+from app.ports.outbound import screening as screening_ports
+from app.ports.outbound.cost import Override
 from tests.fakes.conformance import mismatches
 from tests.fakes.cost import (
     InMemoryBudgetHoldStore,

@@ -20,7 +20,7 @@ from app.core.config import CHAT_MODEL, OPENAI_API_BASE, OPENAI_API_KEY, setting
 from app.core.errors import is_store_error
 from app.core.tool_idempotency import MutatingToolTimedOut
 from app.core.tool_schema import strict_tool_schema
-from app.ports.llm import chat_models
+from app.ports.outbound.llm import chat_models
 
 logger = logging.getLogger(__name__)
 

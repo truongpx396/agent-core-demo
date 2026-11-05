@@ -13,7 +13,7 @@ import pytest
 
 from app.adapters.outbound.postgres import usage_events as pg_usage_events
 from app.agent.cost import budget_holds, budgets, spend
-from app.ports import cost as cost_ports
+from app.ports.outbound import cost as cost_ports
 from tests.conftest import TEST_CTX, _NoPostgresInTests
 
 

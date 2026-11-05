@@ -16,7 +16,7 @@ configured, which is worse than none.
 import re
 
 from app.core import metrics
-from app.ports.screening import injection_scorer
+from app.ports.outbound.screening import injection_scorer
 
 # Llama Prompt Guard 2's natural decision boundary (argmax over its 2-class
 # softmax). Not recalibrated against live traffic like MIN_RERANK_SCORE

@@ -39,7 +39,12 @@ from app.core.config import (
     MAX_COST_USD_PER_TENANT_PER_MONTH,
 )
 from app.core.sql_store import close_pool
-from app.ports.cost import ALL_PRINCIPALS, PERIODS, RESERVED_SUBJECTS, TENANT_SUBJECT
+from app.ports.outbound.cost import (
+    ALL_PRINCIPALS,
+    PERIODS,
+    RESERVED_SUBJECTS,
+    TENANT_SUBJECT,
+)
 
 
 def _parse_limit(text: str) -> float | None:

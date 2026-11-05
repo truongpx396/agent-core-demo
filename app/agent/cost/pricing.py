@@ -34,8 +34,8 @@ from app.core.config import (
     PRICING_REFRESH_SECONDS,
     UNPRICED_MODEL_POLICY,
 )
-from app.ports import models as ports
-from app.ports.models import FAILED_LOOKUP_RETRY_SECONDS
+from app.ports.outbound import models as ports
+from app.ports.outbound.models import FAILED_LOOKUP_RETRY_SECONDS
 
 logger = logging.getLogger(__name__)
 

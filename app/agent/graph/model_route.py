@@ -9,7 +9,7 @@ non-negotiable rules.
 
 How it decides: two signals each name the lowest tier they accept (`app/core/routing_policy.py`, pure, also
 run by the evaluation harness): rules over the user's message, and the label from the ML service's label set
-(`app/ports/classification.py`). The tier is the highest configured tier at or below `min(ceiling, max(rules,
+(`app/ports/outbound/classification.py`). The tier is the highest configured tier at or below `min(ceiling, max(rules,
 label))`. A label that can't be had (service down or slow, no topic, unknown topic) leaves the rules to
 decide, and is counted.
 
@@ -46,8 +46,8 @@ from app.core.config import (
     STRONG_CHAT_MODEL,
 )
 from app.core.routing_policy import Tier
-from app.ports.classification import Choice, Labelled, route_classifier
-from app.ports.llm import llm_failures
+from app.ports.outbound.classification import Choice, Labelled, route_classifier
+from app.ports.outbound.llm import llm_failures
 
 logger = logging.getLogger(__name__)
 

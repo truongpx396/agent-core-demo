@@ -450,7 +450,7 @@ and needs no paid-API call and no training:
 3. Ask:
 
 ```python
-from app.ports.classification import Choice, route_classifier   # the port; the process binds the ML-service adapter at start
+from app.ports.outbound.classification import Choice, route_classifier   # the port; the process binds the ML-service adapter at start
 
 EMAIL_INTENT = Choice(                                                  # named after the label set; the options are exactly its labels
     "email-intent", "Does this message ask us to send an email, or only to look something up?",
@@ -586,7 +586,7 @@ requester + subject", since what counts as the same ticket is a product decision
 
 ## 🏢 Example domains
 
-`AgentManifest` + `DomainPlugin` (`app/ports/domains.py`) mean a new use case is a manifest and a plugin, never a fork of
+`AgentManifest` + `DomainPlugin` (`app/ports/outbound/domains.py`) mean a new use case is a manifest and a plugin, never a fork of
 `build_graph()`. Four domains run on the one unmodified graph, the default included:
 
 | Domain | What it does | Run |

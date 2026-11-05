@@ -4,7 +4,7 @@ pending at its `human_approval` pause under the SAME `tool_call_id`s (the pause 
 `Command(resume=...)` continues that exact state). Without this, a retry risked re-sending an email or
 re-creating a ticket.
 
-The claims live behind the `ToolCallLedger` port (`app/ports/idempotency.py`; the Postgres adapter keys them by
+The claims live behind the `ToolCallLedger` port (`app/ports/outbound/idempotency.py`; the Postgres adapter keys them by
 `tool_call_id` alone: the provider assigns a fresh one per tool call, so two invocations sharing an id are, by
 construction, the SAME invocation attempted again).
 
@@ -30,7 +30,7 @@ from langchain_core.runnables import RunnableConfig
 
 from app.core import metrics
 from app.core.security import SecurityCtx
-from app.ports.idempotency import tool_call_ledger
+from app.ports.outbound.idempotency import tool_call_ledger
 
 logger = logging.getLogger(__name__)
 

@@ -9,7 +9,7 @@ import asyncio
 import pytest
 
 from app.agent.runtime import core as runtime
-from app.ports import checkpointing as checkpointing_port
+from app.ports.outbound import checkpointing as checkpointing_port
 from tests.conftest import TEST_CTX
 
 

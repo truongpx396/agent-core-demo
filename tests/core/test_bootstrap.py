@@ -5,15 +5,15 @@ adapters are read from `bootstrap.adapters()` rather than from the slots."""
 import importlib
 import pkgutil
 
-import app.ports
+import app.ports.outbound
 from app import bootstrap
 from app.ports.slot import PortNotBound, Slot, all_slots
 from tests.fakes.conformance import mismatches
 
 
 def _import_every_port_module() -> None:
-    for module in pkgutil.iter_modules(app.ports.__path__):
-        importlib.import_module(f"app.ports.{module.name}")
+    for module in pkgutil.iter_modules(app.ports.outbound.__path__):
+        importlib.import_module(f"app.ports.outbound.{module.name}")
 
 
 def test_every_port_has_a_production_adapter_and_no_adapter_is_for_a_port_that_does_not_exist():

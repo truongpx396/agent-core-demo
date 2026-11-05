@@ -1,7 +1,7 @@
-"""Fakes for the ports in `app/ports/classification.py` and `app/ports/screening.py` (the ML service)."""
+"""Fakes for the ports in `app/ports/outbound/classification.py` and `app/ports/outbound/screening.py` (the ML service)."""
 from collections.abc import Awaitable, Callable
 
-from app.ports.classification import NO_ANSWER, Choice, Labelled
+from app.ports.outbound.classification import NO_ANSWER, Choice, Labelled
 
 
 class NoAnswerClassifier:
@@ -36,6 +36,6 @@ class ConstantScorer:
 def use_classifier(monkeypatch, choose) -> None:
     """Binds a classifier whose `choose(question, text)` is the given coroutine function, for the duration of the test."""
     classifier = type("_Scripted", (), {"choose": staticmethod(choose)})()
-    from app.ports.classification import route_classifier
+    from app.ports.outbound.classification import route_classifier
 
     monkeypatch.setattr(route_classifier, "get", lambda: classifier)

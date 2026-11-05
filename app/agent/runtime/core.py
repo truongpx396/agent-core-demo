@@ -7,7 +7,7 @@ and a worker runs them here.
 
 ## Durable checkpointing (init_graph_async)
 
-A durable saver (the `Checkpointing` port, `app/ports/checkpointing.py`; Postgres in production), not `build_graph()`'s
+A durable saver (the `Checkpointing` port, `app/ports/outbound/checkpointing.py`; Postgres in production), not `build_graph()`'s
 default `MemorySaver`: a paused `human_approval` gate is only a real safety control if it survives a redeploy, and it
 must be safe under concurrent access from several processes sharing the same `thread_id`s (FastAPI + `agent_worker.py`
 replicas).
@@ -55,8 +55,8 @@ from app.core.config import (
 )
 from app.core.errors import ErrorCode, ErrorEnvelope
 from app.core.security import SecurityCtx
-from app.ports.checkpointing import checkpointing
-from app.ports.domains import domain_catalog
+from app.ports.outbound.checkpointing import checkpointing
+from app.ports.outbound.domains import domain_catalog
 
 logger = logging.getLogger(__name__)
 

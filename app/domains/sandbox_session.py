@@ -45,7 +45,11 @@ from app.core.config import (
 )
 from app.core.output_limits import bound_output
 from app.core.scrubbing import scrub
-from app.ports.sandbox import REMOTE_ERROR_PREFIX, SANDBOX_DEPENDENCY, sandbox_catalog
+from app.ports.outbound.sandbox import (
+    REMOTE_ERROR_PREFIX,
+    SANDBOX_DEPENDENCY,
+    sandbox_catalog,
+)
 
 logger = logging.getLogger(__name__)
 

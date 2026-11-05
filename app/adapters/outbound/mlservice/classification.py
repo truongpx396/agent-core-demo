@@ -1,4 +1,4 @@
-"""The `RouteClassifier` adapter (`app/ports/classification.py`): the app's client for `POST
+"""The `RouteClassifier` adapter (`app/ports/outbound/classification.py`): the app's client for `POST
 /v1/decide` (specs/016, contracts/decide.md).
 
 The interface is not ours, on purpose: `/v1/decide` takes and returns the shape of the TypeSafe "System One" /
@@ -35,7 +35,7 @@ import math
 import httpx
 
 from app.core.config import ML_SERVICE_URL, ROUTER_TIMEOUT_SECONDS
-from app.ports.classification import NO_ANSWER, Choice, Labelled
+from app.ports.outbound.classification import NO_ANSWER, Choice, Labelled
 
 logger = logging.getLogger(__name__)
 

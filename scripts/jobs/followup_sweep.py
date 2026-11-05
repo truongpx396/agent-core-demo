@@ -31,7 +31,7 @@ from app.core.job_runtime import scheduled_job
 from app.core.security import SecurityCtx
 from app.domains.sales import store
 from app.domains.sales.domain import SALES_MANIFEST
-from app.ports.notify import team_channel
+from app.ports.outbound.notify import team_channel
 
 _CRON_CTX: SecurityCtx = {"tenant": DEFAULT_TENANT, "principal": "sales-followup-cron", "claims": {}}
 

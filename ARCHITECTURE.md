@@ -98,12 +98,12 @@ reach; `GraphDeps` is for what the graph is built with.
 ## Adding something
 
 **A new external dependency** (a second search provider, a new store):
-1. the Protocol, its data and its `Slot` in `app/ports/<capability>.py`. The Protocol's docstring states the contract an adapter must keep (what it raises, what it scopes by);
+1. the Protocol, its data and its `Slot` in `app/ports/outbound/<capability>.py`. The Protocol's docstring states the contract an adapter must keep (what it raises, what it scopes by);
 2. the adapter in `app/adapters/outbound/<technology>/`. It returns data in the port's types and translates the system's errors into the port's;
 3. one entry in `app/bootstrap.py::adapters()`. `tests/core/test_bootstrap.py` fails on a port without an adapter and on an adapter that does not match its Protocol (names, async-ness, parameters);
 4. a fake in `tests/fakes/` if consumers need one, listed in `tests/fakes/test_fakes.py`, which holds it to the same Protocol check.
 
-**A new domain**: unchanged (`store.py` + `tools.py` + `domain.py`, an `AgentManifest` and a `DomainPlugin`, one line in `registry.py`). Its repository is a port in `app/ports/<domain>.py` and its `store.py` is bound in `bootstrap.py`.
+**A new domain**: unchanged (`store.py` + `tools.py` + `domain.py`, an `AgentManifest` and a `DomainPlugin`, one line in `registry.py`). Its repository is a port in `app/ports/outbound/<domain>.py` and its `store.py` is bound in `bootstrap.py`.
 
 **A new way in** (a channel, a published server, a consumer): `app/adapters/inbound/<name>/`, a leaf; its entrypoint calls `wire()`. The test says so if you forget.
 

@@ -242,7 +242,7 @@ def test_the_driven_scanner_sees_every_spelling_of_an_import():
         "import app.adapters.outbound.redis.queue as q\n",
     ):
         assert driven_modules_reached(source) == {"app.adapters.outbound.redis.queue"}, source
-    assert driven_modules_reached("from app.adapters.outbound import postgres\nfrom app.ports import cost\n") == set()
+    assert driven_modules_reached("from app.adapters.outbound import postgres\nfrom app.ports.outbound import cost\n") == set()
 
 
 def test_only_process_entrypoints_import_the_composition_root():
@@ -316,18 +316,18 @@ def test_the_framework_scanner_can_fail():
         ("app/domains/support/tools.py", "from app.adapters.outbound.crawl4ai.web_crawler import render_url_to_markdown", {"app.adapters"}),
         ("app/agent/runtime/x.py", "from app.domains.registry import resolve_domain", {"app.domains"}),
         # application: what is allowed
-        ("app/agent/cost/x.py", "from app.ports.cost import UsageEventStore", set()),
+        ("app/agent/cost/x.py", "from app.ports.outbound.cost import UsageEventStore", set()),
         ("app/agent/cost/x.py", "from app.billing_integration import port as billing_port", set()),
         ("app/agent/graph/x.py", "from langgraph.graph import StateGraph\nfrom langchain_core.messages import AIMessage", set()),
         ("app/agent/graph/x.py", "from app.core import metrics\nfrom app.core.security import SecurityCtx", set()),
-        ("app/domains/support/tools.py", "from app.ports.domains import AgentManifest", set()),
+        ("app/domains/support/tools.py", "from app.ports.outbound.domains import AgentManifest", set()),
         # kernel and ports: inward only
         ("app/core/security.py", "from qdrant_client.models import Filter", {"qdrant_client"}),
         ("app/core/tool_idempotency.py", "from app.core.sql_store import get_connection", {"app.core.sql_store"}),
         ("app/core/errors.py", "from app.agent.graph import state", {"app.agent"}),
-        ("app/ports/cost.py", "from app.core.security import SecurityCtx", set()),
-        ("app/ports/cost.py", "import psycopg", {"psycopg"}),
-        ("app/ports/cost.py", "from app.adapters.outbound.qdrant import qdrant_store", {"app.adapters"}),
+        ("app/ports/outbound/cost.py", "from app.core.security import SecurityCtx", set()),
+        ("app/ports/outbound/cost.py", "import psycopg", {"psycopg"}),
+        ("app/ports/outbound/cost.py", "from app.adapters.outbound.qdrant import qdrant_store", {"app.adapters"}),
         # adapters may import anything
         ("app/adapters/outbound/postgres/x.py", "import psycopg\nfrom app.agent.cost import budgets", set()),
         ("app/domains/support/store.py", "from app.core.sql_store import get_connection", set()),

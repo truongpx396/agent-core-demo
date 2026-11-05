@@ -11,7 +11,7 @@ import pytest
 from app.agent.cost import usage_reconcile as reconcile
 from app.agent.cost.usage_reconcile import Finding, Report, Tolerance
 from app.core import metrics
-from app.ports.cost import Window
+from app.ports.outbound.cost import Window
 from scripts.jobs import usage_reconcile
 from tests.conftest import metric_value
 
