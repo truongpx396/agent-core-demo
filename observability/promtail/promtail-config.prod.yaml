@@ -4,8 +4,8 @@
 # daemon socket (docker_sd_configs below): it has to be co-located with the
 # containers it reads, unlike Prometheus/otel-collector which can scrape or
 # receive over a network. Only the `clients.url` target differs from dev —
-# pushing to the observability droplet's Loki over the DO VPC instead of a
-# same-host `loki:3100` — via LOKI_PUSH_HOST, substituted by Promtail's own
+# pushing to the observability droplet's Loki over the DO VPC instead of the dev
+# file's `host.docker.internal:3100` — via LOKI_PUSH_HOST, substituted by Promtail's own
 # `-config.expand-env=true` flag (docker-compose.prod.yml's command).
 server:
   http_listen_port: 9080

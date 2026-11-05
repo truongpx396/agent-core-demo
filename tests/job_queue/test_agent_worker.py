@@ -9,26 +9,36 @@ a real graph/LLM.
 import asyncio
 import json
 import logging
+import os
+import signal
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 from app.agent.graph.messages import RETRY_ARTIFACT_KEY
+from app.agent.runtime.core import current_domain
 from app.core import metrics
 from app.job_queue import agent_worker
 from app.job_queue.queue import (
     CONSUMER_GROUP,
     dead_letter_stream_key,
+    requests_stream_key,
     results_stream_key,
 )
 from tests.conftest import metric_value as _count
 from tests.job_queue.test_queue import FakeRedis
 
-REQUESTS_STREAM = agent_worker.REQUESTS_STREAM  # this test module's worker
-# runs as the default AGENT_DOMAIN ("ecorp"); see app/job_queue/agent_worker.py's
-# own docstring on why the requests stream is a per-process, not per-message,
-# property.
+REQUESTS_STREAM = requests_stream_key("ecorp")  # most of this module runs jobs as the "ecorp" domain
+
+
+def _process(client, entry_id, fields):
+    return agent_worker.process_request(client, entry_id, fields, domain="ecorp")
+
+
+def _reclaim(client, entry_id, fields, *, graph):
+    return agent_worker._handle_reclaimed_job(client, entry_id, fields, graph=graph, domain="ecorp")
 
 
 def _entry(
@@ -82,7 +92,7 @@ class TestProcessRequestTurn:
         client = FakeRedis()
         entry_id, fields = _entry(request_id="r1")
 
-        await agent_worker.process_request(client, entry_id, fields)
+        await _process(client, entry_id, fields)
 
         events = [json.loads(f["payload"]) for _, f in client.streams[results_stream_key("r1")]]
         assert events == [
@@ -114,7 +124,7 @@ class TestProcessRequestTurn:
             }
         )
 
-        await agent_worker.process_request(client, entry_id, fields)
+        await _process(client, entry_id, fields)
 
         events = [json.loads(f["payload"]) for _, f in client.streams[results_stream_key("r1")]]
         assert events == [{"type": "done"}]
@@ -137,7 +147,7 @@ class TestProcessRequestTurn:
 
         async def _run():
             await set_cancel_flag(client, "t1")
-            await agent_worker.process_request(client, entry_id, fields)
+            await _process(client, entry_id, fields)
             return await is_cancelled(client, "t1")
 
         # Also confirm the flag reads back False directly, independent of
@@ -160,7 +170,7 @@ class TestProcessRequestTurn:
         entry_id, fields = _entry(request_id="r1", thread_id="t1")
 
         async def _run():
-            await agent_worker.process_request(client, entry_id, fields)
+            await _process(client, entry_id, fields)
             # Set the flag AFTER the turn "finished" (fake) — proves the
             # captured cancel_check reads live state, not a snapshot.
             await set_cancel_flag(client, "t1")
@@ -180,7 +190,7 @@ class TestProcessRequestTurn:
         ctx = {"tenant": "ecorp", "principal": "p9", "claims": {}}
         entry_id, fields = _entry(text="what is 2+2?", thread_id="t9", ctx=ctx, require_approval=True)
 
-        await agent_worker.process_request(client, entry_id, fields)
+        await _process(client, entry_id, fields)
 
         assert captured == {
             "text": "what is 2+2?",
@@ -200,7 +210,7 @@ class TestProcessRequestTurn:
         client = FakeRedis()
         entry_id, fields = _entry(request_id="r4", images=["https://example.com/cat.png"])
 
-        await agent_worker.process_request(client, entry_id, fields)
+        await _process(client, entry_id, fields)
 
         assert captured["images"] == ["https://example.com/cat.png"]
 
@@ -219,7 +229,7 @@ class TestProcessRequestTurn:
         client = FakeRedis()
         entry_id, fields = _entry(request_id="r5")
 
-        await agent_worker.process_request(client, entry_id, fields)
+        await _process(client, entry_id, fields)
 
         assert captured["images"] is None
 
@@ -235,7 +245,7 @@ class TestProcessRequestTurn:
         entry_id, fields = _entry(request_id="r9")
 
         with caplog.at_level(logging.WARNING, logger="app.job_queue.agent_worker"):
-            await agent_worker.process_request(FakeRedis(), entry_id, fields)
+            await _process(FakeRedis(), entry_id, fields)
 
         (record,) = [r for r in caplog.records if r.getMessage() == "agent_worker_turn_failed"]
         assert record.error_class == "IndexError"
@@ -251,7 +261,7 @@ class TestProcessRequestTurn:
         client = FakeRedis()
         entry_id, fields = _entry(request_id="r2")
 
-        await agent_worker.process_request(client, entry_id, fields)
+        await _process(client, entry_id, fields)
 
         events = [json.loads(f["payload"]) for _, f in client.streams[results_stream_key("r2")]]
         assert len(events) == 1
@@ -283,7 +293,7 @@ class TestProcessRequestTurnContinue:
         ctx = {"tenant": "ecorp", "principal": "p1", "claims": {}}
         entry_id, fields = _entry(kind="turn_continue", request_id="r10", thread_id="t10", ctx=ctx)
 
-        await agent_worker.process_request(client, entry_id, fields)
+        await _process(client, entry_id, fields)
 
         assert captured == {"thread_id": "t10", "ctx": ctx}
         events = [json.loads(f["payload"]) for _, f in client.streams[results_stream_key("r10")]]
@@ -299,7 +309,7 @@ class TestProcessRequestTurnContinue:
         client = FakeRedis()
         entry_id, fields = _entry(kind="turn_continue", request_id="r11", thread_id="t11")
 
-        await agent_worker.process_request(client, entry_id, fields)
+        await _process(client, entry_id, fields)
 
         events = [json.loads(f["payload"]) for _, f in client.streams[results_stream_key("r11")]]
         assert len(events) == 1
@@ -338,7 +348,7 @@ class TestUnattendedJobs:
             request_id="r20", text="save a note", thread_id="telegram:7", ctx=ctx, unattended=True
         )
 
-        await agent_worker.process_request(client, entry_id, fields)
+        await _process(client, entry_id, fields)
 
         assert captured == {
             "text": "save a note",
@@ -366,7 +376,7 @@ class TestUnattendedJobs:
         client = FakeRedis()
         entry_id, fields = _entry(kind="turn_continue", request_id="r21", thread_id="telegram:7", unattended=True)
 
-        await agent_worker.process_request(client, entry_id, fields)
+        await _process(client, entry_id, fields)
 
         assert captured["thread_id"] == "telegram:7"
         events = [json.loads(f["payload"]) for _, f in client.streams[results_stream_key("r21")]]
@@ -388,7 +398,7 @@ class TestUnattendedJobs:
         del payload["unattended"]
         entry_id = "1-0"
 
-        await agent_worker.process_request(client, entry_id, {"payload": json.dumps(payload)})
+        await _process(client, entry_id, {"payload": json.dumps(payload)})
 
         events = [json.loads(f["payload"]) for _, f in client.streams[results_stream_key("r22")]]
         assert events == [{"type": "approval_required", "tool_calls": []}]
@@ -408,9 +418,9 @@ class TestUnattendedJobs:
         entry_id, fields = _entry(request_id="r23", thread_id="telegram:7", unattended=True)
         graph = FakeGraph({"telegram:7": messages} if messages else {})
 
-        await agent_worker._handle_reclaimed_job(client, entry_id, fields, graph=graph)
+        await _reclaim(client, entry_id, fields, graph=graph)
 
-        (republished,) = client.streams[agent_worker.REQUESTS_STREAM]
+        (republished,) = client.streams[REQUESTS_STREAM]
         payload = json.loads(republished[1]["payload"])
         assert payload["kind"] == expected_kind
         assert payload["unattended"] is True
@@ -432,7 +442,7 @@ class TestUnattendedJobs:
         monkeypatch.setattr(
             agent_worker, "astream_events_continue_turn", self._refuse("astream_events_continue_turn")
         )
-        await agent_worker.process_request(client, republished[0], republished[1])
+        await _process(client, republished[0], republished[1])
 
         assert reached == [expected_kind]
 
@@ -450,7 +460,7 @@ class TestProcessRequestResume:
         ctx = {"tenant": "ecorp", "principal": "p1", "claims": {}}
         entry_id, fields = _entry(kind="resume", request_id="r6", thread_id="t6", ctx=ctx, approved=False)
 
-        await agent_worker.process_request(client, entry_id, fields)
+        await _process(client, entry_id, fields)
 
         assert captured == {"thread_id": "t6", "approved": False, "ctx": ctx}
         events = [json.loads(f["payload"]) for _, f in client.streams[results_stream_key("r6")]]
@@ -472,7 +482,7 @@ class TestProcessRequestResume:
         client = FakeRedis()
         entry_id, fields = _entry(kind="resume", request_id="r6", thread_id="t6")
 
-        await agent_worker.process_request(client, entry_id, fields)
+        await _process(client, entry_id, fields)
 
         assert captured["cancel_check"] is not None, "the resume must be cancellable"
         assert await captured["cancel_check"]() is False
@@ -498,7 +508,7 @@ class TestProcessRequestResume:
         entry_id, fields = _entry(kind="resume", request_id="r6", thread_id="t6")
 
         await set_cancel_flag(client, "t6")
-        await agent_worker.process_request(client, entry_id, fields)
+        await _process(client, entry_id, fields)
 
         assert seen_cancelled == [False]
 
@@ -511,7 +521,7 @@ class TestProcessRequestResume:
         client = FakeRedis()
         entry_id, fields = _entry(kind="resume", request_id="r7")
 
-        await agent_worker.process_request(client, entry_id, fields)
+        await _process(client, entry_id, fields)
 
         events = [json.loads(f["payload"]) for _, f in client.streams[results_stream_key("r7")]]
         assert len(events) == 1
@@ -585,7 +595,7 @@ class TestProcessRequestCancel:
         ctx = {"tenant": "ecorp", "principal": "p1", "claims": {}}
         entry_id, fields = _entry(kind="cancel", request_id="r8", thread_id="t8", ctx=ctx)
 
-        await agent_worker.process_request(client, entry_id, fields)
+        await _process(client, entry_id, fields)
 
         assert captured == {"thread_id": "t8", "ctx": ctx}
         events = [json.loads(f["payload"]) for _, f in client.streams[results_stream_key("r8")]]
@@ -607,7 +617,7 @@ class TestProcessRequestCancel:
         client = FakeRedis()
         entry_id, fields = _entry(kind="cancel", request_id="r9")
 
-        await agent_worker.process_request(client, entry_id, fields)
+        await _process(client, entry_id, fields)
 
         events = [json.loads(f["payload"]) for _, f in client.streams[results_stream_key("r9")]]
         assert events == [{"type": "done"}]
@@ -622,7 +632,7 @@ class TestProcessRequestUnknownKind:
         client = FakeRedis()
         entry_id, fields = _entry(kind="not-a-real-kind", request_id="r10")
 
-        await agent_worker.process_request(client, entry_id, fields)
+        await _process(client, entry_id, fields)
 
         events = [json.loads(f["payload"]) for _, f in client.streams[results_stream_key("r10")]]
         assert len(events) == 1
@@ -659,7 +669,7 @@ class TestRunLoop:
             )
             _, entries = response[0]
             for eid, f in entries:
-                await agent_worker.process_request(client, eid, f)
+                await _process(client, eid, f)
 
         await _run_one_iteration()
 
@@ -706,7 +716,7 @@ class TestConcurrentDispatch:
                 entry_id, fields = _entry(request_id=f"r{i}", thread_id=f"t{i}")
                 await semaphore.acquire()
                 task = asyncio.create_task(
-                    agent_worker._process_with_limit(client, entry_id, fields, semaphore)
+                    agent_worker._process_with_limit(client, entry_id, fields, semaphore, domain="ecorp")
                 )
                 tasks.append(task)
             await asyncio.gather(*tasks)
@@ -751,9 +761,9 @@ class TestSameThreadJobsAreSerialized:
         entry_id_1, fields_1 = _entry(request_id="r1", thread_id="same-thread")
         entry_id_2, fields_2 = _entry(request_id="r2", thread_id="same-thread")
 
-        first = asyncio.create_task(agent_worker.process_request(client, entry_id_1, fields_1))
+        first = asyncio.create_task(_process(client, entry_id_1, fields_1))
         await handler_started.wait()  # first job now genuinely holds the lock
-        await agent_worker.process_request(client, entry_id_2, fields_2)  # second, while first is still in flight
+        await _process(client, entry_id_2, fields_2)  # second, while first is still in flight
         release_handler.set()
         await first
 
@@ -812,9 +822,9 @@ class TestSameThreadJobsAreSerialized:
         entry_id_1, fields_1 = _entry(request_id="r1", thread_id="same-thread")
         entry_id_2, fields_2 = _entry(request_id="r2", thread_id="same-thread")
 
-        first = asyncio.create_task(agent_worker.process_request(client, entry_id_1, fields_1))
+        first = asyncio.create_task(_process(client, entry_id_1, fields_1))
         await trailing_cleanup_started.wait()  # "done" already published; first job's own cleanup still running
-        await agent_worker.process_request(client, entry_id_2, fields_2)
+        await _process(client, entry_id_2, fields_2)
         release_trailing_cleanup.set()
         await first
 
@@ -847,9 +857,9 @@ class TestSameThreadJobsAreSerialized:
         entry_id_1, fields_1 = _entry(kind="turn", request_id="r1", thread_id="same-thread")
         entry_id_2, fields_2 = _entry(kind="resume", request_id="r2", thread_id="same-thread")
 
-        turn_task = asyncio.create_task(agent_worker.process_request(client, entry_id_1, fields_1))
+        turn_task = asyncio.create_task(_process(client, entry_id_1, fields_1))
         await handler_started.wait()
-        await agent_worker.process_request(client, entry_id_2, fields_2)
+        await _process(client, entry_id_2, fields_2)
         release_handler.set()
         await turn_task
 
@@ -865,8 +875,8 @@ class TestSameThreadJobsAreSerialized:
         entry_id_1, fields_1 = _entry(request_id="r1", thread_id="same-thread")
         entry_id_2, fields_2 = _entry(request_id="r2", thread_id="same-thread")
 
-        await agent_worker.process_request(client, entry_id_1, fields_1)  # runs and releases
-        await agent_worker.process_request(client, entry_id_2, fields_2)  # lock is free again
+        await _process(client, entry_id_1, fields_1)  # runs and releases
+        await _process(client, entry_id_2, fields_2)  # lock is free again
 
         r2_events = [json.loads(f["payload"]) for _, f in client.streams[results_stream_key("r2")]]
         assert r2_events == [{"type": "done"}]
@@ -881,8 +891,8 @@ class TestSameThreadJobsAreSerialized:
         entry_id_2, fields_2 = _entry(request_id="r2", thread_id="thread-b")
 
         await asyncio.gather(
-            agent_worker.process_request(client, entry_id_1, fields_1),
-            agent_worker.process_request(client, entry_id_2, fields_2),
+            _process(client, entry_id_1, fields_1),
+            _process(client, entry_id_2, fields_2),
         )
 
         for rid in ("r1", "r2"):
@@ -1061,16 +1071,16 @@ class TestHandleReclaimedJob:
         entry_id, fields = _entry(kind="turn", request_id="r1", thread_id="t1")
         before_retried = _count(agent_worker.metrics.agent_worker_job_reclaimed_total, queue="agent", outcome="retried")
 
-        await agent_worker._handle_reclaimed_job(client, entry_id, fields, graph=FakeGraph())
+        await _reclaim(client, entry_id, fields, graph=FakeGraph())
 
         # No error surfaced, nothing dead-lettered — the caller listening on
         # r1's results stream stays blocked, transparently waiting for the
         # retry's own real outcome instead.
         assert results_stream_key("r1") not in client.streams
-        assert dead_letter_stream_key(agent_worker.REQUESTS_STREAM) not in client.streams
+        assert dead_letter_stream_key(REQUESTS_STREAM) not in client.streams
         assert client.acked == [entry_id]
 
-        republished = client.streams[agent_worker.REQUESTS_STREAM]
+        republished = client.streams[REQUESTS_STREAM]
         assert len(republished) == 1
         new_payload = json.loads(republished[0][1]["payload"])
         assert new_payload["request_id"] == "r1"
@@ -1093,12 +1103,12 @@ class TestHandleReclaimedJob:
             {"t2": [HumanMessage(content="hi"), ToolMessage(content="ok", name="add_note", tool_call_id="c1")]}
         )
 
-        await agent_worker._handle_reclaimed_job(client, entry_id, fields, graph=graph)
+        await _reclaim(client, entry_id, fields, graph=graph)
 
         assert results_stream_key("r2") not in client.streams  # no error surfaced — the retry's own outcome will publish it
-        assert dead_letter_stream_key(agent_worker.REQUESTS_STREAM) not in client.streams
+        assert dead_letter_stream_key(REQUESTS_STREAM) not in client.streams
         assert client.acked == [entry_id]
-        republished = client.streams[agent_worker.REQUESTS_STREAM]
+        republished = client.streams[REQUESTS_STREAM]
         assert len(republished) == 1
         new_payload = json.loads(republished[0][1]["payload"])
         assert new_payload["request_id"] == "r2"
@@ -1112,16 +1122,16 @@ class TestHandleReclaimedJob:
         entry_id, fields = _entry(kind="turn", request_id="r2b", thread_id="t2b")
         graph = FakeGraph({"t2b": [HumanMessage(content="2+2?"), AIMessage(content="4")]})
 
-        await agent_worker._handle_reclaimed_job(client, entry_id, fields, graph=graph)
+        await _reclaim(client, entry_id, fields, graph=graph)
 
         events = [json.loads(f["payload"]) for _, f in client.streams[results_stream_key("r2b")]]
         assert events[0]["code"] == "worker_lost"
-        dead = client.streams[dead_letter_stream_key(agent_worker.REQUESTS_STREAM)]
+        dead = client.streams[dead_letter_stream_key(REQUESTS_STREAM)]
         assert len(dead) == 1
         assert client.acked == [entry_id]
-        assert agent_worker.REQUESTS_STREAM not in client.streams or all(
+        assert REQUESTS_STREAM not in client.streams or all(
             json.loads(f["payload"]).get("request_id") != "r2b"
-            for _, f in client.streams.get(agent_worker.REQUESTS_STREAM, [])
+            for _, f in client.streams.get(REQUESTS_STREAM, [])
         )  # never republished
 
     async def test_a_turn_already_at_the_retry_cap_is_dead_lettered_even_though_safe(self, monkeypatch):
@@ -1135,11 +1145,11 @@ class TestHandleReclaimedJob:
         payload["_reclaim_attempts"] = 1  # already retried once
         fields = {"payload": json.dumps(payload)}
 
-        await agent_worker._handle_reclaimed_job(client, entry_id, fields, graph=FakeGraph())
+        await _reclaim(client, entry_id, fields, graph=FakeGraph())
 
         events = [json.loads(f["payload"]) for _, f in client.streams[results_stream_key("r3")]]
         assert events[0]["code"] == "worker_lost"
-        assert len(client.streams[dead_letter_stream_key(agent_worker.REQUESTS_STREAM)]) == 1
+        assert len(client.streams[dead_letter_stream_key(REQUESTS_STREAM)]) == 1
 
     async def test_a_resume_is_always_auto_retried_now_that_tools_are_idempotent(self):
         """Unlike "turn", "resume" needs no checkpoint inspection at all — it continues an EXISTING checkpoint's
@@ -1150,12 +1160,12 @@ class TestHandleReclaimedJob:
         client = FakeRedis()
         entry_id, fields = _entry(kind="resume", request_id="r4", thread_id="t4")
 
-        await agent_worker._handle_reclaimed_job(client, entry_id, fields, graph=FakeGraph())
+        await _reclaim(client, entry_id, fields, graph=FakeGraph())
 
         assert results_stream_key("r4") not in client.streams
-        assert dead_letter_stream_key(agent_worker.REQUESTS_STREAM) not in client.streams
+        assert dead_letter_stream_key(REQUESTS_STREAM) not in client.streams
         assert client.acked == [entry_id]
-        republished = client.streams[agent_worker.REQUESTS_STREAM]
+        republished = client.streams[REQUESTS_STREAM]
         assert json.loads(republished[0][1]["payload"])["kind"] == "resume"
 
     async def test_a_cancel_is_always_auto_retried(self):
@@ -1164,12 +1174,12 @@ class TestHandleReclaimedJob:
         client = FakeRedis()
         entry_id, fields = _entry(kind="cancel", request_id="r5", thread_id="t5")
 
-        await agent_worker._handle_reclaimed_job(client, entry_id, fields, graph=FakeGraph())
+        await _reclaim(client, entry_id, fields, graph=FakeGraph())
 
         assert results_stream_key("r5") not in client.streams
-        assert dead_letter_stream_key(agent_worker.REQUESTS_STREAM) not in client.streams
+        assert dead_letter_stream_key(REQUESTS_STREAM) not in client.streams
         assert client.acked == [entry_id]
-        republished = client.streams[agent_worker.REQUESTS_STREAM]
+        republished = client.streams[REQUESTS_STREAM]
         assert json.loads(republished[0][1]["payload"])["kind"] == "cancel"
 
     async def test_an_unreadable_payload_still_acks_and_dead_letters_without_raising(self):
@@ -1177,10 +1187,10 @@ class TestHandleReclaimedJob:
         entry_id = "9-0"
         fields = {"payload": "not valid json"}
 
-        await agent_worker._handle_reclaimed_job(client, entry_id, fields, graph=FakeGraph())  # must not raise
+        await _reclaim(client, entry_id, fields, graph=FakeGraph())  # must not raise
 
         assert client.acked == [entry_id]
-        dead = client.streams[dead_letter_stream_key(agent_worker.REQUESTS_STREAM)]
+        dead = client.streams[dead_letter_stream_key(REQUESTS_STREAM)]
         assert len(dead) == 1
 
 
@@ -1195,12 +1205,12 @@ class TestReclaimLoop:
         monkeypatch.setattr(agent_worker, "WORKER_RECLAIM_INTERVAL_SECONDS", 0.01)
         client = FakeRedis()
         entry_id, fields = _entry(kind="turn", request_id="r5", thread_id="t5")
-        client.streams[agent_worker.REQUESTS_STREAM] = [(entry_id, fields)]
+        client.streams[REQUESTS_STREAM] = [(entry_id, fields)]
         client._delivered[entry_id] = 999_999_999  # already long abandoned
         graph = FakeGraph({"t5": [HumanMessage(content="hi"), AIMessage(content="done")]})
 
         stop_event = asyncio.Event()
-        task = asyncio.create_task(agent_worker._reclaim_loop(client, stop_event, graph=graph))
+        task = asyncio.create_task(agent_worker._reclaim_loop(client, stop_event, graphs={"ecorp": graph}))
         await asyncio.sleep(0.05)  # let at least one pass run
         stop_event.set()
         await asyncio.wait_for(task, timeout=1)
@@ -1223,15 +1233,15 @@ class TestReclaimLoop:
         # this test's own retry republishes a second entry onto the same
         # stream, and a collision with `entry_id` would make the two
         # indistinguishable.
-        entry_id = await client.xadd(agent_worker.REQUESTS_STREAM, fields)
-        await client.xreadgroup("some-other-group", "dead-consumer", {agent_worker.REQUESTS_STREAM: ">"})
+        entry_id = await client.xadd(REQUESTS_STREAM, fields)
+        await client.xreadgroup("some-other-group", "dead-consumer", {REQUESTS_STREAM: ">"})
         client._delivered[entry_id] = 999_999_999
         graph = FakeGraph(
             {"t6": [HumanMessage(content="hi"), ToolMessage(content="ok", name="add_note", tool_call_id="c1")]}
         )
 
         stop_event = asyncio.Event()
-        task = asyncio.create_task(agent_worker._reclaim_loop(client, stop_event, graph=graph))
+        task = asyncio.create_task(agent_worker._reclaim_loop(client, stop_event, graphs={"ecorp": graph}))
         await asyncio.sleep(0.05)
         stop_event.set()
         await asyncio.wait_for(task, timeout=1)
@@ -1239,7 +1249,7 @@ class TestReclaimLoop:
         assert entry_id in client.acked
         assert results_stream_key("r6") not in client.streams  # no error surfaced
         republished = [
-            f for eid, f in client.streams[agent_worker.REQUESTS_STREAM] if eid != entry_id
+            f for eid, f in client.streams[REQUESTS_STREAM] if eid != entry_id
         ]
         assert len(republished) == 1
         republished_payload = json.loads(republished[0]["payload"])
@@ -1263,7 +1273,7 @@ class TestReclaimLoop:
         monkeypatch.setattr(agent_worker, "reclaim_stale_entries", flaky_reclaim)
 
         stop_event = asyncio.Event()
-        task = asyncio.create_task(agent_worker._reclaim_loop(client, stop_event, graph=FakeGraph()))
+        task = asyncio.create_task(agent_worker._reclaim_loop(client, stop_event, graphs={"ecorp": FakeGraph()}))
         await asyncio.sleep(0.05)
         stop_event.set()
         await asyncio.wait_for(task, timeout=1)
@@ -1273,3 +1283,247 @@ class TestReclaimLoop:
 
 async def _noop_async(*args, **kwargs):
     return None
+
+
+class TestParseWorkerDomains:
+    KNOWN = ["ecorp", "ops", "sales", "support"]
+
+    def test_a_single_name(self):
+        assert agent_worker.parse_worker_domains("support", self.KNOWN) == ("support",)
+
+    def test_a_list_keeps_the_order_given_ignores_spaces_and_drops_repeats(self):
+        assert agent_worker.parse_worker_domains(" sales, ecorp ,sales,", self.KNOWN) == ("sales", "ecorp")
+
+    def test_all_is_every_registered_domain(self):
+        assert agent_worker.parse_worker_domains("all", self.KNOWN) == tuple(self.KNOWN)
+
+    def test_a_typo_fails_loud_and_names_what_is_valid(self):
+        with pytest.raises(ValueError, match=r"'suport'.*ecorp, ops, sales, support"):
+            agent_worker.parse_worker_domains("ecorp,suport", self.KNOWN)
+
+    @pytest.mark.parametrize("spec", ["", " , "])
+    def test_naming_no_domain_fails_instead_of_serving_nothing(self, spec):
+        with pytest.raises(ValueError, match="empty"):
+            agent_worker.parse_worker_domains(spec, self.KNOWN)
+
+
+def test_one_read_budget_is_split_across_the_streams_but_never_below_one(monkeypatch):
+    """XREADGROUP's COUNT is per stream: handing the whole budget to each would claim domains x concurrency."""
+    monkeypatch.setattr(agent_worker, "_READ_COUNT", 10)
+    assert agent_worker._read_count_per_stream(1) == 10
+    assert agent_worker._read_count_per_stream(4) == 2
+    assert agent_worker._read_count_per_stream(25) == 1
+
+
+class TestEachJobRunsOnItsOwnDomain:
+    @pytest.fixture
+    def seen(self, monkeypatch):
+        """Every graph-running entry point records the domain bound when it ran."""
+        seen = []
+
+        async def turn(text, thread_id, ctx, **kwargs):
+            seen.append(current_domain())
+            yield {"type": "done"}
+
+        async def resume(thread_id, approved, ctx, **kwargs):
+            seen.append(current_domain())
+            yield {"type": "done"}
+
+        async def continue_turn(thread_id, ctx, **kwargs):
+            seen.append(current_domain())
+            yield {"type": "done"}
+
+        async def cancel(thread_id, ctx):
+            seen.append(current_domain())
+            return True
+
+        monkeypatch.setattr(agent_worker, "astream_events_turn", turn)
+        monkeypatch.setattr(agent_worker, "astream_events_resume", resume)
+        monkeypatch.setattr(agent_worker, "astream_events_continue_turn", continue_turn)
+        monkeypatch.setattr(agent_worker, "cancel_run", cancel)
+        return seen
+
+    @pytest.mark.parametrize("kind", ["turn", "turn_continue", "resume", "cancel"])
+    async def test_every_kind_runs_on_the_graph_of_the_stream_it_came_from(self, seen, kind):
+        entry_id, fields = _entry(kind=kind)
+
+        await agent_worker.process_request(FakeRedis(), entry_id, fields, domain="support")
+
+        assert seen == ["support"]
+        assert current_domain() == "ecorp"  # and the binding does not outlive the job
+
+    async def test_the_ack_goes_to_the_stream_the_job_was_read_from(self, seen):
+        client = FakeRedis()
+        entry_id, fields = _entry()
+
+        await agent_worker.process_request(client, entry_id, fields, domain="ops")
+
+        assert client.ack_calls == [(requests_stream_key("ops"), entry_id)]
+
+    async def test_the_ack_still_goes_to_that_stream_when_the_job_fails(self, monkeypatch):
+        async def boom(*args, **kwargs):
+            raise RuntimeError("graph exploded")
+            yield  # pragma: no cover - makes this an async generator
+
+        monkeypatch.setattr(agent_worker, "astream_events_turn", boom)
+        client = FakeRedis()
+        entry_id, fields = _entry()
+
+        await agent_worker.process_request(client, entry_id, fields, domain="sales")
+
+        assert client.ack_calls == [(requests_stream_key("sales"), entry_id)]
+
+    async def test_jobs_in_flight_together_do_not_see_each_others_domain(self, monkeypatch):
+        """The jobs of different domains overlap in one process: each task keeps its own binding."""
+        release = asyncio.Event()
+        seen = {}
+
+        async def turn(text, thread_id, ctx, **kwargs):
+            await release.wait()  # every job is inside its handler before any finishes
+            seen[thread_id] = current_domain()
+            yield {"type": "done"}
+
+        monkeypatch.setattr(agent_worker, "astream_events_turn", turn)
+        client = FakeRedis()
+        jobs = [
+            asyncio.create_task(
+                agent_worker.process_request(client, *_entry(request_id=f"r-{d}", thread_id=f"t-{d}"), domain=d)
+            )
+            for d in ("ecorp", "support", "ops", "sales")
+        ]
+        await asyncio.sleep(0.05)
+        release.set()
+        await asyncio.gather(*jobs)
+
+        assert seen == {"t-ecorp": "ecorp", "t-support": "support", "t-ops": "ops", "t-sales": "sales"}
+
+
+class _BlockingFakeRedis(FakeRedis):
+    """`xreadgroup` yields when idle (the real one blocks), so `run()`'s loop cannot starve the event loop; it also records its calls."""
+
+    def __init__(self):
+        super().__init__()
+        self.reads = []
+
+    async def aclose(self):
+        pass
+
+    async def xreadgroup(self, group, consumer, streams, count=None, block=None):
+        self.reads.append((list(streams), count))
+        result = await super().xreadgroup(group, consumer, streams, count=count, block=block)
+        if not result:
+            await asyncio.sleep(0.01)
+        return result
+
+
+class TestRunServesEveryConfiguredDomain:
+    async def test_one_process_reads_each_domains_stream_and_runs_each_job_on_its_graph(self, monkeypatch):
+        seen = {}
+
+        async def turn(text, thread_id, ctx, **kwargs):
+            seen[thread_id] = current_domain()
+            yield {"type": "done"}
+
+        built = []
+
+        async def init_graph(domain=None):
+            built.append(domain)
+            return f"graph-{domain}"
+
+        async def no_reclaim(*args, **kwargs):
+            return None
+
+        client = _BlockingFakeRedis()
+        support_id = await client.xadd(requests_stream_key("support"), _entry(request_id="r-s", thread_id="t-s")[1])
+        ops_id = await client.xadd(requests_stream_key("ops"), _entry(request_id="r-o", thread_id="t-o")[1])
+        monkeypatch.setattr(agent_worker, "AGENT_WORKER_DOMAINS", "support, ops")
+        monkeypatch.setattr(agent_worker, "astream_events_turn", turn)
+        monkeypatch.setattr(agent_worker, "init_graph_async", init_graph)
+        monkeypatch.setattr(agent_worker, "get_client", lambda: client)
+        monkeypatch.setattr(agent_worker, "_reclaim_loop", no_reclaim)
+        monkeypatch.setattr(agent_worker, "close_all_connections", AsyncMock())
+        monkeypatch.setattr(agent_worker.sql_store, "close_pool", AsyncMock())
+        monkeypatch.setattr(agent_worker, "close_checkpointer_pool", AsyncMock())
+
+        async def stop_once_both_are_acked():
+            while len(client.acked) < 2:
+                await asyncio.sleep(0.01)
+            os.kill(os.getpid(), signal.SIGTERM)
+
+        stopper = asyncio.create_task(stop_once_both_are_acked())
+        await asyncio.wait_for(agent_worker.run(), 30)
+        await stopper
+
+        assert built == ["support", "ops"]  # every graph built at boot, none for a domain it does not serve
+        assert set(client.groups) == {requests_stream_key("support"), requests_stream_key("ops")}
+        assert client.reads[0][0] == [requests_stream_key("support"), requests_stream_key("ops")]  # one call, both streams
+        assert seen == {"t-s": "support", "t-o": "ops"}
+        assert sorted(client.ack_calls) == sorted(
+            [(requests_stream_key("support"), support_id), (requests_stream_key("ops"), ops_id)]
+        )
+
+    async def test_a_typo_in_the_domain_list_stops_the_process_before_it_reads_anything(self, monkeypatch):
+        client = _BlockingFakeRedis()
+        monkeypatch.setattr(agent_worker, "AGENT_WORKER_DOMAINS", "ecorp,suport")
+        monkeypatch.setattr(agent_worker, "get_client", lambda: client)
+
+        with pytest.raises(ValueError, match="suport"):
+            await agent_worker.run()
+
+        assert client.reads == []
+
+
+class TestReclaimSweepsEveryDomain:
+    async def test_each_domains_abandoned_job_is_judged_by_its_own_graph_and_goes_back_on_its_own_stream(self, monkeypatch):
+        monkeypatch.setattr(agent_worker, "WORKER_RECLAIM_INTERVAL_SECONDS", 0.01)
+        client = FakeRedis()
+        asked = []
+
+        class RecordingGraph(FakeGraph):
+            def __init__(self, name):
+                super().__init__({"t-x": [HumanMessage(content="hi")]})
+                self.name = name
+
+            async def aget_state(self, config):
+                asked.append(self.name)
+                return await super().aget_state(config)
+
+        ids = {}
+        for domain in ("support", "ops"):
+            entry_id = await client.xadd(requests_stream_key(domain), _entry(request_id=f"r-{domain}", thread_id="t-x")[1])
+            await client.xreadgroup("some-other-group", "dead-consumer", {requests_stream_key(domain): ">"})
+            client._delivered[entry_id] = 999_999_999
+            ids[domain] = entry_id
+        graphs = {"support": RecordingGraph("support"), "ops": RecordingGraph("ops")}
+
+        stop_event = asyncio.Event()
+        task = asyncio.create_task(agent_worker._reclaim_loop(client, stop_event, graphs=graphs))
+        await asyncio.sleep(0.05)
+        stop_event.set()
+        await asyncio.wait_for(task, timeout=1)
+
+        assert sorted(set(asked)) == ["ops", "support"]
+        assert sorted(client.ack_calls) == sorted((requests_stream_key(d), ids[d]) for d in ("support", "ops"))
+        for domain in ("support", "ops"):
+            retried = [f for eid, f in client.streams[requests_stream_key(domain)] if eid != ids[domain]]
+            assert [json.loads(f["payload"])["request_id"] for f in retried] == [f"r-{domain}"]
+
+    async def test_a_failing_domain_does_not_stop_the_others_from_being_swept(self, monkeypatch):
+        monkeypatch.setattr(agent_worker, "WORKER_RECLAIM_INTERVAL_SECONDS", 0.01)
+        swept = []
+
+        async def reclaim(client, *, stream, **kwargs):
+            swept.append(stream)
+            if stream == requests_stream_key("support"):
+                raise RuntimeError("redis blip")
+            return []
+
+        monkeypatch.setattr(agent_worker, "reclaim_stale_entries", reclaim)
+        stop_event = asyncio.Event()
+        graphs = {"support": FakeGraph(), "ops": FakeGraph()}
+        task = asyncio.create_task(agent_worker._reclaim_loop(FakeRedis(), stop_event, graphs=graphs))
+        await asyncio.sleep(0.05)
+        stop_event.set()
+        await asyncio.wait_for(task, timeout=1)
+
+        assert requests_stream_key("ops") in swept

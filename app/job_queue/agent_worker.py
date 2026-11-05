@@ -1,18 +1,24 @@
 """Redis Streams consumer: the "agent worker" half of the SSE-service/agent-worker split (GRAPH_PATTERNS.md
-pattern 43). Consumer-group delivery hands each request on this process's domain stream
-(`queue.py::requests_stream_key`) to exactly one worker, so more workers means more capacity.
+pattern 43). Consumer-group delivery hands each request on a domain's stream (`queue.py::requests_stream_key`)
+to exactly one worker, so more workers means more capacity.
 
-One process serves ONE domain for its life: `AGENT_DOMAIN` (default `"ecorp"`) picks the manifest/tools and
-the stream. Several domains means several worker pools; `app/api/main.py` stays one process, routing by
-`X-Domain`.
+## Domains
 
-Run with `make agent-worker` (or `-support`/`-ops`/`-sales`); it needs the Redis from `make up` and is not
-started by `make up` or `make serve`. Every chat front door (the API, `make chat`, `make telegram`) needs a
-worker for its domain, or its turn gets the "is an agent-worker running for this domain?" error.
+A process serves the domains in `AGENT_WORKER_DOMAINS` (comma-separated names, or `all`; default `"ecorp"`): it
+reads each one's stream and runs a job on THAT domain's graph (its manifest and tools), under one concurrency
+budget. The domain of a job is the stream it came from, never a field of the payload: `process_request` binds
+it (`runtime/core.py::bind_domain`) around the handler, so the graph, the session row and the ack all follow
+it. One domain per process is still a valid deployment (a pool sized or isolated per domain); `app/api/main.py`
+routes by `X-Domain` either way.
+
+Run with `make agent-worker` (`make agent-worker-all` for every domain); it needs the Redis from `make up` and
+is not started by `make up` or `make serve`. Every chat front door (the API, `make chat`, `make telegram`)
+needs a worker serving its domain, or its turn gets the "is an agent-worker running for this domain?" error.
 
 ## Concurrency
 
-`run()` runs up to `_MAX_CONCURRENCY` turns at once (a semaphore-bounded task per job). Different thread_ids
+`run()` runs up to `_MAX_CONCURRENCY` turns at once across all its domains (a semaphore-bounded task per job).
+Different thread_ids
 are safe: a turn holds no in-process state a sibling could corrupt (state is in Postgres via the checkpointer,
 `bind_request_id`'s `ContextVar` is copied per task).
 
@@ -75,7 +81,11 @@ from typing import cast
 from langchain_core.messages import AIMessage
 
 from app.agent.graph.messages import is_retry_artifact, is_user_message
-from app.agent.runtime.core import close_checkpointer_pool, init_graph_async
+from app.agent.runtime.core import (
+    bind_domain,
+    close_checkpointer_pool,
+    init_graph_async,
+)
 from app.agent.runtime.stream import (
     astream_events_continue_turn,
     astream_events_continue_turn_unattended,
@@ -87,7 +97,7 @@ from app.agent.runtime.stream import (
 from app.bootstrap import verify_wired, wire
 from app.core import metrics, sql_store
 from app.core.config import (
-    AGENT_DOMAIN,
+    AGENT_WORKER_DOMAINS,
     AGENT_WORKER_MAX_CONCURRENCY,
     AGENT_WORKER_RECLAIM_IDLE_SECONDS,
     MAX_AUTO_RECLAIM_RETRIES,
@@ -102,7 +112,6 @@ from app.core.errors import (
 from app.core.logging_config import bind_request_id, configure_logging
 from app.core.profiling import start_profiling
 from app.core.telemetry import configure_telemetry
-from app.domains.registry import resolve_domain
 from app.job_queue.queue import (
     CONSUMER_GROUP,
     RECLAIM_ATTEMPTS_FIELD,
@@ -121,19 +130,37 @@ from app.job_queue.queue import (
     requests_stream_key,
 )
 from app.mcp.connection import close_all_connections
+from app.ports.domains import domain_catalog
 
 logger = logging.getLogger(__name__)
 
 CONSUMER_NAME = f"{socket.gethostname()}-{uuid.uuid4().hex[:8]}"
-# This process's own domain's requests stream, fixed for its whole life
-# (domain is a per-PROCESS property, not per-message — see module docstring).
-REQUESTS_STREAM = requests_stream_key(AGENT_DOMAIN)
 _MAX_CONCURRENCY = AGENT_WORKER_MAX_CONCURRENCY  # concurrent turns per worker
 # process — bounds both the semaphore in run() and how many entries one
 # xreadgroup call pulls, so this process never claims more than it's
 # willing to start (unclaimed entries stay pending for the group).
 _READ_COUNT = _MAX_CONCURRENCY
 _BLOCK_MS = 5000
+
+
+def parse_worker_domains(spec: str, known: list[str]) -> tuple[str, ...]:
+    """`AGENT_WORKER_DOMAINS` as an ordered, duplicate-free tuple of registered names; `all` is every `known` one.
+    Raises `ValueError` for a blank spec or an unknown name, so a typo stops the process instead of leaving a
+    stream nobody reads."""
+    names = [name.strip() for name in spec.split(",") if name.strip()]
+    if not names:
+        raise ValueError("AGENT_WORKER_DOMAINS is empty: name at least one domain, or `all`")
+    if "all" in names:
+        return tuple(known)
+    unknown = [name for name in names if name not in known]
+    if unknown:
+        raise ValueError(f"Unknown AGENT_WORKER_DOMAINS {', '.join(map(repr, unknown))}: must be one of {', '.join(known)}, or `all`")
+    return tuple(dict.fromkeys(names))
+
+
+def _read_count_per_stream(domains: int) -> int:
+    """XREADGROUP's COUNT is per stream, so the budget is split across them (at least 1 each)."""
+    return max(1, _READ_COUNT // domains)
 
 
 async def _publish_events(client, request_id: str, events, release_lock) -> None:
@@ -266,9 +293,10 @@ _DISPATCH = {
 }
 
 
-async def process_request(client, entry_id: str, fields: dict) -> None:
-    """Dispatch one job by `payload["kind"]` and stream its events back. Always ack, even on failure: a
-    redelivered, already-attempted request would re-run the same side-effecting tool calls.
+async def process_request(client, entry_id: str, fields: dict, *, domain: str) -> None:
+    """Dispatch one job by `payload["kind"]` and stream its events back, on `domain`'s graph. Always ack (on
+    `domain`'s stream), even on failure: a redelivered, already-attempted request would re-run the same
+    side-effecting tool calls.
 
     Every job kind first acquires `queue.py::acquire_thread_lock` for its `thread_id`. The module docstring
     notes a turn holds no IN-PROCESS state a sibling could corrupt, which is true of this process's memory but
@@ -311,7 +339,7 @@ async def process_request(client, entry_id: str, fields: dict) -> None:
         lock_released = True
         await release_thread_lock(client, thread_id, lock_token)
 
-    with bind_request_id(request_id):
+    with bind_request_id(request_id), bind_domain(domain):
         try:
             thread_id = payload["thread_id"]
             if handler is None:
@@ -336,6 +364,7 @@ async def process_request(client, entry_id: str, fields: dict) -> None:
                 "agent_worker_turn_failed",
                 extra={
                     "request_id": request_id,
+                    "domain": domain,
                     "kind": kind,
                     "error_class": type(exc).__name__,
                     "origin": error_origin(exc),  # where, not what: see errors.error_origin
@@ -349,17 +378,17 @@ async def process_request(client, entry_id: str, fields: dict) -> None:
                 client, request_id, {"type": "error", "content": envelope.message, **envelope.to_dict()}
             )
         finally:
-            await client.xack(REQUESTS_STREAM, CONSUMER_GROUP, entry_id)
+            await client.xack(requests_stream_key(domain), CONSUMER_GROUP, entry_id)
 
 
 async def _process_with_limit(
-    client, entry_id: str, fields: dict, semaphore: asyncio.Semaphore
+    client, entry_id: str, fields: dict, semaphore: asyncio.Semaphore, *, domain: str
 ) -> None:
     """Runs one job under `semaphore` and releases it when done, success or
     failure — `process_request` already acks regardless of outcome, so this
     wrapper only owns the concurrency slot."""
     try:
-        await process_request(client, entry_id, fields)
+        await process_request(client, entry_id, fields, domain=domain)
     finally:
         semaphore.release()
 
@@ -451,7 +480,7 @@ async def _classify_reclaimed_turn(graph, thread_id: str) -> str:
     return "retry_continue"
 
 
-async def _handle_reclaimed_job(client, entry_id: str, fields: dict, *, graph) -> None:
+async def _handle_reclaimed_job(client, entry_id: str, fields: dict, *, graph, domain: str) -> None:
     """One entry `_reclaim_loop` found idle past
     `AGENT_WORKER_RECLAIM_IDLE_SECONDS` — its original consumer almost
     certainly died before ever reaching `process_request`'s own ack (a live
@@ -467,7 +496,7 @@ async def _handle_reclaimed_job(client, entry_id: str, fields: dict, *, graph) -
             "agent_worker_reclaimed_payload_unreadable",
             extra={"entry_id": entry_id, "error_class": type(exc).__name__},
         )
-        await _dead_letter_reclaimed(client, entry_id, {}, reason="unreadable_payload")
+        await _dead_letter_reclaimed(client, entry_id, {}, reason="unreadable_payload", domain=domain)
         return
 
     request_id = payload.get("request_id")
@@ -479,6 +508,7 @@ async def _handle_reclaimed_job(client, entry_id: str, fields: dict, *, graph) -
         extra={
             "entry_id": entry_id,
             "request_id": request_id,
+            "domain": domain,
             "thread_id": thread_id,
             "kind": kind,
             "attempts": attempts,
@@ -501,9 +531,9 @@ async def _handle_reclaimed_job(client, entry_id: str, fields: dict, *, graph) -
         safe_to_retry = False
 
     if safe_to_retry and attempts < MAX_AUTO_RECLAIM_RETRIES:
-        await republish_job(client, requests_stream=REQUESTS_STREAM, payload=payload)
+        await republish_job(client, requests_stream=requests_stream_key(domain), payload=payload)
         metrics.agent_worker_job_reclaimed_total.labels(queue="agent", outcome="retried").inc()
-        await client.xack(REQUESTS_STREAM, CONSUMER_GROUP, entry_id)
+        await client.xack(requests_stream_key(domain), CONSUMER_GROUP, entry_id)
         return
 
     # Not safe (a "turn"/"turn_continue" that already finished or is
@@ -523,21 +553,21 @@ async def _handle_reclaimed_job(client, entry_id: str, fields: dict, *, graph) -
     # exceed THREAD_LOCK_TTL_SECONDS, so by the time a job is reclaimed
     # its lock has already self-expired via that TTL — see both settings'
     # own docstrings in app/core/config.py.
-    await _dead_letter_reclaimed(client, entry_id, payload, reason="worker_lost")
+    await _dead_letter_reclaimed(client, entry_id, payload, reason="worker_lost", domain=domain)
 
 
-async def _dead_letter_reclaimed(client, entry_id: str, payload: dict, *, reason: str) -> None:
+async def _dead_letter_reclaimed(client, entry_id: str, payload: dict, *, reason: str, domain: str) -> None:
+    stream = requests_stream_key(domain)
     metrics.agent_worker_job_reclaimed_total.labels(queue="agent", outcome="dead_lettered").inc()
-    await publish_dead_letter(
-        client, requests_stream=REQUESTS_STREAM, entry_id=entry_id, payload=payload, reason=reason
-    )
-    await client.xack(REQUESTS_STREAM, CONSUMER_GROUP, entry_id)
+    await publish_dead_letter(client, requests_stream=stream, entry_id=entry_id, payload=payload, reason=reason)
+    await client.xack(stream, CONSUMER_GROUP, entry_id)
 
 
-async def _reclaim_loop(client, stop_event: asyncio.Event, *, graph) -> None:
+async def _reclaim_loop(client, stop_event: asyncio.Event, *, graphs: dict) -> None:
     """Runs for this whole process's life, alongside `run()`'s own read
-    loop: every `WORKER_RECLAIM_INTERVAL_SECONDS`, sweeps this domain's
-    requests stream for entries abandoned by a worker that died mid-job
+    loop: every `WORKER_RECLAIM_INTERVAL_SECONDS`, sweeps each served
+    domain's requests stream (`graphs` is domain name -> its graph) for
+    entries abandoned by a worker that died mid-job
     (any replica's reclaim loop can claim any OTHER replica's abandoned
     entry — `XAUTOCLAIM` operates on the whole consumer group, not just
     this process's own pending list). A transient Redis error is logged and
@@ -550,36 +580,36 @@ async def _reclaim_loop(client, stop_event: asyncio.Event, *, graph) -> None:
             return  # stop_event was set during the wait — shutting down
         except TimeoutError:
             pass  # normal case: interval elapsed, run a pass below
-        try:
-            entries = await reclaim_stale_entries(
-                client,
-                stream=REQUESTS_STREAM,
-                group=CONSUMER_GROUP,
-                consumer=CONSUMER_NAME,
-                min_idle_ms=min_idle_ms,
-            )
-            for entry_id, fields in entries:
-                await _handle_reclaimed_job(client, entry_id, fields, graph=graph)
-        except Exception as exc:  # noqa: BLE001 - one bad pass must not end reclaim for this process's whole life
-            logger.warning("agent_worker_reclaim_pass_failed", extra={"error_class": type(exc).__name__})
+        for domain, graph in graphs.items():
+            try:
+                entries = await reclaim_stale_entries(
+                    client,
+                    stream=requests_stream_key(domain),
+                    group=CONSUMER_GROUP,
+                    consumer=CONSUMER_NAME,
+                    min_idle_ms=min_idle_ms,
+                )
+                for entry_id, fields in entries:
+                    await _handle_reclaimed_job(client, entry_id, fields, graph=graph, domain=domain)
+            except Exception as exc:  # noqa: BLE001 - one bad pass must not end reclaim for this process's whole life, nor for the other domains
+                logger.warning("agent_worker_reclaim_pass_failed", extra={"domain": domain, "error_class": type(exc).__name__})
 
 
 async def run() -> None:
     wire()
     verify_wired()
-    manifest, domain = resolve_domain(AGENT_DOMAIN)  # fails loud on a typo'd AGENT_DOMAIN
-    graph = await init_graph_async(manifest=manifest, domain=domain)  # opens the durable
-    # checkpointer on THIS process's own loop, against AGENT_DOMAIN's manifest/tools.
-    # Kept (not discarded like before reclaim support existed): _reclaim_loop
-    # needs it read-only, to check a reclaimed "turn"/"turn_continue" job's
-    # checkpointed state via _classify_reclaimed_turn — a process serves
-    # exactly one domain for its life, so init_graph_async() would return
-    # this exact same cached graph again regardless.
+    domains = parse_worker_domains(AGENT_WORKER_DOMAINS, domain_catalog.get().names())  # fails loud on a typo
+    # One graph per served domain, built now so a bad manifest stops the process at boot. The first call opens the
+    # durable checkpointer on THIS process's own loop; every domain shares it. Kept for _reclaim_loop, which reads
+    # a reclaimed job's checkpointed state (read-only) through its own domain's graph.
+    graphs = {name: await init_graph_async(name) for name in domains}
+    streams = {requests_stream_key(name): name for name in domains}  # stream -> domain
     client = get_client()
-    await ensure_consumer_group(client, AGENT_DOMAIN)
+    for name in domains:
+        await ensure_consumer_group(client, name)
     logger.info(
         "agent_worker_started",
-        extra={"consumer": CONSUMER_NAME, "domain": manifest.name, "max_concurrency": _MAX_CONCURRENCY},
+        extra={"consumer": CONSUMER_NAME, "domains": list(domains), "max_concurrency": _MAX_CONCURRENCY},
     )
 
     # Graceful shutdown: SIGTERM/SIGINT sets this instead of killing the
@@ -594,7 +624,7 @@ async def run() -> None:
     for sig in (signal.SIGTERM, signal.SIGINT):
         loop.add_signal_handler(sig, stop_event.set)
 
-    reclaim_task = asyncio.create_task(_reclaim_loop(client, stop_event, graph=graph))
+    reclaim_task = asyncio.create_task(_reclaim_loop(client, stop_event, graphs=graphs))
 
     # Bounds jobs this process runs at once. Acquired BEFORE the task is
     # created, so a full semaphore also backpressures reading: entries stay
@@ -602,25 +632,26 @@ async def run() -> None:
     semaphore = asyncio.Semaphore(_MAX_CONCURRENCY)
     in_flight: set[asyncio.Task] = set()
 
+    read_count = _read_count_per_stream(len(domains))
     while not stop_event.is_set():
         response = cast(
             StreamReadResponse,
             await client.xreadgroup(
                 CONSUMER_GROUP,
                 CONSUMER_NAME,
-                {REQUESTS_STREAM: ">"},
-                count=_READ_COUNT,
+                dict.fromkeys(streams, ">"),
+                count=read_count,
                 block=_BLOCK_MS,
             ),
         )
-        if not response:
-            continue
-        _, entries = response[0]
-        for entry_id, fields in entries:
-            await semaphore.acquire()
-            task = asyncio.create_task(_process_with_limit(client, entry_id, fields, semaphore))
-            in_flight.add(task)
-            task.add_done_callback(in_flight.discard)
+        for stream, entries in response or []:
+            for entry_id, fields in entries:
+                await semaphore.acquire()
+                task = asyncio.create_task(
+                    _process_with_limit(client, entry_id, fields, semaphore, domain=streams[stream])
+                )
+                in_flight.add(task)
+                task.add_done_callback(in_flight.discard)
 
     logger.info(
         "agent_worker_stopping", extra={"consumer": CONSUMER_NAME, "in_flight": len(in_flight)}
@@ -646,5 +677,6 @@ async def run() -> None:
 if __name__ == "__main__":
     configure_logging()
     configure_telemetry("agent-core-agent-worker")
-    start_profiling("agent-core-agent-worker")
+    # One tag value: a comma would read as a separator in a Pyroscope query.
+    start_profiling("agent-core-agent-worker", domain="+".join(d.strip() for d in AGENT_WORKER_DOMAINS.split(",") if d.strip()))
     asyncio.run(run())

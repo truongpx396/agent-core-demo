@@ -26,13 +26,19 @@ Provisioning to the burst peak when the ceiling is elsewhere just pays for idle 
 
 Docker already gives independent restart-on-crash, resource accounting and trivial scaling *per container* (`restart: unless-stopped` is container-level, so a crashed process inside a multi-process container needs its own supervisor to be noticed at all). Both workers are one-process-per-container services in `docker-compose.yml`, scaled by replica count (`docker compose --profile app up -d --scale agent-worker=3` / `--scale ingest-worker=3`). Efficiency belongs *inside* the process (below), not in packing processes together. Each replica pushes its metrics over OTLP to one collector (GRAPH_PATTERNS.md 43), so scaling needs no scrape-config change either.
 
+## Domains per process
+
+One `agent_worker` process serves every domain in `AGENT_WORKER_DOMAINS` (names, or `all`), so the four example domains need one container, not four. The budget is the process's: `AGENT_WORKER_MAX_CONCURRENCY` turns at once **across all its domains**, over one checkpointer pool. Size it for the sum of the domains' load, not per domain.
+
+The cost is isolation. A flood on one domain can occupy every slot while another waits. If that matters, run separate pools, each with its own `AGENT_WORKER_DOMAINS` and replicas (`AGENT_WORKER_DOMAINS=support docker compose --profile app up -d --scale agent-worker=2`); streams and consumer groups are per domain, so the pools never share a job. GRAPH_PATTERNS.md 96 has the mechanics.
+
 ## Model 1: `agent_worker`, concurrency because turns mostly *wait*
 
-`agent_worker.py::run()` runs up to `AGENT_WORKER_MAX_CONCURRENCY` turns in ONE process: an `asyncio.Semaphore` acquired *before* a task is created, then `asyncio.create_task` per job, not a serial `await` loop.
+`agent_worker.py::run()` runs up to `AGENT_WORKER_MAX_CONCURRENCY` turns in ONE process (all its domains together): an `asyncio.Semaphore` acquired *before* a task is created, then `asyncio.create_task` per job, not a serial `await` loop.
 
 - **Why "50 parallel requests" doesn't need 50 cores:** a turn's slow part is a network round trip to an LLM API plus tool execution, during which the process is idle. asyncio overlaps many such waits on one thread: while turn A awaits the LLM, the loop runs turn B. That's **concurrency** (many outstanding I/O operations interleaved), not **parallelism**. If the "LLM call" were local CPU-bound computation, it wouldn't work (see Model 2).
 - **Why it's safe:** a turn holds no in-process state a concurrent sibling could corrupt. Conversation state lives in Postgres via the checkpointer; tenant-scoped resources (Redis, Qdrant, the appdata pool) are per-call or pooled; and `bind_request_id`'s `contextvars.ContextVar` is copied per task by `asyncio.create_task`, so one task's request id never leaks into a sibling's logs.
-- **The bottleneck it doesn't remove:** the checkpointer. `_open_checkpointer` (`app/agent/runtime/core.py`) backs `AsyncPostgresSaver` with a connection *pool* because psycopg wraps every operation on one connection in its own lock, so a single shared connection would serialize every turn's checkpoint reads and writes regardless of the semaphore. The pool is what lets `_MAX_CONCURRENCY` turns overlap.
+- **The bottleneck it doesn't remove:** the checkpointer. `PgCheckpointing.open` (`app/adapters/postgres/checkpointing.py`) backs `AsyncPostgresSaver` with a connection *pool* because psycopg wraps every operation on one connection in its own lock, so a single shared connection would serialize every turn's checkpoint reads and writes regardless of the semaphore. The pool is what lets `_MAX_CONCURRENCY` turns overlap.
 
 ## Model 2: `ingest_worker`, originally serial, now mirrors Model 1
 

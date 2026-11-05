@@ -18,17 +18,11 @@ mcp-serve-ops:  ## MCP server exposing fetch_metrics_summary/list_recent_inciden
 
 # --- Queue consumers ---
 
-agent-worker:  ## Redis Streams agent worker for the Ecorp domain (run several to scale); the API, `make chat` and `make telegram` publish to it
+agent-worker:  ## Redis Streams agent worker for the Ecorp domain (run several to scale); AGENT_WORKER_DOMAINS=support,ops picks others
 	python -m app.job_queue.agent_worker
 
-agent-worker-support:  ## Agent worker pool for the support domain; the web UI's X-Domain: support turns route here
-	AGENT_DOMAIN=support python -m app.job_queue.agent_worker
-
-agent-worker-ops:  ## Agent worker pool for the ops domain; the web UI's X-Domain: ops turns route here
-	AGENT_DOMAIN=ops python -m app.job_queue.agent_worker
-
-agent-worker-sales:  ## Agent worker pool for the sales domain; the web UI's X-Domain: sales turns route here
-	AGENT_DOMAIN=sales python -m app.job_queue.agent_worker
+agent-worker-all:  ## One agent worker serving every domain (ecorp, support, ops, sales)
+	AGENT_WORKER_DOMAINS=all python -m app.job_queue.agent_worker
 
 ingest-worker:  ## Document-ingestion worker for POST /ingest/upload (run several to scale)
 	python -m app.ingestion.ingest_worker
@@ -44,7 +38,7 @@ usage-reconcile-worker:  ## usage-reconcile as a loop: a pass every USAGE_RECONC
 
 # --- Channels ---
 
-chat:  ## Interactive agent CLI; turns go through the queue, so it needs `make up` and a worker (`make agent-worker`); AGENT_DOMAIN=support|ops|sales picks another pool
+chat:  ## Interactive agent CLI; turns go through the queue, so it needs `make up` and a worker (`make agent-worker`); AGENT_DOMAIN=support|ops|sales picks another domain (`make agent-worker-all`)
 	python -m app.channels.chat
 
 chat-hitl:  ## Interactive CLI with tool approval (same worker requirement as `make chat`)
@@ -53,15 +47,15 @@ chat-hitl:  ## Interactive CLI with tool approval (same worker requirement as `m
 telegram:  ## Telegram bot for the Ecorp domain; needs TELEGRAM_BOT_TOKEN and `make agent-worker`; approvals appear as Approve/Reject buttons (specs/021)
 	python -m app.channels.telegram
 
-telegram-support:  ## Telegram bot as the support copilot; needs `make agent-worker-support`
+telegram-support:  ## Telegram bot as the support copilot; needs a worker serving support (`make agent-worker-all`)
 	AGENT_DOMAIN=support python -m app.channels.telegram
 
-telegram-sales:  ## Telegram bot as the sales concierge; needs `make agent-worker-sales`
+telegram-sales:  ## Telegram bot as the sales concierge; needs a worker serving sales (`make agent-worker-all`)
 	AGENT_DOMAIN=sales python -m app.channels.telegram
 
 # --- Helpers ---
 
-restart-all:  ## Kill and relaunch the API, every agent worker pool and the ingest worker as background host processes (logs in var/), then `make ingest` and `make index-skills`. Host dev only, not for `up-app`
+restart-all:  ## Kill and relaunch the API, one agent worker for every domain and the ingest worker as background host processes (logs in var/), then `make ingest` and `make index-skills`. Host dev only, not for `up-app`
 	pkill -f 'uvicorn app\.api\.main:app' 2>/dev/null || true
 	# `serve --reload` runs the real server as a multiprocessing child that the pkill above never matches; if its
 	# reloader parent died, the child stays orphaned on :8000 serving stale code. Kill whatever holds the port.
@@ -79,10 +73,7 @@ restart-all:  ## Kill and relaunch the API, every agent worker pool and the inge
 	pkill -9 -f 'app\.ingestion\.ingest_worker' 2>/dev/null || true
 	mkdir -p var
 	nohup $(MAKE) serve > var/serve.log 2>&1 &
-	nohup $(MAKE) agent-worker > var/agent-worker.log 2>&1 &
-	nohup $(MAKE) agent-worker-support > var/agent-worker-support.log 2>&1 &
-	nohup $(MAKE) agent-worker-ops > var/agent-worker-ops.log 2>&1 &
-	nohup $(MAKE) agent-worker-sales > var/agent-worker-sales.log 2>&1 &
+	nohup $(MAKE) agent-worker-all > var/agent-worker.log 2>&1 &
 	nohup $(MAKE) ingest-worker > var/ingest-worker.log 2>&1 &
 	$(MAKE) ingest
 	$(MAKE) index-skills

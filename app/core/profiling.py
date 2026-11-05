@@ -29,8 +29,9 @@ logger = logging.getLogger(__name__)
 _started = False
 
 
-def start_profiling(service_name: str) -> bool:
-    """True when the profiler is running in this process. Idempotent; blank `PYROSCOPE_SERVER_ADDRESS` is a quiet False."""
+def start_profiling(service_name: str, *, domain: str | None = None) -> bool:
+    """True when the profiler is running in this process. Idempotent; blank `PYROSCOPE_SERVER_ADDRESS` is a quiet False.
+    `domain` is the `domain` tag (default `AGENT_DOMAIN`); a process serving several passes them joined, as `a+b`."""
     global _started
     if _started:
         return True
@@ -48,7 +49,7 @@ def start_profiling(service_name: str) -> bool:
             application_name=service_name,
             server_address=PYROSCOPE_SERVER_ADDRESS,
             sample_rate=PYROSCOPE_SAMPLE_RATE,
-            tags={"domain": AGENT_DOMAIN, "replica": socket.gethostname()},
+            tags={"domain": domain or AGENT_DOMAIN, "replica": socket.gethostname()},
         )
     except Exception as exc:  # noqa: BLE001 - diagnostics must not stop the process they observe
         agent_profiling_start_failures_total.labels(reason="configure_failed").inc()

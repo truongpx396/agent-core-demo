@@ -130,9 +130,9 @@ async def chat_stream_queued(
     longer auto-declines it), resumed via `POST /chat/resume` below.
 
     `domain` (`X-Domain` header, see `get_domain`) picks which domain's
-    requests stream this is published onto — only a worker pool booted with
-    a matching `AGENT_DOMAIN` reads it, letting one API process serve every
-    running domain.
+    requests stream this is published onto — only a worker serving that
+    domain (`AGENT_WORKER_DOMAINS`) reads it, letting one API process serve
+    every running domain.
 
     Deduplicated against an identical (`thread_id`, `message`, `images`)
     resubmission within `CHAT_SUBMIT_DEDUP_TTL_SECONDS`

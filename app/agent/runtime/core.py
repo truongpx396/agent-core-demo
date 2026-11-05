@@ -17,18 +17,28 @@ raises "bound to a different event loop" (verified). So `init_graph_async()` ope
 CALLING loop, and every process driving the graph must await it on that loop before any graph call, never from
 a background thread or a different loop.
 
-This file owns the checkpointer/graph singleton lifecycle
-(`init_graph_async`/`close_checkpointer_pool`/`_resolve_domain_name`), the
+## One graph per domain
+
+A process may serve several domains (`agent_worker.py`, `AGENT_WORKER_DOMAINS`). Each gets its own compiled graph
+(its manifest and tools) over ONE shared checkpointer: `PgCheckpointing.open()` makes a new pool on every call, so
+opening one per domain would orphan all but the last. Which graph a turn runs on is `bind_domain(name)`, set by the
+worker around each job; a task started inside it inherits it (`ContextVar`). Outside any `bind_domain` (the API's
+session reads, the tests) it is `DEFAULT_DOMAIN`.
+
+This file owns the checkpointer/graph lifecycle (`init_graph_async`/`close_checkpointer_pool`), the
 session-directory upsert (`upsert_session`) and the tenant daily-budget bindings
 (`_check_allowance`/`allowance_refusal`; the rule is `app/agent/cost/budgets.py`). They are kept together
-because each reads or reassigns a module global (`_graph`/`_domain_name`, or config names several tests
+because each reads or reassigns a module global (`_graphs`/`_saver`, or config names several tests
 monkeypatch on this module) and that only works with consumer and binding in one file. The streaming entry
 points live in `app/agent/runtime/stream.py`, which reaches this module's globals as `runtime_module.X` rather
 than a bare import, for the same monkeypatch reason.
 """
 import asyncio
 import logging
-from typing import TYPE_CHECKING
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
+from typing import Any
 
 from app.agent.cost import budget_holds, budgets, pricing
 from app.agent.graph.build import build_graph
@@ -48,29 +58,30 @@ from app.core.security import SecurityCtx
 from app.ports.checkpointing import checkpointing
 from app.ports.domains import domain_catalog
 
-if TYPE_CHECKING:
-    from app.ports.domains import AgentManifest, DomainPlugin
-
 logger = logging.getLogger(__name__)
 
-_graph = None
-_graph_lock = asyncio.Lock()  # guards _graph's construction, not its use — see
-# init_graph_async's own docstring: the checkpointer's open()/build_graph() run
-# between the `if _graph is None` check and the `_graph = ...` write, so
-# without this lock several concurrent first-callers could each pass the
-# None check, each open their own checkpointer pool, and each overwrite
-# _graph, leaking every loser's pool the same way core/sql_store.py::_get_pool's
-# own identical guard exists to prevent. Every current production caller
-# happens to prime this sequentially before any concurrent turn dispatch
-# begins (agent_worker.py's run(), telegram.py's poll loop, chat.py's CLI
-# loop, FastAPI's lifespan) — so this lock is a hardening, not a fix for a
-# live incident, but the pattern is identical to core/sql_store.py's, which IS
-# reachable, so closing both consistently is cheap insurance against a
-# future caller (e.g. a direct in-process turn endpoint) reintroducing it.
-_domain_name = "ecorp"  # this process's domain (app/domains/registry.py); stamps
-# app/agent/runtime/sessions.py's chat_sessions.domain column — the graph itself only needs
-# the manifest/tools, already baked into _graph by build_graph().
-DEFAULT_DOMAIN = "ecorp"  # the domain a process serves when its caller names none
+_graphs: dict[str, Any] = {}  # compiled graph per domain name
+_saver = None  # the one checkpointer every domain's graph shares
+_graph_lock = asyncio.Lock()  # guards the two above while they are built: without it concurrent first
+# callers each open a checkpointer pool and overwrite the graph, leaking every loser's pool (the same guard
+# as core/sql_store.py::_get_pool). Every production caller primes sequentially, so this is hardening.
+DEFAULT_DOMAIN = "ecorp"  # the domain a turn runs on when nothing bound one
+_bound_domain: ContextVar[str | None] = ContextVar("agent_domain", default=None)
+
+
+def current_domain() -> str:
+    return _bound_domain.get() or DEFAULT_DOMAIN
+
+
+@contextmanager
+def bind_domain(name: str) -> Iterator[None]:
+    """Runs everything inside on `name`'s graph and stamps its sessions with `name`."""
+    token = _bound_domain.set(name)
+    try:
+        yield
+    finally:
+        _bound_domain.reset(token)
+
 
 # LangGraph's own graph-step cap — coarser than MAX_ITERATIONS (an agent-node
 # count): each turn also runs several fixed pre/post-loop nodes, and each
@@ -154,20 +165,9 @@ async def upsert_session(ctx: SecurityCtx | None, thread_id: str, text: str) -> 
     should still appear in "switch conversation." Degrades to a no-op on its
     own failure (can't fail the turn).
 
-    `_domain_name` is this process's own domain (set once in init_graph_async
-    alongside `_graph`), so the stamped row always matches whichever domain
-    actually ran the turn, regardless of caller.
+    The row is stamped with `current_domain()`, the domain whose graph runs the turn.
     """
-    await sessions.upsert_session(ctx, thread_id, text, domain=_domain_name)
-
-
-def _resolve_domain_name(manifest: "AgentManifest | None") -> str:
-    """`manifest.name` if given, else the process default's ("ecorp") — mirrors
-    init_graph_async's substitution exactly so `_domain_name` always names whichever
-    manifest the graph was actually built with."""
-    if manifest is not None:
-        return manifest.name
-    return domain_catalog.get().resolve(DEFAULT_DOMAIN)[0].name
+    await sessions.upsert_session(ctx, thread_id, text, domain=current_domain())
 
 
 async def close_checkpointer_pool() -> None:
@@ -177,33 +177,24 @@ async def close_checkpointer_pool() -> None:
     await checkpointing.get().close()
 
 
-async def init_graph_async(manifest: "AgentManifest | None" = None, domain: "DomainPlugin | None" = None):
-    """Initialize (or reuse) the shared graph for a process with its own
-    persistent event loop (FastAPI's lifespan; the CLI's --stream mode).
-    Returns the graph; a no-op if the singleton already exists — both
-    astream_events_turn/_resume call this directly so the checkpointer ends
-    up bound to whichever loop actually drives them, self-healing even if
-    startup forgot to prime it via lifespan (`manifest`/`domain` are then
-    ignored — the singleton doesn't change domain mid-process).
+async def init_graph_async(domain: str | None = None):
+    """The compiled graph for `domain` (default: `current_domain()`), built on first use over the shared
+    checkpointer, which this opens on the CALLING loop (see the module docstring). `agent_worker.py` primes
+    every domain it serves at start, so no turn pays the build and an unknown name fails at boot; every
+    stream entry point calls it without an argument and gets the bound domain's graph.
 
-    `manifest`/`domain` (app/ports/domains.py) thread straight into
-    `build_graph()` and default to `None`, meaning the process default domain
-    (`DEFAULT_DOMAIN`, "ecorp", resolved through `app/domains/registry.py` like
-    any other), so existing callers are unaffected. This is what lets a new
-    process boot the same durable-checkpointer machinery against a
-    different domain — see app/job_queue/agent_worker.py, which resolves
-    AGENT_DOMAIN via app/domains/registry.py before priming the singleton.
-    Each process still serves exactly one domain for its lifetime.
+    An unknown `domain` raises `ValueError` (the catalog lists the known names).
     """
-    global _graph, _domain_name
-    if _graph is not None:
-        return _graph
+    global _saver
+    name = domain or current_domain()
+    graph = _graphs.get(name)
+    if graph is not None:
+        return graph
     async with _graph_lock:
-        if _graph is None:  # re-check: another caller may have finished while this one waited for the lock
-            _domain_name = _resolve_domain_name(manifest)
-            default_manifest, default_domain = domain_catalog.get().resolve(DEFAULT_DOMAIN)
-            saver = await checkpointing.get().open()
-            _graph = build_graph(
-                manifest or default_manifest, domain or default_domain, checkpointer=saver
-            )
-    return _graph
+        graph = _graphs.get(name)  # re-check: another caller may have built it while this one waited for the lock
+        if graph is None:
+            manifest, plugin = domain_catalog.get().resolve(name)
+            if _saver is None:
+                _saver = await checkpointing.get().open()
+            graph = _graphs[name] = build_graph(manifest, plugin, checkpointer=_saver)
+    return graph

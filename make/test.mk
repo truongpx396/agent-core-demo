@@ -55,7 +55,7 @@ loadtest-down:  ## Stop the fake LLM and point the api and workers back at real 
 
 loadtest-app-up:  ## Point the running containerized api and workers at loadtest/fake_llm_server.py via docker-compose.loadtest.yml (only OPENAI_API_BASE changes; other containers untouched). Called by `loadtest-up`; use it alone only if the fake LLM already runs
 	$(COMPOSE) -f deploy/compose/docker-compose.loadtest.yml up -d \
-		api agent-worker agent-worker-support agent-worker-ops agent-worker-sales ingest-worker
+		api agent-worker ingest-worker
 
 loadtest-queued:  ## Interactive Locust UI against the queued chat path (loadtest/locustfile_queued.py); needs `make loadtest-up`. Measures agent_worker's own concurrency, not Ollama's
 	locust -f loadtest/locustfile_queued.py --host http://localhost:8000

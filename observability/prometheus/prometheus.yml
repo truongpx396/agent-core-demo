@@ -1,14 +1,6 @@
-# Scrape config for the app's own OTel metrics (via the otel-collector's
-# aggregated Prometheus exporter — see ../otel-collector/config.yaml) plus
-# a handful of infra dependencies from the main docker-compose.yml stack.
-#
-# Cross-stack targets are reached via `host.docker.internal` (this
-# compose file is deliberately independent of docker-compose.yml — see
-# docker-compose.observability.yml's own header) — the SAME bridge
-# litellm-config.yaml already relies on to reach a host-native Ollama, just
-# applied in the other direction here. Every such target degrades to
-# harmlessly "down" in Prometheus if the main stack (`make up`) isn't
-# running; nothing in the app depends on this stack being up either.
+# Scrapes the app's OTel metrics (through the otel-collector's Prometheus exporter) and the infra exporters of the app stack. Every target
+# is a port published by docker-compose.collectors.yml or docker-compose.yml, reached through `host.docker.internal`: this stack shares no
+# network with them (docker-compose.observability.yml). A target whose stack is not up shows as down; nothing in the app depends on this one.
 global:
   scrape_interval: 15s
   evaluation_interval: 15s
@@ -30,7 +22,7 @@ scrape_configs:
   # across the API + every agent-worker/ingest-worker replica.
   - job_name: otel-collector
     static_configs:
-      - targets: ["otel-collector:8889"]
+      - targets: ["host.docker.internal:8889"]
 
   # Qdrant's own built-in Prometheus metrics (no config needed on its
   # side) — verify the exact metric names it exposes with
@@ -59,9 +51,7 @@ scrape_configs:
     static_configs:
       - targets: ["host.docker.internal:8083"]
 
-  # postgres_exporter / redis_exporter — see docker-compose.yml (main
-  # stack), co-located with postgres/redis since they need those
-  # services' own credentials/network.
+  # postgres-exporter / redis-exporter (docker-compose.collectors.yml).
   - job_name: postgres
     static_configs:
       - targets: ["host.docker.internal:9187"]
@@ -70,18 +60,14 @@ scrape_configs:
     static_configs:
       - targets: ["host.docker.internal:9121"]
 
-  # pgbouncer-exporter (docker-compose.yml): the pool and wait gauges the PgBouncer alerts read. In production the same job name comes
+  # pgbouncer-exporter (docker-compose.collectors.yml): the pool and wait gauges the PgBouncer alerts read. In production the same job name comes
   # through the app droplet's otel-collector-agent (observability/otel-collector/config.agent.yaml).
   - job_name: pgbouncer
     static_configs:
       - targets: ["host.docker.internal:9127"]
 
-  # node-exporter / cadvisor — also co-located in docker-compose.yml (main
-  # stack). The imported community dashboard (grafana.com id 893, "Docker
-  # and system monitoring") that consumes these resolves its own $server
-  # variable via label_values(node_boot_time_seconds, instance) and never
-  # filters on job= directly (verified against its actual panel queries),
-  # so these job names are just for consistency with the jobs above.
+  # node-exporter / cadvisor (docker-compose.collectors.yml). Their dashboard never filters on job= (its $server variable is
+  # label_values(node_boot_time_seconds, instance)), so these names only match the jobs above.
   - job_name: node
     static_configs:
       - targets: ["host.docker.internal:9100"]

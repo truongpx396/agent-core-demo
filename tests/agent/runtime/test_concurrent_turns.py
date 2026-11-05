@@ -118,7 +118,7 @@ def _echoing_llm(respond: Callable[[list[BaseMessage]], AIMessage]):
 @pytest.fixture(autouse=True)
 def reset_agent_singleton(monkeypatch):
     """Same fixture as tests/agent/runtime/test_durable_checkpoint.py — see that file's docstring for why
-    `_graph`/`_graph_lock` (module-level singletons) and the checkpointer adapter that owns the pool need resetting before and after
+    `_graphs`/`_saver`/`_graph_lock` (module-level singletons) and the checkpointer adapter that owns the pool need resetting before and after
     every test here too — this file's own `asyncio.gather`-heavy tests (every class below runs several turns
     concurrently) are exactly the shape most likely to leave `_graph_lock` stuck if a gathered task were ever
     torn down while holding it, so this reset matters here at least as much as in that file.
@@ -127,11 +127,13 @@ def reset_agent_singleton(monkeypatch):
     # left behind by the last test (bound to a loop that is gone) is never the one this test closes.
     monkeypatch.setattr(pg_checkpointing, "CHECKPOINTER_DATABASE_URL", ensure_postgres()["checkpointer_database_url"])
     monkeypatch.setattr(checkpointing_port.checkpointing, "get", lambda adapter=pg_checkpointing.PgCheckpointing(): adapter)
-    agent_module._graph = None
+    agent_module._graphs = {}
+    agent_module._saver = None
     agent_module._graph_lock = asyncio.Lock()
     subagent_tools.reset_subagent_graph_cache()
     yield
-    agent_module._graph = None
+    agent_module._graphs = {}
+    agent_module._saver = None
     agent_module._graph_lock = asyncio.Lock()
     subagent_tools.reset_subagent_graph_cache()
 
@@ -365,16 +367,13 @@ class TestWorkerConcurrencyAgainstTheRealQueue:
         """Same isolation technique as
         tests/integration/test_queue_real_redis.py's own `real_redis`
         fixture, applied to BOTH `queue`'s and `agent_worker`'s own
-        requests-stream/`CONSUMER_GROUP` bindings — `agent_worker.py` binds
-        its own `REQUESTS_STREAM` module global once at import time (see
-        that module's own docstring on why: domain is a per-PROCESS
-        property), a separate reference `queue.requests_stream_key`'s own
-        rebinding below doesn't reach, so it needs its own direct patch;
-        `process_request`'s `finally: client.xack(...)` reads that global,
-        not a parameter. `queue.requests_stream_key` is patched (not a
-        fixed constant, now that it's domain-parameterized) to always
-        return this same `stream` regardless of domain — this test only
-        ever exercises the default ("ecorp") one anyway."""
+        requests-stream/`CONSUMER_GROUP` bindings — `agent_worker.py` imports
+        `requests_stream_key` by name, a separate reference from the
+        `queue.requests_stream_key` rebinding below, so it needs its own
+        direct patch (`process_request`'s `finally: client.xack(...)` calls
+        it). Both are patched (not a fixed constant, now that the key is
+        domain-parameterized) to always return this same `stream`
+        regardless of domain — this test only ever exercises "ecorp"."""
         info = ensure_redis()
         stream = f"agent:requests:test:{uuid.uuid4()}"
         group = f"agent-workers:test:{uuid.uuid4()}"
@@ -382,7 +381,7 @@ class TestWorkerConcurrencyAgainstTheRealQueue:
         monkeypatch.setattr(queue, "_client", None)
         monkeypatch.setattr(queue, "requests_stream_key", lambda domain="ecorp": stream)
         monkeypatch.setattr(queue, "CONSUMER_GROUP", group)
-        monkeypatch.setattr(agent_worker, "REQUESTS_STREAM", stream)
+        monkeypatch.setattr(agent_worker, "requests_stream_key", lambda domain="ecorp": stream)
         monkeypatch.setattr(agent_worker, "CONSUMER_GROUP", group)
         yield
         queue._client = None
@@ -417,7 +416,7 @@ class TestWorkerConcurrencyAgainstTheRealQueue:
             response = await client.xreadgroup(
                 agent_worker.CONSUMER_GROUP,
                 "test-consumer",
-                {agent_worker.REQUESTS_STREAM: ">"},
+                {queue.requests_stream_key(): ">"},
                 count=n,
             )
             _, entries = response[0]
@@ -434,7 +433,7 @@ class TestWorkerConcurrencyAgainstTheRealQueue:
                 await semaphore.acquire()
                 tasks.append(
                     asyncio.create_task(
-                        agent_worker._process_with_limit(client, entry_id, fields, semaphore)
+                        agent_worker._process_with_limit(client, entry_id, fields, semaphore, domain="ecorp")
                     )
                 )
             await asyncio.gather(*tasks)
@@ -500,7 +499,7 @@ class TestSameThreadTurnsAreSerializedNotCorrupted:
         monkeypatch.setattr(queue, "_client", None)
         monkeypatch.setattr(queue, "requests_stream_key", lambda domain="ecorp": stream)
         monkeypatch.setattr(queue, "CONSUMER_GROUP", group)
-        monkeypatch.setattr(agent_worker, "REQUESTS_STREAM", stream)
+        monkeypatch.setattr(agent_worker, "requests_stream_key", lambda domain="ecorp": stream)
         monkeypatch.setattr(agent_worker, "CONSUMER_GROUP", group)
         yield
         queue._client = None
@@ -532,7 +531,7 @@ class TestSameThreadTurnsAreSerializedNotCorrupted:
             response = await client.xreadgroup(
                 agent_worker.CONSUMER_GROUP,
                 "test-consumer",
-                {agent_worker.REQUESTS_STREAM: ">"},
+                {queue.requests_stream_key(): ">"},
                 count=2,
             )
             _, entries = response[0]
@@ -546,7 +545,7 @@ class TestSameThreadTurnsAreSerializedNotCorrupted:
                 await semaphore.acquire()
                 tasks.append(
                     asyncio.create_task(
-                        agent_worker._process_with_limit(client, entry_id, fields, semaphore)
+                        agent_worker._process_with_limit(client, entry_id, fields, semaphore, domain="ecorp")
                     )
                 )
             await asyncio.gather(*tasks)

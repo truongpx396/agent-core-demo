@@ -1,41 +1,23 @@
-# One command (`make up`) brings up the whole offline AI stack, including
-# crawl4ai (real headless-Chromium rendering, GRAPH_PATTERNS.md pattern 50).
-# Two further opt-in profiles layer on top: `app` (`make up-app`) for the
-# containerized app itself, and `sandbox` (`make sandbox-up`) for a
-# containerized, authenticated OpenSandbox server — each profile-gated
-# separately since each adds real host privilege/cost most `make up`
-# users don't need by default (see each service's own comment below).
+# The dev stack (`make up`). Opt-in profiles: `app` (`make up-app`) the containerized api and workers, `sandbox` (`make sandbox-up`) the
+# OpenSandbox server, `gateway` (`make mcp-gateway-up`) the MCP gateway and edge auth, `quality` (`make sonar-up`) SonarQube. The telemetry
+# collectors are docker-compose.collectors.yml; the observability backends, docker-compose.observability.yml.
 
-# The agent-worker and ingest-worker roles run the app's image, which carries the API's HEALTHCHECK
-# (Dockerfile): a probe of http://localhost:8000/health/ready. A worker binds no port, so inheriting it
-# reported every worker `unhealthy` forever (a failing streak in the hundreds), which hides a service
-# that really is unhealthy and would restart-loop one under anything that acts on health. The probe is
-# switched off here rather than replaced: whether a worker pool is alive is an application-level fact
-# the `WorkerUnreachable` alert (observability/prometheus/alerts.yml) already watches, a job that no
-# worker takes. A worker added without this inherits the API's probe.
+# Workers bind no port, so the image's API HEALTHCHECK (a probe of :8000/health/ready) would report them `unhealthy` forever. Whether a pool is
+# alive is the `WorkerUnreachable` alert's job (observability/prometheus/alerts.yml). A worker added without this inherits the probe.
 x-worker-healthcheck: &worker-healthcheck
   disable: true
 
-# Shared env for the containerized app roles below (services: api,
-# agent-worker, ingest-worker) — every URL points at the OTHER containers'
-# in-network service names (e.g. `litellm:4000`), not `localhost` — a
-# container can't reach another container via the host's own localhost the
-# way a host process can (see app/core/config.py's Settings defaults, all
-# `localhost:*`, which assume exactly that host-process case and are
-# overridden here).
+# Env for the containerized app roles (api, agent-worker, ingest-worker). URLs use the other containers' service names: `localhost` is the
+# container itself here (Settings' defaults assume a host process).
 x-app-env: &app-env
   OPENAI_API_BASE: http://litellm:4000/v1
-  # The key the app presents to LiteLLM. A container does NOT read `.env` (compose only uses it to fill in `${...}` like this one), so before
-  # this line every containerized role (api, the workers, ingest-worker) sent the app's built-in default, `sk-anything`, which is the dev
-  # MASTER key: a scoped key minted with `make litellm-key ARGS="create ..."` and put in `.env` as OPENAI_API_KEY was never used by the
-  # containers, so its budget never moved and the spend log showed `default_user_id` as the caller. The name is LITELLM_APP_KEY, as in
-  # docker-compose.prod.yml and `scripts/litellm_key.py`; a host process (`make serve`, `make agent-worker`) still reads OPENAI_API_KEY from
-  # `.env`. Unset, this falls back to the dev master key (`sk-anything`, set on the litellm service below), which is today's behaviour.
+  # A container does not read `.env` (compose only uses it to fill `${...}`), so before this line the containers sent the dev master key and a scoped
+  # `make litellm-key` key was never used. Name as in docker-compose.prod.yml and scripts/litellm_key.py. Unset falls back to `sk-anything`.
   OPENAI_API_KEY: ${LITELLM_APP_KEY:-sk-anything}
   QDRANT_URL: http://qdrant:6333
   ML_SERVICE_URL: http://ml-service:80
-  # Through PgBouncer (the `pgbouncer` service below), not to Postgres: the server-side connection count is the pooler's pool size, not
-  # these processes' pools times their replicas. LiteLLM, Langfuse and the exporters stay on `postgres:5432` (specs/022).
+  # Through PgBouncer, not Postgres: Postgres sees the pooler's pool size however many replicas run. LiteLLM, Langfuse and the exporters
+  # connect directly (specs/022).
   CHECKPOINTER_DATABASE_URL: postgresql://langfuse:langfuse@pgbouncer:6432/checkpointer
   APPDATA_DATABASE_URL: postgresql://langfuse:langfuse@pgbouncer:6432/appdata
   REDIS_URL: redis://redis:6379
@@ -45,56 +27,37 @@ x-app-env: &app-env
   LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-}
   CRAWL4AI_SERVER_URL: http://crawl4ai:11235
   CRAWL4AI_API_TOKEN: ${CRAWL4AI_API_TOKEN:-}
-  # Empty leaves web_search declared but answering "not set up" (app/adapters/web/serper.py). A container does not read `.env`, so without this
-  # line a key that works under `make serve` is silently empty in the api and the workers.
+  # Empty leaves web_search declared but answering "not set up" (app/adapters/web/serper.py). A container does not read `.env`.
   SERPER_API_KEY: ${SERPER_API_KEY:-}
   WEB_SEARCH_MAX_RESULTS: ${WEB_SEARCH_MAX_RESULTS:-5}
-  # opensandbox-mcp is a stdio subprocess THIS process spawns
-  # (app/adapters/mcp/sandbox_tools.py) — for the containerized agent-worker
-  # role, that subprocess runs INSIDE this same container, on this same
-  # compose network, so it resolves opensandbox-server's in-network name
-  # exactly like any other service here (only needed if the `sandbox`
-  # profile is also up — see `make sandbox-up`; sandbox_tools.py already
-  # degrades to no sandbox tools if it isn't reachable).
+  # opensandbox-mcp is a stdio subprocess of this process (app/adapters/mcp/sandbox_tools.py), so it resolves the in-network name. Only matters
+  # with the `sandbox` profile up; without it the sandbox tools are absent.
   OPENSANDBOX_MCP_DOMAIN: opensandbox-server:8090
   OPENSANDBOX_API_KEY: ${OPENSANDBOX_API_KEY:-}
-  # The otel-collector lives in the SEPARATE, optional
-  # docker-compose.observability.yml (`make obs-up`) — reached via
-  # host.docker.internal, not an in-network service name, so this app never
-  # depends on that stack being up (a push that fails just gets dropped by
-  # the OTLP exporter; see app/core/telemetry.py and that compose file's
-  # own header for the full reasoning).
+  # The collector is docker-compose.collectors.yml's, reached through its published port so the app never depends on it: a failed push is
+  # dropped (app/core/telemetry.py).
   OTEL_EXPORTER_OTLP_ENDPOINT: http://host.docker.internal:4318
-  # The same relationship for profiles: the Pyroscope server is in the optional observability stack (`make obs-up`), and a push to a
-  # server that is not there is dropped by the SDK without a delay (specs/022 research.md). Blank it to turn profiling off.
+  # Pyroscope is in the observability stack; a push to a server that is not there is dropped without a delay (specs/022). Blank turns profiling off.
   PYROSCOPE_SERVER_ADDRESS: ${PYROSCOPE_SERVER_ADDRESS-http://host.docker.internal:4040}
 
-# Build target for every service that builds the root Dockerfile: the stage that ships, NAMED, so a reordered Dockerfile cannot
-# silently make the builder stage (which has uv in it) the thing that runs (ENGINEERING_PATTERNS.md pattern 76).
+# The shipping Dockerfile stage, named so a reordered Dockerfile cannot make the builder stage run (ENGINEERING_PATTERNS.md 76).
 x-app-build: &app-build
   context: .
   target: runtime
 
-# The authlimit service image (specs/018): a self-contained Go module with its own Dockerfile and build context, not the root Dockerfile.
-# Two services (the service and its smoke-check stand-in upstream) use it, so the build is described once.
+# The authlimit service's own Dockerfile and context, shared by `authlimit` and its smoke-check stand-in `authlimit-echo`.
 x-authlimit-image: &authlimit-image
   image: authlimit:dev
   build:
     context: ./services/authlimit
 
-# Runtime hardening for the images this repo builds (api, the workers, ml-service). Nothing here changes what the app does; each line
-# removes something the process never needed:
-#   init                    a real PID 1: reaps the sandbox bridge's child processes and forwards SIGTERM, so `stop_grace_period` is honoured
-#   no-new-privileges       a process cannot gain privileges through a setuid binary
-#   cap_drop: ALL           the app runs as uid 1000 and binds a port above 1024 (ml-service binds 80, which Docker's
-#                           net.ipv4.ip_unprivileged_port_start=0 allows without a capability): it needs none
-#   read_only + tmpfs       the image's filesystem is not written at runtime. What does get written is small and goes to RAM: uploads spool to
-#                           /tmp, and libraries write dot-directories under $HOME (fastembed/huggingface under ~/.cache, and crawl4ai makes
-#                           ~/.crawl4ai the moment it is IMPORTED: the first version of this block gave only ~/.cache a tmpfs and the api
-#                           crashed at start with 'Read-only file system', found by running the image this way). So $HOME itself is a tmpfs
-#                           owned by the app user, which covers the next library's dot-directory too. Both are capped, because tmpfs counts
-#                           against the container's memory limit; what lives there is re-created after a restart. ml-service keeps a named
-#                           volume for its models, so it overrides `tmpfs` to /tmp only.
+# Runtime hardening for the images this repo builds (nothing here changes what the app does):
+#   init                  a real PID 1: reaps the sandbox bridge's children and forwards SIGTERM, so `stop_grace_period` holds
+#   no-new-privileges     no privilege gain through a setuid binary
+#   cap_drop: ALL         the app runs as uid 1000 on a port above 1024: it needs no capability
+#   read_only + tmpfs     the image filesystem is never written. /tmp and $HOME (libraries create dot-directories there: crawl4ai makes
+#                         ~/.crawl4ai on import) are RAM, capped because tmpfs counts against the memory limit. ml-service keeps a named
+#                         volume for its models, so it overrides `tmpfs`.
 x-hardened: &hardened
   init: true
   security_opt:
@@ -109,32 +72,24 @@ x-hardened: &hardened
 services:
   # --- LiteLLM proxy: single OpenAI-compatible endpoint for the app ---
   litellm:
-    # Pinned by digest: the tag moves, and the gateway is the one place that holds provider keys and decides what a call costs (its stop
-    # status changed from 400 to 429 between releases, and a LiteLLM release on PyPI was compromised in March 2026). The digest is the
-    # linux/amd64 + linux/arm64 index of what `main-stable` resolved to on 2026-07-30 (LiteLLM 1.94.1), the image the checks in
-    # COST_GOVERNANCE.md ran against. The tag stays for the reader and is ignored by Docker while a digest is present. To move it, see
-    # infra/README.md ("Bumping the LiteLLM image"); docker-compose.prod.yml must carry the same digest.
+    # Pinned by digest: the gateway holds the provider keys and decides what a call costs, and its behaviour moves between releases (the stop status
+    # went from 400 to 429; a LiteLLM PyPI release was compromised in 2026-03). This is the multi-arch index of `main-stable` on 2026-07-30 (1.94.1),
+    # the image COST_GOVERNANCE.md's checks ran on. To move it: infra/README.md ("Bumping the LiteLLM image"); docker-compose.prod.yml carries the same one.
     image: ghcr.io/berriai/litellm:main-stable@sha256:28b10a635296730007097390939b55f8696ece548530d4ddda3e31c708b4dc81
     command: ["--config", "/app/config.yaml", "--port", "4000"]
     ports:
       - "4000:4000"
     volumes:
       - ./deploy/litellm/litellm-config.yaml:/app/config.yaml:ro
-      # sitecustomize.py, auto-imported by Python at startup (PYTHONPATH
-      # below) — patches a live-verified litellm bug where two tool calls
-      # from an ollama_chat model in one turn get corrupted into one glued,
-      # unusable tool_call. See deploy/litellm/patches/sitecustomize.py's own
-      # comment for the full root cause and repro; the stock image itself
-      # is untouched, so `docker compose pull litellm` still works normally.
+      # sitecustomize.py, auto-imported via PYTHONPATH below, patches a LiteLLM bug that glues two tool calls from an ollama_chat model into one
+      # (deploy/litellm/patches/sitecustomize.py). The stock image is untouched.
       - ./deploy/litellm/patches:/app/patches:ro
     environment:
       PYTHONPATH: /app/patches
-      # Keys for the hosted tiers, empty until you have them. Nothing reads them while the `chat-medium` and `chat-strong` entries in
-      # litellm-config.yaml are the local stand-ins; when you replace an entry with its Gemini block, that block's `os.environ/GEMINI_API_KEY_*`
-      # reads the variable below. Put the keys in .env (gitignored), never in this file.
+      # Keys for the hosted tiers, empty until you have them: the Gemini blocks in litellm-config.yaml read them. Put them in .env, never here.
       GEMINI_API_KEY_MEDIUM: ${GEMINI_API_KEY_MEDIUM:-}
       GEMINI_API_KEY_STRONG: ${GEMINI_API_KEY_STRONG:-}
-      # Proxy-level Langfuse logging (falls back to empty if unset).
+      # Proxy-level Langfuse logging.
       LANGFUSE_HOST: ${LANGFUSE_HOST:-http://langfuse-web:3000}
       LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-}
       LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-}
@@ -147,10 +102,7 @@ services:
       postgres:
         condition: service_healthy
 
-  # --- Open WebUI: browser-based chat UI talking directly to a native
-  # macOS Ollama on the host (see litellm-config.yaml's api_base comments
-  # on the "chat" model — same host instance, no containerized Ollama in
-  # this stack) ---
+  # --- Open WebUI: a browser chat UI on the host's native Ollama (no Ollama container in this stack; see litellm-config.yaml) ---
   open-webui:
     image: ghcr.io/open-webui/open-webui:main
     ports:
@@ -171,65 +123,12 @@ services:
     volumes:
       - qdrant:/qdrant/storage
 
-  # --- Small-CPU-model inference service — started as a reranker-only
-  # container, now hosts a second small ONNX model (prompt-injection
-  # classification) alongside it, same container/batching engine, hence
-  # the broader name. See docker/ml-service/main.py's own module
-  # docstring for the full reasoning behind everything below.
-  #
-  # Reranking (app/retrieval/embeddings.py's `rerank`, hit from
-  # app/retrieval/qdrant_store.py::hybrid_search on every retrieval) used
-  # to run local fastembed/ONNX in agent-worker's own process — a real,
-  # measured concurrency bottleneck: a real 50-concurrent-turn HTTP burst
-  # against this app showed every concurrent turn's rerank call holding a
-  # slot in agent-worker's own shared thread pool for the call's full
-  # duration, AND ONNX Runtime's own default thread settings meant each
-  # call separately tried to grab every CPU core for itself — genuine
-  # thread + core oversubscription under load, not just GIL contention.
-  #
-  # This is a small hand-rolled FastAPI + onnxruntime service running the
-  # app's original rerank model, Xenova/ms-marco-MiniLM-L-6-v2 (22M
-  # params, 6 layers), with its own async micro-batching queue that
-  # coalesces concurrent /rerank calls' (query, candidate) pairs into one
-  # ONNX forward pass — genuine cross-request batching, verified directly
-  # (debug logging showed batches of up to MAX_BATCH_SIZE=256 pairs pulled
-  # from ~12-13 different concurrent callers each), not an assumption.
-  #
-  # Hugging Face's text-embeddings-inference (TEI) was tried first
-  # (BAAI/bge-reranker-base — MiniLM is a plain-BERT architecture TEI's
-  # candle backend doesn't support at all, regardless of weight format)
-  # and measured directly against this exact workload before being
-  # replaced outright, not just alongside: TEI's own internal admission
-  # queue rejected ~94% of a genuine 100-simultaneous-request burst
-  # outright (`"error_type":"Overloaded"`), needed ~84s to sustainably
-  # serve 100 requests at its real safe concurrency ceiling (4, found
-  # empirically — 8 was measurably WORSE, not better), and idled at
-  # 2.26GiB. This service handles that same 100-request burst in full
-  # with ZERO rejections (~5-15s depending on host contention), needs
-  # ~14-85s to sustainably serve 100 requests depending on how many other
-  # containers are competing for CPU (bare-metal-equivalent numbers are
-  # far better than under this stack's real full contention — both are
-  # real, measured, not cherry-picked), single warm calls in ~25-100ms
-  # (TEI+bge-reranker-base: ~0.85s), and idles at 200-420MiB — roughly
-  # 11x less memory. A serving framework (BentoML, Ray Serve, Triton) was
-  # also considered for this and rejected, each for a concrete, verified
-  # reason, not just "not chosen."
-  #
-  # Prompt-injection classification (app/core/moderation.py's ML layer,
-  # defense-in-depth alongside its pattern-based check) is Meta's Llama
-  # Prompt Guard 2, 22M — the smaller of its two published sizes, same
-  # CPU/low-memory tradeoff this whole service already optimizes for —
-  # via gravitee-io's ONNX port (gravitee-io/Llama-Prompt-Guard-2-22M-onnx),
-  # NOT the original meta-llama/ repo: that one is gated under the Llama 4
-  # license (requires accepting terms + an HF token), a real blocker for
-  # an anonymous Docker build; gravitee-io's port is verified unauthenticated-
-  # downloadable. This was originally ruled out entirely for this app (see
-  # app/core/moderation.py's git history) as "a whole additional...
-  # inference cost on the turn's hot path, for a demo" — that constraint
-  # no longer holds once a fast, fully local, no-extra-container CPU
-  # service already exists for the reranker above; adding a second small
-  # ONNX model to that SAME already-running container is a marginal cost,
-  # not a new one.
+  # --- ML service: the reranker (app/retrieval/embeddings.py `rerank`, on every retrieval), Llama Prompt Guard 2 (app/core/moderation.py), the
+  # embedding endpoint and the label sets, in one CPU container (design: docker/ml-service/main.py).
+  # Rerank used to run in the worker's process and oversubscribed its threads and cores under a 50-turn burst. This service coalesces concurrent
+  # calls into one ONNX pass (batches of up to 256 pairs from ~12 callers) and served a 100-request burst with no rejections; Hugging Face TEI
+  # (bge-reranker-base) rejected ~94% of the same burst and idled at 2.26 GiB against 200-420 MiB here.
+  # Prompt Guard comes from gravitee-io's ONNX port: Meta's repo is gated behind the Llama 4 license, which an anonymous image build cannot accept.
   ml-service:
     <<: *hardened
     tmpfs:
@@ -254,10 +153,7 @@ services:
       retries: 12
       start_period: 45s   # covers a cold pull of BOTH models on first startup
 
-  # --- Semantic cache backing store (app/retrieval/semantic_cache.py) — Redis Stack,
-  # not plain redis:7, because the semantic cache needs RediSearch's vector
-  # KNN query support (FT.CREATE ... VECTOR, FT.SEARCH ... KNN), which the
-  # base redis image doesn't ship.
+  # --- Redis Stack, not plain redis: the semantic cache (app/retrieval/semantic_cache.py) needs RediSearch's vector KNN ---
   redis:
     image: redis/redis-stack-server:latest
     ports:
@@ -270,16 +166,11 @@ services:
       timeout: 5s
       retries: 10
 
-  # --- Langfuse tracing UI + its Postgres (also used by LiteLLM and, now,
-  # app/core/sql_store.py's structured-data tool — see postgres-init/02-appdata.sql) ---
+  # --- Postgres: Langfuse, LiteLLM and the app's databases (postgres-init/) ---
   postgres:
     image: postgres:16
-    # pg_stat_statements must be loaded at server start (shared_preload_libraries),
-    # not just CREATE EXTENSION'd — it needs its own shared-memory hash table
-    # allocated at postmaster startup. postgres-exporter's stat_statements
-    # collector (docker-compose.yml's postgres-exporter service) reads this via
-    # a plain SQL view once the extension is created in appdata (see `make`
-    # target or the one-time `CREATE EXTENSION` run after this service restarts).
+    # pg_stat_statements must be preloaded at server start (it allocates shared memory in the postmaster); postgres-exporter's stat_statements
+    # collector reads it once `CREATE EXTENSION` has run in appdata.
     command: ["postgres", "-c", "shared_preload_libraries=pg_stat_statements"]
     ports:
       - "5432:5432"   # exposed so app/core/sql_store.py (host process) can connect directly
@@ -296,13 +187,10 @@ services:
       timeout: 5s
       retries: 10
 
-  # --- PgBouncer in front of the app's two databases (specs/022). Transaction pooling: a server connection is held for one transaction, so
-  # the connections Postgres sees are default_pool_size + reserve per database however many processes and client connections there are
-  # (WORKER_CONCURRENCY.md, "Postgres connection budget"). Only `appdata` and `checkpointer` are listed: LiteLLM and Langfuse (Prisma) and the
-  # exporters keep a direct connection, and migrations and postgres-init talk to Postgres itself. The app's pools disable prepared statements
-  # (app/core/sql_store.py), the one thing a transaction pooler cannot carry from one server connection to the next.
-  # Hardened like the app roles (tests/core/test_compose_pooler.py): the image runs as uid 70 and writes only the config its entrypoint
-  # generates from these variables, so one tmpfs is the whole write path (measured, specs/022 research.md).
+  # --- PgBouncer in front of `appdata` and `checkpointer` (specs/022). Transaction pooling: Postgres sees the pool size per database however many
+  # processes connect (WORKER_CONCURRENCY.md, "Postgres connection budget"). LiteLLM, Langfuse and the exporters connect directly. The app's pools
+  # disable prepared statements (app/core/sql_store.py), the one thing a transaction pooler cannot carry. Hardened like the app roles
+  # (tests/core/test_compose_pooler.py); one tmpfs is its whole write path (specs/022 research.md).
   pgbouncer:
     image: edoburu/pgbouncer:v1.26.1-p0@sha256:488422e38cff912895d0d65d8963fcd306e6ac589a724398b6eb8e294e94d624
     restart: unless-stopped
@@ -317,16 +205,15 @@ services:
       LISTEN_PORT: "6432"
       AUTH_TYPE: scram-sha-256
       POOL_MODE: transaction
-      # 15 + 3 reserve = at most 18 server connections per database (MAX_DB_CONNECTIONS is the hard cap, reserve included): 36 of
-      # Postgres's 100, leaving the rest to LiteLLM, Langfuse and the exporters. A test keeps that sum honest.
+      # 15 + 3 reserve = 18 server connections per database, 36 of Postgres's 100; a test keeps that sum honest.
       DEFAULT_POOL_SIZE: "15"
       RESERVE_POOL_SIZE: "3"
       RESERVE_POOL_TIMEOUT: "3"
       MAX_DB_CONNECTIONS: "18"
       MAX_CLIENT_CONN: "500"
-      # A client that cannot get a server connection in 30 s gets an error instead of waiting for ever; PgBouncerClientsWaiting fires first.
+      # Gives up after 30 s instead of waiting for ever; PgBouncerClientsWaiting fires first.
       QUERY_WAIT_TIMEOUT: "30"
-      # A transaction left open holds a server connection while it does nothing; nothing here keeps one open for a minute.
+      # An open transaction holds a server connection; nothing here keeps one open for a minute.
       IDLE_TRANSACTION_TIMEOUT: "60"
       IGNORE_STARTUP_PARAMETERS: extra_float_digits,options
       # SHOW commands only (the exporter's login); there is no admin user.
@@ -344,147 +231,6 @@ services:
       postgres:
         condition: service_healthy
 
-  # Pool and wait metrics for the three alerts in observability/prometheus/alerts.yml (PgBouncerDown, PgBouncerClientsWaiting,
-  # PgBouncerMaxWait). Publishes its port like postgres-exporter below, for the optional observability stack.
-  pgbouncer-exporter:
-    image: prometheuscommunity/pgbouncer-exporter:v0.12.1@sha256:30f31b6c2efdad3647f8182cc7c1a3a19e42bae5d17387694989f969371c230d
-    restart: unless-stopped
-    init: true
-    security_opt: ["no-new-privileges:true"]
-    cap_drop: ["ALL"]
-    read_only: true
-    environment:
-      PGBOUNCER_EXPORTER_CONNECTION_STRING: postgres://langfuse:langfuse@pgbouncer:6432/pgbouncer?sslmode=disable
-    ports:
-      - "9127:9127"
-    depends_on:
-      pgbouncer:
-        condition: service_healthy
-
-  # --- Prometheus exporters for postgres/redis above — co-located here
-  # (not in docker-compose.observability.yml) since they need those
-  # services' own credentials/in-network hostnames directly. Each publishes
-  # its own metrics port to the host so the OPTIONAL observability stack
-  # (`make obs-up`) can scrape it via host.docker.internal without any
-  # shared Docker network — see docker-compose.observability.yml's header.
-  # Neither is required for the app itself to run.
-  postgres-exporter:
-    image: prometheuscommunity/postgres-exporter:latest
-    environment:
-      # Points at appdata, not the "postgres" system database — verified
-      # directly (--auto-discover-databases, despite the exporter's own docs
-      # describing it as scraping every discovered database, is a no-op for
-      # the stat_user_tables/statio_user_tables collectors on this exporter
-      # version: they only ever query the single database the DSN itself
-      # connects to). appdata is where this app's own tables (employees,
-      # chat_sessions, crm_leads, ...) actually live — the ones worth adding
-      # an index to. All the OTHER pg_stat_database/pg_locks/pg_stat_activity
-      # metrics stay cluster-wide regardless (verified: they already showed
-      # every database's rows even when this pointed at "postgres"), so this
-      # change costs nothing for the rest of the dashboard.
-      DATA_SOURCE_NAME: postgresql://langfuse:langfuse@postgres:5432/appdata?sslmode=disable
-    # Both collectors are opt-in (disabled by default) since the exporter's own
-    # --help warns pg_stat_statements can be expensive on a busy server — every
-    # distinct query becomes its own timeseries. stat_statements.limit below
-    # caps that; it also needs the pg_stat_statements extension actually
-    # loaded in Postgres (postgres service's shared_preload_libraries) or this
-    # collector just silently reports no data. stat_user_tables needs no such
-    # extension — it's a built-in stats view — so it starts working immediately.
-    command:
-      - "--collector.stat_user_tables"
-      - "--collector.stat_statements"
-      - "--collector.stat_statements.include_query"
-      - "--collector.stat_statements.limit=25"
-    ports:
-      - "9187:9187"
-    depends_on:
-      postgres:
-        condition: service_healthy
-
-  redis-exporter:
-    image: oliver006/redis_exporter:latest
-    environment:
-      REDIS_ADDR: redis://redis:6379
-    ports:
-      - "9121:9121"
-    depends_on:
-      redis:
-        condition: service_healthy
-
-  # --- Host + per-container resource metrics, purely to power the
-  # community "Docker and system monitoring (nodeexporter v1.3.1)" dashboard
-  # (grafana.com id 16310 — observability/grafana/dashboards/docker-system-
-  # monitoring.json; brought under this repo's own file-based provisioning
-  # like every other dashboard there). Neither exporter is used by anything
-  # else in this stack.
-  #
-  # On Docker Desktop for Mac, "host" metrics are actually the stats of
-  # Docker Desktop's own hidden Linux VM, not the physical Mac — there is no
-  # way to see real host hardware from inside any container on this
-  # platform. On native Linux Docker both exporters report real host state.
-  node-exporter:
-    image: prom/node-exporter:latest
-    pid: host
-    volumes:
-      - /proc:/host/proc:ro
-      - /sys:/host/sys:ro
-      - /:/rootfs:ro
-      - textfile_collector:/textfile-collector:ro
-    command:
-      - "--path.procfs=/host/proc"
-      - "--path.sysfs=/host/sys"
-      - "--path.rootfs=/rootfs"
-      - "--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)"
-      - "--collector.textfile.directory=/textfile-collector"
-    ports:
-      - "9100:9100"
-
-  cadvisor:
-    image: gcr.io/cadvisor/cadvisor:latest
-    # No /dev/kmsg device mount (the usual Linux cadvisor recipe) — that
-    # path doesn't exist in Docker Desktop's VM and makes the container
-    # crash-loop on Mac; omitting it is harmless on native Linux too, it
-    # just means kernel-log-derived metrics (OOM events) stay unavailable.
-    volumes:
-      - /:/rootfs:ro
-      - /var/run:/var/run:ro
-      - /sys:/sys:ro
-      - /var/lib/docker/:/var/lib/docker:ro
-      - /var/run/docker.sock:/var/run/docker.sock:ro
-    # KNOWN LIMITATION on Docker Desktop for Mac: cadvisor's
-    # docker-container-factory (needed for human-readable container
-    # names/labels, not just raw cgroup ids) talks to containerd, not
-    # docker.sock — verified via its own startup log ("Registration of the
-    # docker container factory failed: ... containerd.sock: no such file"),
-    # and confirmed as a genuine upstream regression (google/cadvisor#3772,
-    # still open) rather than a config mistake — cAdvisor 0.54.1+ made the
-    # DOCKER factory require containerd too, when previously only the
-    # separate containerd factory did; 0.54.0 (last good) registers the
-    # docker factory fine but panics on this specific Docker Desktop
-    # version's container metadata shape instead. Docker Desktop's
-    # containerd lives entirely inside its own hidden Linux VM with no
-    # bind-mountable path exposed to the host. So cAdvisor's own metrics
-    # stay keyed by raw cgroup id (e.g. "/docker/<hash>") — the
-    # container-name-mapper service below (docker.sock only, no cAdvisor
-    # involved) supplies the id -> name join the dashboard's panels use
-    # instead. Native Linux Docker doesn't have this gap since containerd's
-    # socket is a normal host path there.
-    ports:
-      - "8081:8080"   # 8080 is already open-webui's port in this compose file
-
-  # --- id -> name lookup for cadvisor's cgroup-id-only metrics above
-  # (docker:cli is the official Docker CLI with no daemon — nothing else
-  # here needs one). The dashboard's per-container panels join this in via
-  # `* on(id) group_left(name) container_id_name_map{name=~"$container"}`,
-  # which also doubles as the $container selector's actual filter.
-  container-name-mapper:
-    image: docker:cli
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro
-      - ./observability/textfile-collectors/container-name-map.sh:/container-name-map.sh:ro
-      - textfile_collector:/textfile-collector
-    entrypoint: ["/bin/sh", "/container-name-map.sh"]
-
   langfuse-web:
     image: langfuse/langfuse:2
     ports:
@@ -499,14 +245,8 @@ services:
       postgres:
         condition: service_healthy
 
-  # --- Object storage for uploaded documents (app/ingestion/object_store.py) — a
-  # self-hosted, S3-compatible MinIO, consistent with this app's
-  # fully-offline/self-hosted posture everywhere else (no real cloud
-  # dependency for a demo). No healthcheck here, matching qdrant/litellm/
-  # langfuse-web above: the official minio image ships no curl to probe
-  # with, and this app's own object_store.py already degrades a
-  # not-yet-ready MinIO into a clear upload-time error rather than
-  # depending on compose-level health gating.
+  # --- S3-compatible object storage for uploads (app/ingestion/object_store.py). No healthcheck: the image has no curl, and object_store.py turns
+  # a not-ready MinIO into a clear upload-time error. ---
   minio:
     image: minio/minio:latest
     command: ["server", "/data", "--console-address", ":9001"]
@@ -519,52 +259,27 @@ services:
     volumes:
       - minio:/data
 
-  # --- Real headless-Chromium rendering server for app/ingestion/web_crawler.py
-  # (GRAPH_PATTERNS.md pattern 50) — crawl4ai's own official dockerized
-  # server (verified tag exists on Docker Hub, matches the requirements.txt
-  # pin exactly), NOT this app's own build: the browser now runs warm and
-  # pooled in its own container instead of a fresh launch per tool call in
-  # THIS app's process. Default profile (no `profiles:` key), unlike
-  # opensandbox-server below — it needs no host Docker socket access, just
-  # a published port like qdrant/redis, so there's no reason to gate it
-  # behind an opt-in profile the way that one is.
+  # --- crawl4ai's official server (headless Chromium, warm and pooled; pattern 50) instead of a browser launch per tool call in the app.
+  # Default profile: it needs no host Docker socket, only a published port. ---
   crawl4ai:
     image: unclecode/crawl4ai:0.9.3
     shm_size: 1g   # Chromium needs real /dev/shm — crawl4ai's own docker run docs
     ports:
       - "11235:11235"   # verified official default port (self-hosting.md), NOT 8000
     environment:
-      # Required: crawl4ai 0.9.0+ is secure-by-default — without this, the
-      # server binds loopback-only INSIDE its own container and the
-      # published port above just connection-resets.
+      # Required since 0.9.0 (secure by default): without it the server binds loopback inside its container and the published port resets.
       CRAWL4AI_API_TOKEN: ${CRAWL4AI_API_TOKEN:-}
     healthcheck:
-      # Verified this image ships curl (`docker run --entrypoint sh
-      # unclecode/crawl4ai:0.9.3 -c "which curl"`) — /health needs no auth
-      # per crawl4ai's own docs.
+      # The image ships curl; /health needs no auth.
       test: ["CMD", "curl", "-f", "http://localhost:11235/health"]
       interval: 10s
       timeout: 5s
       retries: 10
       start_period: 40s   # crawl4ai's own docs: allow up to 40s startup
 
-  # --- Real, isolated code-execution sandbox for every domain's sandbox
-  # tools (ops/support/sales — app/adapters/mcp/sandbox_tools.py, GRAPH_PATTERNS.md
-  # pattern 50) — a
-  # containerized, authenticated opensandbox-server (no official image
-  # exists upstream, verified against OpenSandbox's own docs; this repo
-  # builds its own from docker/opensandbox-server.{Dockerfile,toml}).
-  #
-  # Own opt-in "sandbox" profile, separate from "app" above: it needs
-  # /var/run/docker.sock bind-mounted to create sibling sandbox containers
-  # on the HOST daemon (OpenSandbox needs real Docker, so this is a socket
-  # bind-mount, not Docker-in-Docker) — the SAME privilege a bare
-  # `uvx opensandbox-server` host process already had as whatever user ran
-  # it, just packaged differently, but sensitive enough to stay
-  # deliberately opt-in like "app", under its OWN name since it's a
-  # different concern (containerizing a third-party tool, not this app's
-  # own roles). Bring it up with `make sandbox-up` (or
-  # `docker compose --profile sandbox up -d --build`).
+  # --- OpenSandbox server for every domain's sandbox tools (app/adapters/mcp/sandbox_tools.py, pattern 50). Upstream publishes no image, so this
+  # repo builds one (docker/opensandbox-server.{Dockerfile,toml}). Own opt-in `sandbox` profile (`make sandbox-up`): it bind-mounts the Docker
+  # socket to start sibling sandbox containers on the host daemon, the privilege `uvx opensandbox-server` had as a host process. ---
   opensandbox-server:
     build:
       context: .
@@ -577,31 +292,20 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
       - opensandbox-data:/data
     environment:
-      # Overrides docker/opensandbox-server.toml's (unset) server.api_key —
-      # verified exact env var name against OpenSandbox's own
-      # server/configuration.md. Required: current opensandbox-server
-      # releases refuse to start in non-interactive mode without one.
+      # Overrides server.api_key; current releases refuse to start non-interactively without one.
       OPENSANDBOX_SERVER_API_KEY: ${OPENSANDBOX_API_KEY}
 
-  # --- The MCP gateway (opt-in `gateway` profile; `make mcp-gateway-up`; specs/017) ---
-  # The published MCP servers (app/mcp/server.py, ops_server.py) over Streamable HTTP behind OAuth 2.1, for clients that are not a child
-  # process of the person using them: caddy-gateway terminates TLS, mcp-gateway is the resource server, casdoor is the authorization
-  # server that issues the tokens. Local development only: the names are *.localhost, the certificates come from Caddy's own CA and the
-  # one published port is bound to loopback. A deployment would put real names, ACME and its own identity provider in their place
-  # (the gateway only needs an issuer URL and a JWKS URL; nothing in it is Casdoor-specific).
+  # --- MCP gateway (profile `gateway`; `make mcp-gateway-up`; specs/017) ---
+  # The published MCP servers (app/mcp/server.py, ops_server.py) over Streamable HTTP behind OAuth 2.1: caddy-gateway terminates TLS, mcp-gateway is
+  # the resource server, casdoor issues the tokens. Local only: *.localhost names, Caddy's own CA, one loopback port. A deployment swaps in real
+  # names, ACME and its own identity provider (the gateway needs only an issuer URL and a JWKS URL).
   #
-  # Casdoor ships a new release almost every day, so it is pinned by digest (the tag stays for the reader); to move it, take the new tag's
-  # digest from Docker Hub, run `make mcp-gateway-up`, then `make mcp-gateway-bootstrap`, and read the token it mints
-  # (specs/017-mcp-gateway/research.md lists the claims and behaviours this repo depends on: `aud` from the `resource` parameter, the
-  # JWT-Standard claim set, S256 PKCE, dynamic registration off).
-  #
-  # Its own Postgres, not this stack's shared `postgres` service: Casdoor owns and migrates its schema on an upgrade, the same
-  # reasoning as sonarqube-db below.
-  # The two passwords come from `make mcp-gateway-up` (a second --env-file, outside the repo). They default to EMPTY here, not to
-  # `${VAR:?message}`: compose interpolates the WHOLE file on every command, profile or not, so a required variable would make
-  # `make up` itself fail for everyone who never starts this stack. Empty is safe: Postgres refuses to initialise without a
-  # superuser password and Casdoor reports that the admin password is not set, so a bare `docker compose --profile gateway up`
-  # fails at start instead of running with a blank secret.
+  # Casdoor is pinned by digest because it releases almost daily. To move it, take the new tag's digest, run `make mcp-gateway-up` and
+  # `make mcp-gateway-bootstrap`, and read the minted token (specs/017-mcp-gateway/research.md lists the claims this depends on).
+  # It gets its own Postgres: Casdoor migrates its schema on upgrade (as sonarqube-db does).
+  # The passwords come from `make mcp-gateway-up` (a second --env-file outside the repo) and default to EMPTY, not `${VAR:?}`: compose interpolates
+  # the whole file on every command, so a required variable would break `make up` for everyone. Empty fails safe: Postgres will not initialise
+  # without a password and Casdoor reports the admin password unset.
   casdoor-db:
     image: postgres:16-alpine@sha256:f4610795587492cd4fb887c2dc3de301b813278bb6f616992061141b5f15ac36
     profiles: ["gateway"]
@@ -629,10 +333,9 @@ services:
       dataSourceName: user=casdoor password=${CASDOOR_DB_PASSWORD:-} host=casdoor-db port=5432 sslmode=disable dbname=casdoor
       dbName: casdoor
       runmode: prod
-      # Every URL Casdoor generates (the issuer in a token's `iss`, the discovery document) is derived from this, not from the Host
-      # header of the request (measured: with it unset the issuer followed whatever Host a caller sent). It must equal MCP_GATEWAY_ISSUER.
+      # Every URL Casdoor generates (the token's `iss`, the discovery document) derives from this, not the request's Host (measured). Must equal MCP_GATEWAY_ISSUER.
       origin: ${MCP_GATEWAY_ISSUER:-https://auth.localhost:8443}
-      # This version has no default admin password ("set initAdminPassword before the first start"); `make mcp-gateway-up` generates one.
+      # No default admin password in this version; `make mcp-gateway-up` generates one.
       initAdminPassword: ${CASDOOR_ADMIN_PASSWORD:-}
     depends_on:
       casdoor-db:
@@ -645,20 +348,20 @@ services:
     profiles: ["gateway"]
     restart: unless-stopped
     command: ["python", "-m", "app.mcp.gateway", "--host", "0.0.0.0", "--port", "8000"]
-    # Only what the two published tools read: the app database and Prometheus, plus the gateway's own settings. Not the LLM keys, not
-    # Redis, not the sandbox key: this process is reachable by anyone holding a token and holds nothing it does not use.
+    # Only what the two tools read (the app database, Prometheus) and the gateway's own settings: no LLM keys, Redis or sandbox key, as anyone
+    # holding a token can reach this process.
     environment:
       APPDATA_DATABASE_URL: postgresql://langfuse:langfuse@pgbouncer:6432/appdata
       PROMETHEUS_URL: ${MCP_GATEWAY_PROMETHEUS_URL:-http://host.docker.internal:9090}
       OTEL_EXPORTER_OTLP_ENDPOINT: ${MCP_GATEWAY_OTLP_ENDPOINT-http://host.docker.internal:4318}
       MCP_GATEWAY_PUBLIC_URL: ${MCP_GATEWAY_PUBLIC_URL:-https://mcp.localhost:8443}
       MCP_GATEWAY_ISSUER: ${MCP_GATEWAY_ISSUER:-https://auth.localhost:8443}
-      # In-network name and plain http: the keys are fetched by this process, not shown to a client, so only the ISSUER has to be public.
+      # In-network name, plain http: only the ISSUER has to be public.
       MCP_GATEWAY_JWKS_URL: http://casdoor:8000/.well-known/jwks
       MCP_GATEWAY_OPS_TENANTS: ${MCP_GATEWAY_OPS_TENANTS:-ops-team}
     extra_hosts:
       - "host.docker.internal:host-gateway"
-    # Ready means "can check a token": a replica that cannot reach the signing keys is taken out of rotation instead of answering 401.
+    # Ready = can check a token: a replica that cannot reach the signing keys leaves rotation instead of answering 401.
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/readyz', timeout=3)"]
       interval: 10s
@@ -670,7 +373,7 @@ services:
         condition: service_healthy
       casdoor:
         condition: service_healthy
-    # Stateless, so any number of replicas behind caddy-gateway's `dynamic a` (deploy/caddy/Caddyfile.gateway):
+    # Stateless: scale behind caddy-gateway's `dynamic a` (deploy/caddy/Caddyfile.gateway):
     #   docker compose --profile gateway up -d --scale mcp-gateway=3 --no-recreate
 
   caddy-gateway:
@@ -680,8 +383,8 @@ services:
     security_opt:
       - no-new-privileges:true
     environment:
-      # What sits behind the chat-API site's check (deploy/caddy/Caddyfile.gateway): the stub that echoes what it received, or `api:8000`.
-      # Resolved by compose's `:-`, not Caddy's own default, which only fires on a completely UNSET variable and not on a set-but-empty one.
+      # What sits behind the chat-API site's check (deploy/caddy/Caddyfile.gateway): the echo stub or `api:8000`. Resolved by compose's `:-` because
+      # Caddy's own default only fires on an UNSET variable, not an empty one.
       AUTHLIMIT_UPSTREAM: ${AUTHLIMIT_UPSTREAM:-authlimit-echo:8000}
     ports:
       # Loopback only: this is a development stack with Casdoor's admin UI behind it.
@@ -700,11 +403,10 @@ services:
       authlimit-echo:
         condition: service_healthy
 
-  # --- authlimit: the edge authentication and rate-limit service (profile `gateway`; specs/018) ---
-  # Caddy asks it about every request (`forward_auth`, deploy/caddy/Caddyfile.gateway). It verifies the Casdoor access token offline,
-  # charges the tenant's and the person's token buckets in Redis, refuses revoked people, and answers with a short-lived signed identity
-  # that Caddy copies onto the request. It is stateless apart from caches: two replicas by default, any number works behind Caddy's
-  # `dynamic a`. Needs `make up` (Redis) and `make authlimit-keys` (the signing key) first.
+  # --- authlimit: edge authentication and rate limiting (profile `gateway`; specs/018) ---
+  # Caddy asks it about every request (`forward_auth`, deploy/caddy/Caddyfile.gateway): it verifies the Casdoor token offline, charges the tenant's
+  # and the person's token buckets in Redis, refuses revoked people, and returns a short-lived signed identity for Caddy to copy onto the request.
+  # Stateless apart from caches; any number of replicas behind Caddy's `dynamic a`. Needs `make up` (Redis) and `make authlimit-keys` first.
   authlimit:
     <<: *authlimit-image
     profiles: ["gateway"]
@@ -712,9 +414,8 @@ services:
     init: true
     deploy:
       replicas: 2
-    # The host user, so the key directory (created by `make authlimit-keys` with mode 700, owned by them) is readable. The image's own
-    # user (65532) cannot read a directory only its owner may enter. `AUTHLIMIT_UID`/`GID` are set by the Makefile; without them the
-    # default stays valid so no other compose command is affected, and the service fails at start with a clear message about the keys.
+    # The host user, so the key directory (mode 700, made by `make authlimit-keys`) is readable; the image's 65532 cannot enter it. The Makefile sets
+    # AUTHLIMIT_UID/GID; the default keeps other compose commands valid, and the service then fails at start naming the keys.
     user: "${AUTHLIMIT_UID:-65532}:${AUTHLIMIT_GID:-65532}"
     security_opt:
       - no-new-privileges:true
@@ -732,7 +433,7 @@ services:
       AUTHLIMIT_KEYS_DIR: /keys
       AUTHLIMIT_KEYS_ALLOW_LOOSE_PERMS: ${AUTHLIMIT_KEYS_ALLOW_LOOSE_PERMS:-false}
       AUTHLIMIT_LIMIT_MODE: ${AUTHLIMIT_LIMIT_MODE:-enforce}
-      # The key cache's timings, here so `make authlimit-smoke` can shorten them to watch a Casdoor outage in seconds, not hours.
+      # Key-cache timings, exposed so `make authlimit-smoke` can shorten them to watch a Casdoor outage in seconds.
       AUTHLIMIT_JWKS_CACHE_SECONDS: ${AUTHLIMIT_JWKS_CACHE_SECONDS:-300}
       AUTHLIMIT_JWKS_MIN_REFRESH_SECONDS: ${AUTHLIMIT_JWKS_MIN_REFRESH_SECONDS:-30}
       AUTHLIMIT_JWKS_STALE_GRACE_SECONDS: ${AUTHLIMIT_JWKS_STALE_GRACE_SECONDS:-21600}
@@ -740,12 +441,11 @@ services:
       AUTHLIMIT_MCP_METADATA_URL_TEMPLATE: ${MCP_GATEWAY_PUBLIC_URL:-https://mcp.localhost:8443}/.well-known/oauth-protected-resource{path}
       OTEL_EXPORTER_OTLP_ENDPOINT: ${AUTHLIMIT_OTLP_ENDPOINT-http://host.docker.internal:4318}
     volumes:
-      # The signing keys, read-only. Outside the repository (the convention of `make mcp-gateway-secrets`): see `make authlimit-keys`.
+      # The signing keys, read-only, outside the repo (see `make authlimit-keys`).
       - ${AUTHLIMIT_KEYS_DIR:-${HOME:-/tmp}/.cache/graph-agent-core-authlimit/keys}:/keys:ro
     extra_hosts:
       - "host.docker.internal:host-gateway"   # so OTEL_EXPORTER_OTLP_ENDPOINT resolves on native Linux Docker too
-    # Ready means "can decide a request": a signing key, usable Casdoor keys, a trustworthy revocation list. A replica that cannot is
-    # taken out of rotation by Caddy's health check (`health_uri /readyz`), and shows unhealthy here.
+    # Ready = a signing key, usable Casdoor keys and a trustworthy revocation list; Caddy's `health_uri /readyz` drops a replica that is not.
     healthcheck:
       test: ["CMD", "/authlimit", "healthcheck", "--ready"]
       interval: 10s
@@ -758,8 +458,8 @@ services:
       casdoor:
         condition: service_healthy
 
-  # The stand-in upstream for the smoke check (`make authlimit-smoke`): it answers every request with the headers it received, which is how
-  # the check proves what a real API would have been given. A test fixture; the same image as authlimit, a different binary.
+  # The smoke check's stand-in upstream (`make authlimit-smoke`): echoes the headers it received, which shows what a real API would have been given.
+  # Same image as authlimit, a different binary.
   authlimit-echo:
     <<: *authlimit-image
     profiles: ["gateway"]
@@ -780,22 +480,9 @@ services:
       timeout: 5s
       retries: 5
 
-  # --- Self-hosted SonarQube Community Edition (`make sonar-up` / `docker
-  # compose --profile quality up -d`) — a PERSISTENT server, unlike
-  # .github/workflows/ci.yml's own ephemeral per-run `sonarqube` job (see
-  # that job's own comment for why CI doesn't just point at this one: a
-  # local dev server isn't reachable from a GH-hosted runner). Running
-  # this gets you the thing the CI job explicitly can't: cross-run
-  # history, trend graphs, and a real dashboard to triage the 90-ish
-  # pre-existing issues (2 BLOCKER) the first baseline scan found in this
-  # repo — see `make sonar-scan`'s own comment. Opt-in like `sandbox`/
-  # `app` above: real memory cost (SonarQube's own docs: 2GB+ heap) not
-  # every `make up` session needs.
-  #
-  # Its own dedicated Postgres, not this stack's shared `postgres` service
-  # — SonarQube owns and migrates its own schema on a version upgrade, and
-  # that lifecycle shouldn't couple to appdata/checkpointer/litellm's (same
-  # "separate database per owner" reasoning as postgres-init/05-checkpointer-db.sql).
+  # --- SonarQube Community (profile `quality`; `make sonar-up`) ---
+  # A persistent server with history and trends, which CI's ephemeral per-run `sonarqube` job (.github/workflows/ci.yml) cannot give: a GitHub
+  # runner cannot reach a local server. Opt-in for its memory cost (2 GB+ heap). Own Postgres, since SonarQube migrates its schema on upgrade.
   sonarqube-db:
     image: postgres:16
     profiles: ["quality"]
@@ -836,22 +523,14 @@ services:
       retries: 20
       start_period: 60s
 
-  # --- Containerized app roles (opt-in, NOT started by `make up`) ---
-  #
-  # Everyday dev/demo still runs `make serve`/`make agent-worker`/
-  # `make ingest-worker` as host processes against the infra above (fast
-  # --reload iteration, see Makefile) — that workflow is untouched. These
-  # three services are the actual deployable artifact (see Dockerfile's own
-  # header) for anyone who wants this stack running as containers instead;
-  # behind the "app" profile so `docker compose up`/`make up` never starts
-  # them by accident. Bring them up explicitly with `make up-app` (or
-  # `docker compose --profile app up -d --build`).
+  # --- Containerized app roles (profile `app`; `make up-app`) ---
+  # The deployable artifact (see the Dockerfile header). Everyday dev runs `make serve`, `make agent-worker` and `make ingest-worker` as host
+  # processes instead.
   api:
     <<: *hardened
     build: *app-build
-    # The one role that receives uploads (up to 5 x 25 MB per request, app/api/routers/ingest.py): the multipart parser spools every file to
-    # /tmp BEFORE the handler runs. A tmpfs would hold that in RAM, against this container's memory limit, and fill at the second concurrent
-    # large upload; so this role's /tmp is a disk-backed anonymous volume (not the image's read-only layer) and only $HOME is tmpfs.
+    # The one role that takes uploads (up to 5 x 25 MB, app/api/routers/ingest.py): the multipart parser spools to /tmp before the handler runs, so
+    # /tmp is a disk-backed volume (a tmpfs would fill RAM at the second large upload). Only $HOME is tmpfs.
     tmpfs:
       - /home/appuser:size=64m,uid=1000,gid=1000
     volumes:
@@ -862,17 +541,16 @@ services:
       - "8000:8000"
     environment:
       <<: *app-env
-      # Who is calling (spec 018). Header mode by default HERE because this role is published straight on :8000 with nothing in front of it
-      # (`--profile app` alone): it trusts X-Tenant-Id / X-Principal-Id as sent, loudly (a startup warning, agent_api_auth_mode). `make
-      # authlimit-up-app` sets AUTH_MODE=identity and points Caddy at this service, after which only the signed identity the front door adds
-      # is trusted and a request that skips Caddy and comes straight to :8000 is a 401. The keys address is the authlimit service by its
-      # in-network name (no dependency on it: the API starts first and answers 503 until the keys can be fetched, instead of not starting).
+      # Header mode by default: this role is published on :8000 with nothing in front (`--profile app` alone), so it trusts X-Tenant-Id and
+      # X-Principal-Id and warns at start (agent_api_auth_mode). `make authlimit-up-app` sets AUTH_MODE=identity and puts Caddy in front: only the
+      # signed identity is trusted, and a request straight to :8000 is a 401. The keys URL is authlimit's in-network name; the API starts without it
+      # and answers 503 until the keys load.
       AUTH_MODE: ${AUTH_MODE:-headers}
       AUTHLIMIT_KEYS_URL: ${AUTHLIMIT_KEYS_URL:-http://authlimit:8080/internal/jwks.json}
-      # The two timings of the API's copy of those keys, passed through so the smoke can shorten them (the defaults are Settings' own).
+      # The API's copy of those keys; passed through so the smoke can shorten the timings (the defaults are Settings').
       AUTHLIMIT_KEYS_CACHE_SECONDS: ${AUTHLIMIT_KEYS_CACHE_SECONDS:-60}
       AUTHLIMIT_KEYS_STALE_GRACE_SECONDS: ${AUTHLIMIT_KEYS_STALE_GRACE_SECONDS:-600}
-      # What the built-in page signs in against: the SAME names and defaults the authlimit service reads, so one override changes both.
+      # What the built-in page signs in against: the names and defaults authlimit reads, so one override changes both.
       WEB_AUTH_ISSUER: ${AUTHLIMIT_ISSUER:-https://auth.localhost:8443}
       WEB_AUTH_AUDIENCE: ${AUTHLIMIT_AUDIENCE:-https://api.localhost:8443}
     extra_hosts:
@@ -883,6 +561,7 @@ services:
       redis:
         condition: service_healthy
 
+  # One container serves every domain: each domain's requests stream, on that domain's graph (app/job_queue/agent_worker.py).
   agent-worker:
     <<: *hardened
     build: *app-build
@@ -890,38 +569,10 @@ services:
     restart: unless-stopped
     command: ["python", "-m", "app.job_queue.agent_worker"]
     healthcheck: *worker-healthcheck
-    environment: *app-env
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    depends_on:
-      pgbouncer:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-    # Run several for independent scaling (GRAPH_PATTERNS.md pattern 43):
-    #   docker compose --profile app up -d --scale agent-worker=3
-    # Each replica pushes its own metrics via OTLP (app/core/telemetry.py) —
-    # unlike a pull-based /metrics endpoint, scaling this doesn't need any
-    # scrape-config change; the otel-collector aggregates all of them.
-
-  # --- Per-domain agent-worker pools, containerized counterparts of
-  # `make agent-worker-support`/`-ops`/`-sales` (Makefile) — same image/
-  # command as `agent-worker` above, just AGENT_DOMAIN-scoped so the web
-  # UI's X-Domain: support/ops/sales turns route to a worker that's
-  # actually running when the app is brought up via `up-app` instead of
-  # the host-native `make restart-all` path. Also gets these domains'
-  # logs into Loki (observability/promtail/promtail-config.yaml's service
-  # allowlist keys off these exact compose service names).
-  agent-worker-support:
-    <<: *hardened
-    build: *app-build
-    profiles: ["app"]
-    restart: unless-stopped
-    command: ["python", "-m", "app.job_queue.agent_worker"]
-    healthcheck: *worker-healthcheck
     environment:
       <<: *app-env
-      AGENT_DOMAIN: support
+      # Names some domains instead to run separate pools (`support,ops`). The concurrency budget, AGENT_WORKER_MAX_CONCURRENCY, is shared by all of them.
+      AGENT_WORKER_DOMAINS: ${AGENT_WORKER_DOMAINS:-all}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:
@@ -929,42 +580,7 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-
-  agent-worker-ops:
-    <<: *hardened
-    build: *app-build
-    profiles: ["app"]
-    restart: unless-stopped
-    command: ["python", "-m", "app.job_queue.agent_worker"]
-    healthcheck: *worker-healthcheck
-    environment:
-      <<: *app-env
-      AGENT_DOMAIN: ops
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    depends_on:
-      pgbouncer:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-
-  agent-worker-sales:
-    <<: *hardened
-    build: *app-build
-    profiles: ["app"]
-    restart: unless-stopped
-    command: ["python", "-m", "app.job_queue.agent_worker"]
-    healthcheck: *worker-healthcheck
-    environment:
-      <<: *app-env
-      AGENT_DOMAIN: sales
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    depends_on:
-      pgbouncer:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
+    # Scale with replicas (pattern 43): docker compose --profile app up -d --scale agent-worker=3. Each pushes its own OTLP metrics, so no scrape change.
 
   ingest-worker:
     <<: *hardened
@@ -991,7 +607,6 @@ volumes:
   redis:
   minio:
   opensandbox-data:
-  textfile_collector:
   ml-service:
   sonarqube-db:
   sonarqube-data:

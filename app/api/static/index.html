@@ -399,9 +399,8 @@
     <!-- Only the queued endpoints (POST /chat/stream/queued, /chat/resume,
          /chat/cancel) read X-Domain — see app/api/deps.py's get_domain. A
          new domain registered in app/domains/registry.py needs one more
-         <option> here (and an `AGENT_DOMAIN=<name> make agent-worker`
-         process actually running) before it's reachable from this page. -->
-    <select id="domainSelect" title="Which domain this turn runs against (X-Domain) — needs a matching AGENT_DOMAIN agent-worker running">
+         <option> here (and a worker serving it in `AGENT_WORKER_DOMAINS`) before it's reachable from this page. -->
+    <select id="domainSelect" title="Which domain this turn runs against (X-Domain) — needs an agent-worker serving that domain (AGENT_WORKER_DOMAINS)">
       <option value="ecorp">ecorp</option>
       <option value="support">support</option>
       <option value="ops">ops</option>
