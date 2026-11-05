@@ -1,3 +1,6 @@
 __pycache__/
 **/__pycache__/
 *.pyc
+# in the context so the build can read them, not in the image
+Dockerfile
+.dockerignore

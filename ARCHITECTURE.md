@@ -6,15 +6,16 @@ web, Slack, the sandbox) is outside, reached through a **port**: a `Protocol` in
 when an import crosses the line the wrong way (`tests/core/test_architecture_layers.py`).
 
 ```
- inbound adapters ───────► the application ───────► ports ◄─────── outbound adapters
- (they call in)            (asks for what it        (Protocols,     (they are called)
-                            needs, by port)          data, slots)
+ DRIVING (inbound) ────────► the application ───────► ports ◄─────────── DRIVEN (outbound)
+ adapters call in            asks for what it         Protocols, data,    adapters are called
+                             needs, by port           slots
 
- app/adapters/inbound/api                   app/agent  graph,        app/ports/      app/adapters/{postgres,litellm,mlservice,web,notify,mcp}
- app/adapters/inbound/channels                         runtime,                      app/retrieval   Qdrant, the Redis answer cache
- app/mcp                              tools, cost                   app/ingestion   the crawler (and the ingest pipeline)
- app/job_queue (worker)    app/domains tools, policy                app/domains/*/store.py   each domain's repository
- scripts/                  app/core    the kernel
+ app/adapters/inbound/       app/agent    graph,      app/ports/          app/adapters/outbound/
+   api/       HTTP                        runtime,                          postgres/ qdrant/ redis/ minio/
+   channels/  CLI, Telegram                tools, cost                       litellm/ mlservice/ embeddings/
+   mcp/       MCP servers, gateway app/domains tools, policy                web/ crawl4ai/ notify/ mcp/
+   workers/   queue consumers      app/core    the kernel                   app/domains/*/store.py  each domain's repository
+ scripts/
 
                   app/bootstrap.py binds every port to its adapter, once per process
 ```
@@ -26,15 +27,34 @@ when an import crosses the line the wrong way (`tests/core/test_architecture_lay
 | **ports** | `app/ports/` | the standard library, `pydantic`, the kernel, other ports |
 | **kernel** | `app/core/*.py` except the platform modules | the kernel and the ports. No infrastructure client, nothing above it |
 | **application** | `app/agent/`, `app/domains/` (except the adapter files below) | the kernel, the ports, LangGraph and LangChain core, OpenTelemetry/Langfuse/structlog. Never an infrastructure client, an adapter, an inbound adapter, or (from `app/agent`) a domain |
-| **adapters** | `app/adapters/`, `app/retrieval/`, `app/ingestion/`, `app/mcp/`, `app/job_queue/`, `app/adapters/inbound/api/`, `app/adapters/inbound/channels/`, `app/bootstrap.py`, the platform modules in `app/core/` (`sql_store`, `internal_identity`, `telemetry`, `profiling`, `logging_config`, `job_runtime`), and a domain's `store.py`, `metrics_client.py` and `registry.py` | anything inward of them |
+| **adapters** | `app/adapters/` (`inbound/` and `outbound/`, below), `app/ingestion/`, `app/bootstrap.py`, the platform modules in `app/core/` (`sql_store`, `internal_identity`, `telemetry`, `profiling`, `logging_config`, `job_runtime`), and a domain's `store.py`, `metrics_client.py` and `registry.py` | anything inward of them |
+
+## The two sides of the adapter ring
+
+`app/adapters/` has one half for each direction a call can go:
+
+| | `inbound/` : DRIVING (primary) | `outbound/` : DRIVEN (secondary) |
+|---|---|---|
+| Who calls whom | something outside calls the application | the application calls out |
+| What is in it | `api/` the chat, ingest and health HTTP API; `channels/` the CLI and Telegram; `mcp/` the published MCP servers and their OAuth gateway; `workers/` the queue consumers | one package per technology: `postgres/`, `qdrant/`, `redis/`, `minio/`, `litellm/`, `mlservice/`, `embeddings/`, `web/`, `crawl4ai/`, `notify/`, `mcp/` (the client and the sandbox bridge) |
+| How it meets the application | calls the application's own functions (`app/agent/runtime/`): there is no driving port, because nothing needs to swap the application for a fake | implements a Protocol from `app/ports/`; `app/bootstrap.py` binds it |
+| Who may import it | nobody in `app/` (a leaf) | `app/bootstrap.py`, and the inbound adapters in the listed places below |
+
+Where new code goes: a new way in (another channel, another published server, another consumer) is `app/adapters/inbound/<name>/`; a new system the application calls is a port in
+`app/ports/` and `app/adapters/outbound/<technology>/`; logic that decides something is in `app/agent/`, `app/domains/` or `app/core/`, never in an adapter.
+
+Three tests keep the sides apart (`tests/core/test_architecture_layers.py`): the inbound packages are leaves; **an outbound adapter never imports an inbound one**; and an inbound adapter reaches an
+outbound one directly only in `INBOUND_REACHES_OUTBOUND`, a list that may only shrink. Today it holds 13 crossings, each a port not yet written: the Redis Streams queue (the API and the Telegram channel publish
+or read, the workers consume), the object store an upload goes to, the MCP connection a process closes at shutdown, and the probes behind `/health`.
 
 "Infrastructure client" is a fixed list: `psycopg`, `psycopg_pool`, `redis`, `qdrant_client`, `openai`, `langchain_openai`, `httpx`, `minio`,
 `fastembed`, `crawl4ai`, `mcp`, `fastapi`, `starlette`, `uvicorn`, `jwt`, `limits`, and the LangGraph Postgres saver
 (`tests/core/test_architecture_layers.py::INFRASTRUCTURE`).
 
-Four rules beyond the imports, each a test:
+Rules beyond the imports, each a test:
 
-- **The API and the channels are leaves.** Nothing in `app/` imports `app.adapters.inbound.api` or `app.adapters.inbound.channels`.
+- **The inbound adapters are leaves.** Nothing in `app/` imports `app.adapters.inbound.api`, `channels`, `mcp` or `workers`.
+- **The driven side never imports the driving side**, and the driving side reaches it directly only where `INBOUND_REACHES_OUTBOUND` lists (above).
 - **Only a process entrypoint imports `app.bootstrap`** (and `scheduled_job`, which starts the one-shot jobs).
 - **Every entrypoint that reaches the application calls `wire()`** (`tests/core/test_entrypoints_wire.py`).
 - **The modules that decide stay free of the agent framework**: security, errors, scrubbing, URL safety, moderation, routing policy, the whole cost policy and the
@@ -52,9 +72,9 @@ slot raises `PortNotBound` naming the port. There is no default adapter, so the 
 | `llm` | `ChatModels`, `LlmFailures` | `app/adapters/outbound/litellm/chat_model.py`, `failures.py` | the alias, the tool shape, never retrying a budget stop, answering a guardrail refusal |
 | `sessions`, `idempotency`, `checkpointing` | `SessionStore`, `ToolCallLedger`, `Checkpointing` | `app/adapters/outbound/postgres/` | ownership never defaults to yes; the exactly-once guard fails open and steers the agent to verify after a timeout |
 | `domains` | `DomainCatalog`, and the plugin contract `AgentManifest` / `DomainPlugin` | `app/domains/registry.py` | the graph is never forked for a domain |
-| `retrieval` | `DocumentIndex`, `AnswerCache` | `app/adapters/outbound/qdrant/qdrant_store.py`, `semantic_cache.py` | WHAT may be seen: every tenant search carries an `AccessScope` |
+| `retrieval` | `DocumentIndex`, `AnswerCache` | `app/adapters/outbound/qdrant/qdrant_store.py`, `app/adapters/outbound/redis/semantic_cache.py` | WHAT may be seen: every tenant search carries an `AccessScope` |
 | `classification`, `screening` | `RouteClassifier`, `InjectionScorer` | `app/adapters/outbound/mlservice/` | the routing decision and the moderation verdict (fail open on a failed check, closed on a real hit) |
-| `web`, `notify`, `sandbox` | `WebSearch`, `PageRenderer`, `TeamChannel`, `SandboxCatalog` | `app/adapters/outbound/web/`, `app/adapters/outbound/crawl4ai/web_crawler.py`, `app/adapters/outbound/notify/`, `app/adapters/mcp/` | framing a result as untrusted, scrubbing, bounding, the approval tier |
+| `web`, `notify`, `sandbox` | `WebSearch`, `PageRenderer`, `TeamChannel`, `SandboxCatalog` | `app/adapters/outbound/web/`, `app/adapters/outbound/crawl4ai/web_crawler.py`, `app/adapters/outbound/notify/`, `app/adapters/outbound/mcp/sandbox_tools.py` | framing a result as untrusted, scrubbing, bounding, the approval tier |
 | `support`, `sales`, `ops`, `ecorp` | `TicketStore`, `LeadStore`, `IncidentStore`, `MetricsReader`, `KnowledgeBase`, `EmployeeDirectory` | each domain's `store.py` (the module itself), `ops/metrics_client.py` | use cases, closed vocabularies, deterministic ids, result text |
 
 Billing was the first port and is unchanged: `credit_billing.port.BillingPort`, reached through `app/billing_integration/port.py`, enforced by its own two tests.
@@ -79,13 +99,13 @@ reach; `GraphDeps` is for what the graph is built with.
 
 **A new external dependency** (a second search provider, a new store):
 1. the Protocol, its data and its `Slot` in `app/ports/<capability>.py`. The Protocol's docstring states the contract an adapter must keep (what it raises, what it scopes by);
-2. the adapter in `app/adapters/<technology>/`, or in the package that already owns that system. It returns data in the port's types and translates the system's errors into the port's;
+2. the adapter in `app/adapters/outbound/<technology>/`. It returns data in the port's types and translates the system's errors into the port's;
 3. one entry in `app/bootstrap.py::adapters()`. `tests/core/test_bootstrap.py` fails on a port without an adapter and on an adapter that does not match its Protocol (names, async-ness, parameters);
 4. a fake in `tests/fakes/` if consumers need one, listed in `tests/fakes/test_fakes.py`, which holds it to the same Protocol check.
 
 **A new domain**: unchanged (`store.py` + `tools.py` + `domain.py`, an `AgentManifest` and a `DomainPlugin`, one line in `registry.py`). Its repository is a port in `app/ports/<domain>.py` and its `store.py` is bound in `bootstrap.py`.
 
-**A new entrypoint**: call `wire()`. The test says so if you forget.
+**A new way in** (a channel, a published server, a consumer): `app/adapters/inbound/<name>/`, a leaf; its entrypoint calls `wire()`. The test says so if you forget.
 
 ## Testing
 
@@ -116,9 +136,9 @@ usage-event store, the model catalog, the classifier and the injection scorer is
 
 ## Not done, and why
 
-- **The inbound adapters still reach some infrastructure directly.** `app/adapters/inbound/api/health.py` probes Postgres, Qdrant and the ML service itself, the Telegram channel and the queue use Redis, and the
-  operator scripts import adapter modules (`scripts/jobs/followup_sweep.py` calls the sales store). They are adapters, so the rule allows it; routing them through ports would add ports with one caller.
-- **`app/ingestion/` and `app/adapters/outbound/qdrant/memory.py` are classified as adapters but hold pipeline logic** (chunking, crawl, the ingest job). Splitting that logic from the Qdrant and MinIO calls is a port or two
-  (`VectorWriter`, `ObjectStore`) not written here.
-- **The integration and live tiers were not run in this change** (they need Docker and models). Their fixtures were rewritten to bind the adapters and the tiers still collect.
-- **No constitution amendment.** The rings and the four rules above are a MINOR addition to "Architecture & Technology Constraints"; that goes through `/speckit-constitution`.
+- **The driving side still reaches some driven adapters directly** (the 13 crossings in `INBOUND_REACHES_OUTBOUND`). The queue is the largest: a `JobQueue` port would let the API, the Telegram channel and the workers
+  stop importing the Redis module. The operator scripts also import adapter modules (`scripts/jobs/followup_sweep.py` calls the sales store). They are adapters, so the rule allows it.
+- **`app/ingestion/` (chunking, extractors, the ingestor) and `app/adapters/outbound/qdrant/memory.py` hold pipeline logic but import concrete adapters** (`qdrant_store`, `embeddings`, `object_store`). They are
+  classified as adapters. Splitting the logic from the Qdrant and MinIO calls is a port or two (`VectorWriter`, `ObjectStore`) not written here.
+- **`app/billing_integration/` sits beside the adapters, not in them.** It is the earlier seam to the billing package, with its own two boundary tests; moving it would touch the constitution's "Self-contained packages".
+- **No constitution amendment.** The rings and the rules above are a MINOR addition to "Architecture & Technology Constraints", and two of its path pointers (the health probe and the billing package's "never imports" example) still name the API's old package path; both go through `/speckit-constitution`.

@@ -826,30 +826,25 @@ casually. The compose files live in `deploy/compose/` but resolve paths and `.en
 
 ```
 app/
-  adapters/    the outbound adapters that have no older home: postgres/, litellm/, mlservice/, web/, notify/, mcp/
+  adapters/
+    inbound/   the DRIVING side (something outside calls the app): api/ (FastAPI: routers, deps by AUTH_MODE, identity, health, web UI), channels/ (CLI and Telegram, clients of the chat API through the front door; they never touch the queue or the graph), mcp/ (the published servers, the Streamable HTTP + OAuth 2.1 gateway), workers/ (agent and ingest queue consumers)
+    outbound/  the DRIVEN side (the app calls out, through a port), one package per technology: postgres/ qdrant/ redis/ (answer cache, Streams queue) minio/ litellm/ mlservice/ embeddings/ web/ crawl4ai/ notify/ mcp/ (the client and the sandbox bridge)
   agent/       graph/ (LangGraph), runtime/ (turns, streaming, sessions), tools/ (built-ins, catalogs, run_subagent), cost/ (meter, caps)
-  api/         FastAPI: main.py mounts routers/ (chat, ingest, usage, system); deps.py (caller by AUTH_MODE), identity.py, schemas, health, webhook rate limit, web UI (static/index.html)
   billing_integration/  the app's one seam to the billing package (port.py)
   bootstrap.py binds every port to its adapter; each entrypoint calls wire() first
-  channels/    CLI (chat.py) and Telegram: clients of the chat API through the front door (door.py, sign-in, Telegram people, and the bot's approvals, inbox, webhook and account linking); they never touch the queue or the graph
   core/        the kernel: config, security (SecurityCtx/Policy/AccessScope), metrics, errors, scrubbing, the gateway identity, tool timeout and the exactly-once guard (plus the SQL pool and other platform modules)
-  domains/     ecorp/, support/, ops/, sales/ (store = the domain's adapter + tools + domain each), registry, shared sandbox session
-  ingestion/   chunking, ingestor, crawler, object store, ingest worker
-  job_queue/   Redis Streams queue, agent worker, reclaim (the API is the only producer)
-  mcp/         server, ops_server (stdio), gateway (Streamable HTTP + OAuth 2.1), client
+  domains/     ecorp/, support/, ops/, sales/ (store = the domain's adapter + tools + domain, and its skills/ and subagents/), shared/skills/ (for every domain), registry, shared sandbox session
+  ingestion/   the ingest pipeline: chunking, extractors, ingestor
   ports/       the Protocols the application needs (cost, models, llm, sessions, retrieval, web, sandbox, a repository per domain, ...) and Slot, the typed seam
-  retrieval/   embeddings, Qdrant store, semantic cache, memory deletion
-scripts/       seed, eval, cron jobs, ops_investigate, defectdojo import; ai_review/ is the PR-review tool
-services/authlimit/       the edge auth and rate-limit service: the only Go in the repo (own tests, Dockerfile, CI job)
+scripts/       jobs/ (scheduled one-shots), checks/ (smokes, probes, eval), tools/ (operator CLIs); model_eval/ and ai_review/ (the PR-review tool) are packages
+services/      what runs as its own process, each with its own Dockerfile: authlimit/ (the edge auth and rate-limit service: the only Go in the repo) and ml-service/ (rerank, prompt guard, embeddings, label sets)
+Dockerfile     the app image (at the root: the build context)
 evals/ scripts/model_eval/   the model-evaluation harness and its frozen datasets, candidates, baselines
 specs/ .specify/          Spec Kit specs 001–019 and the constitution
-skills/ subagents/        the agent's own catalogs
-docker/ Dockerfile        ml-service, OpenSandbox, sandbox image; the app image (the Dockerfile stays at the root: the build context)
-deploy/                   compose/ (dev, prod, observability, load test), caddy/, litellm/ (configs, patches/)
-deploy/terraform/          DigitalOcean droplets; deploy/README.md is the runbook
+deploy/                   compose/ (dev, prod, observability, load test), caddy/, litellm/ (configs, patches/), images/ (sandbox builds), terraform/ (DigitalOcean droplets), env/; deploy/README.md is the runbook
 observability/            Prometheus (+ alerts.yml), Alertmanager, Loki, Promtail, otel-collector, Grafana
 postgres-init/            numbered SQL schema (fresh volumes only)
-tests/                    mirrors app/; adapters/ (SQL shape, requests), fakes/ (in-memory ports); integration/, live/, deepeval/ are the marked tiers
+tests/                    by feature area, not a mirror of app/; adapters/ (SQL shape, requests), fakes/ (in-memory ports); integration/, live/, deepeval/ are the marked tiers
 packages/billing/         the independent billing package: src, tests, schema, alerts, docs, specs
 promptfoo/ garak/ loadtest/   prompt checks (the repo's only package.json), jailbreak scan, Locust
 make/                     host.mk, admin.mk, evals.mk, security.mk, test.mk: targets the Makefile includes
