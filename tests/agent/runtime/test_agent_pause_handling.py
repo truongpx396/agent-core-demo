@@ -1,7 +1,7 @@
 """Tests for astream_events_turn_unattended's auto-decline handling of an
 unexpected pause.
 
-Its callers (app/adapters/inbound/workers/agent_worker.py's queue consumer, app/adapters/inbound/channels/telegram.py)
+Its callers (app/adapters/inbound/workers/agent_worker.py's queue consumer, app/adapters/inbound/channels/telegram/bot.py)
 have no interactive human on the other end of the call to solicit a real
 approval decision from — unlike astream_events_turn's approval_required/
 astream_events_resume round trip — so when a turn pauses at human_approval
@@ -29,7 +29,7 @@ from tests.ecorp import build_graph
 class TestAstreamEventsTurnUnattended:
     """astream_events_turn_unattended (GRAPH_PATTERNS.md pattern 43) — the async, streaming sibling of pattern
     8's auto-decline, used by app/adapters/inbound/workers/agent_worker.py's Redis Streams consumer and
-    app/adapters/inbound/channels/telegram.py, neither of which has an interactive human to show an approval_required event to.
+    app/adapters/inbound/channels/telegram/bot.py, neither of which has an interactive human to show an approval_required event to.
     """
 
     async def test_forwards_every_event_unchanged_when_never_paused(self, monkeypatch):

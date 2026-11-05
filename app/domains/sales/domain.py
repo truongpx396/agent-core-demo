@@ -1,4 +1,4 @@
-"""The sales/CRM-concierge domain: watches inbound channels (via app/adapters/inbound/channels/telegram.py's AGENT_DOMAIN
+"""The sales/CRM-concierge domain: watches inbound channels (via app/adapters/inbound/channels/telegram/bot.py's AGENT_DOMAIN
 mechanism), logs interactions, drafts replies, schedules follow-ups (nudged later by
 scripts/jobs/followup_sweep.py), checks the pending queue, hands a qualified lead to a human rep with a packaged
 brief, and closes leads that aren't converting. Reuses `search_docs`/`ask_clarification` as-is (like

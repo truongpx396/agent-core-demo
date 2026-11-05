@@ -47,7 +47,7 @@ pydantic>=2.5,<3
 pydantic-settings>=2.0,<3
 fastapi>=0.110,<1
 uvicorn>=0.29,<1
-# Seals the refresh token a linked Telegram account keeps in Redis (app/adapters/inbound/channels/telegram_link.py); pinned in the lock file already as a transitive dependency.
+# Seals the refresh token a linked Telegram account keeps in Redis (app/adapters/inbound/channels/telegram/link.py); pinned in the lock file already as a transitive dependency.
 cryptography>=43,<51
 
 # Dev/test — graph unit + integration tests (fake LLM, no live services)

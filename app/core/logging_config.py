@@ -1,5 +1,5 @@
 """Structured (JSON) logging, shared by every long-running service process (app/adapters/inbound/api/main.py, agent_worker.py,
-ingest_worker.py, app/adapters/inbound/channels/telegram.py), NOT the interactive CLI (app/adapters/inbound/channels/chat.py) or one-shot
+ingest_worker.py, app/adapters/inbound/channels/telegram/bot.py), NOT the interactive CLI (app/adapters/inbound/channels/cli/chat.py) or one-shot
 scripts, which print for a human and would get JSON noise interleaved.
 
 Built on structlog, but no log call site changed: every call already goes through stdlib `logging` (`logger =

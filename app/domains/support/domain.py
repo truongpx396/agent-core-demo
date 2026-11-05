@@ -1,5 +1,5 @@
 """The support-copilot domain: a Tier-1 customer-facing agent, deployed
-behind a chat gateway (app/adapters/inbound/channels/telegram.py's AGENT_DOMAIN), with
+behind a chat gateway (app/adapters/inbound/channels/telegram/bot.py's AGENT_DOMAIN), with
 SANDBOXED tool access — just the knowledge base plus the ticket system.
 
 `tools()` reuses `search_docs`/`ask_clarification` from app/agent/tools/builtin.py

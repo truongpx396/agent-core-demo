@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 TITLE_MAX_CHARS = 60
 
-# Thread ids the Telegram channel derives itself (`app/adapters/inbound/channels/telegram.py::
+# Thread ids the Telegram channel derives itself (`app/adapters/inbound/channels/telegram/bot.py::
 # _thread_id` — `telegram:<person>:<chat id>`, the person being the caller's own id).
 # Reserved: a caller may claim one only if it names THEM (app/adapters/inbound/api/routers/chat.py::
 # _require_conversation_owner), or they could squat a real chat user's conversation
