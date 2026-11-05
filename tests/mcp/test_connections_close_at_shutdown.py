@@ -19,7 +19,7 @@ async def test_the_api_closes_its_mcp_connections_when_the_lifespan_ends(monkeyp
     monkeypatch.setattr(api_main, "configure_telemetry", lambda name: None)
     monkeypatch.setattr(api_main.billing_http, "validate_configuration", lambda: None)
     monkeypatch.setattr(api_main, "init_graph_async", AsyncMock())
-    monkeypatch.setattr(api_main, "close_all_connections", AsyncMock(side_effect=lambda: calls.append("mcp")))
+    monkeypatch.setattr(api_main, "close_adapters", AsyncMock(side_effect=lambda: calls.append("mcp")))
     monkeypatch.setattr(api_main.sql_store, "close_pool", AsyncMock(side_effect=lambda: calls.append("sql")))
     monkeypatch.setattr(api_main, "close_checkpointer_pool", AsyncMock(side_effect=lambda: calls.append("checkpointer")))
 
@@ -49,7 +49,7 @@ async def test_a_worker_told_to_stop_closes_its_mcp_connections_after_its_in_fli
     monkeypatch.setattr(agent_worker, "get_client", lambda: client)
     monkeypatch.setattr(agent_worker, "ensure_consumer_group", AsyncMock())
     monkeypatch.setattr(agent_worker, "_reclaim_loop", no_reclaim)
-    monkeypatch.setattr(agent_worker, "close_all_connections", AsyncMock(side_effect=lambda: calls.append("mcp")))
+    monkeypatch.setattr(agent_worker, "close_adapters", AsyncMock(side_effect=lambda: calls.append("mcp")))
     monkeypatch.setattr(agent_worker.sql_store, "close_pool", AsyncMock(side_effect=lambda: calls.append("sql")))
     monkeypatch.setattr(agent_worker, "close_checkpointer_pool", AsyncMock(side_effect=lambda: calls.append("checkpointer")))
 

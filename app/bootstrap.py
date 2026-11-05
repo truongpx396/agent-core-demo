@@ -18,7 +18,9 @@ from app.adapters.outbound.crawl4ai.web_crawler import Crawl4aiPageRenderer
 from app.adapters.outbound.litellm.chat_model import OpenAiChatModels
 from app.adapters.outbound.litellm.failures import OpenAiFailures
 from app.adapters.outbound.litellm.model_catalog import LiteLLMModelCatalog
+from app.adapters.outbound.mcp.connection import close_all_connections
 from app.adapters.outbound.mcp.sandbox_tools import OpenSandboxCatalog
+from app.adapters.outbound.minio.object_store import MinioObjectStore
 from app.adapters.outbound.mlservice.classification import MlServiceClassifier
 from app.adapters.outbound.mlservice.prompt_guard import MlServicePromptGuard
 from app.adapters.outbound.notify.team_channel import LocalAndSlackTeamChannel
@@ -54,6 +56,7 @@ from app.ports.outbound import (
     sandbox,
     screening,
     sessions,
+    storage,
     support,
     web,
 )
@@ -81,6 +84,7 @@ def adapters() -> dict[Slot, object]:
         web.web_search: SerperWebSearch(),
         web.page_renderer: Crawl4aiPageRenderer(),
         notify.team_channel: LocalAndSlackTeamChannel(),
+        storage.object_store: MinioObjectStore(),
         sandbox.sandbox_catalog: OpenSandboxCatalog(),
         # A domain's `store.py` is its adapter: the MODULE is bound (its functions are looked up at call time, which is how the module's tests patch them).
         support.ticket_store: support_store,
@@ -105,3 +109,9 @@ def verify_wired() -> None:
     missing = unbound()
     if missing:
         raise PortNotBound("ports with no adapter: " + ", ".join(sorted(missing)) + " (add them to app/bootstrap.py::adapters)")
+
+
+async def close_adapters() -> None:
+    """Ends what the adapters hold open on the running loop: the MCP connections, each a child process (the sandbox bridge). Call it where a
+    process stops, on the loop that served the requests, before it closes the pools the application opened. A no-op if nothing was opened."""
+    await close_all_connections()

@@ -22,6 +22,7 @@ from app.adapters.inbound.api.routers import system as system_router
 from app.adapters.inbound.api.routers import usage as usage_router
 from app.adapters.inbound.api.routers.system import ui
 from app.adapters.inbound.api.schemas import CancelRequest, ChatRequest, ResumeRequest
+from app.adapters.outbound.minio import object_store as minio_object_store
 from app.adapters.outbound.redis import ingest_queue, queue
 from app.agent.runtime import sessions
 from app.core import metrics
@@ -1029,7 +1030,7 @@ class TestIngestUpload:
         published = []
 
         monkeypatch.setattr(
-            ingest_router.object_store,
+            minio_object_store,
             "upload_bytes",
             lambda key, data, content_type: uploaded.append((key, data, content_type)),
         )
@@ -1072,7 +1073,7 @@ class TestIngestUpload:
         assert result[0].job_id == published[0]["job_id"]
 
     async def test_multiple_files_each_get_their_own_job(self, monkeypatch):
-        monkeypatch.setattr(ingest_router.object_store, "upload_bytes", lambda *a, **kw: None)
+        monkeypatch.setattr(minio_object_store, "upload_bytes", lambda *a, **kw: None)
 
         async def fake_publish(client, **kw):
             pass
@@ -1100,7 +1101,7 @@ class TestIngestUpload:
         one file's problem must not discard another file's already-queued
         job in the SAME request."""
         uploaded = []
-        monkeypatch.setattr(ingest_router.object_store, "upload_bytes", lambda *a, **kw: uploaded.append(a))
+        monkeypatch.setattr(minio_object_store, "upload_bytes", lambda *a, **kw: uploaded.append(a))
 
         files = [_upload_file("spreadsheet.xlsx", b"data", "application/vnd.ms-excel")]
 
@@ -1114,7 +1115,7 @@ class TestIngestUpload:
 
     async def test_a_bad_file_alongside_a_good_one_still_queues_the_good_one(self, monkeypatch):
         uploaded = []
-        monkeypatch.setattr(ingest_router.object_store, "upload_bytes", lambda key, *a, **kw: uploaded.append(key))
+        monkeypatch.setattr(minio_object_store, "upload_bytes", lambda key, *a, **kw: uploaded.append(key))
 
         async def fake_publish(client, **kw):
             pass
@@ -1141,8 +1142,8 @@ class TestIngestUpload:
         but never got a job published is an orphaned blob nothing will
         ever ingest or remove."""
         deleted = []
-        monkeypatch.setattr(ingest_router.object_store, "upload_bytes", lambda *a, **kw: None)
-        monkeypatch.setattr(ingest_router.object_store, "delete_object", lambda key: deleted.append(key))
+        monkeypatch.setattr(minio_object_store, "upload_bytes", lambda *a, **kw: None)
+        monkeypatch.setattr(minio_object_store, "delete_object", lambda key: deleted.append(key))
 
         async def failing_publish(client, **kw):
             raise ConnectionError("redis unreachable")
@@ -1169,7 +1170,7 @@ class TestIngestUpload:
         filesystem paths (no real traversal risk), just for a sane,
         predictable key shape."""
         uploaded = []
-        monkeypatch.setattr(ingest_router.object_store, "upload_bytes", lambda key, *a, **kw: uploaded.append(key))
+        monkeypatch.setattr(minio_object_store, "upload_bytes", lambda key, *a, **kw: uploaded.append(key))
 
         async def fake_publish(client, **kw):
             pass
@@ -1192,7 +1193,7 @@ class TestIngestUpload:
         the first 5 would have been fine."""
         monkeypatch.setattr(ingest_router, "MAX_UPLOAD_FILES_PER_REQUEST", 2)
         uploaded = []
-        monkeypatch.setattr(ingest_router.object_store, "upload_bytes", lambda *a, **kw: uploaded.append(a))
+        monkeypatch.setattr(minio_object_store, "upload_bytes", lambda *a, **kw: uploaded.append(a))
 
         files = [
             _upload_file("a.pdf", b"x", "application/pdf"),
@@ -1214,7 +1215,7 @@ class TestIngestUpload:
         monkeypatch.setattr(ingest_router, "_MAX_UPLOAD_BYTES", 10)  # tiny, so the test payload need not be huge
         monkeypatch.setattr(ingest_router, "_UPLOAD_READ_CHUNK_BYTES", 4)
         uploaded = []
-        monkeypatch.setattr(ingest_router.object_store, "upload_bytes", lambda *a, **kw: uploaded.append(a))
+        monkeypatch.setattr(minio_object_store, "upload_bytes", lambda *a, **kw: uploaded.append(a))
 
         files = [_upload_file("report.pdf", b"x" * 100, "application/pdf")]
 
@@ -1229,7 +1230,7 @@ class TestIngestUpload:
         monkeypatch.setattr(ingest_router, "_MAX_UPLOAD_BYTES", 1000)
         uploaded = []
         monkeypatch.setattr(
-            ingest_router.object_store, "upload_bytes", lambda key, data, ct: uploaded.append(data)
+            minio_object_store, "upload_bytes", lambda key, data, ct: uploaded.append(data)
         )
 
         async def fake_publish(client, **kw):

@@ -80,7 +80,6 @@ from typing import cast
 
 from langchain_core.messages import AIMessage
 
-from app.adapters.outbound.mcp.connection import close_all_connections
 from app.adapters.outbound.redis.queue import (
     CONSUMER_GROUP,
     RECLAIM_ATTEMPTS_FIELD,
@@ -112,7 +111,7 @@ from app.agent.runtime.stream import (
     astream_events_turn_unattended,
     cancel_run,
 )
-from app.bootstrap import verify_wired, wire
+from app.bootstrap import close_adapters, verify_wired, wire
 from app.core import metrics, sql_store
 from app.core.config import (
     AGENT_WORKER_DOMAINS,
@@ -663,7 +662,7 @@ async def run() -> None:
     await reclaim_task  # stop_event already set above, so this returns promptly
     await client.aclose()
     # Same reasoning as app/adapters/inbound/api/main.py's lifespan shutdown: the MCP bridge a sandbox tool started is a child process of this one.
-    await close_all_connections()
+    await close_adapters()
     # Same reasoning as app/adapters/inbound/api/main.py's lifespan shutdown: a turn may have
     # opened core/sql_store.py's connection pool; leaving it open past exit
     # produces the "couldn't stop thread... within 5.0 seconds" warning

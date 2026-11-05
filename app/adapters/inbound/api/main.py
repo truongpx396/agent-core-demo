@@ -43,10 +43,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.adapters.inbound.api import identity
 from app.adapters.inbound.api.rate_limit import WebhookRateLimitMiddleware
 from app.adapters.inbound.api.routers import chat, ingest, system, usage
-from app.adapters.outbound.mcp.connection import close_all_connections
 from app.agent.runtime.core import close_checkpointer_pool, init_graph_async
 from app.billing_integration import http as billing_http
-from app.bootstrap import verify_wired, wire
+from app.bootstrap import close_adapters, verify_wired, wire
 from app.core import sql_store
 from app.core.config import (
     CORS_ALLOWED_ORIGINS,
@@ -98,10 +97,9 @@ async def lifespan(app: FastAPI):
         await announce_task
     # Closes the HTTP client that fetches the front door's public keys, on the loop that used it. No-op in header mode (none was made).
     await identity.close()
-    # Ends the long-lived connections to MCP servers this process opened (the sandbox bridge, app/adapters/outbound/mcp/connection.py): each is a
-    # child process, and closing here, on the loop that served the requests, terminates it instead of leaving that to the
-    # loop's teardown. No-op if no sandbox tool was ever used.
-    await close_all_connections()
+    # Ends the long-lived connections to MCP servers this process opened (the sandbox bridge): each is a child process, and closing here, on
+    # the loop that served the requests, terminates it instead of leaving that to the loop's teardown. No-op if no sandbox tool was ever used.
+    await close_adapters()
     # Closes the Postgres pool's background worker threads cleanly
     # (core/sql_store.py, pattern 31) — skipping this leaves them running at exit
     # with a "couldn't stop thread" warning. No-op if the pool was never opened.

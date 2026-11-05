@@ -118,7 +118,7 @@ async def test_header_mode_starts_announces_and_closes_cleanly(monkeypatch, capl
         return None
 
     monkeypatch.setattr(api, "init_graph_async", no_graph)
-    monkeypatch.setattr(api, "close_all_connections", no_op)
+    monkeypatch.setattr(api, "close_adapters", no_op)
     monkeypatch.setattr(api.sql_store, "close_pool", no_op)
     monkeypatch.setattr(api, "close_checkpointer_pool", no_op)
     closed = []

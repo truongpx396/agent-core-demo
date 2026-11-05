@@ -12,6 +12,7 @@ import threading
 import time
 
 from app.adapters.inbound.workers import ingest_worker
+from app.adapters.outbound.minio import object_store as minio_object_store
 from app.adapters.outbound.redis import ingest_queue
 from app.adapters.outbound.redis.queue import dead_letter_stream_key
 from tests.conftest import metric_value as _count
@@ -51,7 +52,7 @@ class TestProcessJob:
         captured = {}
 
         monkeypatch.setattr(
-            ingest_worker.object_store, "download_bytes", lambda key: (captured.setdefault("key", key), b"pdf-bytes")[1]
+            minio_object_store, "download_bytes", lambda key: (captured.setdefault("key", key), b"pdf-bytes")[1]
         )
 
         def fake_extract_pdf(data):
@@ -92,7 +93,7 @@ class TestProcessJob:
         asyncio.run_coroutine_threadsafe bridge; see _make_progress_reporter's
         own docstring for why that bridge is gone now that ingest_text
         itself is native async instead of running via asyncio.to_thread)."""
-        monkeypatch.setattr(ingest_worker.object_store, "download_bytes", lambda key: b"pdf-bytes")
+        monkeypatch.setattr(minio_object_store, "download_bytes", lambda key: b"pdf-bytes")
         monkeypatch.setitem(ingest_worker.EXTRACTORS_BY_SUFFIX, ".pdf", lambda data: "text")
 
         async def fake_ingest_text(text, title, ctx, source, topic=None, on_progress=None):
@@ -117,7 +118,7 @@ class TestProcessJob:
 
     async def test_docx_dispatches_to_the_docx_extractor(self, monkeypatch):
         captured = {}
-        monkeypatch.setattr(ingest_worker.object_store, "download_bytes", lambda key: b"docx-bytes")
+        monkeypatch.setattr(minio_object_store, "download_bytes", lambda key: b"docx-bytes")
         monkeypatch.setitem(
             ingest_worker.EXTRACTORS_BY_SUFFIX, ".docx", lambda data: captured.setdefault("called", True) or "text"
         )
@@ -146,7 +147,7 @@ class TestProcessJob:
         def failing_download(key):
             raise RuntimeError("MinIO unreachable")
 
-        monkeypatch.setattr(ingest_worker.object_store, "download_bytes", failing_download)
+        monkeypatch.setattr(minio_object_store, "download_bytes", failing_download)
 
         client = FakeRedis()
         entry_id, fields = _entry(job_id="j4")
@@ -160,7 +161,7 @@ class TestProcessJob:
     async def test_an_extraction_failure_publishes_an_error_and_still_acks(self, monkeypatch):
         from app.ingestion.extractors import ExtractionFailed
 
-        monkeypatch.setattr(ingest_worker.object_store, "download_bytes", lambda key: b"garbage")
+        monkeypatch.setattr(minio_object_store, "download_bytes", lambda key: b"garbage")
 
         def failing_extract(data):
             raise ExtractionFailed("could not parse PDF: bad xref")
@@ -184,7 +185,7 @@ class TestProcessJob:
         regardless of which stage in the pipeline actually failed."""
         from app.ingestion.ingestor import IngestRefused
 
-        monkeypatch.setattr(ingest_worker.object_store, "download_bytes", lambda key: b"pdf-bytes")
+        monkeypatch.setattr(minio_object_store, "download_bytes", lambda key: b"pdf-bytes")
         monkeypatch.setitem(ingest_worker.EXTRACTORS_BY_SUFFIX, ".pdf", lambda data: "some text")
 
         def refusing_ingest(*a, **kw):
@@ -204,7 +205,7 @@ class TestProcessJob:
 
 class TestRunLoop:
     async def test_processes_one_job_end_to_end_via_the_consumer_group(self, monkeypatch):
-        monkeypatch.setattr(ingest_worker.object_store, "download_bytes", lambda key: b"pdf-bytes")
+        monkeypatch.setattr(minio_object_store, "download_bytes", lambda key: b"pdf-bytes")
         monkeypatch.setitem(ingest_worker.EXTRACTORS_BY_SUFFIX, ".pdf", lambda data: "text")
         monkeypatch.setattr(ingest_worker.ingestor, "ingest_text", _async_ingest_text_returning(5))
         client = FakeRedis()
@@ -306,7 +307,7 @@ class TestConcurrentDispatch:
                 current -= 1
             return b"pdf-bytes"
 
-        monkeypatch.setattr(ingest_worker.object_store, "download_bytes", slow_download)
+        monkeypatch.setattr(minio_object_store, "download_bytes", slow_download)
         monkeypatch.setitem(ingest_worker.EXTRACTORS_BY_SUFFIX, ".pdf", lambda data: "text")
         monkeypatch.setattr(ingest_worker.ingestor, "ingest_text", _async_ingest_text_returning(1))
 

@@ -194,15 +194,11 @@ OUTBOUND = "app/adapters/outbound/"
 INBOUND_REACHES_OUTBOUND: frozenset[tuple[str, str]] = frozenset({
     ("app/adapters/inbound/api/health.py", "app.adapters.outbound.qdrant.qdrant_store"),
     ("app/adapters/inbound/api/health.py", "app.adapters.outbound.redis.queue"),
-    ("app/adapters/inbound/api/main.py", "app.adapters.outbound.mcp.connection"),
     ("app/adapters/inbound/api/routers/chat.py", "app.adapters.outbound.redis.queue"),
-    ("app/adapters/inbound/api/routers/ingest.py", "app.adapters.outbound.minio.object_store"),
     ("app/adapters/inbound/api/routers/ingest.py", "app.adapters.outbound.redis.ingest_queue"),
     ("app/adapters/inbound/api/routers/ingest.py", "app.adapters.outbound.redis.queue"),
     ("app/adapters/inbound/channels/telegram.py", "app.adapters.outbound.redis.queue"),
-    ("app/adapters/inbound/workers/agent_worker.py", "app.adapters.outbound.mcp.connection"),
     ("app/adapters/inbound/workers/agent_worker.py", "app.adapters.outbound.redis.queue"),
-    ("app/adapters/inbound/workers/ingest_worker.py", "app.adapters.outbound.minio.object_store"),
     ("app/adapters/inbound/workers/ingest_worker.py", "app.adapters.outbound.redis.ingest_queue"),
     ("app/adapters/inbound/workers/ingest_worker.py", "app.adapters.outbound.redis.queue"),
 })

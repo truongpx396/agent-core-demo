@@ -94,3 +94,16 @@ def download_bytes(key: str) -> bytes:
     finally:
         response.close()
         response.release_conn()
+
+
+class MinioObjectStore:
+    """The `ObjectStore` adapter (`app/ports/outbound/storage.py`). The module's functions are looked up at call time, which is how their tests patch them."""
+
+    def upload_bytes(self, key: str, data: bytes, content_type: str = "application/octet-stream") -> None:
+        upload_bytes(key, data, content_type)
+
+    def delete_object(self, key: str) -> None:
+        delete_object(key)
+
+    def download_bytes(self, key: str) -> bytes:
+        return download_bytes(key)

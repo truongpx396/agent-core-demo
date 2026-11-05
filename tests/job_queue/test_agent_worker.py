@@ -1441,7 +1441,7 @@ class TestRunServesEveryConfiguredDomain:
         monkeypatch.setattr(agent_worker, "init_graph_async", init_graph)
         monkeypatch.setattr(agent_worker, "get_client", lambda: client)
         monkeypatch.setattr(agent_worker, "_reclaim_loop", no_reclaim)
-        monkeypatch.setattr(agent_worker, "close_all_connections", AsyncMock())
+        monkeypatch.setattr(agent_worker, "close_adapters", AsyncMock())
         monkeypatch.setattr(agent_worker.sql_store, "close_pool", AsyncMock())
         monkeypatch.setattr(agent_worker, "close_checkpointer_pool", AsyncMock())
 

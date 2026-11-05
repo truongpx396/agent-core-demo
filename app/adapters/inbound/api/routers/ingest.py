@@ -16,7 +16,6 @@ from fastapi.responses import StreamingResponse
 
 from app.adapters.inbound.api.deps import get_ctx
 from app.adapters.inbound.api.schemas import IngestUploadResult
-from app.adapters.outbound.minio import object_store
 from app.adapters.outbound.redis import ingest_queue, queue
 from app.core import metrics
 from app.core.config import (
@@ -26,6 +25,7 @@ from app.core.config import (
 )
 from app.core.security import SecurityCtx
 from app.ingestion.extractors import EXTRACTORS_BY_SUFFIX
+from app.ports.outbound.storage import object_store
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -84,7 +84,7 @@ async def ingest_upload(
     request-wide rather than per-file.
 
     A file that uploads to MinIO but then fails to publish its own job is
-    cleaned up (`object_store.delete_object`) rather than left as an
+    cleaned up (`ObjectStore.delete_object`) rather than left as an
     orphaned blob nothing will ever ingest or remove.
     """
     if len(files) > MAX_UPLOAD_FILES_PER_REQUEST:
@@ -126,7 +126,7 @@ async def ingest_upload(
             # Blocking MinIO I/O off the event loop — this IS the shared
             # SSE-serving process, so a large upload must not stall other requests.
             await asyncio.to_thread(
-                object_store.upload_bytes,
+                object_store.get().upload_bytes,
                 object_key,
                 data,
                 upload.content_type or "application/octet-stream",
@@ -144,7 +144,7 @@ async def ingest_upload(
             # Best-effort cleanup: harmless even if upload_bytes itself is
             # what failed (deleting an object that was never created is a
             # no-op under MinIO/S3 delete semantics).
-            await asyncio.to_thread(object_store.delete_object, object_key)
+            await asyncio.to_thread(object_store.get().delete_object, object_key)
             metrics.agent_upload_failed_total.labels(reason="storage_error").inc()
             logger.warning(
                 # "filename" is a reserved stdlib LogRecord attribute (the

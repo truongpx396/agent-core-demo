@@ -36,7 +36,6 @@ import uuid
 from pathlib import Path
 from typing import cast
 
-from app.adapters.outbound.minio import object_store
 from app.adapters.outbound.redis.ingest_queue import (
     INGEST_CONSUMER_GROUP,
     INGEST_REQUESTS_STREAM,
@@ -64,6 +63,7 @@ from app.core.profiling import start_profiling
 from app.core.telemetry import configure_telemetry
 from app.ingestion import ingestor
 from app.ingestion.extractors import EXTRACTORS_BY_SUFFIX, ExtractionFailed
+from app.ports.outbound.storage import object_store
 
 logger = logging.getLogger(__name__)
 
@@ -120,7 +120,7 @@ async def process_job(client, entry_id: str, fields: dict) -> None:
             # Both offloaded via asyncio.to_thread — see module docstring:
             # a blocking call on the event loop would stall every OTHER
             # in-flight job's I/O.
-            data = await asyncio.to_thread(object_store.download_bytes, payload["object_key"])
+            data = await asyncio.to_thread(object_store.get().download_bytes, payload["object_key"])
             text = await asyncio.to_thread(extractor, data)
             on_progress = _make_progress_reporter(client, job_id)
             chunks = await ingestor.ingest_text(
