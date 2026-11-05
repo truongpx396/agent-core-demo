@@ -197,9 +197,10 @@ cannot be judged or safely changed later.
   compatible MUST bump `STATE_SCHEMA_VERSION` (`app/agent/graph/core.py`); a differing build SHA
   alone is not a break.
 - **Composition**: a new use case is an `AgentManifest` + `DomainPlugin` under
-  `app/domains/<name>/` (`store.py`, `tools.py`, `domain.py`). It MUST NOT fork or branch
-  `build_graph()`. A domain's `allowed_tools` is its sandbox boundary; skills and subagents are
-  domain-tagged so they never leak across domains.
+  `app/domains/<name>/` (`store.py`, `tools.py`, `domain.py`, and `ports.py` for its repository
+  port). It MUST NOT fork or branch `build_graph()`. A domain's `allowed_tools` is its sandbox
+  boundary; skills and subagents live in the domain's own `skills/` and `subagents/` folders
+  (the folder is the owner; a `domains:` tag is refused), so they never leak across domains.
 - **Queueing**: the HTTP chat path is the Redis Streams queue; domain is inferred from the
   stream a job landed on, never from its payload. A queue consumer is at-least-once, so its
   handler MUST be safe under redelivery (Principle IV).
@@ -295,4 +296,4 @@ states the intent and the conflicting document MUST be corrected.
 - **Runtime guidance**: day-to-day development guidance for agents and contributors lives in
   `CLAUDE.md` and `.claude/rules/`; those files MUST NOT contradict this constitution.
 
-**Version**: 1.4.2 | **Ratified**: 2026-10-01 | **Last Amended**: 2026-11-05
+**Version**: 1.4.3 | **Ratified**: 2026-10-01 | **Last Amended**: 2026-11-06
