@@ -15,9 +15,9 @@ import re
 
 import pytest
 
-from app.domains import sandbox_session
 from app.domains.ops import tools as ops_tools
 from app.domains.sales import tools as sales_tools
+from app.domains.shared import sandbox_session
 from app.domains.support import tools as support_tools
 
 _VALUE_RULE = re.compile(r"^[A-Za-z0-9]([A-Za-z0-9_.-]{0,61}[A-Za-z0-9])?$")

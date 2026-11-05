@@ -1,4 +1,4 @@
-"""Tests for app/domains/sandbox_session.py — the shared logic behind
+"""Tests for app/domains/shared/sandbox_session.py — the shared logic behind
 every domain's own sandbox tool trio (ops/support/sales), mocks the raw
 OpenSandbox MCP tools' `.invoke(...)` calls (returning realistic JSON
 strings matching the EXACT shapes read from opensandbox_mcp/opensandbox's
@@ -12,7 +12,7 @@ import json
 
 import pytest
 
-from app.domains import sandbox_session
+from app.domains.shared import sandbox_session
 
 
 class _FakeTool:

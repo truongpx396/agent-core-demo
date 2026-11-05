@@ -13,7 +13,7 @@ from opensandbox_mcp.server import create_server
 
 from app.adapters.outbound.mcp import sandbox_tools
 from app.adapters.outbound.mcp.client import tool_fingerprint
-from app.domains import sandbox_session
+from app.domains.shared import sandbox_session
 
 
 async def _offered() -> dict[str, str]:

@@ -9,7 +9,7 @@ import importlib
 import pytest
 from pydantic import ValidationError
 
-from app.domains import sandbox_session
+from app.domains.shared import sandbox_session
 
 _DOMAINS = ["ops", "support", "sales"]
 _FIELDS = [

@@ -8,7 +8,7 @@ the five pinned tools load and are all `outward`, the other fourteen are never o
 from app.adapters.outbound.mcp import sandbox_tools
 from app.adapters.outbound.mcp.connection import close_all_connections
 from app.core import metrics
-from app.domains import sandbox_session
+from app.domains.shared import sandbox_session
 from tests.conftest import metric_value
 
 

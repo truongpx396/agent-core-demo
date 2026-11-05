@@ -8,7 +8,7 @@ real use of the `outward` capability; `log_incident`/`list_recent_incidents`/
 Ctx is still required (fail-closed, like every tool here) even though the
 data isn't tenant-scoped — it's global operational data about the app
 itself, so `ctx` proves "a legitimate caller," not a row filter. See
-app/domains/policy.py for why `ActionAllowlistPolicy` still fits.
+app/domains/shared/policy.py for why `ActionAllowlistPolicy` still fits.
 `log_incident`/`resolve_incident` stamp attribution from
 `ctx["principal"]` even though the incident row has no tenant column.
 
@@ -27,12 +27,12 @@ from app.core.tool_idempotency import idempotent
 from app.core.tool_runtime import arun_with_timeout
 from app.core.tool_schema import ToolArgs
 from app.core.untrusted import frame_untrusted
-from app.domains import sandbox_session
 from app.domains.ops import metric_checks
-from app.domains.policy import ActionAllowlistPolicy
-from app.domains.web_search import make_web_search_tool
+from app.domains.ops.ports import incident_store, metrics_reader
+from app.domains.shared import sandbox_session
+from app.domains.shared.policy import ActionAllowlistPolicy
+from app.domains.shared.web_search import make_web_search_tool
 from app.ports.outbound.notify import team_channel
-from app.ports.outbound.ops import incident_store, metrics_reader
 from app.ports.outbound.web import CRAWL_TOOL_TIMEOUT_SECONDS, page_renderer
 
 NO_CTX_REFUSAL = (
@@ -300,7 +300,7 @@ async def check_vendor_status_page(
     )
 
 
-# The discovery half of check_vendor_status_page: finds the vendor's status page it then reads (app/domains/web_search.py says why).
+# The discovery half of check_vendor_status_page: finds the vendor's status page it then reads (app/domains/shared/web_search.py says why).
 web_search = make_web_search_tool(OPS_POLICY, then_read_with="check_vendor_status_page")
 
 
