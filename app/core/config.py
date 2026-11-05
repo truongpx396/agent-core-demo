@@ -355,7 +355,7 @@ class Settings(BillingSettings):
     # target, not queryable.
     prometheus_url: str = "http://localhost:9090"
 
-    # Sandbox session defaults (app/domains/sandbox_session.py, shared by
+    # Sandbox session defaults (app/domains/shared/sandbox_session.py, shared by
     # ops/support/sales, pattern 50) — image and lifetime for the one
     # OpenSandbox sandbox each investigation thread lazily creates and
     # reuses. A fresh sandbox has NO network egress by default, so needed
@@ -644,7 +644,7 @@ class Settings(BillingSettings):
     # How long the signing keys are cached. A key the authorization server rotates is picked up on the next unknown `kid` regardless.
     mcp_gateway_jwks_cache_seconds: int = Field(default=300, ge=30)
 
-    # The most text one remote MCP tool call (app/adapters/outbound/mcp/client.py) or one sandbox result (app/domains/sandbox_session.py) may hand
+    # The most text one remote MCP tool call (app/adapters/outbound/mcp/client.py) or one sandbox result (app/domains/shared/sandbox_session.py) may hand
     # the model; the middle of anything longer is replaced by a marker that says how much (app/core/output_limits.py, specs/009
     # A3). 20,000 is the page reader's own cap (app/adapters/outbound/crawl4ai/web_crawler.py), so no tool returns more than a crawled page can.
     mcp_tool_output_max_chars: int = Field(default=20_000, ge=200)
@@ -675,7 +675,7 @@ class Settings(BillingSettings):
     crawl4ai_api_token: str = ""
 
     # API key for serper.dev (a Google Search API), the backend of the `web_search` tool
-    # (app/adapters/outbound/web/serper.py, app/domains/web_search.py). Optional and OFF when empty, like Langfuse and the
+    # (app/adapters/outbound/web/serper.py, app/domains/shared/web_search.py). Optional and OFF when empty, like Langfuse and the
     # Slack webhook: the core runs fully offline, and with no key the tool is still declared (the tool list
     # must not change between deploys, or a thread paused on an approval for it could not resume) but
     # answers that web search is not configured, without a network call. Every search spends one of the

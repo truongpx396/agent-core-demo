@@ -97,7 +97,7 @@ class TestSandboxing:
     list has.
 
     Not a full exact-set check — app/domains/support/tools.py also adds
-    its own four narrow sandbox tools (app/domains/sandbox_session.py,
+    its own four narrow sandbox tools (app/domains/shared/sandbox_session.py,
     GRAPH_PATTERNS.md pattern 50), always present as a fixed set of four
     regardless of whether opensandbox-mcp happens to be reachable when
     this test runs — reachability became a per-call concern, not a

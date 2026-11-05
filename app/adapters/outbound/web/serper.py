@@ -1,5 +1,5 @@
 """The `WebSearch` adapter (`app/ports/outbound/web.py`): the client for serper.dev, a Google Search API, the backend of the `web_search` tool
-(`app/domains/web_search.py`).
+(`app/domains/shared/web_search.py`).
 
 Measured against the live API (2026-10-28), because the rest of this module rests on it:
 - `POST https://google.serper.dev/search`, key in an `X-API-KEY` header, body `{"q": ..., "num": N}`. A good

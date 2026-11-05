@@ -1,4 +1,4 @@
-"""The `MetricsReader` adapter (`app/ports/outbound/ops.py`): pulls this app's own operational metrics from the Prometheus this repo already ships
+"""The `MetricsReader` adapter (`app/domains/ops/ports.py`): pulls this app's own operational metrics from the Prometheus this repo already ships
 (`docker-compose.observability.yml`, `make obs-up`) — not a new data source, and not a new dependency (`httpx` is already used elsewhere, e.g.
 app/adapters/inbound/channels/telegram.py, app/ingestion/ingestor.py).
 

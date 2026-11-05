@@ -24,10 +24,35 @@ when an import crosses the line the wrong way (`tests/core/test_architecture_lay
 
 | Ring | Where | May import |
 |---|---|---|
-| **ports** | `app/ports/` (`outbound/`, and `slot.py`) | the standard library, `pydantic`, the kernel, other ports |
+| **ports** | `app/ports/` (`outbound/`, and `slot.py`), and each business module's own `app/domains/<module>/ports.py` | the standard library, `pydantic`, the kernel, other ports |
 | **kernel** | `app/core/*.py` except the platform modules | the kernel and the ports. No infrastructure client, nothing above it |
 | **application** | `app/agent/`, `app/domains/` (except the adapter files below), `app/ingestion/` | the kernel, the ports, LangGraph and LangChain core, OpenTelemetry/Langfuse/structlog. Never an infrastructure client, an adapter, an inbound adapter, or (from `app/agent`) a domain |
 | **adapters** | `app/adapters/` (`inbound/` and `outbound/`, below), `app/ingestion/`, `app/bootstrap.py`, the platform modules in `app/core/` (`sql_store`, `internal_identity`, `telemetry`, `profiling`, `logging_config`, `job_runtime`), and a domain's `store.py`, `metrics_client.py` and `registry.py` | anything inward of them |
+
+## The business modules
+
+Inside the application ring the code is a modular monolith: one process, and a business feature is a **module** that owns everything it needs.
+
+```
+app/domains/
+  ecorp/ ops/ sales/ support/    one module each, the same shape:
+    domain.py      the plugin: its AgentManifest and DomainPlugin (what the registry publishes)
+    tools.py       the tool layer (schemas, ctx check, idempotent())   usecases.py  the rules, where a module has them
+    ports.py       the module's own driven ports (a repository) and their Slots
+    store.py       the adapter for them (also metrics_client.py in ops); bound in bootstrap.py
+    skills/ subagents/
+  shared/          what the modules have in common: policy.py, sandbox_session.py, web_search.py (the shared kernel)
+  registry.py      names every module; the one place that does
+```
+
+Two rules, each a test (`tests/core/test_architecture_layers.py`):
+
+- **A module imports no other module.** It may import itself, `app/domains/shared/`, the kernel and the platform ports; not a sibling and not the registry. What two modules both need goes in `shared/`;
+  what one asks of the world is a port.
+- **The rest of the code imports only what a module publishes**: `domain` (the plugin) and `usecases` (what a driving adapter calls). `app/bootstrap.py` also names `ports` and the adapter (`store`, `metrics_client`),
+  which is its job. Four reaches remain in `MODULE_LEDGER`, which may only shrink.
+
+A port belongs to the module when only that module's tools use it (`TicketStore` is the support module's) and to the platform (`app/ports/outbound/`) when several things use it (`WebSearch`, `SandboxCatalog`, `UsageEventStore`).
 
 ## The two sides of the adapter ring
 
@@ -80,7 +105,7 @@ slot raises `PortNotBound` naming the port. There is no default adapter, so the 
 | `classification`, `screening` | `RouteClassifier`, `InjectionScorer` | `app/adapters/outbound/mlservice/` | the routing decision and the moderation verdict (fail open on a failed check, closed on a real hit) |
 | `web`, `notify`, `sandbox` | `WebSearch`, `PageRenderer`, `PageFetcher`, `TeamChannel`, `SandboxCatalog` | `app/adapters/outbound/web/` (search, `page_fetch.py`), `app/adapters/outbound/crawl4ai/web_crawler.py`, `app/adapters/outbound/notify/`, `app/adapters/outbound/mcp/sandbox_tools.py` | framing a result as untrusted, scrubbing, bounding, the approval tier |
 | `jobs`, `storage` | `TurnQueue`, `IngestQueue`, `ObjectStore` | `app/adapters/outbound/redis/queue.py`, `ingest_queue.py`, `app/adapters/outbound/minio/object_store.py` | which events end a stream; the dedup window; a job carries a pointer to an upload, never its bytes |
-| `support`, `sales`, `ops`, `ecorp` | `TicketStore`, `LeadStore`, `IncidentStore`, `MetricsReader`, `KnowledgeBase`, `EmployeeDirectory` | each domain's `store.py` (the module itself), `ops/metrics_client.py` | use cases, closed vocabularies, deterministic ids, result text |
+| a module's own (`app/domains/<module>/ports.py`) | support `TicketStore`, sales `LeadStore`, ops `IncidentStore` and `MetricsReader`, ecorp `KnowledgeBase` and `EmployeeDirectory` | each module's `store.py` (the module itself), `ops/metrics_client.py` | use cases, closed vocabularies, deterministic ids, result text |
 
 Billing was the first port and is unchanged: `credit_billing.port.BillingPort`, reached through `app/billing_integration/port.py`, enforced by its own two tests.
 
@@ -108,7 +133,8 @@ reach; `GraphDeps` is for what the graph is built with.
 3. one entry in `app/bootstrap.py::adapters()`. `tests/core/test_bootstrap.py` fails on a port without an adapter and on an adapter that does not match its Protocol (names, async-ness, parameters);
 4. a fake in `tests/fakes/` if consumers need one, listed in `tests/fakes/test_fakes.py`, which holds it to the same Protocol check.
 
-**A new domain**: unchanged (`store.py` + `tools.py` + `domain.py`, an `AgentManifest` and a `DomainPlugin`, one line in `registry.py`). Its repository is a port in `app/ports/outbound/<domain>.py` and its `store.py` is bound in `bootstrap.py`.
+**A new domain** is a new module: `app/domains/<name>/` with `domain.py` (an `AgentManifest` and a `DomainPlugin`), `tools.py` and `store.py`, one line in `registry.py`, and `ports.py` for its repository; `store.py` is bound in `bootstrap.py`. It imports
+nothing from a sibling (`shared/` is for what is common), and `tests/core/test_architecture_layers.py` says so if it does.
 
 **A new way in** (a channel, a published server, a consumer): `app/adapters/inbound/<name>/`, a leaf; its entrypoint calls `wire()`. The test says so if you forget.
 
@@ -137,6 +163,8 @@ usage-event store, the model catalog, the classifier and the injection scorer is
 - **OpenTelemetry, Langfuse and structlog are allowed everywhere.** Observability is cross-cutting.
 - **A domain's `store.py` is its adapter, as a module.** The `store.py` + `tools.py` + `domain.py` shape is the documented convention, and a module satisfies a `Protocol`
   structurally, so the SQL did not move and its tests did not change.
+- **Modules first, layers inside.** The platform stays layered by technology (`app/adapters/outbound/<technology>/`, `app/ports/outbound/`) because several things share each system; a business feature is
+  cut by module, with its repository port beside the adapter that implements it. The ports moved with their `Slot` objects intact, so no call site changed beyond an import path.
 - **A queue consumer owns its broker.** The workers' Streams code (consumer group, thread lock, reclaim, dead letters) is the inbound adapter's own technology, not a port: nothing in the application calls it,
   and putting it behind one would only move the Redis commands. The producer is a port because the API, the application's caller, submits work through it.
 - **Moved code was moved verbatim.** Behaviour, fail-open/closed choices and metrics are the same; the diff is where things live and what imports them.
@@ -147,5 +175,7 @@ usage-event store, the model catalog, the classifier and the injection scorer is
   The operator scripts likewise import adapter modules (`scripts/jobs/followup_sweep.py` calls the sales store).
 - **`app/adapters/outbound/qdrant/memory.py` (scoped memory deletion) builds its selector in the adapter ring.** Nothing in the application calls it: it is for a data-subject request or a retention sweep, run by an operator.
 - **A domain's `store.py` is an adapter living in its domain**, by the `store.py` + `tools.py` + `domain.py` convention (see Decisions).
+- **Four reaches into a module's internals remain** (`MODULE_LEDGER`): the ops MCP server uses `ops/tools.py`, the ops digest job uses `ops/metric_checks.py` and `ops/ports.py`, and the follow-up sweep queries `sales/store.py`. Each is a use case the module has not published (ops has no `usecases.py`).
+- **Only the business domains are modules.** The agent engine, `app/ingestion/` and `app/billing_integration/` keep their own shape; they are not cut the same way and are not under the module rules.
 - **`app/billing_integration/` sits beside the adapters, not in them.** It is the earlier seam to the billing package, with its own two boundary tests; moving it would touch the constitution's "Self-contained packages".
 - **The constitution does not describe the rings.** They and the rules above would be a MINOR addition to "Architecture & Technology Constraints", which goes through `/speckit-constitution`. (Its two path pointers that named the API's old package were fixed in 1.4.2.)
