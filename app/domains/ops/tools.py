@@ -27,10 +27,13 @@ from app.core.tool_idempotency import idempotent
 from app.core.tool_runtime import arun_with_timeout
 from app.core.tool_schema import ToolArgs
 from app.core.untrusted import frame_untrusted
-from app.domains.ops import metric_checks
-from app.domains.ops.ports import incident_store, metrics_reader
+from app.domains.ops.ports import incident_store
+from app.domains.ops.usecases import (
+    OPS_POLICY,
+    fetch_metrics_summary_impl,
+    list_recent_incidents_impl,
+)
 from app.domains.shared import sandbox_session
-from app.domains.shared.policy import ActionAllowlistPolicy
 from app.domains.shared.web_search import make_web_search_tool
 from app.ports.outbound.notify import team_channel
 from app.ports.outbound.web import CRAWL_TOOL_TIMEOUT_SECONDS, page_renderer
@@ -40,25 +43,6 @@ NO_CTX_REFUSAL = (
     "This isn't something you can work around — it means the request "
     "never got a security context stamped on it upstream."
 )
-
-OPS_POLICY = ActionAllowlistPolicy(
-    frozenset(
-        {
-            "fetch_metrics",
-            "post_to_channel",
-            "log_incident",
-            "list_recent_incidents",
-            "resolve_incident",
-            "check_vendor_status",
-            "web_search",
-            "run_command_in_sandbox",
-            "run_python_in_sandbox",
-            "read_sandbox_file",
-            "write_sandbox_file",
-        }
-    )
-)
-
 
 def ctx_from_config(config: RunnableConfig | None) -> SecurityCtx | None:
     if not config:
@@ -75,18 +59,6 @@ def ctx_or_refuse(config: RunnableConfig | None, action: str) -> SecurityCtx | N
 
 class FetchMetricsSummaryArgs(BaseModel):
     pass
-
-
-async def fetch_metrics_summary_impl() -> str:
-    readings = await metrics_reader.get().fetch_readings()
-    anomalies = metric_checks.detect_anomalies(readings)
-    lines = [metric_checks.format_readings(readings)]
-    if anomalies:
-        lines.append("\nAnomalies (past an alert-matching threshold):")
-        lines.extend(f"- {a}" for a in anomalies)
-    else:
-        lines.append("\nNo anomalies — every metric is within its normal range.")
-    return "\n".join(lines)
 
 
 @tool(args_schema=FetchMetricsSummaryArgs)
@@ -188,17 +160,6 @@ async def log_incident(
 
 class ListRecentIncidentsArgs(ToolArgs):
     status: str | None = Field(..., description="Filter: 'open' or 'resolved'. Pass null for both.")
-
-
-async def list_recent_incidents_impl(status: str | None) -> str:
-    incidents = await incident_store.get().list_recent_incidents(status=status)
-    if not incidents:
-        return "No incidents on record."
-    lines = [
-        f"- #{i['id']} [{i['status']}] {i['summary']} (opened by {i['opened_by']}, {i['created_at']})"
-        for i in incidents
-    ]
-    return "\n".join(lines)
 
 
 @tool(args_schema=ListRecentIncidentsArgs)

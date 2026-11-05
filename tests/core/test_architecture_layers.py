@@ -298,12 +298,8 @@ PUBLISHED = frozenset({"domain", "usecases"})
 COMPOSITION_ROOT = "app/bootstrap.py"
 COMPOSED = PUBLISHED | {"ports", "store", "metrics_client"}
 
-# Reaches into a module's internals that remain, as (file, module reached). Like `LEDGER`, it may only shrink; each is a use case the module has not published.
+# Reaches into a module's internals that remain, as (file, module reached). Like `LEDGER`, it may only shrink, and it is empty: an entry would be a use case a module has not published.
 MODULE_LEDGER: frozenset[tuple[str, str]] = frozenset({
-    ("app/adapters/inbound/mcp/ops_server.py", "app.domains.ops.tools"),  # the two read-only tools of the published ops server
-    ("scripts/jobs/ops_digest.py", "app.domains.ops.metric_checks"),  # the thresholds the digest flags
-    ("scripts/jobs/ops_digest.py", "app.domains.ops.ports"),  # the metrics reader
-    ("scripts/jobs/followup_sweep.py", "app.domains.sales.store"),  # the sweep queries the lead table
 })
 
 
