@@ -5,7 +5,7 @@ has none yet, so each is authenticated by what it carries instead.
 - `POST /telegram/webhook`: the request must carry `TELEGRAM_WEBHOOK_SECRET` in `X-Telegram-Bot-Api-Secret-Token` (what `setWebhook`'s `secret_token`
   makes Telegram send; compared in constant time). It does one thing, put the update on the inbox, and answers 200 only once that worked: any other
   answer makes Telegram redeliver (its docs: a non-2xx is retried), which is what we want when Redis is down.
-- `GET /telegram/link/callback` and `POST /telegram/link/confirm`: account linking (telegram_link.py). Pages set no-store, no-referrer and a
+- `GET /telegram/link/callback` and `POST /telegram/link/confirm`: account linking (link.py). Pages set no-store, no-referrer and a
   no-frame policy because the address carries a one-time code.
 
 Bound to loopback by default; TLS and the public name are the reverse proxy's (the proxy must route `/telegram/` here and must NOT require the front
@@ -25,8 +25,8 @@ import uvicorn
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import HTMLResponse
 
-from app.adapters.inbound.channels.telegram_inbox import Inbox
-from app.adapters.inbound.channels.telegram_link import (
+from app.adapters.inbound.channels.telegram.inbox import Inbox
+from app.adapters.inbound.channels.telegram.link import (
     CALLBACK_PATH,
     CONFIRM_PATH,
     LinkFlow,
@@ -107,7 +107,7 @@ def build_app(inbox: Inbox, linker: LinkFlow | None, *, webhook: bool) -> FastAP
                 return _refused()
             body = (
                 "<h1>Connect this account?</h1>"
-                # nosemgrep: python.django.security.injection.raw-html-format.raw-html-format -- every interpolated value is html.escape'd; tests/adapters/inbound/channels/test_telegram_server.py::TestTheLinkPages::test_the_confirmation_names_both_sides_and_escapes_what_it_shows feeds each a hostile string
+                # nosemgrep: python.django.security.injection.raw-html-format.raw-html-format -- every interpolated value is html.escape'd; tests/adapters/inbound/channels/telegram/test_server.py::TestTheLinkPages::test_the_confirmation_names_both_sides_and_escapes_what_it_shows feeds each a hostile string
                 f"<p>Telegram user <b>{html.escape(ask.telegram)}</b> will be able to use the assistant as <b>{html.escape(ask.account)}</b>.</p>"
                 "<p>If you did not ask for this in Telegram yourself, close this page: someone may be trying to use your account.</p>"
                 # nosemgrep: python.django.security.injection.raw-html-format.raw-html-format -- the token is html.escape'd with quote=True and CONFIRM_PATH is a constant; same test

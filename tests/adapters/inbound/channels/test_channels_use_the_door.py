@@ -14,8 +14,8 @@ from pathlib import Path
 import pytest
 
 REPO = Path(__file__).resolve().parents[4]
-CHANNELS = sorted((REPO / "app" / "adapters" / "inbound" / "channels").glob("*.py"))
-CHANNELS = [path for path in CHANNELS if path.name != "__init__.py"]
+CHANNELS_DIR = REPO / "app" / "adapters" / "inbound" / "channels"
+CHANNELS = [path for path in sorted(CHANNELS_DIR.rglob("*.py")) if path.name != "__init__.py"]
 
 # Importing any of these runs the graph, builds it, or puts a turn on the queue.
 FORBIDDEN = (
@@ -60,20 +60,23 @@ def offences(source: str) -> list[str]:
 
 def test_there_are_channels_for_this_test_to_be_about():
     """A floor against a vacuous pass: a moved directory would make every check below true."""
-    names = {path.name for path in CHANNELS}
-    assert {"chat.py", "telegram.py", "door.py", "oauth.py", "cli_auth.py", "telegram_people.py", "telegram_inbox.py", "telegram_link.py", "telegram_server.py"} <= names
+    names = {path.relative_to(CHANNELS_DIR).as_posix() for path in CHANNELS}
+    assert {
+        "door.py", "oauth.py", "cli/chat.py", "cli/auth.py",
+        "telegram/bot.py", "telegram/people.py", "telegram/inbox.py", "telegram/link.py", "telegram/server.py",
+    } <= names
 
 
-@pytest.mark.parametrize("channel", CHANNELS, ids=lambda p: p.name)
+@pytest.mark.parametrize("channel", CHANNELS, ids=lambda p: p.relative_to(CHANNELS_DIR).as_posix())
 def test_a_channel_cannot_reach_the_graph_or_the_queue(channel):
     assert offences(channel.read_text()) == [], (
-        f"{channel.name} must send its turns to the chat API through the front door (app/adapters/inbound/channels/door.py), never to the queue or the graph"
+        f"{channel.relative_to(CHANNELS_DIR)} must send its turns to the chat API through the front door (app/adapters/inbound/channels/door.py), never to the queue or the graph"
     )
 
 
-@pytest.mark.parametrize("channel", ["chat.py", "telegram.py"])
+@pytest.mark.parametrize("channel", ["cli/chat.py", "telegram/bot.py"])
 def test_the_two_channels_reach_the_agent_through_the_door(channel):
-    modules = {module for module, _ in imported((REPO / "app" / "adapters" / "inbound" / "channels" / channel).read_text())}
+    modules = {module for module, _ in imported((CHANNELS_DIR / channel).read_text())}
 
     assert "app.adapters.inbound.channels.door" in modules
 

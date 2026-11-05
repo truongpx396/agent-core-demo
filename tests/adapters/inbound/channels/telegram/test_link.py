@@ -1,4 +1,4 @@
-"""Telegram account linking (app/adapters/inbound/channels/telegram_link.py, specs/021 FR-008). The authorization server is replaced by two functions of
+"""Telegram account linking (app/adapters/inbound/channels/telegram/link.py, specs/021 FR-008). The authorization server is replaced by two functions of
 `app.adapters.inbound.channels.oauth` (the code exchange and the refresh), whose real behaviour is covered in test_oauth.py and, for Casdoor, in specs/020 research."""
 import asyncio
 import base64
@@ -8,9 +8,10 @@ import time
 import pytest
 from cryptography.fernet import Fernet
 
-from app.adapters.inbound.channels import oauth, telegram_link
+from app.adapters.inbound.channels import oauth
 from app.adapters.inbound.channels.oauth import SignInRefused, Tokens
-from app.adapters.inbound.channels.telegram_link import (
+from app.adapters.inbound.channels.telegram import link as telegram_link
+from app.adapters.inbound.channels.telegram.link import (
     LinkedAuth,
     LinkFlow,
     LinkStore,
@@ -18,7 +19,7 @@ from app.adapters.inbound.channels.telegram_link import (
 )
 from app.core import metrics
 from app.core.config import settings
-from tests.adapters.inbound.channels.telegram_fakes import FakeApi, FakeRedis
+from tests.adapters.inbound.channels.telegram.fakes import FakeApi, FakeRedis
 from tests.conftest import metric_value as _count
 
 KEY = Fernet.generate_key().decode()

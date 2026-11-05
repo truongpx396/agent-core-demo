@@ -1,24 +1,24 @@
-"""Tests for app/adapters/inbound/channels/telegram.py — the bot's turn flow, its approval buttons, its commands and its start-up checks. Telegram's API, the door
-(`app/adapters/inbound/channels/door.py`) and Redis are replaced by the fakes in tests/adapters/inbound/channels/telegram_fakes.py, so these never touch a network, a queue, a worker or
-a model. What the door and the sign-in do with real HTTP is tested in test_door.py, test_oauth.py and test_telegram_people.py; the inbox, the webhook
+"""Tests for app/adapters/inbound/channels/telegram/bot.py — the bot's turn flow, its approval buttons, its commands and its start-up checks. Telegram's API, the door
+(`app/adapters/inbound/channels/door.py`) and Redis are replaced by the fakes in tests/adapters/inbound/channels/telegram/fakes.py, so these never touch a network, a queue, a worker or
+a model. What the door and the sign-in do with real HTTP is tested in test_door.py, test_oauth.py and test_people.py; the inbox, the webhook
 server, linking and the Bot API client have their own files.
 """
 import asyncio
 
 import pytest
 
-from app.adapters.inbound.channels import telegram as telegram_channel
 from app.adapters.inbound.channels.door import SIGNIN_MESSAGES
 from app.adapters.inbound.channels.oauth import SignInRefused
-from app.adapters.inbound.channels.telegram import Bot
-from app.adapters.inbound.channels.telegram_approvals import (
+from app.adapters.inbound.channels.telegram import bot as telegram_channel
+from app.adapters.inbound.channels.telegram.approvals import (
     ApprovalStore,
     parse_callback,
 )
-from app.adapters.inbound.channels.telegram_inbox import Inbox
+from app.adapters.inbound.channels.telegram.bot import Bot
+from app.adapters.inbound.channels.telegram.inbox import Inbox
 from app.core import metrics
 from app.core.config import settings
-from tests.adapters.inbound.channels.telegram_fakes import (
+from tests.adapters.inbound.channels.telegram.fakes import (
     FakeApi,
     FakeChannel,
     FakeDoor,

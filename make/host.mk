@@ -39,19 +39,19 @@ usage-reconcile-worker:  ## usage-reconcile as a loop: a pass every USAGE_RECONC
 # --- Channels ---
 
 chat:  ## Interactive agent CLI; turns go through the queue, so it needs `make up` and a worker (`make agent-worker`); AGENT_DOMAIN=support|ops|sales picks another domain (`make agent-worker-all`)
-	python -m app.adapters.inbound.channels.chat
+	python -m app.adapters.inbound.channels.cli.chat
 
 chat-hitl:  ## Interactive CLI with tool approval (same worker requirement as `make chat`)
-	python -m app.adapters.inbound.channels.chat --hitl
+	python -m app.adapters.inbound.channels.cli.chat --hitl
 
 telegram:  ## Telegram bot for the Ecorp domain; needs TELEGRAM_BOT_TOKEN and `make agent-worker`; approvals appear as Approve/Reject buttons (specs/021)
-	python -m app.adapters.inbound.channels.telegram
+	python -m app.adapters.inbound.channels.telegram.bot
 
 telegram-support:  ## Telegram bot as the support copilot; needs a worker serving support (`make agent-worker-all`)
-	AGENT_DOMAIN=support python -m app.adapters.inbound.channels.telegram
+	AGENT_DOMAIN=support python -m app.adapters.inbound.channels.telegram.bot
 
 telegram-sales:  ## Telegram bot as the sales concierge; needs a worker serving sales (`make agent-worker-all`)
-	AGENT_DOMAIN=sales python -m app.adapters.inbound.channels.telegram
+	AGENT_DOMAIN=sales python -m app.adapters.inbound.channels.telegram.bot
 
 # --- Helpers ---
 
