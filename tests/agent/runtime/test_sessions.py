@@ -1,12 +1,12 @@
 """Tests for app/agent/runtime/sessions.py — the session directory backing item #9's
 web UI switcher. Same "assert the query text/params, not a live query
-result" approach tests/core/test_sql_store.py already uses, extended with
+result" approach tests/platform/test_sql_store.py already uses, extended with
 fetchone() (session_belongs_to's single-row lookup) alongside
 fetchall() (list_sessions).
 
 `upsert_session`/`list_sessions`/`session_belongs_to`/`get_connection` are
 all `async def`/`@asynccontextmanager` now (a real `AsyncConnectionPool`,
-see app/core/sql_store.py's own docstring), so every call below runs
+see app/platform/sql_store.py's own docstring), so every call below runs
 through `asyncio.run(...)`, this repo's established pattern for exercising
 async code from a plain `def test_...`.
 """

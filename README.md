@@ -167,7 +167,7 @@ flowchart TB
     Output -- answer stands --> Finish
     Finish -. write back .-> SemCache
 
-    MCPGateway --> SQL["app/core/sql_store.py"]
+    MCPGateway --> SQL["app/platform/sql_store.py"]
     ToolsNode --> SQL
     SQL --> Postgres[("Postgres: appdata")]
     Retrieve --> Qdrant[("Qdrant<br/>hybrid search")]
@@ -515,7 +515,7 @@ the chat API or the MCP routes.
 - **Replicas:** two by default; state is only Redis, so any number works.
 - **MCP routes** run it **limit-only**: the gateway still verifies the token itself (the MCP spec requires it), so a missing or bad token passes through to the gateway's own 401.
 - **Fails closed** where it is a security check (no usable keys, an untrustworthy revocation list: 503) and **open** where it is a protection (limiter store down: served, counted, alerted). A Casdoor outage is survived for a bounded grace (6 h by default), then everything is refused.
-- **The API** verifies the identity (`AUTH_MODE=identity`, `app/core/internal_identity.py`; see [HTTP API](#-http-api)).
+- **The API** verifies the identity (`AUTH_MODE=identity`, `app/platform/internal_identity.py`; see [HTTP API](#-http-api)).
 - ❌ **Not built:** Cloudflare and per-address limits, a production identity provider, mutual TLS between Caddy and the service. Measurements (about 0.4 ms median added per request), contract, threat model and gaps: `specs/018-authlimit-edge-auth/`.
 
 | Command | Does |
@@ -702,7 +702,7 @@ drops it; config in [`observability/`](observability/); prod runs the backends o
 |---|---|
 | otel-collector | Receives every process's OTLP push; one Prometheus scrape target (`:8889`) |
 | Prometheus | Scrapes the collector, Qdrant, LiteLLM and the Postgres/Redis/PgBouncer exporters (three PgBouncer alerts: down, clients waiting, a client waiting over 10 s) |
-| Pyroscope | Continuous CPU profiles pushed by the API and each worker (`PYROSCOPE_SERVER_ADDRESS`, [`app/core/profiling.py`](app/core/profiling.py)); flame graphs in Grafana, Explore, Pyroscope, tagged by `domain` and `replica`. On in dev, **off in production until tried on the droplet** |
+| Pyroscope | Continuous CPU profiles pushed by the API and each worker (`PYROSCOPE_SERVER_ADDRESS`, [`app/platform/profiling.py`](app/platform/profiling.py)); flame graphs in Grafana, Explore, Pyroscope, tagged by `domain` and `replica`. On in dev, **off in production until tried on the droplet** |
 | Alertmanager | Routes [`alerts.yml`](observability/prometheus/alerts.yml) (error rate, p95 latency, tool errors, tenant budget, moderation and webhook spikes, degradation, checkpoints, unreachable workers). Locally **no notification channel is wired**. Production mounts `alertmanager.prod.yml` (Slack, severity-routed) and **refuses to start** without `ALERTMANAGER_SLACK_WEBHOOK_URL`, so a deployment can't be quietly alert-deaf |
 | Loki + Promtail | Ship the app containers' JSON logs |
 | Grafana | Seven provisioned dashboards: **Agent Core Overview**, **Infra**, **Logs**, **Credit Billing**, Docker/host, Postgres, Redis |
@@ -832,7 +832,8 @@ app/
   agent/       graph/ (LangGraph), runtime/ (turns, streaming, sessions), tools/ (built-ins, catalogs, run_subagent), cost/ (meter, caps)
   billing_integration/  the app's one seam to the billing package (port.py)
   bootstrap.py binds every port to its adapter; each entrypoint calls wire() first
-  core/        the kernel: config, security (SecurityCtx/Policy/AccessScope), metrics, errors, scrubbing, the gateway identity, tool timeout and the exactly-once guard (plus the SQL pool and other platform modules)
+  core/        the kernel: config, security (SecurityCtx/Policy/AccessScope), metrics, errors, scrubbing, the gateway identity, tool timeout and the exactly-once guard
+  platform/    the process plumbing, adapter-side: the SQL pool, the Redis client, telemetry, logging, profiling, the job runtime, the check of the door's identity
   domains/     ecorp/, support/, ops/, sales/ (each a module: domain, tools, ports, store = its adapter, skills/ and subagents/), shared/ (policy, sandbox session, web search: what the modules share; skills/ for a skill every domain can follow, none today), registry
   ingestion/   the ingest pipeline: chunking, extractors, ingestor (over the Embedder, DocumentWriter and PageFetcher ports)
   ports/outbound/  the Protocols the application needs (cost, models, llm, sessions, retrieval, web, sandbox, ...; a domain's repository port is in its module) and Slot, the typed seam

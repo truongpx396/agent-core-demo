@@ -5,12 +5,12 @@ Statements only. Whether a hold is taken at all, what an unreachable table means
 and when a hold is stale are the application's (`app/agent/cost/budget_holds.py`); this module raises on any database error and lets the
 caller decide. Every statement is scoped by tenant.
 """
-from app.core.sql_store import get_connection
+from app.platform.sql_store import get_connection
 
 
 class PgBudgetHoldStore:
     async def reserve(self, tenant: str, hold_id: str, amount_usd: float, *, stale_after_minutes: int) -> None:
-        # The sweep of this tenant's abandoned holds shares the insert's transaction (`get_connection` is one, see core/sql_store.py).
+        # The sweep of this tenant's abandoned holds shares the insert's transaction (`get_connection` is one, see platform/sql_store.py).
         # It is housekeeping, not correctness: the read already ignores stale holds.
         async with get_connection() as conn:
             await conn.execute(

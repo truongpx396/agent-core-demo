@@ -60,8 +60,8 @@ from app.adapters.inbound.mcp.identity import token_source
 from app.bootstrap import wire
 from app.core.config import Settings
 from app.core.config import settings as app_settings
-from app.core.logging_config import configure_logging
-from app.core.telemetry import configure_telemetry
+from app.platform.logging_config import configure_logging
+from app.platform.telemetry import configure_telemetry
 
 logger = logging.getLogger(__name__)
 

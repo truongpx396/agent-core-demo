@@ -1,4 +1,4 @@
-"""MCP server exposing the structured-data tool (`app/core/sql_store.py`'s `query_employees`) so an external
+"""MCP server exposing the structured-data tool (`app/platform/sql_store.py`'s `query_employees`) so an external
 client (Claude Desktop, another agent, `mcp dev`) can reach it, not just this app's own LLM (GRAPH_PATTERNS.md
 pattern 21). Built on `mcp.server.MCPServer`, the 2.x SDK's server class (what `FastMCP` became).
 
@@ -30,9 +30,9 @@ from app.adapters.inbound.mcp.identity import (
     launcher_source,
 )
 from app.bootstrap import wire
-from app.core.logging_config import configure_logging
 from app.core.security import DEFAULT_POLICY
 from app.domains.ecorp.usecases import Department, query_employees_impl
+from app.platform.logging_config import configure_logging
 
 SERVER_NAME = "ecorp-structured-data"
 

@@ -172,7 +172,7 @@ class Settings(BillingSettings):
     # each a scoped nested agent run `run_subagent` can delegate to. No Qdrant collection:
     # a subagent's description is embedded in run_subagent's own tool schema.
 
-    # Structured-data tool (app/core/sql_store.py) — a SEPARATE database in
+    # Structured-data tool (app/platform/sql_store.py) — a SEPARATE database in
     # the same Postgres as LiteLLM/Langfuse, not sharing their schema.
     appdata_database_url: str = "postgresql://langfuse:langfuse@localhost:5432/appdata"
 
@@ -432,7 +432,7 @@ class Settings(BillingSettings):
     # agent_worker_max_concurrency so the two numbers don't drift apart.
     checkpointer_pool_max_size: int = 10
 
-    # app/core/sql_store.py's AsyncConnectionPool size: the connections ONE process may hold for the application's own tables (the stores, the
+    # app/platform/sql_store.py's AsyncConnectionPool size: the connections ONE process may hold for the application's own tables (the stores, the
     # meter, the idempotency guard). It was a literal 10. Behind PgBouncer a client connection costs the pooler a few KB, not Postgres a
     # backend, so the server-side bound is the pooler's pool size and not this number times the replicas (WORKER_CONCURRENCY.md).
     appdata_pool_max_size: int = Field(default=10, ge=1)
@@ -514,13 +514,13 @@ class Settings(BillingSettings):
 
     # How the API learns WHO is calling (app/adapters/inbound/api/deps.py::get_ctx; specs/018). In `identity` mode (the default) it trusts one thing: the
     # short-lived signed identity the front door (the authlimit service) puts on a request it has verified, checked against the front
-    # door's published public keys (app/core/internal_identity.py). The client's own X-Tenant-Id / X-Principal-Id are ignored. In `headers`
+    # door's published public keys (app/platform/internal_identity.py). The client's own X-Tenant-Id / X-Principal-Id are ignored. In `headers`
     # mode it trusts those two headers as it always did: for the hermetic tests and for running the API directly with no front door, and
     # NEVER for a deployment a stranger can reach (a client can send any header value). It is announced loudly: a startup warning, the gauge
     # `agent_api_auth_mode` and the alert `ApiHeaderAuthMode`. Chosen explicitly, never inferred: an unset variable is `identity`.
     auth_mode: Literal["identity", "headers"] = "identity"
     # Where the front door publishes the public half of its signing keys (`/internal/jwks.json` on the authlimit service). Required in
-    # `identity` mode: the API refuses to START without it (app/core/internal_identity.py::check_settings), not on the first request.
+    # `identity` mode: the API refuses to START without it (app/platform/internal_identity.py::check_settings), not on the first request.
     authlimit_keys_url: str = ""
     # How long a fetched key set is trusted before the next fetch. A key that was rotated in is picked up on the next unknown `kid` regardless
     # (at most one fetch every ten seconds, so a caller cannot turn made-up key ids into load on the front door).
@@ -688,7 +688,7 @@ class Settings(BillingSettings):
     # 10 is Serper's own default page size; asking for more costs more credits per search.
     web_search_max_results: int = Field(default=5, ge=1, le=10)
 
-    # OTel metrics export (app/core/telemetry.py) — OTLP/HTTP base URL (no
+    # OTel metrics export (app/platform/telemetry.py) — OTLP/HTTP base URL (no
     # /v1/metrics suffix; configure_telemetry appends it). Points at the
     # shared otel-collector in a real deployment; localhost:4318 matches
     # this file's usual "host talks to docker-compose service via published
@@ -707,7 +707,7 @@ class Settings(BillingSettings):
     # comment).
     otel_exporter_otlp_endpoint: str = "http://localhost:4318"
 
-    # Continuous profiling (app/core/profiling.py): the base URL of a Pyroscope server, e.g. http://localhost:4040. Blank (the default) is off
+    # Continuous profiling (app/platform/profiling.py): the base URL of a Pyroscope server, e.g. http://localhost:4040. Blank (the default) is off
     # and the SDK is never imported, so a process without a profiler behaves exactly as before.
     pyroscope_server_address: str = ""
     # Samples per second per process. 100 is the SDK's own default; lower it to trade resolution for overhead.

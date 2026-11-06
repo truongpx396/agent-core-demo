@@ -63,7 +63,7 @@ _ready_indexes: set[str] = set()
 # RediSearch TAG queries treat many characters as syntax, not literal text
 # (e.g. an unescaped tenant like "other-co" raises "Syntax error... near
 # other") — every tag value interpolated into a query string must be
-# escaped first, same reason core/sql_store.py never interpolates unparameterized.
+# escaped first, same reason platform/sql_store.py never interpolates unparameterized.
 #
 # Escapes EVERY ASCII character that is not a letter, digit or underscore,
 # rather than a list of the ones known to bite: the first version was exactly

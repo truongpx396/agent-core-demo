@@ -23,7 +23,7 @@ import pytest
 
 from app.adapters.inbound.workers import streams
 from app.adapters.outbound.redis import queue
-from app.core import redis_client
+from app.platform import redis_client
 from app.ports.outbound import jobs
 from tests.conftest import TEST_CTX
 from tests.containers import ensure_redis

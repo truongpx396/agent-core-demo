@@ -6,7 +6,7 @@
 # worker replicas are running — a pull-based per-process /metrics endpoint
 # (this app's old design) could never see a worker's metrics at all, since
 # a worker process binds no HTTP port for anything to scrape directly. See
-# app/core/telemetry.py's module docstring for the full reasoning.
+# app/platform/telemetry.py's module docstring for the full reasoning.
 
 receivers:
   otlp:
@@ -27,7 +27,7 @@ exporters:
     # their own _total suffix / are Prometheus-idiomatic — verified
     # empirically (a throwaway collector + push script) that this exporter
     # does NOT double that suffix, and that explicit histogram bucket
-    # boundaries set via app/core/telemetry.py's Views survive translation
+    # boundaries set via app/platform/telemetry.py's Views survive translation
     # unchanged (le="0.5", "1", ... rather than the SDK's own
     # millisecond-scale defaults).
 

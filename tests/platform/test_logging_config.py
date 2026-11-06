@@ -1,4 +1,4 @@
-"""Tests for app/core/logging_config.py's structlog-based structured
+"""Tests for app/platform/logging_config.py's structlog-based structured
 logging setup."""
 import io
 import json
@@ -6,7 +6,7 @@ import logging
 
 import pytest
 
-from app.core.logging_config import bind_request_id, build_formatter, request_id_var
+from app.platform.logging_config import bind_request_id, build_formatter, request_id_var
 
 
 @pytest.fixture

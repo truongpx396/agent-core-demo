@@ -105,7 +105,7 @@ from app.agent.runtime.stream import (
     cancel_run,
 )
 from app.bootstrap import close_adapters, verify_wired, wire
-from app.core import metrics, sql_store
+from app.core import metrics
 from app.core.config import (
     AGENT_WORKER_DOMAINS,
     AGENT_WORKER_MAX_CONCURRENCY,
@@ -119,10 +119,11 @@ from app.core.errors import (
     error_origin,
     internal_error_envelope,
 )
-from app.core.logging_config import bind_request_id, configure_logging
-from app.core.profiling import start_profiling
-from app.core.redis_client import StreamReadResponse, get_client
-from app.core.telemetry import configure_telemetry
+from app.platform import sql_store
+from app.platform.logging_config import bind_request_id, configure_logging
+from app.platform.profiling import start_profiling
+from app.platform.redis_client import StreamReadResponse, get_client
+from app.platform.telemetry import configure_telemetry
 from app.ports.outbound.domains import domain_catalog
 from app.ports.outbound.jobs import (
     CONSUMER_GROUP,
@@ -637,7 +638,7 @@ async def run() -> None:
     # Same reasoning as app/adapters/inbound/api/main.py's lifespan shutdown: the MCP bridge a sandbox tool started is a child process of this one.
     await close_adapters()
     # Same reasoning as app/adapters/inbound/api/main.py's lifespan shutdown: a turn may have
-    # opened core/sql_store.py's connection pool; leaving it open past exit
+    # opened platform/sql_store.py's connection pool; leaving it open past exit
     # produces the "couldn't stop thread... within 5.0 seconds" warning
     # documented there. No-op if this worker never touched it.
     await sql_store.close_pool()

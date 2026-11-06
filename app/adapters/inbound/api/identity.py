@@ -1,5 +1,5 @@
 """The API's side of "who is calling": the verifier it asks, the refusal it answers with, and the announcement of
-the mode it runs in (specs/018). `app/core/internal_identity.py` is the check itself and knows nothing of
+the mode it runs in (specs/018). `app/platform/internal_identity.py` is the check itself and knows nothing of
 HTTP; this adds:
 - one verifier per process, built on first use from the settings (keys address, cache seconds, grace) and
   closed at shutdown. Its HTTP client belongs to the loop that serves requests, so it is made there, not at
@@ -23,7 +23,7 @@ from fastapi.responses import JSONResponse
 from app.core import metrics
 from app.core.config import settings
 from app.core.errors import AUTH_ERRORS, ErrorCode, ErrorEnvelope
-from app.core.internal_identity import (
+from app.platform.internal_identity import (
     InternalIdentityVerifier,
     InternalKeys,
     Refusal,

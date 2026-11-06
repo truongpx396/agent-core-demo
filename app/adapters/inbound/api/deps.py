@@ -8,7 +8,7 @@ an inference.
 
 **`identity` (the default).** The front door (the authlimit service in front of this API) verifies a person's
 access token and adds a short-lived signed identity to the request in `X-Internal-Identity`. This mode
-verifies it (app/core/internal_identity.py) and builds the ctx from its `tenant` and `sub` alone.
+verifies it (app/platform/internal_identity.py) and builds the ctx from its `tenant` and `sub` alone.
 `X-Tenant-Id` and `X-Principal-Id` are IGNORED, so a client sending them gains nothing, and a request with no
 valid identity is refused: a 401, or a 503 when the keys that would check it can't be confirmed current
 (app/adapters/inbound/api/identity.py). No default tenant, no fallback to the headers.
@@ -31,9 +31,9 @@ from fastapi.exceptions import RequestValidationError
 
 from app.adapters.inbound.api import identity
 from app.core.config import settings
-from app.core.internal_identity import Identity
 from app.core.security import SecurityCtx
 from app.domains.registry import DOMAINS
+from app.platform.internal_identity import Identity
 
 
 def _missing_header(name: str) -> dict:

@@ -34,7 +34,7 @@ attach = [
 why = "reference side-effect tool: ctx check first, then idempotent() keyed by tool_call_id, tier declared in TOOL_CAPABILITIES"
 
 [[rule]]
-when = ["app/domains/*/store.py", "app/core/sql_store.py"]
+when = ["app/domains/*/store.py", "app/platform/sql_store.py"]
 attach = ["app/domains/support/store.py::create_ticket"]
 why = "reference store write: tenant-scoped fixed SQL, ON CONFLICT on tool_call_id, read the existing row back on a replay"
 

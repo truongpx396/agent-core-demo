@@ -1,6 +1,6 @@
 """The `IngestQueue` adapter (`app/ports/outbound/jobs.py`): Redis Streams for the ingestion pipeline, a SEPARATE stream and consumer group from the chat-turn queue
 (`queue.py`). Deliberate: chat turns are short and latency-sensitive, an ingest job (parsing a large PDF) can run for many seconds, and a shared consumer group
-round-robins without priority, so a burst of ingest jobs would delay chat turns. Same Redis server and client as `queue.py` (`app/core/redis_client.py`); only the
+round-robins without priority, so a burst of ingest jobs would delay chat turns. Same Redis server and client as `queue.py` (`app/platform/redis_client.py`); only the
 stream and group names and the payloads are separate.
 
 This module is the PRODUCER half: enqueue a job and read its events back, for `app/adapters/inbound/api/routers/ingest.py` (`POST /ingest/upload`). The consumer is
@@ -14,8 +14,8 @@ from typing import cast
 import redis.asyncio as redis
 
 from app.core import metrics
-from app.core.redis_client import StreamReadResponse, get_client
 from app.core.security import SecurityCtx
+from app.platform.redis_client import StreamReadResponse, get_client
 from app.ports.outbound.jobs import INGEST_REQUESTS_STREAM, ingest_results_stream_key
 
 logger = logging.getLogger(__name__)

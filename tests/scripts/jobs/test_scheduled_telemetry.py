@@ -24,7 +24,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 
-from app.core import job_runtime, telemetry
+from app.platform import job_runtime, telemetry
 from scripts.jobs import followup_sweep, ops_digest, tool_call_dedup_sweep
 from scripts.tools import ops_investigate
 

@@ -23,7 +23,7 @@ from psycopg.rows import dict_row
 from psycopg_pool import AsyncConnectionPool
 
 from app.core.config import CHECKPOINTER_DATABASE_URL, CHECKPOINTER_POOL_MAX_SIZE
-from app.core.sql_store import POOLER_SAFE_CONNECTION_KWARGS
+from app.platform.sql_store import POOLER_SAFE_CONNECTION_KWARGS
 
 
 class PgCheckpointing:

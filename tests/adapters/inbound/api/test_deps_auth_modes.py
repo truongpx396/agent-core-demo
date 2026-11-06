@@ -16,8 +16,8 @@ from app.adapters.inbound.api import deps, identity
 from app.adapters.inbound.api import main as api
 from app.core import metrics
 from app.core.errors import AUTH_ERRORS, ErrorCode
-from app.core.internal_identity import InternalIdentityVerifier, InternalKeys
 from app.core.security import SecurityCtx, valid_ctx
+from app.platform.internal_identity import InternalIdentityVerifier, InternalKeys
 from tests.conftest import metric_value
 from tests.identity_support import (
     GRACE,

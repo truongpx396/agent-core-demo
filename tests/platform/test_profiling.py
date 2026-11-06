@@ -8,8 +8,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.core import profiling
 from app.core.metrics import agent_profiling_start_failures_total as failures
+from app.platform import profiling
 from tests.conftest import metric_value
 
 
@@ -112,4 +112,4 @@ def test_the_entrypoints_start_it_right_after_telemetry_and_a_short_lived_job_do
         telemetry, start = f'configure_telemetry("{service}")', f'start_profiling("{service}"'
         assert telemetry in source and start in source, relative
         assert source.index(telemetry) < source.index(start), f"{relative}: start_profiling must follow configure_telemetry"
-    assert "start_profiling" not in (repo / "app/core/job_runtime.py").read_text()
+    assert "start_profiling" not in (repo / "app/platform/job_runtime.py").read_text()

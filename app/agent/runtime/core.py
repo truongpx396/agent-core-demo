@@ -64,7 +64,7 @@ _graphs: dict[str, Any] = {}  # compiled graph per domain name
 _saver = None  # the one checkpointer every domain's graph shares
 _graph_lock = asyncio.Lock()  # guards the two above while they are built: without it concurrent first
 # callers each open a checkpointer pool and overwrite the graph, leaking every loser's pool (the same guard
-# as core/sql_store.py::_get_pool). Every production caller primes sequentially, so this is hardening.
+# as platform/sql_store.py::_get_pool). Every production caller primes sequentially, so this is hardening.
 DEFAULT_DOMAIN = "ecorp"  # the domain a turn runs on when nothing bound one
 _bound_domain: ContextVar[str | None] = ContextVar("agent_domain", default=None)
 

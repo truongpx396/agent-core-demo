@@ -31,12 +31,12 @@ from app.adapters.inbound.mcp.identity import (
 )
 from app.bootstrap import wire
 from app.core.config import DEFAULT_TENANT
-from app.core.logging_config import configure_logging
 from app.domains.ops.usecases import (
     OPS_POLICY,
     fetch_metrics_summary_impl,
     list_recent_incidents_impl,
 )
+from app.platform.logging_config import configure_logging
 
 SERVER_NAME = "ecorp-ops"
 

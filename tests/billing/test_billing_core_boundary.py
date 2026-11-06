@@ -125,7 +125,7 @@ def test_the_scan_actually_covers_the_package():
         "from app.core import metrics",
         "from app.core.config import STRIPE_API_KEY",
         "from app import core",
-        "from app.core.sql_store import get_connection",
+        "from app.platform.sql_store import get_connection",
         "def f():\n    from app.core.config import X\n",
         "class C:\n    def m(self):\n        if True:\n            import app.core.gateway\n",
         "from app.billingx import y",

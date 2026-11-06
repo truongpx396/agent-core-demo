@@ -1,4 +1,4 @@
-# Ships this app's containers' stdout (docker-compose.yml's structlog JSON lines, app/core/logging_config.py) to Loki. Containers are found
+# Ships this app's containers' stdout (docker-compose.yml's structlog JSON lines, app/platform/logging_config.py) to Loki. Containers are found
 # through the Docker socket (docker_sd_configs), which sees EVERY container on the host: an unrelated project's months-old logs once made Loki
 # reject whole batches ("timestamp too old", limits_config's reject_old_samples_max_age), dropping this app's lines batched with them. So the
 # `keep` filter below is an allowlist of service names, not a project match, and works under any checkout directory name.

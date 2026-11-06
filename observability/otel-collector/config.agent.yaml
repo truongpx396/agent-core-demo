@@ -2,7 +2,7 @@
 # `otel-collector-agent` service), the other half of the "agent + gateway"
 # split from this directory's own `config.yaml` (which runs unchanged on
 # the SEPARATE observability droplet as the gateway). Two jobs:
-#   1. Same OTLP receiver app/core/telemetry.py already pushes to (now
+#   1. Same OTLP receiver app/platform/telemetry.py already pushes to (now
 #      pointed here instead of a remote host — see docker-compose.prod.yml's
 #      `OTEL_EXPORTER_OTLP_ENDPOINT`).
 #   2. Scrapes node-exporter/cadvisor LOCALLY (same Docker network, no

@@ -242,7 +242,7 @@ def scaled_stack(qdrant_collection: str) -> Iterator[str]:
         # never ask the same question twice either; a stray hit or miss
         # either way degrades gracefully (semantic_cache.get/set's own
         # broad except) and doesn't change what any assertion here checks.
-        # Disables OTel metrics export (app/core/telemetry.py's own
+        # Disables OTel metrics export (app/platform/telemetry.py's own
         # blank-endpoint short-circuit) — same reasoning as
         # tests/live/conftest.py's own copy of this: these subprocesses
         # genuinely enter app/adapters/inbound/api/main.py's lifespan, so without this

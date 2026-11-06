@@ -45,8 +45,8 @@ from decimal import Decimal
 
 from psycopg import errors as pg_errors
 
-from app.core.job_runtime import scheduled_job
-from app.core.sql_store import get_connection
+from app.platform.job_runtime import scheduled_job
+from app.platform.sql_store import get_connection
 
 logger = logging.getLogger(__name__)
 

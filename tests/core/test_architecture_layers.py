@@ -10,12 +10,13 @@ The rings, inside out:
 
 - ports       `app/ports/**` and each business module's own `app/domains/<module>/ports.py`. Protocols and plain data. Imports the standard
               library, `pydantic`, the kernel and other ports.
-- kernel      `app/core/*.py` except the platform modules below. Security context, errors, scrubbing, the tool wrapper, metrics, settings.
+- kernel      `app/core/*.py`. Security context, errors, scrubbing, the tool wrapper, metrics, settings.
               Imports no infrastructure client and nothing outside the kernel and the ports.
 - application `app/agent/**`, `app/domains/**` and `app/ingestion/**` except the adapter files below (a domain's `store.py`, and the registry that names every domain). The graph, the runtime, the cost policy, the tools, the ingest pipeline.
               Imports no infrastructure client, no adapter and no inbound adapter; `app/agent` never imports `app/domains` (a domain plugs
               into the agent, not the other way round).
-- adapters    everything else: `app/adapters/**`, the platform modules in `app/core`, and the per-domain
+- adapters    everything else: `app/adapters/**`, `app/platform/**` (the SQL pool, the Redis client, telemetry, logging, profiling, the job
+              runtime and the verifier of the door's identity: process plumbing that opens a connection or a socket), and the per-domain
               `store.py` (the domain's repository, by the `store.py` + `tools.py` + `domain.py` convention). They may import anything inside
               them. `app/adapters/` has two sides: `inbound/` DRIVES the application (API, channels, MCP servers, workers), is a leaf and imports
               nothing from `outbound/`; `outbound/` is DRIVEN by it (one package per technology, each implementing a port) and imports nothing from `inbound/`.
@@ -43,11 +44,6 @@ INFRASTRUCTURE = frozenset({
     "crawl4ai", "mcp", "fastapi", "starlette", "uvicorn", "jwt", "limits", "langgraph.checkpoint.postgres", "pyroscope",
 })
 
-# Modules that live in `app/core` but are adapters or process plumbing, not kernel.
-PLATFORM_CORE = frozenset({
-    "sql_store", "redis_client", "internal_identity", "telemetry", "logging_config", "job_runtime", "profiling",
-})
-
 # Application-ring files that are adapters by convention.
 ADAPTER_FILE_GLOBS = ("app/domains/*/store.py", "app/domains/ops/metrics_client.py", "app/domains/registry.py")
 
@@ -68,8 +64,7 @@ def ring_of(rel: str) -> str:
     if any(fnmatch.fnmatch(rel, glob) for glob in ADAPTER_FILE_GLOBS):
         return "adapter"
     if rel.startswith("app/core/"):
-        stem = Path(rel).stem
-        return "adapter" if stem in PLATFORM_CORE else "kernel"
+        return "kernel"
     if rel.startswith(("app/agent/", "app/domains/", "app/ingestion/")):
         return "application"
     return "adapter"
@@ -96,12 +91,13 @@ def _match(name: str, prefixes) -> str | None:
     return next((prefix for prefix in prefixes if _is(name, prefix)), None)
 
 
-PLATFORM_MODULES = tuple(f"app.core.{stem}" for stem in sorted(PLATFORM_CORE))
+# Process plumbing, adapter-side: the application may not import it, as it may not import an adapter.
+PLATFORM_MODULES = ("app.platform",)
 
 
 def violations_in(rel: str, source: str) -> set[tuple[str, str]]:
     """The (file, rule target) pairs in `source` that break the dependency rule for the ring `rel` belongs to. The target is the
-    infrastructure package, adapter package or module the import reaches (`psycopg`, `app.core.sql_store`), not the spelling of the
+    infrastructure package, adapter package or module the import reaches (`psycopg`, `app.platform`), not the spelling of the
     import, so `from psycopg import errors` and `import psycopg` are one entry."""
     ring = ring_of(rel)
     if ring == "adapter":
@@ -159,7 +155,7 @@ LEAF_PACKAGES = ("app.adapters.inbound.api", "app.adapters.inbound.channels", "a
 # The composition root is imported by the code that STARTS a process (an entrypoint, or `scheduled_job` which starts the one-shot jobs), and by nothing else:
 # anything deeper that imported it could bind adapters behind a test's back or make the application depend on its own wiring.
 BOOTSTRAP = "app.bootstrap"
-BOOTSTRAP_IMPORTERS_BESIDES_ENTRYPOINTS = frozenset({"app/core/job_runtime.py"})
+BOOTSTRAP_IMPORTERS_BESIDES_ENTRYPOINTS = frozenset({"app/platform/job_runtime.py"})
 
 
 def importers_of(package: str, files: dict[str, str]) -> set[str]:
@@ -214,7 +210,7 @@ def test_the_driving_side_never_imports_the_driven_side():
     crossings = sorted((rel, module) for rel, src in files.items() for module in driven_modules_reached(src))
     assert crossings == [], (
         "an inbound adapter imports an outbound one: go through a port in app/ports/outbound/ (the application's side), or, for a consumer's own "
-        "broker technology, keep it in the inbound adapter (app/adapters/inbound/workers/streams.py); a connection factory shared by both sides is a platform module in app/core"
+        "broker technology, keep it in the inbound adapter (app/adapters/inbound/workers/streams.py); a connection factory shared by both sides is a platform module in app/platform"
     )
 
 
@@ -471,7 +467,7 @@ def test_the_engine_scanner_flags_exactly_what_is_behind_the_doors(source, allow
         ("app/agent/cost/x.py", "import psycopg", {"psycopg"}),
         ("app/agent/cost/x.py", "from psycopg import errors", {"psycopg"}),
         ("app/agent/cost/x.py", "def f():\n    import httpx\n", {"httpx"}),
-        ("app/agent/cost/x.py", "from app.core.sql_store import get_connection", {"app.core.sql_store"}),
+        ("app/agent/cost/x.py", "from app.platform.sql_store import get_connection", {"app.platform"}),
         ("app/agent/graph/x.py", "from app.adapters.outbound.redis import semantic_cache", {"app.adapters"}),
         ("app/domains/support/tools.py", "from app.domains.support import store", {"app.domains.support.store"}),
         ("app/domains/support/tools.py", "from app.adapters.outbound.crawl4ai.web_crawler import render_url_to_markdown", {"app.adapters"}),
@@ -487,7 +483,7 @@ def test_the_engine_scanner_flags_exactly_what_is_behind_the_doors(source, allow
         ("app/domains/support/tools.py", "from app.ports.outbound.domains import AgentManifest", set()),
         # kernel and ports: inward only
         ("app/core/security.py", "from qdrant_client.models import Filter", {"qdrant_client"}),
-        ("app/core/tool_idempotency.py", "from app.core.sql_store import get_connection", {"app.core.sql_store"}),
+        ("app/core/tool_idempotency.py", "from app.platform.sql_store import get_connection", {"app.platform"}),
         ("app/core/errors.py", "from app.agent.graph import state", {"app.agent"}),
         ("app/ports/outbound/cost.py", "from app.core.security import SecurityCtx", set()),
         ("app/ports/outbound/cost.py", "import psycopg", {"psycopg"}),
@@ -497,9 +493,9 @@ def test_the_engine_scanner_flags_exactly_what_is_behind_the_doors(source, allow
         ("app/domains/ecorp/ports.py", "import psycopg", {"psycopg"}),
         # adapters may import anything
         ("app/adapters/outbound/postgres/x.py", "import psycopg\nfrom app.agent.cost import budgets", set()),
-        ("app/domains/support/store.py", "from app.core.sql_store import get_connection", set()),
+        ("app/domains/support/store.py", "from app.platform.sql_store import get_connection", set()),
         ("app/adapters/inbound/api/routers/chat.py", "from app.agent.runtime import stream", set()),
-        ("app/core/sql_store.py", "import psycopg_pool", set()),
+        ("app/platform/sql_store.py", "import psycopg_pool", set()),
     ],
 )
 def test_the_scanner_flags_exactly_the_wrong_way_imports(rel, source, expected):
@@ -507,8 +503,8 @@ def test_the_scanner_flags_exactly_the_wrong_way_imports(rel, source, expected):
 
 
 def test_a_from_import_of_a_submodule_is_seen():
-    """`from app.core import sql_store` names the module only through the imported name."""
-    assert violations_in("app/agent/cost/x.py", "from app.core import sql_store") == {("app/agent/cost/x.py", "app.core.sql_store")}
+    """`from app.platform import sql_store` names the module only through the imported name."""
+    assert violations_in("app/agent/cost/x.py", "from app.platform import sql_store") == {("app/agent/cost/x.py", "app.platform")}
 
 
 def test_the_rings_cover_every_python_file_under_app():
@@ -523,3 +519,11 @@ def test_there_are_files_for_these_rules_to_be_about():
         ring = ring_of(path.relative_to(REPO).as_posix())
         by_ring[ring] = by_ring.get(ring, 0) + 1
     assert by_ring.get("application", 0) > 40 and by_ring.get("kernel", 0) > 10
+
+
+def test_the_platform_plumbing_is_in_its_own_package_and_is_an_adapter():
+    """The folder says what the test enforces: nothing in `app/core` opens a connection, and `app/platform` is the adapter side of the kernel."""
+    platform = sorted(p.stem for p in (REPO / "app/platform").glob("*.py") if p.stem != "__init__")
+    assert platform == ["internal_identity", "job_runtime", "logging_config", "profiling", "redis_client", "sql_store", "telemetry"]
+    assert {ring_of(f"app/platform/{stem}.py") for stem in platform} == {"adapter"}
+    assert not any((REPO / "app/core" / f"{stem}.py").exists() for stem in platform)

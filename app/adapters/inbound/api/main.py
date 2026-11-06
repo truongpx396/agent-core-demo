@@ -46,15 +46,15 @@ from app.adapters.inbound.api.routers import chat, ingest, system, usage
 from app.agent.runtime.core import close_checkpointer_pool, init_graph_async
 from app.billing_integration import http as billing_http
 from app.bootstrap import close_adapters, verify_wired, wire
-from app.core import sql_store
 from app.core.config import (
     CORS_ALLOWED_ORIGINS,
     settings,
 )
-from app.core.internal_identity import check_settings
-from app.core.logging_config import configure_logging
-from app.core.profiling import start_profiling
-from app.core.telemetry import configure_telemetry
+from app.platform import sql_store
+from app.platform.internal_identity import check_settings
+from app.platform.logging_config import configure_logging
+from app.platform.profiling import start_profiling
+from app.platform.telemetry import configure_telemetry
 
 # Called at import time, before uvicorn logs anything — without this, the
 # service had no logging handler at all, so every `logger.info(...)` call
@@ -101,7 +101,7 @@ async def lifespan(app: FastAPI):
     # the loop that served the requests, terminates it instead of leaving that to the loop's teardown. No-op if no sandbox tool was ever used.
     await close_adapters()
     # Closes the Postgres pool's background worker threads cleanly
-    # (core/sql_store.py, pattern 31) — skipping this leaves them running at exit
+    # (platform/sql_store.py, pattern 31) — skipping this leaves them running at exit
     # with a "couldn't stop thread" warning. No-op if the pool was never opened.
     await sql_store.close_pool()
     # Same reasoning for the checkpointer's pool — init_graph_async() above

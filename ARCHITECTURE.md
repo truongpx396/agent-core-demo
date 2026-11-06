@@ -25,9 +25,9 @@ when an import crosses the line the wrong way (`tests/core/test_architecture_lay
 | Ring | Where | May import |
 |---|---|---|
 | **ports** | `app/ports/` (`outbound/`, and `slot.py`), and each business module's own `app/domains/<module>/ports.py` | the standard library, `pydantic`, the kernel, other ports |
-| **kernel** | `app/core/*.py` except the platform modules | the kernel and the ports. No infrastructure client, nothing above it |
+| **kernel** | `app/core/*.py` | the kernel and the ports. No infrastructure client, nothing above it |
 | **application** | `app/agent/`, `app/domains/` (except the adapter files below), `app/ingestion/` | the kernel, the ports, LangGraph and LangChain core, OpenTelemetry/Langfuse/structlog. Never an infrastructure client, an adapter, an inbound adapter, or (from `app/agent`) a domain |
-| **adapters** | `app/adapters/` (`inbound/` and `outbound/`, below), `app/ingestion/`, `app/bootstrap.py`, the platform modules in `app/core/` (`sql_store`, `internal_identity`, `telemetry`, `profiling`, `logging_config`, `job_runtime`), and a domain's `store.py`, `metrics_client.py` and `registry.py` | anything inward of them |
+| **adapters** | `app/adapters/` (`inbound/` and `outbound/`, below), `app/ingestion/`, `app/bootstrap.py`, `app/platform/` (the process plumbing that opens a connection or a socket: `sql_store`, `redis_client`, `internal_identity`, `telemetry`, `profiling`, `logging_config`, `job_runtime`), and a domain's `store.py`, `metrics_client.py` and `registry.py` | anything inward of them |
 
 ## The business modules
 
@@ -84,7 +84,7 @@ never imports an outbound one**. Where an inbound adapter needs something an out
 1. a port, when the application's side needs it (the API submits a turn through `TurnQueue`, an upload goes through `ObjectStore`, the readiness probe asks `DocumentIndex.ping`);
 2. its own technology, when it is the adapter's trigger and not something the application calls: the queue workers read their Redis stream themselves (`app/adapters/inbound/workers/streams.py`), and
    what the producer and the consumer must agree on (stream and key names, TTLs) is plain data in the port module (`app/ports/outbound/jobs.py`);
-3. a platform module in `app/core`, when both sides open the same connection (`app/core/redis_client.py`, like `sql_store.py`), or `bootstrap.close_adapters()` for shutdown.
+3. a platform module in `app/platform`, when both sides open the same connection (`app/platform/redis_client.py`, like `sql_store.py`), or `bootstrap.close_adapters()` for shutdown.
 
 "Infrastructure client" is a fixed list: `psycopg`, `psycopg_pool`, `redis`, `qdrant_client`, `openai`, `langchain_openai`, `httpx`, `minio`,
 `fastembed`, `crawl4ai`, `mcp`, `fastapi`, `starlette`, `uvicorn`, `jwt`, `limits`, and the LangGraph Postgres saver

@@ -24,7 +24,7 @@
 /app/agent/tools/builtin.py         @truongpx396
 /app/core/tool_idempotency.py     @truongpx396
 /app/agent/graph/hitl.py            @truongpx396
-/app/core/sql_store.py             @truongpx396
+/app/platform/sql_store.py             @truongpx396
 
 # Every domain's write tools and the SQL behind them (side-effect-tools checklist applies).
 /app/domains/*/tools.py             @truongpx396

@@ -15,7 +15,7 @@ services:
       - ./observability/otel-collector/config.yaml:/etc/otelcol-contrib/config.yaml:ro
     ports:
       - "4317:4317"   # OTLP gRPC (unused by the app; for any other client)
-      - "4318:4318"   # OTLP HTTP: what app/core/telemetry.py pushes to
+      - "4318:4318"   # OTLP HTTP: what app/platform/telemetry.py pushes to
       - "8889:8889"   # its Prometheus exporter, scraped by Prometheus
 
   # Pool and wait metrics for the PgBouncer alerts (observability/prometheus/alerts.yml).

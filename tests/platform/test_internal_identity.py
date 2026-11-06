@@ -1,4 +1,4 @@
-"""app/core/internal_identity.py: the API's check of the identity the front door signs (specs/018, task T057).
+"""app/platform/internal_identity.py: the API's check of the identity the front door signs (specs/018, task T057).
 
 Three layers, each with the collaborator faked and nothing else:
   * the REAL identity the Go service minted (`testdata/auth-vectors/identity.json`), verified at the instant the file says, so the two
@@ -19,9 +19,9 @@ import jwt
 import pytest
 from cryptography.hazmat.primitives.asymmetric import rsa
 
-from app.core import internal_identity as ii
 from app.core import metrics
-from app.core.internal_identity import (
+from app.platform import internal_identity as ii
+from app.platform.internal_identity import (
     Identity,
     InternalIdentityVerifier,
     InternalKeys,

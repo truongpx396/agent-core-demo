@@ -82,7 +82,7 @@ class _BoundHistogram:
 
 class Histogram:
     """prometheus_client.Histogram-shaped wrapper around an OTel Histogram.
-    Bucket boundaries live in app/core/telemetry.py's Views, not here."""
+    Bucket boundaries live in app/platform/telemetry.py's Views, not here."""
 
     def __init__(self, name: str, description: str = "", unit: str = "", labelnames=()):
         self._instrument = _meter.create_histogram(
@@ -786,7 +786,7 @@ agent_mcp_gateway_requests_total = Counter(
 
 agent_api_identity_total = Counter(
     "agent_api_identity_total",
-    "What the API decided about the internal identity of a request in identity mode (app/core/internal_identity.py, specs/018): ok, or "
+    "What the API decided about the internal identity of a request in identity mode (app/platform/internal_identity.py, specs/018): ok, or "
     "the reason it was refused. missing (no identity header: the front door was bypassed or is not in front of this API), malformed, "
     "algorithm, type (the wrong `typ`), unknown_kid, signature, expired, not_yet_valid, issuer, audience, claims (no tenant or no "
     "subject), unexpected (the verifier itself failed, refused all the same), and keys_unavailable (the front door's public keys could "
@@ -827,7 +827,7 @@ agent_team_channel_notify_total = Counter(
 
 agent_profiling_start_failures_total = Counter(
     "agent_profiling_start_failures_total",
-    "Times app/core/profiling.py could not start the profiler although PYROSCOPE_SERVER_ADDRESS is set: sdk_missing (the pyroscope-io "
+    "Times app/platform/profiling.py could not start the profiler although PYROSCOPE_SERVER_ADDRESS is set: sdk_missing (the pyroscope-io "
     "package is not installed) or configure_failed (the SDK raised). The process keeps running without profiles. No alert: a missing "
     "flame graph leaves no one unaware of committed business state. It cannot see a server that is down or not ready (the native sampler "
     "drops those pushes silently), so a gap in the Pyroscope UI with this at 0 is the server's side.",

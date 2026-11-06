@@ -51,12 +51,12 @@ from app.adapters.inbound.channels.telegram.reply import ReplySink
 from app.agent.runtime.sessions import TELEGRAM_THREAD_PREFIX
 from app.core import metrics
 from app.core.config import AGENT_DOMAIN, DEFAULT_TENANT, TELEGRAM_BOT_TOKEN, settings
-from app.core.logging_config import configure_logging
+from app.domains.registry import DOMAINS
+from app.platform.logging_config import configure_logging
 
 # Redis for the channel's OWN small state (offset, inbox, approvals, link records), through the one client factory and nothing else from that module.
-from app.core.redis_client import get_client as get_redis_client
-from app.core.telemetry import configure_telemetry
-from app.domains.registry import DOMAINS
+from app.platform.redis_client import get_client as get_redis_client
+from app.platform.telemetry import configure_telemetry
 
 logger = logging.getLogger(__name__)
 

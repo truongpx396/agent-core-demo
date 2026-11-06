@@ -1,4 +1,4 @@
-"""Test doubles for the API's check of the front door's identity (app/core/internal_identity.py, app/adapters/inbound/api/identity.py): a signing key, the
+"""Test doubles for the API's check of the front door's identity (app/platform/internal_identity.py, app/adapters/inbound/api/identity.py): a signing key, the
 identities it would sign, and the key endpoint that publishes it.
 
 Nothing here touches a network. `InternalKeys` is handed an `httpx.AsyncClient` over a `MockTransport`, so a test exercises the real verifier,
@@ -11,7 +11,7 @@ import httpx
 import jwt
 from cryptography.hazmat.primitives.asymmetric import ed25519
 
-from app.core import internal_identity as ii
+from app.platform import internal_identity as ii
 
 URL = "http://authlimit:8080/internal/jwks.json"
 TTL, GRACE, MIN_REFRESH = 60, 600, 10

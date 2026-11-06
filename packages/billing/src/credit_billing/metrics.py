@@ -11,7 +11,7 @@ only by the scope label, which `sum by` and the alerts' `increase(...{path=...})
 
 They use the OpenTelemetry **API** only. A library depends on the API and emits through whatever provider the
 process installed; the SDK, exporter, endpoint and `service.name` stay the process's concern
-(`app/core/telemetry.py::configure_telemetry` in the app). `get_meter` is a proxy until a provider is
+(`app/platform/telemetry.py::configure_telemetry` in the app). `get_meter` is a proxy until a provider is
 installed and then replays the instruments, so import order doesn't matter and a process that never configures
 telemetry records nothing.
 

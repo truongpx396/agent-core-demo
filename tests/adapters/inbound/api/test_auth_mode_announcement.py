@@ -17,7 +17,7 @@ from app.adapters.inbound.api import identity
 from app.adapters.inbound.api import main as api
 from app.core import metrics
 from app.core.config import settings
-from app.core.internal_identity import AuthConfigError
+from app.platform.internal_identity import AuthConfigError
 from tests.conftest import _METRIC_READER
 
 
