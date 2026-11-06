@@ -18,9 +18,9 @@ from pydantic import SecretStr
 
 from app.agent.cost import metering
 from app.core.config import CHAT_MODEL, DEFAULT_TENANT, OPENAI_API_BASE, OPENAI_API_KEY
-from app.core.job_runtime import scheduled_job
 from app.core.security import SecurityCtx
 from app.domains.ops import usecases
+from app.platform.job_runtime import scheduled_job
 from app.ports.outbound.notify import team_channel
 
 # The automated job's own identity — never a real person's — so usage-event

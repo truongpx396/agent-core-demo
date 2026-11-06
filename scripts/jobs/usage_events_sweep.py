@@ -20,7 +20,7 @@ from app.agent.cost.usage_events_retention import (
     sweep_old_events,
 )
 from app.core.config import USAGE_EVENT_RETENTION_DAYS
-from app.core.job_runtime import scheduled_job
+from app.platform.job_runtime import scheduled_job
 
 logger = logging.getLogger(__name__)
 

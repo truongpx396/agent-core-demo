@@ -35,13 +35,13 @@ from app import bootstrap
 from app.adapters.outbound.litellm.model_catalog import admin_base_url
 from app.adapters.outbound.litellm.spend_logs import HttpGatewaySpendLog
 from app.agent.cost import usage_reconcile as reconcile
-from app.core import sql_store
 from app.core.config import (
     USAGE_RECONCILE_INTERVAL_SECONDS,
     USAGE_RECONCILE_LOOKBACK_DAYS,
 )
-from app.core.logging_config import configure_logging
-from app.core.telemetry import configure_telemetry, shutdown_telemetry
+from app.platform import sql_store
+from app.platform.logging_config import configure_logging
+from app.platform.telemetry import configure_telemetry, shutdown_telemetry
 
 logger = logging.getLogger(__name__)
 

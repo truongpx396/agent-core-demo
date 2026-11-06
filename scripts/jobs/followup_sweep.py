@@ -27,10 +27,10 @@ from pydantic import SecretStr
 
 from app.agent.cost import metering
 from app.core.config import CHAT_MODEL, DEFAULT_TENANT, OPENAI_API_BASE, OPENAI_API_KEY
-from app.core.job_runtime import scheduled_job
 from app.core.security import SecurityCtx
 from app.domains.sales import usecases
 from app.domains.sales.domain import SALES_MANIFEST
+from app.platform.job_runtime import scheduled_job
 from app.ports.outbound.notify import team_channel
 
 _CRON_CTX: SecurityCtx = {"tenant": DEFAULT_TENANT, "principal": "sales-followup-cron", "claims": {}}

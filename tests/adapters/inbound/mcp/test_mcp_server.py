@@ -2,7 +2,7 @@
 app/agent/tools/builtin.py's query_employees, reached over MCPServer's in-process
 list_tools/call_tool. The same server over a real stdio subprocess is in
 tests/adapters/inbound/mcp/test_published_servers_over_stdio.py. These stay hermetic by mocking
-app.core.sql_store.query_employees, same boundary test_tools.py's
+app.platform.sql_store.query_employees, same boundary test_tools.py's
 TestQueryEmployees mocks at.
 
 The identity is the LAUNCHER's (`launched_as`, tests/adapters/inbound/mcp/conftest.py), never a tool
@@ -16,7 +16,7 @@ tenant there is a tenant a prompt injection can name.
 import logging
 
 from app.adapters.inbound.mcp import server as mcp_server
-from app.core import sql_store
+from app.platform import sql_store
 
 
 async def _call(name, arguments=None):

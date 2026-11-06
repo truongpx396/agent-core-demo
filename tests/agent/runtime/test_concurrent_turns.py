@@ -56,8 +56,9 @@ from app.agent.runtime import core as agent_module
 from app.agent.runtime import stream as stream_module
 from app.agent.tools import builtin as tools_module
 from app.agent.tools import run_subagent as subagent_tools
-from app.core import metrics, redis_client
+from app.core import metrics
 from app.domains.ecorp import store as ecorp_store
+from app.platform import redis_client
 from app.ports.outbound import checkpointing as checkpointing_port
 from app.ports.outbound import jobs
 from tests.conftest import metric_value as _count

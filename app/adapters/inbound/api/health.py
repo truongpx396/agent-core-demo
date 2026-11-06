@@ -17,13 +17,13 @@ from collections.abc import Awaitable, Callable
 import httpx
 import psycopg
 
-from app.core import sql_store
 from app.core.config import (
     CHECKPOINTER_DATABASE_URL,
     COLLECTION,
     ML_SERVICE_URL,
     SKILLS_COLLECTION,
 )
+from app.platform import sql_store
 from app.ports.outbound.jobs import turn_queue
 from app.ports.outbound.retrieval import document_index
 

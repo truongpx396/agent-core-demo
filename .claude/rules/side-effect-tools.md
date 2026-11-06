@@ -2,7 +2,7 @@
 paths:
   - "app/agent/tools/builtin.py"
   - "app/core/tool_idempotency.py"
-  - "app/core/sql_store.py"
+  - "app/platform/sql_store.py"
   - "app/domains/**/*.py"
   - "postgres-init/**/*.sql"
 ---
@@ -33,7 +33,7 @@ Constitution Principles I–IV apply. Use `app/domains/support/tools.py::create_
 7. A best-effort pivot send backing an already-committed write (`app/adapters/outbound/notify/team_channel.py`) never
    raises, but MUST emit a metric and have an alert (see `runtime-reliability.md`).
 
-## Store layer (`store.py`, `core/sql_store.py`)
+## Store layer (`store.py`, `platform/sql_store.py`)
 
 - Fixed SQL, `%s` parameters, and `tenant` in every `WHERE` / `INSERT`. Never interpolate a value.
 - Pure INSERT: add `tool_call_id TEXT UNIQUE` (nullable), `... ON CONFLICT (tool_call_id) DO

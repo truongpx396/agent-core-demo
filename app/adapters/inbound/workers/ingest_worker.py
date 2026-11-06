@@ -54,12 +54,12 @@ from app.core.config import (
     MAX_AUTO_RECLAIM_RETRIES,
     WORKER_RECLAIM_INTERVAL_SECONDS,
 )
-from app.core.logging_config import bind_request_id, configure_logging
-from app.core.profiling import start_profiling
-from app.core.redis_client import StreamReadResponse, get_client
-from app.core.telemetry import configure_telemetry
 from app.ingestion import ingestor
 from app.ingestion.extractors import EXTRACTORS_BY_SUFFIX, ExtractionFailed
+from app.platform.logging_config import bind_request_id, configure_logging
+from app.platform.profiling import start_profiling
+from app.platform.redis_client import StreamReadResponse, get_client
+from app.platform.telemetry import configure_telemetry
 from app.ports.outbound.jobs import INGEST_CONSUMER_GROUP, INGEST_REQUESTS_STREAM
 from app.ports.outbound.storage import object_store
 

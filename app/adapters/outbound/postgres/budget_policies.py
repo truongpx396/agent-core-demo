@@ -7,7 +7,7 @@ Statements only. The cache, the validation of a write (`period`, a negative limi
 """
 from psycopg import errors as pg_errors
 
-from app.core.sql_store import get_connection
+from app.platform.sql_store import get_connection
 from app.ports.outbound.cost import (
     ALL_PRINCIPALS,
     TENANT_SUBJECT,

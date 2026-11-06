@@ -42,7 +42,7 @@ from app.agent.tools.run_subagent import (
 from app.agent.tools.run_subagent_domain import make_domain_subagent_tool
 from app.agent.tools.skill_catalog import SkillRecord
 from app.agent.tools.subagent_catalog import SubagentRecord
-from app.core import metrics, sql_store, tool_runtime
+from app.core import metrics, tool_runtime
 from app.core.config import SKILLS_COLLECTION
 from app.domains.ecorp import store as ecorp_store
 from app.domains.ecorp import usecases as ecorp_usecases
@@ -53,6 +53,7 @@ from app.domains.ecorp.tools import (
     query_employees,
     remember,
 )
+from app.platform import sql_store
 from tests.conftest import TEST_CTX, metric_value
 from tests.ecorp import (
     ECORP_DOMAIN_PLUGIN,

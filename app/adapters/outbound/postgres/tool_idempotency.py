@@ -5,7 +5,7 @@ one are, by construction, the SAME invocation attempted again.
 The claim is `INSERT ... ON CONFLICT DO NOTHING RETURNING`: the primary key makes it atomic, and whichever caller's INSERT lands owns running the
 tool. Statements only; what a failure of this store means for the tool call is the consumer's (`app/core/tool_idempotency.py`: it fails open).
 """
-from app.core.sql_store import get_connection
+from app.platform.sql_store import get_connection
 
 
 class PgToolCallLedger:

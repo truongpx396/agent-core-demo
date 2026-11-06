@@ -20,8 +20,8 @@ from typing import cast
 import redis.asyncio as redis
 
 from app.core import metrics
-from app.core.redis_client import StreamReadResponse, get_client
 from app.core.security import SecurityCtx
+from app.platform.redis_client import StreamReadResponse, get_client
 from app.ports.outbound.jobs import (
     CANCEL_FLAG_TTL_SECONDS,
     TERMINAL_EVENT_TYPES,

@@ -13,8 +13,8 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 
 from app.bootstrap import wire
-from app.core.logging_config import configure_logging
-from app.core.telemetry import configure_telemetry, shutdown_telemetry
+from app.platform.logging_config import configure_logging
+from app.platform.telemetry import configure_telemetry, shutdown_telemetry
 
 
 @contextmanager

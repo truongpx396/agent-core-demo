@@ -10,7 +10,7 @@ from datetime import datetime
 
 from app.adapters.outbound.embeddings.embeddings import embed_document, embed_sparse
 from app.adapters.outbound.qdrant import qdrant_store
-from app.core import sql_store
+from app.platform import sql_store
 
 
 async def sparse_vector_or_none(text: str) -> tuple[list[int], list[float]] | None:

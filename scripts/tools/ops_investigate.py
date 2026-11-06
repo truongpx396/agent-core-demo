@@ -20,9 +20,9 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
 from app.agent.graph.build import build_graph
 from app.core.config import DEFAULT_TENANT
-from app.core.job_runtime import scheduled_job
 from app.core.security import SecurityCtx
 from app.domains.ops.domain import OPS_DOMAIN_PLUGIN, OPS_MANIFEST
+from app.platform.job_runtime import scheduled_job
 
 # Local dev ctx, same shape as app/adapters/inbound/channels/cli/chat.py's _LOCAL_CTX — this
 # process itself is the trusted boundary a real deployment's auth gateway

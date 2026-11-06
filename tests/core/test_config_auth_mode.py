@@ -14,7 +14,7 @@ import pytest
 from pydantic import ValidationError
 
 from app.core.config import Settings
-from app.core.internal_identity import AuthConfigError, check_settings
+from app.platform.internal_identity import AuthConfigError, check_settings
 
 REPO = Path(__file__).resolve().parents[2]
 _ENV = ("AUTH_MODE", "AUTHLIMIT_KEYS_URL", "AUTHLIMIT_KEYS_CACHE_SECONDS", "AUTHLIMIT_KEYS_STALE_GRACE_SECONDS")

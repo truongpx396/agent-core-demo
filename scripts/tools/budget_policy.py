@@ -38,7 +38,7 @@ from app.core.config import (
     MAX_COST_USD_PER_TENANT_PER_DAY,
     MAX_COST_USD_PER_TENANT_PER_MONTH,
 )
-from app.core.sql_store import close_pool
+from app.platform.sql_store import close_pool
 from app.ports.outbound.cost import (
     ALL_PRINCIPALS,
     PERIODS,

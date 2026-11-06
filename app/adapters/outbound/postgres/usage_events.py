@@ -14,7 +14,7 @@ from decimal import Decimal
 from psycopg import errors as pg_errors
 
 from app.billing_integration import port as billing_port
-from app.core.sql_store import get_connection
+from app.platform.sql_store import get_connection
 from app.ports.outbound.cost import (
     EventsByTenantDay,
     UsageEventRow,

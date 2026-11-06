@@ -89,7 +89,7 @@ def test_there_are_entrypoints_for_this_rule_to_be_about():
 
 def test_scheduled_job_wires_for_the_one_shot_jobs_that_run_inside_it():
     """`unwired` trusts `scheduled_job` to wire, so that trust is checked here."""
-    assert _calls(ast.parse((REPO / "app/core/job_runtime.py").read_text()), "wire")
+    assert _calls(ast.parse((REPO / "app/platform/job_runtime.py").read_text()), "wire")
 
 
 @pytest.mark.parametrize(
@@ -98,7 +98,7 @@ def test_scheduled_job_wires_for_the_one_shot_jobs_that_run_inside_it():
         ('from app.agent import cost\nif __name__ == "__main__":\n    cost.run()\n', True),
         ('from app.agent import cost\nfrom app.bootstrap import wire\nif __name__ == "__main__":\n    wire()\n    cost.run()\n', False),
         ('from app.agent import cost\nfrom app import bootstrap\ndef main():\n    bootstrap.wire()\nif __name__ == "__main__":\n    main()\n', False),
-        ('from app.core.job_runtime import scheduled_job\nfrom app.domains import notify\nif __name__ == "__main__":\n    with scheduled_job("x"):\n        pass\n', False),
+        ('from app.platform.job_runtime import scheduled_job\nfrom app.domains import notify\nif __name__ == "__main__":\n    with scheduled_job("x"):\n        pass\n', False),
         ('from app.adapters.inbound.mcp import server\nif __name__ == "__main__":\n    server.main()\n', True),
         # not an entrypoint, or reaches nothing that needs a port
         ('from app.agent import cost\ndef helper():\n    cost.run()\n', False),

@@ -1,6 +1,6 @@
 """The Redis connection the Streams queues and the Telegram channel's own state share: one client per process, built on first use.
 
-A platform module like `sql_store.py`: it opens a connection, so it is adapter-side and listed in `PLATFORM_CORE` of the layering test.
+A platform module like `sql_store.py`: it opens a connection, so it is adapter-side, in `app/platform/` (`tests/core/test_architecture_layers.py`).
 """
 import redis.asyncio as redis
 

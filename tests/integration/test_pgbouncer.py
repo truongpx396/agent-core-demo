@@ -16,7 +16,7 @@ from langgraph.checkpoint.base import empty_checkpoint
 from psycopg_pool import AsyncConnectionPool
 
 from app.adapters.outbound.postgres import checkpointing
-from app.core import sql_store
+from app.platform import sql_store
 from tests.containers import ensure_pgbouncer
 
 pytestmark = [pytest.mark.integration, pytest.mark.xdist_group("pgbouncer")]

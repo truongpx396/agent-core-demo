@@ -20,8 +20,8 @@ row goes stale just deletes nothing.
 import asyncio
 import logging
 
-from app.core.job_runtime import scheduled_job
 from app.core.tool_idempotency import sweep_stale_rows
+from app.platform.job_runtime import scheduled_job
 
 logger = logging.getLogger(__name__)
 
