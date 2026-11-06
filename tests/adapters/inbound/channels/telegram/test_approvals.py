@@ -1,10 +1,10 @@
-"""The state and words behind the Telegram approval buttons (app/adapters/inbound/channels/telegram_approvals.py, specs/021 FR-001). The flow that uses them, and the
-cases where a tap must do nothing, are in test_telegram_channel.py."""
+"""The state and words behind the Telegram approval buttons (app/adapters/inbound/channels/telegram/approvals.py, specs/021 FR-001). The flow that uses them, and the
+cases where a tap must do nothing, are in test_bot.py."""
 import json
 
 import pytest
 
-from app.adapters.inbound.channels.telegram_approvals import (
+from app.adapters.inbound.channels.telegram.approvals import (
     ApprovalStore,
     Pending,
     callback_data,
@@ -12,7 +12,7 @@ from app.adapters.inbound.channels.telegram_approvals import (
     parse_callback,
     render,
 )
-from tests.adapters.inbound.channels.telegram_fakes import FakeRedis
+from tests.adapters.inbound.channels.telegram.fakes import FakeRedis
 
 
 class TestTheButtons:

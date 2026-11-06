@@ -1,7 +1,7 @@
 """Interactive CLI for the LangGraph agent.
 
 A client of the chat API through the front door, like the web page (specs/020): the person signs in once (a browser opens the authorization
-server's page; `app/adapters/inbound/channels/cli_auth.py`), and each turn is a `POST /chat/stream/queued` carrying their token. The door proves who they are,
+server's page; `app/adapters/inbound/channels/cli/auth.py`), and each turn is a `POST /chat/stream/queued` carrying their token. The door proves who they are,
 meters them and hands the API a signed identity; the API publishes the turn and relays the events a worker publishes back
 (`app/adapters/inbound/channels/door.py`). This process never touches the queue or the graph, so `make chat` needs the front door (or, for development, the API
 alone with `AUTH_MODE=headers`) and a worker for the domain (`make agent-worker`); without one the turn ends, after
@@ -22,7 +22,7 @@ worker would run it to the end, including a tool call the person was about to be
 `--sign-out` forgets the saved sign-in. With `AUTH_MODE=headers` (development, announced loudly by the API) nothing is signed in: the tenant and
 the OS user are sent as headers, which is only safe where nothing a stranger controls can reach the API.
 
-Run with: `make chat`, `make chat-hitl`, or `python -m app.adapters.inbound.channels.chat --hitl`
+Run with: `make chat`, `make chat-hitl`, or `python -m app.adapters.inbound.channels.cli.chat --hitl`
 """
 import asyncio
 import getpass
@@ -30,7 +30,7 @@ import sys
 import uuid
 from contextlib import aclosing
 
-from app.adapters.inbound.channels.cli_auth import (
+from app.adapters.inbound.channels.cli.auth import (
     CliAuth,
     SessionStore,
     default_session_path,

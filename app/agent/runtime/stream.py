@@ -607,7 +607,7 @@ async def astream_events_turn(
     mirrors app/agent/graph/core.py's opt-in HITL gate (should_continue): a tool call
     pauses instead of executing, and the caller resumes via
     astream_events_resume(thread_id, approved, ctx) — see
-    app/adapters/inbound/channels/chat.py's `--hitl` mode, which does it through the queue
+    app/adapters/inbound/channels/cli/chat.py's `--hitl` mode, which does it through the queue
     (a `resume` job) rather than by calling this module. `images` (pattern 44) is
     optional. `cancel_check` forwards to `_run_graph_stream`; only
     agent_worker.py's turn-job dispatch passes one (wired to a Redis flag

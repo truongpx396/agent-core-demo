@@ -351,7 +351,7 @@ agent_unattended_pause_total = Counter(
     "decline round — a model that re-requests a declined write is declined "
     "again, up to UNATTENDED_MAX_DECLINE_ROUNDS) at "
     "a mandatory capability gate — its callers (app/adapters/inbound/workers/agent_worker.py's "
-    "queue consumer, app/adapters/inbound/channels/telegram.py) have no interactive human on "
+    "queue consumer, app/adapters/inbound/channels/telegram/bot.py) have no interactive human on "
     "the other end of the call to solicit a real decision from (unlike "
     "astream_events_turn's approval_required/astream_events_resume flow)",
 )
@@ -360,7 +360,7 @@ agent_unattended_job_paused_total = Counter(
     "agent_unattended_job_paused_total",
     "An unattended job (a Telegram message) that reached its channel as approval_required instead of "
     "being declined by the worker, so the channel cancelled the pause itself "
-    "(app/adapters/inbound/channels/telegram.py::_decline_pause). The worker declines a pause for such a job "
+    "(app/adapters/inbound/channels/telegram/bot.py::_decline_pause). The worker declines a pause for such a job "
     "(agent_unattended_pause_total counts those), so this should stay at zero: a count means a worker "
     "that predates the `unattended` flag ran the job, which is a rolling deploy that upgraded the "
     "channel before its workers (GRAPH_PATTERNS.md 89). Nothing ran and nothing is left paused, which "
@@ -389,7 +389,7 @@ channel_person_provisioned_total = Counter(
 
 channel_telegram_update_total = Counter(
     "channel_telegram_update_total",
-    "A Telegram update after it reached the bot's inbox (app/adapters/inbound/channels/telegram_inbox.py), by what became of it. `dropped` is an update the "
+    "A Telegram update after it reached the bot's inbox (app/adapters/inbound/channels/telegram/inbox.py), by what became of it. `dropped` is an update the "
     "bot gave up on after a crash loop or could not read, and the person never got an answer",
     ["outcome"],
 )  # outcome: handled | error | overflow | requeued | dropped
@@ -410,7 +410,7 @@ channel_telegram_link_total = Counter(
 
 channel_telegram_webhook_total = Counter(
     "channel_telegram_webhook_total",
-    "Requests to the bot's webhook (app/adapters/inbound/channels/telegram_server.py), by outcome. `forbidden` is a request without the secret Telegram was given",
+    "Requests to the bot's webhook (app/adapters/inbound/channels/telegram/server.py), by outcome. `forbidden` is a request without the secret Telegram was given",
     ["outcome"],
 )  # outcome: accepted | forbidden | invalid | unavailable
 

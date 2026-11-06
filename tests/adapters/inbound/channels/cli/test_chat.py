@@ -1,4 +1,4 @@
-"""The CLI (app/adapters/inbound/channels/chat.py): it renders a turn's events, and a turn is a request to the chat API through the front door.
+"""The CLI (app/adapters/inbound/channels/cli/chat.py): it renders a turn's events, and a turn is a request to the chat API through the front door.
 
 The renderer stops reading a stream at `approval_required`, which is not the stream's last step: its generators are still open. The door client
 (`app/adapters/inbound/channels/door.py`) has its own tests (tests/adapters/inbound/channels/test_door.py), so it is replaced here by a fake and these tests are about what the CLI
@@ -8,7 +8,7 @@ import asyncio
 
 import pytest
 
-from app.adapters.inbound.channels import chat as chat_channel
+from app.adapters.inbound.channels.cli import chat as chat_channel
 
 
 async def test_stopping_at_a_pending_approval_closes_the_stream_it_leaves_open():

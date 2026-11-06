@@ -32,7 +32,7 @@ from cryptography.fernet import Fernet, InvalidToken
 
 from app.adapters.inbound.channels import oauth
 from app.adapters.inbound.channels.oauth import SignInRefused, Tokens
-from app.adapters.inbound.channels.telegram_api import BotApi
+from app.adapters.inbound.channels.telegram.api import BotApi
 from app.core import metrics
 from app.core.config import settings
 

@@ -5,16 +5,16 @@ touches the queue or the graph; it needs Redis for its own small state (below) a
 Requires `TELEGRAM_BOT_TOKEN` (from @BotFather) and refuses to start without it, the same fail-closed discipline as SecurityCtx and moderation. It is
 the ONE surface that necessarily reaches the public internet.
 
-**Transport and dispatch** (specs/021). `TELEGRAM_MODE=poll` (the default) long-polls `getUpdates`; `webhook` is served by `telegram_server.py`.
-Either one only pushes the update onto a Redis list; `telegram_inbox.py` runs them, up to `TELEGRAM_MAX_CONCURRENT_CHATS` chats at a time and each
+**Transport and dispatch** (specs/021). `TELEGRAM_MODE=poll` (the default) long-polls `getUpdates`; `webhook` is served by `server.py`.
+Either one only pushes the update onto a Redis list; `inbox.py` runs them, up to `TELEGRAM_MAX_CONCURRENT_CHATS` chats at a time and each
 chat in order, so a slow turn delays only its own chat and `/cancel` can reach it.
 
 **Human in the loop** (specs/021 FR-001). A turn that needs approval ends at `approval_required`; the bot shows what it wants to do with Approve /
-Reject buttons, and only the owner's tap resumes it (`telegram_approvals.py` for why that is safe). With `TELEGRAM_APPROVALS=false` the turn is sent
+Reject buttons, and only the owner's tap resumes it (`approvals.py` for why that is safe). With `TELEGRAM_APPROVALS=false` the turn is sent
 `unattended`: the worker declines every pause, so a mutating request never becomes a silent write and never leaves the conversation paused.
 
-`AGENT_DOMAIN` (default `"ecorp"`) picks the domain whose worker pool receives messages: `AGENT_DOMAIN=support python -m app.adapters.inbound.channels.telegram`
-runs the support copilot, unmodified. Each domain is its own process with its own bot token. Run with `python -m app.adapters.inbound.channels.telegram` (Makefile
+`AGENT_DOMAIN` (default `"ecorp"`) picks the domain whose worker pool receives messages: `AGENT_DOMAIN=support python -m app.adapters.inbound.channels.telegram.bot`
+runs the support copilot, unmodified. Each domain is its own process with its own bot token. Run with `python -m app.adapters.inbound.channels.telegram.bot` (Makefile
 `telegram`, `telegram-support`, `telegram-sales`); not started by `make up`/`make serve`.
 """
 import asyncio
@@ -26,11 +26,6 @@ from dataclasses import dataclass, field
 import httpx
 import redis.asyncio as redis
 
-from app.adapters.inbound.channels import (
-    telegram_link,
-    telegram_people,
-    telegram_server,
-)
 from app.adapters.inbound.channels.door import (
     SIGNIN_MESSAGES,
     Auth,
@@ -40,18 +35,19 @@ from app.adapters.inbound.channels.door import (
     make_http_client,
 )
 from app.adapters.inbound.channels.oauth import SignInRefused
-from app.adapters.inbound.channels.telegram_api import NO_KEYBOARD, BotApi
-from app.adapters.inbound.channels.telegram_approvals import (
+from app.adapters.inbound.channels.telegram import link, people, server
+from app.adapters.inbound.channels.telegram.api import NO_KEYBOARD, BotApi
+from app.adapters.inbound.channels.telegram.approvals import (
     ApprovalStore,
     Pending,
     keyboard,
     parse_callback,
     render,
 )
-from app.adapters.inbound.channels.telegram_inbox import Dispatcher, Inbox
-from app.adapters.inbound.channels.telegram_link import LinkedAuth, LinkFlow, LinkStore
-from app.adapters.inbound.channels.telegram_people import TelegramPeople
-from app.adapters.inbound.channels.telegram_reply import ReplySink
+from app.adapters.inbound.channels.telegram.inbox import Dispatcher, Inbox
+from app.adapters.inbound.channels.telegram.link import LinkedAuth, LinkFlow, LinkStore
+from app.adapters.inbound.channels.telegram.people import TelegramPeople
+from app.adapters.inbound.channels.telegram.reply import ReplySink
 from app.agent.runtime.sessions import TELEGRAM_THREAD_PREFIX
 from app.core import metrics
 from app.core.config import AGENT_DOMAIN, DEFAULT_TENANT, TELEGRAM_BOT_TOKEN, settings
@@ -447,21 +443,21 @@ async def _poll(api: BotApi, client: redis.Redis, inbox: Inbox, stop: asyncio.Ev
 def check_settings() -> None:
     """Refuse to start a bot that is set up half-way, before it takes a single message."""
     if not TELEGRAM_BOT_TOKEN:
-        raise RuntimeError("TELEGRAM_BOT_TOKEN is not set — see app/adapters/inbound/channels/telegram.py's module docstring")
+        raise RuntimeError("TELEGRAM_BOT_TOKEN is not set — see app/adapters/inbound/channels/telegram/bot.py's module docstring")
     if AGENT_DOMAIN not in DOMAINS:
         raise RuntimeError(f"AGENT_DOMAIN={AGENT_DOMAIN!r} is not a registered domain ({', '.join(sorted(DOMAINS))})")
     if settings.auth_mode == "headers":
         return
     if settings.telegram_linking:
-        telegram_link.check_settings()
+        link.check_settings()
     else:
-        telegram_people.check_settings()
+        people.check_settings()
 
 
 async def run() -> None:
     check_settings()
     if settings.telegram_mode == "webhook":
-        telegram_server.check_webhook_settings()
+        server.check_webhook_settings()
     redis_client = get_redis_client()
     inbox = Inbox(redis_client, AGENT_DOMAIN)
 
@@ -490,7 +486,7 @@ async def run() -> None:
                 await api.delete_webhook()
                 group.create_task(_poll(api, redis_client, inbox, stop))
             if settings.telegram_mode == "webhook" or linker is not None:
-                group.create_task(telegram_server.serve(telegram_server.build_app(inbox, linker, webhook=settings.telegram_mode == "webhook"), stop))
+                group.create_task(server.serve(server.build_app(inbox, linker, webhook=settings.telegram_mode == "webhook"), stop))
             logger.info("telegram_channel_started", extra={"domain": AGENT_DOMAIN, "mode": settings.telegram_mode, "linking": linker is not None})
     logger.info("telegram_channel_stopping")
 

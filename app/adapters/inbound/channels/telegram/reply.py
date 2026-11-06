@@ -10,7 +10,7 @@ Two rules keep this from ever being worse than waiting:
 import time
 from collections.abc import Callable
 
-from app.adapters.inbound.channels.telegram_api import (
+from app.adapters.inbound.channels.telegram.api import (
     MESSAGE_CHAR_LIMIT,
     BotApi,
     split_text,

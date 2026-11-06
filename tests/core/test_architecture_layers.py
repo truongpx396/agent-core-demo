@@ -403,6 +403,65 @@ def test_the_internals_scanner_flags_exactly_the_unpublished_modules(source, all
     assert module_internals_reached("app/x.py", source, allowed=allowed) == expected
 
 
+# --- the engine: what may reach into app/agent -----------------------------------------------------------------------------------
+#
+# `app/agent/` is what every module plugs into and every driving adapter calls. It has two doors and no others:
+#   - `app.agent.tools`: the SDK a business module builds its plugin from (the shared tools, the skill and subagent catalogs, `run_subagent`);
+#   - `app.agent.runtime` and `app.agent.cost`: what a driving adapter calls (the streaming turns, the session directory, the spend queries).
+# The graph's nodes, guards and state stay behind them, so the graph can be rebuilt without touching a module or an adapter.
+
+ENGINE = "app.agent"
+MODULE_SIDE = ("app.agent.tools",)
+DRIVING_SIDE = ("app.agent.runtime", "app.agent.cost")
+
+
+def engine_reaches(source: str, allowed: tuple[str, ...]) -> set[str]:
+    """The `app.agent.<package>` packages `source` imports that are not under one of `allowed` (the package itself, `app.agent`, is no reach)."""
+    reached: set[str] = set()
+    for name in _imports(ast.parse(source)):
+        if _is(name, ENGINE) and name != ENGINE and not _match(name, allowed):
+            reached.add(".".join(name.split(".")[:3]))
+    return reached
+
+
+def test_a_module_reaches_the_engine_only_through_its_tools_sdk():
+    files = _files_under("app/domains/")
+    assert len(files) > 25, "a floor against a vacuous pass: the domains moved"
+    reaching = {rel: found for rel, src in files.items() if (found := engine_reaches(src, MODULE_SIDE))}
+    assert reaching == {}, (
+        "a business module imports the engine's graph, runtime or cost; it plugs into app.agent.tools and nothing else "
+        "(what it needs from the graph is a tool, a manifest field or a port)"
+    )
+
+
+def test_a_driving_adapter_reaches_the_engine_only_through_runtime_and_cost():
+    files = _files_under(INBOUND)
+    assert len(files) > 30, "a floor against a vacuous pass: the inbound adapters moved"
+    reaching = {rel: found for rel, src in files.items() if (found := engine_reaches(src, DRIVING_SIDE))}
+    assert reaching == {}, (
+        "an inbound adapter imports the engine's graph or tools; put what it needs in app/agent/runtime/ "
+        "(app/agent/runtime/reclaimed_turn.py is an example: the worker reads a checkpoint without knowing the graph's message tags)"
+    )
+
+
+@pytest.mark.parametrize(
+    ("source", "allowed", "expected"),
+    [
+        ("from app.agent.graph.messages import is_user_message", DRIVING_SIDE, {"app.agent.graph"}),
+        ("from app.agent.tools import builtin", DRIVING_SIDE, {"app.agent.tools"}),
+        ("import app.agent.graph.build", MODULE_SIDE, {"app.agent.graph"}),
+        ("from app.agent.runtime import stream", MODULE_SIDE, {"app.agent.runtime"}),
+        ("from app.agent.cost import budgets", MODULE_SIDE, {"app.agent.cost"}),
+        ("from app.agent.runtime.core import bind_domain\nfrom app.agent.cost.spend import x", DRIVING_SIDE, set()),
+        ("from app.agent.tools.builtin import calculator\nfrom app.agent.tools import run_subagent_domain", MODULE_SIDE, set()),
+        ("from app.agent import cost", DRIVING_SIDE, set()),
+        ("from app.core import config\nfrom app.ports.outbound import cost", MODULE_SIDE, set()),
+    ],
+)
+def test_the_engine_scanner_flags_exactly_what_is_behind_the_doors(source, allowed, expected):
+    assert engine_reaches(source, allowed) == expected
+
+
 # --- the scanner itself: each rule must be able to fail ---------------------------------------------------------------------
 
 @pytest.mark.parametrize(

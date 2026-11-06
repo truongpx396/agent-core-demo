@@ -421,7 +421,7 @@ groups:
           summary: "Telegram messages were given up on without an answer"
           description: >-
             channel_telegram_update_total{outcome="dropped"} increased — an update crashed the bot
-            MAX_ATTEMPTS times or could not be read (app/adapters/inbound/channels/telegram_inbox.py), so a person
+            MAX_ATTEMPTS times or could not be read (app/adapters/inbound/channels/telegram/inbox.py), so a person
             wrote to the bot and never got a reply. Nothing was run for it. Find the update's
             cause in the telegram_inbox_* log lines before it is sent again.
 
@@ -435,7 +435,7 @@ groups:
           description: >-
             channel_telegram_webhook_total{outcome="forbidden"} increased by more than 20 in 15m —
             something other than Telegram is posting to the bot's public webhook address
-            (app/adapters/inbound/channels/telegram_server.py). Every such request was refused and nothing was
+            (app/adapters/inbound/channels/telegram/server.py). Every such request was refused and nothing was
             queued, so this is a probe, not an incident. If TELEGRAM_WEBHOOK_SECRET was rotated
             and setWebhook not re-run, Telegram itself is among them and no message is arriving.
 

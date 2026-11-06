@@ -54,6 +54,16 @@ Two rules, each a test (`tests/core/test_architecture_layers.py`):
 
 A port belongs to the module when only that module's tools use it (`TicketStore` is the support module's) and to the platform (`app/ports/outbound/`) when several things use it (`WebSearch`, `SandboxCatalog`, `UsageEventStore`).
 
+## The engine's two doors
+
+`app/agent/` is what every module plugs into and every driving adapter calls, and it has two doors (`tests/core/test_architecture_layers.py`):
+
+- **`app.agent.tools`** is the SDK a business module builds its plugin from: the shared tools, the skill and subagent catalogs, `run_subagent`. A module imports nothing else from the engine.
+- **`app.agent.runtime`** and **`app.agent.cost`** are what a driving adapter calls: the streaming turns, the session directory, the spend queries. An inbound adapter imports nothing else from the engine.
+
+The graph's nodes, guards and state stay behind them, so the graph can change without touching a module or an adapter. When an adapter needs something that is graph knowledge, it goes into `runtime/`:
+the queue worker reads a reclaimed turn's checkpoint through `app/agent/runtime/reclaimed_turn.py`, which knows which messages are the person's and which are retry artifacts, and keeps the Redis side itself.
+
 ## The two sides of the adapter ring
 
 `app/adapters/` has one half for each direction a call can go:
@@ -61,7 +71,7 @@ A port belongs to the module when only that module's tools use it (`TicketStore`
 | | `inbound/` : DRIVING (primary) | `outbound/` : DRIVEN (secondary) |
 |---|---|---|
 | Who calls whom | something outside calls the application | the application calls out |
-| What is in it | `api/` the chat, ingest and health HTTP API; `channels/` the CLI and Telegram; `mcp/` the published MCP servers and their OAuth gateway; `workers/` the queue consumers | one package per technology: `postgres/`, `qdrant/`, `redis/`, `minio/`, `litellm/`, `mlservice/`, `embeddings/`, `web/`, `crawl4ai/`, `notify/`, `mcp/` (the client and the sandbox bridge) |
+| What is in it | `api/` the chat, ingest and health HTTP API; `channels/` the CLI (`cli/`) and Telegram (`telegram/`), over the shared `door.py` and `oauth.py`; `mcp/` the published MCP servers and their OAuth gateway; `workers/` the queue consumers | one package per technology: `postgres/`, `qdrant/`, `redis/`, `minio/`, `litellm/`, `mlservice/`, `embeddings/`, `web/`, `crawl4ai/`, `notify/`, `mcp/` (the client and the sandbox bridge) |
 | How it meets the application | calls the application's own functions (`app/agent/runtime/`): there is no driving port, because nothing needs to swap the application for a fake | implements a Protocol from `app/ports/outbound/`; `app/bootstrap.py` binds it |
 | Who may import it | nobody in `app/` (a leaf) | `app/bootstrap.py` and nothing else; an inbound adapter reaches it through its port |
 

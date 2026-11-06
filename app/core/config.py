@@ -334,7 +334,7 @@ class Settings(BillingSettings):
     minio_bucket: str = "ingest-uploads"
     minio_secure: bool = False  # plain http:// for local docker-compose; a real deployment sets this True
 
-    # Telegram channel (app/adapters/inbound/channels/telegram.py, pattern 42) — empty by
+    # Telegram channel (app/adapters/inbound/channels/telegram/bot.py, pattern 42) — empty by
     # default so the bot refuses to start rather than run with no way to
     # authenticate. Create a bot via @BotFather. The one surface in this app
     # that necessarily reaches the public internet.
@@ -486,7 +486,7 @@ class Settings(BillingSettings):
     max_auto_reclaim_retries: int = 1
 
     # app/agent/runtime/stream.py::astream_events_turn_unattended — how many
-    # times an UNATTENDED caller (app/adapters/inbound/channels/telegram.py: no approve/reject UX)
+    # times an UNATTENDED caller (app/adapters/inbound/channels/telegram/bot.py: no approve/reject UX)
     # auto-declines a pause on one turn before giving up and CANCELLING the run.
     # The model can re-request a declined write; each re-request pauses the
     # conversation again, and an unattended channel can never resolve a pause —

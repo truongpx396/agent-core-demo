@@ -251,7 +251,7 @@ def test_a_named_client_id_is_used_on_creation_and_replaces_the_kept_one_on_a_re
 
 
 def test_the_telegram_bots_login_return_is_registered_only_when_asked_and_is_the_path_the_bot_serves(casdoor):
-    from app.adapters.inbound.channels import telegram_link
+    from app.adapters.inbound.channels.telegram import link as telegram_link
 
     assert bootstrap.TELEGRAM_LINK_CALLBACK_PATH == telegram_link.CALLBACK_PATH
     assert by_name(casdoor())["api-ecorp"]["redirect_uris"] == ["https://api.localhost:8443/", bootstrap.API_SMOKE_CALLBACK, "http://localhost:33420/callback"]

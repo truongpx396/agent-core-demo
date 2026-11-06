@@ -1,5 +1,5 @@
 """Approving a paused action from a Telegram button (specs/021 FR-001 to FR-004). This module is the STATE and the words; the flow that uses them is
-`Bot` in app/adapters/inbound/channels/telegram.py.
+`Bot` in app/adapters/inbound/channels/telegram/bot.py.
 
 What makes a button safe to put in a chat (constitution Principle II is non-negotiable, so each line below is a test):
 

@@ -23,7 +23,7 @@ from app.core.config import MEMORY_RETENTION_DAYS
 
 class SecurityCtx(TypedDict):
     """Stamped ONCE at the trusted boundary (app/adapters/inbound/api/deps.py's header
-    extraction, or a local entry point like app/adapters/inbound/channels/chat.py) — never by
+    extraction, or a local entry point like app/adapters/inbound/channels/cli/chat.py) — never by
     a graph node, never derived from message content or tool output. A ctx a
     caller could influence via the request body or conversation would be a
     privilege-escalation primitive, not a parameter."""
