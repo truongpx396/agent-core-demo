@@ -4,11 +4,11 @@ reason for binding the identity at launch (`launched_as`) instead of taking it
 as an argument.
 
 app/adapters/inbound/mcp/ops_server.py imports `fetch_metrics_summary_impl`/
-`list_recent_incidents_impl` by name (`from app.domains.ops.tools import
+`list_recent_incidents_impl` by name (`from app.domains.ops.usecases import
 ...`), so — unlike tests/adapters/inbound/mcp/test_mcp_server.py's `sql_store.query_employees`
 (a module-qualified call one layer deeper inside `query_employees_impl`
 itself) — the right patch target here is `ops_server`'s OWN bound name,
-not `app.domains.ops.tools`'s: patching the latter would leave
+not `app.domains.ops.usecases`'s: patching the latter would leave
 `ops_server`'s already-imported reference to the original function
 untouched, a classic `from X import Y` monkeypatching pitfall.
 """

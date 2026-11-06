@@ -1,12 +1,12 @@
 """Tests for scripts/jobs/followup_sweep.py — same hermetic-DI approach as
 tests/scripts/jobs/test_ops_digest.py: a fake LLM via `llm=`, and
-store/notify monkeypatched so this never touches a real Postgres, network, or
+the sales store (behind the `LeadStore` port) and notify monkeypatched so this never touches a real Postgres, network, or
 filesystem sink. The metered call's usage event is captured by tests/conftest.py's
 autouse `usage_event_sink`.
 
-`run_followup_sweep` is `async def` now (awaits `store.due_followups`,
+`run_followup_sweep` is `async def` now (awaits `usecases.due_followups`,
 `chat.ainvoke`, `notify.post_to_team_channel`,
-`store.mark_followup_done` — all real I/O), so every call below runs
+`usecases.mark_followup_done` — all real I/O), so every call below runs
 through `asyncio.run(...)`.
 """
 import asyncio
@@ -15,6 +15,7 @@ import pytest
 
 from app.adapters.outbound.notify import team_channel as team_channel_adapter
 from app.core import gateway
+from app.domains.sales import store as sales_store
 from scripts.jobs import followup_sweep
 
 
@@ -47,7 +48,7 @@ def test_run_followup_sweep_returns_empty_when_nothing_is_due(monkeypatch):
     async def fake_due_followups(tenant, as_of):
         return []
 
-    monkeypatch.setattr(followup_sweep.store, "due_followups", fake_due_followups)
+    monkeypatch.setattr(sales_store, "due_followups", fake_due_followups)
 
     drafts = asyncio.run(followup_sweep.run_followup_sweep(llm=_FakeChat([])))
 
@@ -63,14 +64,14 @@ def test_run_followup_sweep_drafts_posts_and_marks_each_followup_done(monkeypatc
     async def fake_due_followups(tenant, as_of):
         return due_items
 
-    monkeypatch.setattr(followup_sweep.store, "due_followups", fake_due_followups)
+    monkeypatch.setattr(sales_store, "due_followups", fake_due_followups)
 
     marked_done = []
 
     async def fake_mark_followup_done(tenant, followup_id):
         marked_done.append(followup_id)
 
-    monkeypatch.setattr(followup_sweep.store, "mark_followup_done", fake_mark_followup_done)
+    monkeypatch.setattr(sales_store, "mark_followup_done", fake_mark_followup_done)
 
     posted = []
 
@@ -106,8 +107,8 @@ def test_run_followup_sweep_tells_the_gateway_whose_call_it_is(monkeypatch):
         return None
 
 
-    monkeypatch.setattr(followup_sweep.store, "due_followups", fake_due_followups)
-    monkeypatch.setattr(followup_sweep.store, "mark_followup_done", fake_mark_followup_done)
+    monkeypatch.setattr(sales_store, "due_followups", fake_due_followups)
+    monkeypatch.setattr(sales_store, "mark_followup_done", fake_mark_followup_done)
     monkeypatch.setattr(team_channel_adapter, "post_to_team_channel", fake_post_to_team_channel)
 
     fake_chat = _FakeChat([_FakeResponse("Hi A!")])
@@ -134,8 +135,8 @@ def test_run_followup_sweep_records_one_cron_usage_event_per_draft(monkeypatch, 
         return None
 
 
-    monkeypatch.setattr(followup_sweep.store, "due_followups", fake_due_followups)
-    monkeypatch.setattr(followup_sweep.store, "mark_followup_done", fake_mark_followup_done)
+    monkeypatch.setattr(sales_store, "due_followups", fake_due_followups)
+    monkeypatch.setattr(sales_store, "mark_followup_done", fake_mark_followup_done)
     monkeypatch.setattr(team_channel_adapter, "post_to_team_channel", fake_post_to_team_channel)
 
     usage = {"input_tokens": 20, "output_tokens": 10, "total_tokens": 30}
@@ -161,8 +162,8 @@ def test_run_followup_sweep_records_usage_when_tokens_are_reported(monkeypatch, 
     async def fake_post_to_team_channel(channel, message):
         return None
 
-    monkeypatch.setattr(followup_sweep.store, "due_followups", fake_due_followups)
-    monkeypatch.setattr(followup_sweep.store, "mark_followup_done", fake_mark_followup_done)
+    monkeypatch.setattr(sales_store, "due_followups", fake_due_followups)
+    monkeypatch.setattr(sales_store, "mark_followup_done", fake_mark_followup_done)
     monkeypatch.setattr(team_channel_adapter, "post_to_team_channel", fake_post_to_team_channel)
 
     fake_chat = _FakeChat([_FakeResponse("draft", usage_metadata={"total_tokens": 17})])
@@ -196,8 +197,8 @@ def test_run_followup_sweep_records_the_priced_cost_of_each_draft(monkeypatch, u
         return None
 
     monkeypatch.setattr(pricing, "_fetch_model_info", priced_fetch)
-    monkeypatch.setattr(followup_sweep.store, "due_followups", fake_due_followups)
-    monkeypatch.setattr(followup_sweep.store, "mark_followup_done", fake_mark_followup_done)
+    monkeypatch.setattr(sales_store, "due_followups", fake_due_followups)
+    monkeypatch.setattr(sales_store, "mark_followup_done", fake_mark_followup_done)
     monkeypatch.setattr(team_channel_adapter, "post_to_team_channel", fake_post_to_team_channel)
     usage = {"input_tokens": 1000, "output_tokens": 500, "total_tokens": 1500}
 

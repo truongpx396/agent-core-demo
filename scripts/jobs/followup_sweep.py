@@ -1,5 +1,5 @@
 """Cron-callable follow-up sweep: find every CRM follow-up due today
-(app/domains/sales/store.py::due_followups), draft a nudge in the sales
+(app/domains/sales/usecases.py::due_followups), draft a nudge in the sales
 concierge's own voice for each, and post the draft to the team channel for
 a human to review and send.
 
@@ -29,7 +29,7 @@ from app.agent.cost import metering
 from app.core.config import CHAT_MODEL, DEFAULT_TENANT, OPENAI_API_BASE, OPENAI_API_KEY
 from app.core.job_runtime import scheduled_job
 from app.core.security import SecurityCtx
-from app.domains.sales import store
+from app.domains.sales import usecases
 from app.domains.sales.domain import SALES_MANIFEST
 from app.ports.outbound.notify import team_channel
 
@@ -61,7 +61,7 @@ async def run_followup_sweep(tenant: str = DEFAULT_TENANT, llm=None) -> list[str
     it to the team channel, mark it done. Returns the list of drafted
     texts (empty if nothing was due). `llm` is DI for tests, same pattern
     as scripts/jobs/ops_digest.py::run_digest."""
-    due = await store.due_followups(tenant, datetime.now(UTC))
+    due = await usecases.due_followups(tenant, datetime.now(UTC))
     if not due:
         return []
 
@@ -91,7 +91,7 @@ async def run_followup_sweep(tenant: str = DEFAULT_TENANT, llm=None) -> list[str
             "sales-followups",
             f"Draft nudge for {item['lead_name']} ({item['contact']}):\n{draft}",
         )
-        await store.mark_followup_done(tenant, item["id"])
+        await usecases.mark_followup_done(tenant, item["id"])
         drafts.append(draft)
 
     return drafts
