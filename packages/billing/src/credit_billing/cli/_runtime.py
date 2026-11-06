@@ -13,7 +13,7 @@ variables (`credit_billing.settings`). A `.env` in the working directory is read
   operator command or an unwatched cron job. So the wait is `CONNECT_TIMEOUT_SECONDS` and the error is
   `DatabaseUnavailable`, naming host, port and database (never user or password) and the variable to check.
   Both CLIs turn it into one `error:` line and exit `EXIT_DATABASE_UNAVAILABLE`.
-- **The job bootstrap.** `scheduled_job()` is the CLI's `app/core/job_runtime.py::scheduled_job`. A CLI lives
+- **The job bootstrap.** `scheduled_job()` is the CLI's `app/platform/job_runtime.py::scheduled_job`. A CLI lives
   seconds but the OTel exporter pushes every 15 s, so a quick job would export NOTHING, and an unattended
   job's key counters are its failures (spec 008 B22). So the provider is flushed on the way out, whether the
   body returned or raised, and a failing flush never turns a finished job into a failed one.
@@ -80,7 +80,7 @@ async def wired_pool(url: str | None = None) -> AsyncIterator[AsyncConnectionPoo
     """A pool for the length of the block, with the core wired to it. Raises `DatabaseUnavailable` if it cannot connect in time."""
     target = url or RuntimeSettings().appdata_database_url
     # prepare_threshold=None: APPDATA_DATABASE_URL may point at a transaction pooler, which cannot carry a prepared statement from one server
-    # connection to the next. The package imports nothing from the app, so this repeats app/core/sql_store.py's reasoning, not its constant.
+    # connection to the next. The package imports nothing from the app, so this repeats app/platform/sql_store.py's reasoning, not its constant.
     pool = AsyncConnectionPool(target, min_size=1, max_size=10, kwargs={"prepare_threshold": None}, open=False)
     try:
         await pool.open(wait=True, timeout=CONNECT_TIMEOUT_SECONDS)

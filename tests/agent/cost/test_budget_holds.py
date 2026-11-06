@@ -4,7 +4,7 @@ for the check-then-act race in app/agent/cost/budgets.py::check_allowance
 (tests/agent/cost/test_tenant_budget.py covers that function itself; this file
 covers the reservation primitives it now reads).
 
-Same "no live Postgres" approach as tests/core/test_sql_store.py:
+Same "no live Postgres" approach as tests/platform/test_sql_store.py:
 get_connection is monkeypatched to a fake async-context-manager connection
 that records the SQL/params it was called with. That proves statement SHAPE
 (tenant scoping, which columns, the staleness cutoff), not how the real

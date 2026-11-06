@@ -35,7 +35,7 @@ x-app-env: &app-env
   OPENSANDBOX_MCP_DOMAIN: opensandbox-server:8090
   OPENSANDBOX_API_KEY: ${OPENSANDBOX_API_KEY:-}
   # The collector is docker-compose.collectors.yml's, reached through its published port so the app never depends on it: a failed push is
-  # dropped (app/core/telemetry.py).
+  # dropped (app/platform/telemetry.py).
   OTEL_EXPORTER_OTLP_ENDPOINT: http://host.docker.internal:4318
   # Pyroscope is in the observability stack; a push to a server that is not there is dropped without a delay (specs/022). Blank turns profiling off.
   PYROSCOPE_SERVER_ADDRESS: ${PYROSCOPE_SERVER_ADDRESS-http://host.docker.internal:4040}
@@ -172,7 +172,7 @@ services:
     # collector reads it once `CREATE EXTENSION` has run in appdata.
     command: ["postgres", "-c", "shared_preload_libraries=pg_stat_statements"]
     ports:
-      - "5432:5432"   # exposed so app/core/sql_store.py (host process) can connect directly
+      - "5432:5432"   # exposed so app/platform/sql_store.py (host process) can connect directly
     environment:
       POSTGRES_USER: langfuse
       POSTGRES_PASSWORD: langfuse
@@ -188,7 +188,7 @@ services:
 
   # --- PgBouncer in front of `appdata` and `checkpointer` (specs/022). Transaction pooling: Postgres sees the pool size per database however many
   # processes connect (WORKER_CONCURRENCY.md, "Postgres connection budget"). LiteLLM, Langfuse and the exporters connect directly. The app's pools
-  # disable prepared statements (app/core/sql_store.py), the one thing a transaction pooler cannot carry. Hardened like the app roles
+  # disable prepared statements (app/platform/sql_store.py), the one thing a transaction pooler cannot carry. Hardened like the app roles
   # (tests/core/test_compose_pooler.py); one tmpfs is its whole write path (specs/022 research.md).
   pgbouncer:
     image: edoburu/pgbouncer:v1.26.1-p0@sha256:488422e38cff912895d0d65d8963fcd306e6ac589a724398b6eb8e294e94d624

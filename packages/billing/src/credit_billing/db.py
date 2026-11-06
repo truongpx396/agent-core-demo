@@ -1,11 +1,11 @@
 """Where the billing core gets a database connection (specs/011-billing-module-boundary,
 contracts/billing-core-boundary.md).
 
-The core used to import the agent's pool (`app.core.sql_store.get_connection`), so copying `credit_billing/`
+The core used to import the agent's pool (`app.platform.sql_store.get_connection`), so copying `credit_billing/`
 into another project failed to import. Now the host (or a service, or a test) says where connections come from
 with `configure(...)`. The core never opens a pool, holds a connection string or falls back to a default.
 
-**The provider owns the transaction.** It must behave like `app.core.sql_store.get_connection`: one `async
+**The provider owns the transaction.** It must behave like `app.platform.sql_store.get_connection`: one `async
 with` is one transaction, committed on a clean exit and rolled back when the block raises. This is an
 invariant: every single-statement writer relies on the commit, and the webhook handler gets "applied and
 marked applied" atomically from one block. `get_connection()` delegates with `async with provider() as conn:

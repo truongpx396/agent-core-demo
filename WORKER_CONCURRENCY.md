@@ -69,7 +69,7 @@ Neither comes from a formula:
 
 ## Postgres connection budget
 
-Every process that runs the graph (each `agent-worker` replica **and** the API, via `init_graph_async()` in its lifespan) holds two client-side pools: the appdata pool (`app/core/sql_store.py`, `APPDATA_POOL_MAX_SIZE`, default `10`) and the checkpointer pool (`CHECKPOINTER_POOL_MAX_SIZE`, default `10`). Direct to Postgres, scaling replicas multiplied that, and nothing enforced the ceiling:
+Every process that runs the graph (each `agent-worker` replica **and** the API, via `init_graph_async()` in its lifespan) holds two client-side pools: the appdata pool (`app/platform/sql_store.py`, `APPDATA_POOL_MAX_SIZE`, default `10`) and the checkpointer pool (`CHECKPOINTER_POOL_MAX_SIZE`, default `10`). Direct to Postgres, scaling replicas multiplied that, and nothing enforced the ceiling:
 
     20 × (agent-worker replicas + API replicas)  ≤  max_connections − reserved
 

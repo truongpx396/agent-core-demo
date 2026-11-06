@@ -10,7 +10,7 @@ init_graph_async() when refused — proving the short-circuit happens BEFORE any
 work, not just that it returns the right shape.
 
 Both `_check_allowance` and `spend.usage_summary` are `async def`
-now (a real `AsyncConnectionPool`, see app/core/sql_store.py's own
+now (a real `AsyncConnectionPool`, see app/platform/sql_store.py's own
 docstring).
 """
 

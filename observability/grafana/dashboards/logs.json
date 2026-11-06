@@ -147,7 +147,7 @@
     {
       "type": "logs",
       "title": "Logs — filter by $service / $level",
-      "description": "Every container's stdout, parsed as JSON where possible (app/core/logging_config.py's structlog output) — see ../promtail/promtail-config.yaml. Use the Service/Level dropdowns above to filter; defaults to error+warn across all services.",
+      "description": "Every container's stdout, parsed as JSON where possible (app/platform/logging_config.py's structlog output) — see ../promtail/promtail-config.yaml. Use the Service/Level dropdowns above to filter; defaults to error+warn across all services.",
       "datasource": {
         "type": "loki",
         "uid": "loki"

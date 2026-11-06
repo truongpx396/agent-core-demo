@@ -1,4 +1,4 @@
--- The structured-data tool's own database (app/core/sql_store.py) — separate
+-- The structured-data tool's own database (app/platform/sql_store.py) — separate
 -- from `litellm` (proxy state) and `langfuse` (trace UI state), so the
 -- demo's own data has its own lifecycle and isn't sharing a schema with
 -- infrastructure that happens to also live in this Postgres.
@@ -9,7 +9,7 @@ CREATE DATABASE appdata OWNER langfuse;
 -- Fixed, typed schema for app/agent/tools/builtin.py::query_employees — a *fixed tool*,
 -- never a text-to-SQL surface (GRAPH_PATTERNS.md pattern 21). `tenant`
 -- mirrors the same column app/adapters/outbound/qdrant/qdrant_store.py's payloads carry, enforced
--- the same way: every query app/core/sql_store.py issues is parameterized and
+-- the same way: every query app/platform/sql_store.py issues is parameterized and
 -- always includes `WHERE tenant = %s`, never a value the model supplies.
 CREATE TABLE employees (
     id SERIAL PRIMARY KEY,
@@ -24,7 +24,7 @@ CREATE INDEX employees_tenant_idx ON employees (tenant);
 
 -- Two tenants seeded, `ecorp` (DEFAULT_TENANT, app/core/config.py) and a second
 -- one purely so a cross-tenant isolation test has something real to prove
--- against — see tests/core/test_sql_store.py.
+-- against — see tests/platform/test_sql_store.py.
 INSERT INTO employees (tenant, name, department, title, hired_on) VALUES
     ('ecorp', 'Priya Nair',      'Engineering', 'Staff Engineer',        '2021-03-01'),
     ('ecorp', 'Marcus Cole',     'Engineering', 'Engineering Manager',   '2020-11-15'),

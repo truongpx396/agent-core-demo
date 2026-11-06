@@ -153,7 +153,7 @@ def _build_app_env(
         # decision-to-delegate and synthesis-of-the-result calls on either
         # side of it.
         "SUBAGENT_TIMEOUT_SECONDS": "240",
-        # Disables OTel metrics export (app/core/telemetry.py's own
+        # Disables OTel metrics export (app/platform/telemetry.py's own
         # blank-endpoint short-circuit) — this subprocess genuinely enters
         # app/adapters/inbound/api/main.py's lifespan, so it WOULD otherwise retry a real
         # OTLP export every ~15s for its entire lifetime against a
