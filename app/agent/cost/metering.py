@@ -17,12 +17,13 @@ thousands of tokens, and adding that to the turn's token budget could stop a per
 Returns the response plus `usage` and `cost_usd` (an unpriced call adds 0.0 to the running total), so the
 agent node's per-turn ceiling and the event come from the same `PricedCall`.
 """
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
 from app.agent.cost import pricing, usage_events
 from app.core import gateway
+from app.ports.outbound.llm import ChatModel
 
 
 @dataclass(frozen=True)
@@ -33,7 +34,7 @@ class MeteredCall:
     priced: pricing.PricedCall
 
 
-async def metered_invoke(llm, messages, *, config, kind: str, model_alias: str, invoke_model: str | None = None) -> MeteredCall:
+async def metered_invoke(llm: ChatModel, messages: Sequence[Any], *, config: Mapping[str, Any] | None, kind: str, model_alias: str, invoke_model: str | None = None) -> MeteredCall:
     """`config` is the LangGraph node config (None when a test calls a node directly, in which
     case no identity is sent and no event is written: there is no tenant to meter to).
 

@@ -5,7 +5,7 @@ registry and endpoints without downloading a model.
 """
 import asyncio
 import logging
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from functools import partial
 from pathlib import Path
@@ -75,7 +75,7 @@ def create_app(
     loaders = {**default_loaders, **(loaders or {})}
 
     @asynccontextmanager
-    async def lifespan(app: FastAPI):
+    async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         registry = Registry(
             base_backoff_s=settings.model_retry_base_s,
             max_backoff_s=settings.model_retry_max_s,

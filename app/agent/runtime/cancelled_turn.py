@@ -16,7 +16,9 @@ import asyncio
 import logging
 
 from langchain_core.messages import AIMessage, BaseMessage, RemoveMessage, ToolMessage
+from langchain_core.runnables import RunnableConfig
 from langgraph.graph import START
+from langgraph.graph.state import CompiledStateGraph
 
 from app.agent.graph.messages import current_turn_messages, is_user_message
 from app.core import metrics
@@ -30,7 +32,7 @@ STOPPED_TURN_MESSAGE = "[The person stopped this request before it finished.]"
 _STATE_TIMEOUT_SECONDS = 2.0
 
 
-async def discard_cancelled_turn(graph, cfg) -> str:
+async def discard_cancelled_turn(graph: CompiledStateGraph, cfg: RunnableConfig) -> str:
     """Take the turn the person stopped out of the thread, or close it. Returns what was done:
     `dropped`, `closed` (a tool had run), `nothing` (no turn in the thread), or `failed`.
 

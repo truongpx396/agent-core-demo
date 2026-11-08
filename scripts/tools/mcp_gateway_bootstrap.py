@@ -73,7 +73,7 @@ class Casdoor:
         if reply.get("status") != "ok":
             raise CasdoorError(f"admin login failed ({reply.get('msg') or reply.get('code')}); stopping rather than retrying (Casdoor locks after 5)")
 
-    def read(self, path: str, **params: str):
+    def read(self, path: str, **params: str) -> dict:
         reply = self.http.get(path, params=params).json()
         if reply.get("status") == "error":
             raise CasdoorError(f"GET {path}: {reply.get('msg')}")

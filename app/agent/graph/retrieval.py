@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 # --- Node: enrich context (multi-step pattern) ---
 def make_retrieve_context_node(
     search: Callable[[str, "SecurityCtx | None"], Awaitable[tuple[str, list[dict]]]],
-):
+) -> Callable[[State], Awaitable[dict]]:
     """Factory, not a plain function, because retrieve_context needs a
     search client — same rationale as make_agent_node for `agent`. Tests
     inject a fake via `make_retrieve_context_node(fake)(state)` instead of

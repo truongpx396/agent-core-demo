@@ -25,7 +25,7 @@ routing call on the reference machine.
 import time
 from collections.abc import Collection, Sequence
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Protocol
 
 import numpy as np
 
@@ -103,7 +103,7 @@ class TieredRouter:
     size_bytes: int | None = None
     rss_mb: float | None = None
 
-    def __init__(self, topics_backend, *, seed: int = 20261017, ceiling: Tier = "strong", configured: Collection[str] = ("local", "medium", "strong"),
+    def __init__(self, topics_backend: Any, *, seed: int = 20261017, ceiling: Tier = "strong", configured: Collection[str] = ("local", "medium", "strong"),
                  long_prompt_chars: int | None = None) -> None:
         from app.core import routing_policy
 

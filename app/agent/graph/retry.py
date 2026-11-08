@@ -4,6 +4,8 @@ retry loop — MAX_CONSECUTIVE_SAME_RETRY_REASON), and `make_no_answer_fallback_
 own four safety-net exits — max iterations/tokens/cost, no-progress). The reasons, their feedback and
 their fallback text are the registry in `graph/output_checks.py`.
 """
+from collections.abc import Callable
+
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 
 from app.agent.graph.messages import RETRY_ARTIFACT_KEY, reject_tool_calls
@@ -66,7 +68,7 @@ def retry_output(state: State) -> dict:
 # run_subagent), but check_output HAS already judged this content here, so
 # trust is reason-dependent (OutputCheck.trust_on_exhaust) rather than
 # always-trusted the way no_answer_fallback's orphaned content is. ---
-def make_retry_exhausted_node(emit_message: bool = True):
+def make_retry_exhausted_node(emit_message: bool = True) -> Callable[[State], dict]:
     def retry_exhausted(state: State) -> dict:
         last = state["messages"][-1] if state.get("messages") else None
         content = getattr(last, "content", "") or ""
@@ -113,7 +115,7 @@ def make_no_answer_fallback_node(
     system_prompt: str,
     enforce_citations: bool = True,
     skill_required_tools: tuple[str, ...] = (),
-):
+) -> Callable[[State], dict]:
     def no_answer_fallback(state: State) -> dict:
         last = state["messages"][-1]
         # A safety net can trip on the very round whose AIMessage is asking for tools. Those calls

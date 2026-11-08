@@ -9,6 +9,8 @@ Every tool in this app, the built-ins in `app/agent/tools/builtin.py` and each d
 """
 import asyncio
 import concurrent.futures
+from collections.abc import Awaitable, Callable
+from typing import Any
 
 from langchain_core.runnables import RunnableConfig
 
@@ -25,7 +27,7 @@ _TOOL_EXECUTOR = concurrent.futures.ThreadPoolExecutor(
 )
 
 
-async def arun_with_timeout(func, *args, _timeout_seconds: float | None = None, **kwargs):
+async def arun_with_timeout(func: Callable[..., Awaitable[Any]], *args: Any, _timeout_seconds: float | None = None, **kwargs: Any) -> Any:
     """Await `func(*args, **kwargs)` and stop waiting after `_timeout_seconds` (default TOOL_TIMEOUT_SECONDS).
     The raised TimeoutError is caught by ToolNode's `handle_tool_errors=friendly_tool_error`
     (app/agent/graph/core.py) and surfaced to the agent like any tool exception.
@@ -57,7 +59,7 @@ async def arun_with_timeout(func, *args, _timeout_seconds: float | None = None, 
 
 
 
-def run_with_timeout(func, *args, _timeout_seconds: float | None = None, **kwargs):
+def run_with_timeout(func: Callable[..., Any], *args: Any, _timeout_seconds: float | None = None, **kwargs: Any) -> Any:
     """The sync survivor of `arun_with_timeout`'s predecessor: still runs
     `func` in a worker thread via `concurrent.futures`, not `asyncio.wait_for`
     — its one caller, `app/adapters/outbound/mcp/sandbox_tools.py::load_sandbox_tools`, runs

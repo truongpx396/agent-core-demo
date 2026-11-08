@@ -60,6 +60,7 @@ from qdrant_client.models import (
     Modifier,
     PointStruct,
     Prefetch,
+    ScoredPoint,
     SparseVector,
     SparseVectorParams,
     VectorParams,
@@ -273,7 +274,7 @@ async def ensure_collection(dim: int, collection: str | None = None) -> None:
 
 
 def build_point(
-    point_id,
+    point_id: str | int,
     dense_vector: list[float],
     payload: dict,
     sparse_vector: tuple[list[int], list[float]] | None = None,
@@ -357,7 +358,7 @@ async def hybrid_search(
     doc_ids: list[str] | None = None,
     collection: str | None = None,
     min_score: float | None = None,
-):
+) -> list[ScoredPoint]:
     """Dense+sparse hybrid search, RRF-fused and cross-encoder reranked, degrading at each stage (see module
     docstring). Returns scored points (each with `.payload`), reranked and truncated to `k` (default
     `RERANK_TOP_K`), or the RRF/dense order truncated to `k` when reranking is unavailable.
@@ -475,8 +476,10 @@ async def count_by_filter(count_filter: Filter) -> int:
     return result.count
 
 
-def _hit(point) -> SearchHit:
-    return SearchHit(id=point.id, score=point.score, payload=dict(point.payload or {}))
+def _hit(point: ScoredPoint) -> SearchHit:
+    # The client's point id may also be a UUID object; the port carries a str or an int.
+    point_id = point.id if isinstance(point.id, str | int) else str(point.id)
+    return SearchHit(id=point_id, score=point.score, payload=dict(point.payload or {}))
 
 
 class QdrantDocumentIndex:

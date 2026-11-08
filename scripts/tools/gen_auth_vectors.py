@@ -33,6 +33,7 @@ import json
 import sys
 import time
 from pathlib import Path
+from typing import Any
 
 import jwt
 from cryptography.hazmat.primitives import serialization
@@ -63,7 +64,7 @@ def public_jwk(key: rsa.RSAPrivateKey, kid: str) -> dict:
     }
 
 
-def claims(**over) -> dict:
+def claims(**over: Any) -> dict:
     """A realistic Casdoor `JWT-Standard` payload for the chat API; `None` removes a claim."""
     base = {
         "iss": ISSUER, "aud": [API_AUDIENCE], "sub": "user-1", "owner": "ecorp", "name": "alice",
@@ -79,7 +80,7 @@ def main() -> None:
     ed = ed25519.Ed25519PrivateKey.generate()
     public_pem = key.public_key().public_bytes(serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo)
 
-    def sign(payload: dict, *, signer=None, kid: str | None = KID, alg: str = "RS256") -> str:
+    def sign(payload: dict, *, signer: Any = None, kid: str | None = KID, alg: str = "RS256") -> str:
         headers = {"kid": kid} if kid else {}
         return jwt.encode(payload, signer or key, algorithm=alg, headers=headers)
 

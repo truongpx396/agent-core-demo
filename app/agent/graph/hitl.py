@@ -11,13 +11,16 @@ from collections.abc import Callable
 from typing import Any, Literal, cast
 
 from langchain_core.messages import AIMessage
+from langchain_core.runnables import RunnableConfig
+from langgraph.graph.state import CompiledStateGraph
+from langgraph.types import StateSnapshot
 
 from app.agent.graph.messages import reject_tool_calls
 from app.agent.graph.state import STATE_SCHEMA_VERSION, State
 from app.core import metrics
 
 
-def _resumability_error_from_state(state) -> str | None:
+def _resumability_error_from_state(state: StateSnapshot) -> str | None:
     """The actual check, factored out of graph/config-fetching so
     `resumability_error_async` stays a thin `aget_state` wrapper. See `resumability_error_async` for the two failure modes this distinguishes.
 
@@ -54,7 +57,7 @@ def _resumability_error_from_state(state) -> str | None:
     return None
 
 
-async def resumability_error_async(graph, config: dict) -> str | None:
+async def resumability_error_async(graph: CompiledStateGraph, config: RunnableConfig) -> str | None:
     """Check before every Command(resume=...): never resume blindly. Returns None if safe, else a human-readable
     reason (and increments `agent_checkpoint_issue_total`).
 
@@ -74,7 +77,7 @@ async def resumability_error_async(graph, config: dict) -> str | None:
     return _resumability_error_from_state(await graph.aget_state(config))
 
 
-async def paused_approval_async(graph, config: dict) -> dict | None:
+async def paused_approval_async(graph: CompiledStateGraph, config: RunnableConfig) -> dict | None:
     """Is `config`'s thread parked at a real human_approval interrupt? Returns `None` if not (the common case),
     else `{"tool_calls": [...], "resumable": bool}`.
 
@@ -110,7 +113,7 @@ async def paused_approval_async(graph, config: dict) -> dict | None:
 CANCEL_SENTINEL = "cancelled"  # app/agent/runtime/stream.py::cancel_run resumes a paused run with this value
 
 
-def make_human_approval_node(interrupt_fn: Callable[[Any], Any]):
+def make_human_approval_node(interrupt_fn: Callable[[Any], Any]) -> Callable[[State], dict]:
     """Factory over the function that pauses the graph (see the module docstring)."""
 
     def human_approval(state: State) -> dict:

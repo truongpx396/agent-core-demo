@@ -37,7 +37,13 @@ from psycopg import AsyncConnection
 from credit_billing import admission, credits
 from credit_billing import usage as usage_module
 from credit_billing.admission import Admission
-from credit_billing.credits import Applied, Balance, IdempotencyConflict, Pricing
+from credit_billing.credits import (
+    Applied,
+    Balance,
+    IdempotencyConflict,
+    Number,
+    Pricing,
+)
 from credit_billing.settings import CREDITS_ENFORCEMENT, CREDITS_PER_USD
 from credit_billing.usage import Recorded, Usage
 
@@ -79,7 +85,7 @@ class BillingPort(Protocol):
         ...
 
 
-def credits_for_cost(cost_usd, credits_per_usd, markup) -> Decimal:
+def credits_for_cost(cost_usd: Number, credits_per_usd: Number, markup: Number) -> Decimal:
     """`round_half_up(cost_usd x credits_per_usd x markup, 6)`: a pure function, so it is the same on either side of a network."""
     return credits.credits_for_cost(cost_usd, credits_per_usd, markup)
 

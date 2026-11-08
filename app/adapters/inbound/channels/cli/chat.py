@@ -28,6 +28,7 @@ import asyncio
 import getpass
 import sys
 import uuid
+from collections.abc import AsyncGenerator
 from contextlib import aclosing
 
 from app.adapters.inbound.channels.cli.auth import (
@@ -58,7 +59,7 @@ def _format_call(name: str, args: dict) -> str:
     return f"{name}({args_str})"
 
 
-async def _render_stream(events) -> bool:
+async def _render_stream(events: AsyncGenerator[dict, None]) -> bool:
     """Render one turn's or resume's events (`stream_turn`/`stream_resume`).
 
     Returns True if the run paused awaiting tool-call approval (the caller

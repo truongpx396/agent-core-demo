@@ -35,7 +35,7 @@ from app.core.config import (
     SUBAGENT_TIMEOUT_SECONDS,
 )
 from app.core.scrubbing import scrub
-from app.core.security import DEFAULT_POLICY, valid_ctx
+from app.core.security import DEFAULT_POLICY, Policy, valid_ctx
 from app.core.tool_runtime import NO_CTX_REFUSAL, arun_with_timeout, ctx_from_config
 from app.ports.outbound.domains import AgentManifest
 
@@ -193,7 +193,7 @@ class _SubagentDomainPlugin:
     def tool_capabilities(self) -> dict[str, str]:
         return {t.name: "read_only" for t in self._tools}
 
-    def policy(self):
+    def policy(self) -> Policy:
         return DEFAULT_POLICY
 
 

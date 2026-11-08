@@ -33,8 +33,11 @@ import logging
 import signal
 import socket
 import uuid
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import cast
+
+import redis.asyncio as redis
 
 from app.adapters.inbound.workers.ingest_streams import (
     ensure_consumer_group,
@@ -73,7 +76,7 @@ _READ_COUNT = _MAX_CONCURRENCY
 _BLOCK_MS = 5000
 
 
-def _make_progress_reporter(client, job_id: str):
+def _make_progress_reporter(client: redis.Redis, job_id: str) -> Callable[[int, int], Awaitable[None]]:
     """An `async def` callback `ingestor.ingest_text` awaits directly (it
     runs on this worker's own event loop, so no thread-bridging needed).
     Fire-and-forget in spirit, not mechanism: a failed progress publish is
@@ -92,7 +95,7 @@ def _make_progress_reporter(client, job_id: str):
     return on_progress
 
 
-async def process_job(client, entry_id: str, fields: dict) -> None:
+async def process_job(client: redis.Redis, entry_id: str, fields: dict) -> None:
     """Run one ingest job and publish its outcome — always ack, even on
     failure, same shape as `agent_worker.py::process_request`. Not because
     a retry would duplicate anything (`ingestor.ingest_text`'s point ids
@@ -149,7 +152,7 @@ async def process_job(client, entry_id: str, fields: dict) -> None:
 
 
 async def _process_with_limit(
-    client, entry_id: str, fields: dict, semaphore: asyncio.Semaphore
+    client: redis.Redis, entry_id: str, fields: dict, semaphore: asyncio.Semaphore
 ) -> None:
     """Runs one job under `semaphore` and releases it when done, success or
     failure — same shape as `agent_worker.py::_process_with_limit`;
@@ -161,7 +164,7 @@ async def _process_with_limit(
         semaphore.release()
 
 
-async def _handle_reclaimed_job(client, entry_id: str, fields: dict) -> None:
+async def _handle_reclaimed_job(client: redis.Redis, entry_id: str, fields: dict) -> None:
     """One entry `_reclaim_loop` found idle past
     `INGEST_WORKER_RECLAIM_IDLE_SECONDS` — its original worker almost
     certainly died mid-job (crashed, OOM-killed) before ever reaching
@@ -224,7 +227,7 @@ async def _handle_reclaimed_job(client, entry_id: str, fields: dict) -> None:
     await _dead_letter_reclaimed_ingest_job(client, entry_id, payload, reason="worker_lost")
 
 
-async def _dead_letter_reclaimed_ingest_job(client, entry_id: str, payload: dict, *, reason: str) -> None:
+async def _dead_letter_reclaimed_ingest_job(client: redis.Redis, entry_id: str, payload: dict, *, reason: str) -> None:
     metrics.agent_worker_job_reclaimed_total.labels(queue="ingest", outcome="dead_lettered").inc()
     await publish_dead_letter(
         client, requests_stream=INGEST_REQUESTS_STREAM, entry_id=entry_id, payload=payload, reason=reason
@@ -232,7 +235,7 @@ async def _dead_letter_reclaimed_ingest_job(client, entry_id: str, payload: dict
     await client.xack(INGEST_REQUESTS_STREAM, INGEST_CONSUMER_GROUP, entry_id)
 
 
-async def _reclaim_loop(client, stop_event: asyncio.Event) -> None:
+async def _reclaim_loop(client: redis.Redis, stop_event: asyncio.Event) -> None:
     """Same shape and reasoning as `agent_worker.py::_reclaim_loop` — see
     there for why this doesn't just redeliver a reclaimed job, and why a
     transient Redis error here is logged and retried next interval rather
