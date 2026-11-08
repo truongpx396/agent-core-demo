@@ -42,12 +42,13 @@ import logging
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
-from typing import Any
 
+from psycopg import AsyncConnection
 from psycopg import errors as pg_errors
+from psycopg.rows import TupleRow
 
 from app.platform.job_runtime import scheduled_job
-from app.platform.sql_store import get_connection
+from app.platform.sql_store import fetch_row, get_connection
 
 logger = logging.getLogger(__name__)
 
@@ -100,11 +101,11 @@ class CarryOver:
     dry_run: bool = False
 
 
-async def cutoff_for(conn: Any) -> datetime:
+async def cutoff_for(conn: AsyncConnection[TupleRow]) -> datetime:
     """The instant before which a ledger row is history: the time of the first REAL event (an id that does not start with
     `ledger:`), or the database's `now()` when there is none yet. Taken on `conn` so a test can ask it of an empty table."""
     cur = await conn.execute(_CUTOFF, {"like": f"{PREFIX}%"})
-    (cutoff,) = await cur.fetchone()
+    (cutoff,) = await fetch_row(cur)
     return cutoff
 
 
@@ -117,7 +118,7 @@ async def run(
         cutoff = await cutoff_for(conn)
         if dry_run:
             cur = await conn.execute(_DRY_RUN, {"cutoff": cutoff, "prefix": PREFIX, "tenant": tenant})
-            count, usd = await cur.fetchone()
+            count, usd = await fetch_row(cur)
             return CarryOver(cutoff, int(count), Decimal(usd), True, dry_run=True)
 
     after, carried, carried_usd = 0, 0, Decimal(0)
@@ -126,7 +127,7 @@ async def run(
             cur = await conn.execute(
                 _BATCH, {"after": after, "cutoff": cutoff, "n": batch_size, "prefix": PREFIX, "tenant": tenant}
             )
-            last_id, scanned, inserted, usd = await cur.fetchone()
+            last_id, scanned, inserted, usd = await fetch_row(cur)
         carried += int(inserted)
         carried_usd += Decimal(usd)
         if scanned < batch_size:

@@ -7,7 +7,7 @@ pooled `appdata` connection.
 """
 from datetime import datetime
 
-from app.platform.sql_store import get_connection
+from app.platform.sql_store import fetch_dict, fetch_dicts, fetch_row, get_connection
 
 
 async def find_or_create_lead(
@@ -36,7 +36,7 @@ async def find_or_create_lead(
     """
     async with get_connection() as conn:
         cur = await conn.execute(sql, [tenant, name, contact])
-        (lead_id,) = await cur.fetchone()
+        (lead_id,) = await fetch_row(cur)
         await conn.execute(
             "INSERT INTO crm_lead_notes (tenant, lead_id, note, tool_call_id) "
             "VALUES (%s, %s, %s, %s) ON CONFLICT (tool_call_id) DO NOTHING",
@@ -71,9 +71,7 @@ async def get_lead(tenant: str, contact: str) -> dict | None:
     )
     async with get_connection() as conn:
         cur = await conn.execute(sql, [tenant, contact])
-        columns = [desc.name for desc in cur.description]
-        row = await cur.fetchone()
-        return dict(zip(columns, row, strict=True)) if row else None
+        return await fetch_dict(cur)
 
 
 async def add_followup(
@@ -109,7 +107,7 @@ async def add_followup(
         cur = await conn.execute(
             "SELECT id FROM crm_followups WHERE tool_call_id = %s", [tool_call_id]
         )
-        (followup_id,) = await cur.fetchone()
+        (followup_id,) = await fetch_row(cur)
         return int(followup_id)
 
 
@@ -130,9 +128,7 @@ async def list_pending_followups(tenant: str, contact: str | None = None) -> lis
     sql += " ORDER BY f.due_at"
     async with get_connection() as conn:
         cur = await conn.execute(sql, params)
-        columns = [desc.name for desc in cur.description]
-        rows = await cur.fetchall()
-        return [dict(zip(columns, row, strict=True)) for row in rows]
+        return await fetch_dicts(cur)
 
 
 async def mark_lead_lost(
@@ -184,9 +180,7 @@ async def due_followups(tenant: str, as_of: datetime) -> list[dict]:
     """
     async with get_connection() as conn:
         cur = await conn.execute(sql, [tenant, as_of])
-        columns = [desc.name for desc in cur.description]
-        rows = await cur.fetchall()
-        return [dict(zip(columns, row, strict=True)) for row in rows]
+        return await fetch_dicts(cur)
 
 
 async def mark_followup_done(tenant: str, followup_id: int) -> None:
@@ -236,7 +230,5 @@ async def lead_history(tenant: str, contact: str) -> dict | None:
     )
     async with get_connection() as conn:
         cur = await conn.execute(sql, [tenant, lead["id"]])
-        columns = [desc.name for desc in cur.description]
-        rows = await cur.fetchall()
-        followups = [dict(zip(columns, row, strict=True)) for row in rows]
+        followups = await fetch_dicts(cur)
     return {**lead, "followups": followups}

@@ -8,7 +8,7 @@ Deliberately NOT `tenant`-scoped, unlike support_tickets/crm_leads: this
 app's own operational metrics have no per-tenant dimension to inherit
 (see postgres-init/10-ops-incidents.sql's comment).
 """
-from app.platform.sql_store import get_connection
+from app.platform.sql_store import fetch_dicts, fetch_row, get_connection
 
 
 async def log_incident(
@@ -33,7 +33,7 @@ async def log_incident(
         cur = await conn.execute(
             "SELECT id FROM ops_incidents WHERE tool_call_id = %s", [tool_call_id]
         )
-        (incident_id,) = await cur.fetchone()
+        (incident_id,) = await fetch_row(cur)
         return int(incident_id)
 
 
@@ -53,9 +53,7 @@ async def list_recent_incidents(limit: int = 10, status: str | None = None) -> l
     params.append(limit)
     async with get_connection() as conn:
         cur = await conn.execute(sql, params)
-        columns = [desc.name for desc in cur.description]
-        rows = await cur.fetchall()
-        return [dict(zip(columns, row, strict=True)) for row in rows]
+        return await fetch_dicts(cur)
 
 
 async def resolve_incident(incident_id: int, resolution: str) -> bool:
