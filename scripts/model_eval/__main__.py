@@ -251,7 +251,7 @@ def cmd_route_label(args: argparse.Namespace) -> int:
     for alias in dict.fromkeys((args.local, args.strong, args.judge)):  # a typo'd alias would otherwise cost an hour of "missing" rows
         try:
             chat(alias, [{"role": "user", "content": "Reply with the single word: ready"}], 120.0)
-        except Exception as exc:  # noqa: BLE001 - whatever is wrong, say which alias and stop before spending time
+        except Exception as exc:  # whatever is wrong, say which alias and stop before spending time
             raise PrerequisiteMissing(f"the gateway did not answer for alias {alias!r} ({type(exc).__name__}); is the stack up (`make up`) and OPENAI_API_BASE correct?") from exc
     out = routing.outcomes_dir(version_dir) / f"{args.strong_id or args.strong}.jsonl"
     result = route_label.label_prompts(

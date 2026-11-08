@@ -45,7 +45,7 @@ def extract_docx_text(data: bytes) -> str:
     `extract_pdf_text`."""
     try:
         doc = Document(io.BytesIO(data))
-    except Exception as exc:  # noqa: BLE001 - python-docx raises a mix of
+    except Exception as exc:  # python-docx raises a mix of
         # exception types for "not a real docx"; all mean the same thing here.
         raise ExtractionFailed(f"could not parse DOCX: {exc}") from exc
     return "\n\n".join(p.text for p in doc.paragraphs if p.text.strip())

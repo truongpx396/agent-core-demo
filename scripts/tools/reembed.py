@@ -139,7 +139,7 @@ async def reembed(
             dense = await embed([str(r.payload["text"]) for r in batch])
         except ReembedError:
             raise
-        except Exception as exc:  # noqa: BLE001 - any failure of the embedding service is exit 3, whatever its client library raised
+        except Exception as exc:  # any failure of the embedding service is exit 3, whatever its client library raised
             raise ReembedError(EXIT_EMBED_DOWN, f"{logical}: the embedding service failed ({type(exc).__name__}); nothing was swapped") from exc
         points = []
         for record, vector in zip(batch, dense, strict=True):

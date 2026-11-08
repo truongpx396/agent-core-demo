@@ -61,7 +61,10 @@ src = [".", "packages/billing/src", "services/ml-service"]
 # S110: bandit's try/except/pass check, paired with BLE001 for the same
 # reason — a handful of genuinely-fine silent swallows (a best-effort
 # trace flush, a cosmetic typing indicator) are individually noqa'd.
-select = ["F", "I", "UP", "B", "BLE", "S110"]
+# PLE: pylint's error rules, among them invisible and bidirectional characters in source (a literal zero-width space sat in
+# scripts/ai_review/review.py). RUF100: a `noqa` that suppresses nothing, which would silently cover the rule if the code under it
+# later changed.
+select = ["F", "I", "UP", "B", "BLE", "S110", "PLE", "RUF100"]
 ignore = [
     "B008",   # FastAPI's Depends()/File() in an argument default is the framework's own idiom
     "UP042",  # str+Enum -> StrEnum for ErrorCode/Topic/Department is a deliberate call for a

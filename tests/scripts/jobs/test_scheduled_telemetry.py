@@ -142,7 +142,7 @@ def test_a_collector_that_is_down_never_turns_a_finished_job_into_a_failure(inst
 class _Collector(BaseHTTPRequestHandler):
     received: list[str] = []
 
-    def do_POST(self):  # noqa: N802 - http.server's required name
+    def do_POST(self):  # http.server's required name
         self.rfile.read(int(self.headers.get("Content-Length", 0)))
         type(self).received.append(self.path)
         self.send_response(200)

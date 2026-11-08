@@ -244,7 +244,7 @@ def make_agent_node(
                     call = await metering.metered_invoke(
                         llm, messages, config=config, kind=kind, model_alias=routed, invoke_model=routed
                     )
-                except Exception as exc:  # noqa: BLE001 - classified by routed_unreachable; anything that is not "never reached a model" is re-raised unchanged
+                except Exception as exc:  # classified by routed_unreachable; anything that is not "never reached a model" is re-raised unchanged
                     if not routed_unreachable(exc):
                         raise
                     metrics.agent_model_route_total.labels(outcome="routed_unreachable_fell_back").inc()
@@ -259,7 +259,7 @@ def make_agent_node(
                         kind=kind,
                         model_alias=model_alias,
                     )
-        except Exception as exc:  # noqa: BLE001 - only the gateway's content-guardrail refusal becomes the turn's answer; every other failure is re-raised unchanged for the retry policy and the stream to classify
+        except Exception as exc:  # only the gateway's content-guardrail refusal becomes the turn's answer; every other failure is re-raised unchanged for the retry policy and the stream to classify
             block = gateway.note_content_block(exc)
             if block is None:
                 raise

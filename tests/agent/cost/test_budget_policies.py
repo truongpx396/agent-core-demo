@@ -22,7 +22,7 @@ from tests.conftest import TEST_CTX, metric_value
 
 _REAL_OVERRIDES_FOR = budget_policies.overrides_for
 
-O = Override  # noqa: N817 - a table of rows reads better with a short name
+O = Override  # a table of rows reads better with a short name
 DEFAULTS = budgets.Defaults(tenant_day=20.0, tenant_month=400.0, principal_day=5.0, principal_month=100.0)
 
 

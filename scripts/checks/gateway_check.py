@@ -79,7 +79,7 @@ def leaks(seen: dict, needles: list[str]) -> list[str]:
 class _Stub(BaseHTTPRequestHandler):
     seen: list[dict] = []
 
-    def do_POST(self) -> None:  # noqa: N802 - http.server's name
+    def do_POST(self) -> None:  # http.server's name
         body = json.loads(self.rfile.read(int(self.headers.get("content-length", 0))) or b"{}")
         type(self).seen.append({"path": self.path, "body": body, "headers": {k.lower(): v for k, v in self.headers.items()}})
         prompt, completion = STUB_TOKENS
@@ -111,7 +111,7 @@ def main() -> int:
     prices = {e["model_name"]: e["model_info"] for e in dev["model_list"]} | {COMPAT: {"input_cost_per_token": 0.000001, "output_cost_per_token": 0.000002}}
     # The container reaches the stub through the host. Docker Desktop answers `host.docker.internal` itself; `--add-host` makes Linux do the same.
     # The stub therefore listens on every interface, which is harmless here: it answers one canned reply and records what it was sent.
-    server = ThreadingHTTPServer(("0.0.0.0", STUB_PORT), _Stub)  # noqa: S104 - see above
+    server = ThreadingHTTPServer(("0.0.0.0", STUB_PORT), _Stub)  # see above
     threading.Thread(target=server.serve_forever, daemon=True).start()
     name = f"gateway-check-{STUB_PORT}"
     failures: list[str] = []

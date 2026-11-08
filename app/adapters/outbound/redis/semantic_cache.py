@@ -162,7 +162,7 @@ async def get(ctx: SecurityCtx | None, query: str) -> tuple[str, list[dict]] | N
         doc = result.docs[0]
         metrics.agent_semantic_cache_total.labels(outcome="hit").inc()
         return doc.answer, json.loads(doc.citations)
-    except Exception:  # noqa: BLE001 - a cache is a latency optimization, never a correctness dependency
+    except Exception:  # a cache is a latency optimization, never a correctness dependency
         logger.warning("semantic cache lookup failed; treating as a miss", exc_info=True)
         metrics.agent_semantic_cache_total.labels(outcome="error").inc()
         return None
@@ -193,7 +193,7 @@ async def set(ctx: SecurityCtx | None, query: str, answer: str, citations: list[
             },
         )
         await client.expire(key, SEMANTIC_CACHE_TTL_SECONDS)
-    except Exception:  # noqa: BLE001 - see get()'s matching note
+    except Exception:  # see get()'s matching note
         logger.warning("semantic cache write failed; continuing without caching", exc_info=True)
         metrics.agent_semantic_cache_total.labels(outcome="error").inc()
 

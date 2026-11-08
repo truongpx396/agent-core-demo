@@ -487,7 +487,7 @@ def defang_mentions(text: str) -> str:
     ping users or teams. Code spans/fences are left alone: `@dataclass` must stay copy-pasteable."""
     parts = re.split(r"(```.*?```|`[^`\n]*`)", text, flags=re.DOTALL)
     for i in range(0, len(parts), 2):
-        parts[i] = re.sub(r"@(?=\w)", "@​", parts[i])
+        parts[i] = re.sub(r"@(?=\w)", "@\u200b", parts[i])
     return "".join(parts)
 
 

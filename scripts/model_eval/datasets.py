@@ -306,7 +306,7 @@ def fetch_public(
                         local_dir=str(root / entry.id / source.hub_repo.replace("/", "__")), etag_timeout=request_timeout_s,
                     )
                     break
-                except Exception as exc:  # noqa: BLE001 - any transport failure is retried, then reported by name below
+                except Exception as exc:  # any transport failure is retried, then reported by name below
                     if attempt == retries:
                         raise DatasetError(f"{entry.id}: could not fetch {source.hub_repo}/{relpath} ({type(exc).__name__}); is the network up?") from exc
                     sleep(2.0 * (attempt + 1))

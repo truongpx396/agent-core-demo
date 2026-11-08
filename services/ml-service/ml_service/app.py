@@ -41,7 +41,7 @@ async def _supervise(registry: Registry, interval_s: float, labeller: labelsets.
                 logger.info("retried failed models", extra={"models": retried})
             if labeller is not None:
                 await labeller.sync()
-        except Exception:  # noqa: BLE001 - recovery must keep running whatever one reload does
+        except Exception:  # recovery must keep running whatever one reload does
             logger.warning("model retry tick failed", exc_info=True)
 
 

@@ -125,8 +125,8 @@ class TestARetry:
 class TestTheCounters:
     async def test_grants_and_debits_are_counted_by_source_and_kind(self):
         tenant = tenant_name()
-        granted = lambda s: metric_value(metrics.agent_credit_granted_total, source=s)  # noqa: E731 - a one-line reader for this test
-        debited = lambda k: metric_value(metrics.agent_credit_debited_total, kind=k)  # noqa: E731
+        granted = lambda s: metric_value(metrics.agent_credit_granted_total, source=s)  # a one-line reader for this test
+        debited = lambda k: metric_value(metrics.agent_credit_debited_total, kind=k)
         before = {**{s: granted(s) for s in ("purchase", "adjustment")}, **{k: debited(k) for k in ("debit", "adjust", "clawback")}}
 
         await credits.grant(tenant, 50, source="purchase", idempotency_key=f"g-{tenant}", actor="test")

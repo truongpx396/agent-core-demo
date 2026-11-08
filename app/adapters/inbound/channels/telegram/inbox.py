@@ -128,7 +128,7 @@ class Dispatcher:
                 continue
             try:
                 taken = await self._inbox.take(poll_seconds)
-            except Exception:  # noqa: BLE001 - a Redis blip must not end the bot; what was taken stays on the processing list
+            except Exception:  # a Redis blip must not end the bot; what was taken stays on the processing list
                 logger.warning("telegram_inbox_read_failed", exc_info=True)
                 await asyncio.sleep(poll_seconds)
                 continue
@@ -181,7 +181,7 @@ class Dispatcher:
     async def _handle(self, raw: str, update: dict) -> None:
         try:
             await self._handler(update)
-        except Exception:  # noqa: BLE001 - one update's failure is counted and dropped; retrying a poison update would only repeat it
+        except Exception:  # one update's failure is counted and dropped; retrying a poison update would only repeat it
             logger.exception("telegram_update_failed")
             metrics.channel_telegram_update_total.labels(outcome="error").inc()
         else:

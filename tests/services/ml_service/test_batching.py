@@ -61,7 +61,7 @@ async def test_a_failed_batch_fails_every_waiter_in_it_and_the_next_batch_still_
 async def test_stop_cancels_the_loop():
     batcher: MicroBatcher[int, int] = MicroBatcher(lambda items: items, max_batch_size=4, max_wait_ms=1)
     batcher.start()
-    task = batcher._task  # noqa: SLF001 - observing the loop's task is the point of this test
+    task = batcher._task  # observing the loop's task is the point of this test
     assert task is not None and not task.done()
     batcher.stop()
     await asyncio.gather(task, return_exceptions=True)
