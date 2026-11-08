@@ -237,7 +237,7 @@ class TestUsageCredits:
 
         async def account_balance(tenant):
             reads.append(tenant)
-            return None
+            return
 
         monkeypatch.setattr(credits, "account_balance", account_balance)
         monkeypatch.setattr(package_port, "CREDITS_PER_USD", None)

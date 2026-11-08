@@ -51,11 +51,11 @@ def _result(answer, total_tokens=10, total_cost_usd=0.0, used=0, ungrounded=0):
 
 
 def _case_result(**overrides):
-    defaults = dict(
-        id="c1", input="x", pass_rate=1.0, repetitions=1, passed=True,
-        checks=[], latency_s=0.1, iterations=1, tool_calls=[], answer="x",
-        total_tokens=0, total_cost_usd=0.0, used_citations_count=0, ungrounded_claims_count=0,
-    )
+    defaults = {
+        "id": "c1", "input": "x", "pass_rate": 1.0, "repetitions": 1, "passed": True,
+        "checks": [], "latency_s": 0.1, "iterations": 1, "tool_calls": [], "answer": "x",
+        "total_tokens": 0, "total_cost_usd": 0.0, "used_citations_count": 0, "ungrounded_claims_count": 0,
+    }
     defaults.update(overrides)
     return CaseResult(**defaults)
 

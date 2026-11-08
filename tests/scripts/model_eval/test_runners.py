@@ -190,7 +190,7 @@ def test_a_backwards_reranker_scores_lower():
 
 
 def test_a_list_with_no_relevant_passage_is_dropped_with_a_warning():
-    lists = _lists() + [rerank.CandidateList("q3", "x", ["a"], ["y"], {})]
+    lists = [*_lists(), rerank.CandidateList("q3", "x", ["a"], ["y"], {})]
     data, _, warnings = rerank.evaluate(OverlapScorer(), lists, runs=1)
     assert data.ids == ["q1", "q2"] and "1 list(s)" in warnings[0]
 

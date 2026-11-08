@@ -16,8 +16,8 @@ from tests.services.ml_service.conftest import FakeSession, make_tokenizer
 
 
 def _settings(**overrides) -> Settings:
-    base = dict(rerank_model_name="x", guard_model_repo="x", rerank_max_batch_size=8, guard_max_batch_size=8, max_batch_wait_ms=2,
-                onnx_intra_op_threads=1, model_retry_base_s=0.02, model_retry_max_s=0.05, models_enabled=())
+    base = {"rerank_model_name": "x", "guard_model_repo": "x", "rerank_max_batch_size": 8, "guard_max_batch_size": 8, "max_batch_wait_ms": 2,
+                "onnx_intra_op_threads": 1, "model_retry_base_s": 0.02, "model_retry_max_s": 0.05, "models_enabled": ()}
     return Settings(**{**base, **overrides})
 
 

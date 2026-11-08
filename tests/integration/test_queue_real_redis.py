@@ -99,8 +99,7 @@ async def test_a_turn_request_round_trips_from_producer_through_a_real_consumer_
         await streams.publish_result(client, request_id, {"type": "token", "content": "42"})
         await streams.publish_result(client, request_id, {"type": "done"})
 
-        events = [event async for event in queue.read_results(client, request_id)]
-        return events
+        return [event async for event in queue.read_results(client, request_id)]
 
     events = await _run()
 

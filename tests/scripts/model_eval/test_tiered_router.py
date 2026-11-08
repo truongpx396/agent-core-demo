@@ -115,5 +115,5 @@ def test_a_label_set_with_no_cutoff_for_its_model_cannot_back_a_router(monkeypat
     monkeypatch.setattr(classify.topics, "load_labelset", lambda name: object())
     monkeypatch.setattr(classify.topics, "InProcessTopics", lambda cand, labelset, threads=None: FakeTopics(min_similarity=None))
 
-    with pytest.raises(PrerequisiteMissing, match="no calibration.*labelset-calibrate"):
+    with pytest.raises(PrerequisiteMissing, match=r"no calibration.*labelset-calibrate"):
         classify.build_backend(candidate, RunSettings(runs=1))

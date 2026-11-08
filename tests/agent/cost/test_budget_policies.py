@@ -22,19 +22,19 @@ from tests.conftest import TEST_CTX, metric_value
 
 _REAL_OVERRIDES_FOR = budget_policies.overrides_for
 
-O = Override  # a table of rows reads better with a short name
+Ov = Override  # a table of rows reads better with a short name
 DEFAULTS = budgets.Defaults(tenant_day=20.0, tenant_month=400.0, principal_day=5.0, principal_month=100.0)
 
 
 def _limits(overrides, principal="alice", defaults=DEFAULTS):
-    return {(l.scope, l.window): l.limit_usd for l in budgets.resolve_limits(defaults, overrides, principal)}
+    return {(r.scope, r.window): r.limit_usd for r in budgets.resolve_limits(defaults, overrides, principal)}
 
 
 class TestResolveLimits:
     def test_with_no_overrides_the_settings_defaults_apply_in_order(self):
         limits = budgets.resolve_limits(DEFAULTS, [], "alice")
 
-        assert [(l.scope, l.window, l.limit_usd) for l in limits] == [
+        assert [(r.scope, r.window, r.limit_usd) for r in limits] == [
             ("tenant", "day", 20.0),
             ("tenant", "month", 400.0),
             ("principal", "day", 5.0),
@@ -42,7 +42,7 @@ class TestResolveLimits:
         ]
 
     def test_a_tenant_row_replaces_the_tenant_default_for_that_period_only(self):
-        assert _limits([O("", "day", 50.0)]) == {
+        assert _limits([Ov("", "day", 50.0)]) == {
             ("tenant", "day"): 50.0,
             ("tenant", "month"): 400.0,
             ("principal", "day"): 5.0,
@@ -50,7 +50,7 @@ class TestResolveLimits:
         }
 
     def test_a_person_row_beats_the_tenant_wide_personal_row_which_beats_the_default(self):
-        overrides = [O("*", "day", 10.0), O("alice", "day", 25.0)]
+        overrides = [Ov("*", "day", 10.0), Ov("alice", "day", 25.0)]
 
         assert _limits(overrides, "alice")[("principal", "day")] == 25.0
         assert _limits(overrides, "bob")[("principal", "day")] == 10.0  # only the '*' row names bob
@@ -59,27 +59,27 @@ class TestResolveLimits:
     def test_another_persons_row_never_applies(self):
         """`overrides_for` only fetches the caller's rows, but resolve_limits must also be safe
         on its own: a row for someone else is not this person's limit."""
-        assert _limits([O("mallory", "day", 0.0)], "alice")[("principal", "day")] == 5.0
+        assert _limits([Ov("mallory", "day", 0.0)], "alice")[("principal", "day")] == 5.0
 
     def test_a_none_override_is_an_explicit_no_cap_that_beats_a_default(self):
-        limits = _limits([O("", "month", None), O("*", "day", None)])
+        limits = _limits([Ov("", "month", None), Ov("*", "day", None)])
 
         assert ("tenant", "month") not in limits
         assert ("principal", "day") not in limits
         assert ("tenant", "day") in limits and ("principal", "month") in limits
 
     def test_even_the_always_on_tenant_daily_limit_can_be_explicitly_uncapped(self):
-        assert ("tenant", "day") not in _limits([O("", "day", None)])
+        assert ("tenant", "day") not in _limits([Ov("", "day", None)])
 
     def test_zero_is_a_real_cap_that_suspends_not_a_missing_one(self):
-        limits = _limits([O("alice", "day", 0.0)])
+        limits = _limits([Ov("alice", "day", 0.0)])
 
         assert limits[("principal", "day")] == 0.0
 
     def test_an_override_can_switch_on_a_limit_the_defaults_leave_off(self):
         off = budgets.Defaults(tenant_day=20.0)
 
-        assert _limits([O("*", "day", 7.0)], defaults=off)[("principal", "day")] == 7.0
+        assert _limits([Ov("*", "day", 7.0)], defaults=off)[("principal", "day")] == 7.0
         assert ("principal", "day") not in _limits([], defaults=off)
 
     def test_configured_limits_is_resolve_limits_with_no_overrides(self):
@@ -137,7 +137,7 @@ class TestOverridesFor:
 
         rows = await budget_policies.overrides_for("acme", "alice")
 
-        assert rows == [O("", "day", None), O("alice", "month", 0.0), O("*", "day", 12.5)]
+        assert rows == [Ov("", "day", None), Ov("alice", "month", 0.0), Ov("*", "day", 12.5)]
 
     async def test_a_read_is_cached_per_tenant_and_person_until_it_expires(self, monkeypatch, real_reads):
         conn = _Conn([("alice", "day", 1.0)])
@@ -267,7 +267,7 @@ def _overrides(monkeypatch, rows=None, error=None):
 
 class TestCheckAppliesTheOverrides:
     async def test_a_suspended_person_is_refused_while_a_colleague_is_not(self, monkeypatch, ledger):
-        _overrides(monkeypatch, [O("alice", "day", 0.0)])
+        _overrides(monkeypatch, [Ov("alice", "day", 0.0)])
         colleague = {**TEST_CTX, "principal": "bob"}
 
         alice = await budgets.check(TEST_CTX | {"principal": "alice"}, defaults=DEFAULTS, fail_policy="open")
@@ -278,13 +278,13 @@ class TestCheckAppliesTheOverrides:
 
     async def test_an_override_raises_a_limit_above_the_default(self, monkeypatch, ledger):
         ledger["principal"] = 6.0  # past the $5 default
-        _overrides(monkeypatch, [O("*", "day", 20.0)])
+        _overrides(monkeypatch, [Ov("*", "day", 20.0)])
 
         assert (await budgets.check(TEST_CTX, defaults=DEFAULTS, fail_policy="open")).status == "ok"
 
     async def test_a_tenant_override_lowers_the_tenant_limit(self, monkeypatch, ledger):
         ledger["tenant"] = 3.0
-        _overrides(monkeypatch, [O("", "day", 3.0)])
+        _overrides(monkeypatch, [Ov("", "day", 3.0)])
 
         allowance = await budgets.check(TEST_CTX, defaults=DEFAULTS, fail_policy="open")
 
@@ -341,7 +341,7 @@ class TestWhenTheOverridesCannotBeRead:
 class TestUsageStatus:
     async def test_lists_every_limit_that_applies_with_remaining_floored_at_zero(self, monkeypatch, ledger):
         ledger.update(tenant=12.0, principal=6.0)
-        _overrides(monkeypatch, [O("", "day", 10.0)])
+        _overrides(monkeypatch, [Ov("", "day", 10.0)])
 
         statuses = await budgets.usage_status(TEST_CTX, defaults=DEFAULTS)
 
@@ -352,7 +352,7 @@ class TestUsageStatus:
         assert by_key[("principal", "month")].remaining_usd == pytest.approx(94.0)
 
     async def test_an_uncapped_limit_is_not_listed(self, monkeypatch, ledger):
-        _overrides(monkeypatch, [O("", "month", None)])
+        _overrides(monkeypatch, [Ov("", "month", None)])
 
         assert ("tenant", "month") not in {(s.scope, s.window) for s in await budgets.usage_status(TEST_CTX, defaults=DEFAULTS)}
 
@@ -376,7 +376,7 @@ class TestUsageStatus:
 
 class TestAsRuntimeWiresIt:
     async def test_a_suspension_reaches_a_turn_as_a_personal_refusal(self, monkeypatch, ledger):
-        _overrides(monkeypatch, [O(TEST_CTX["principal"], "day", 0.0)])
+        _overrides(monkeypatch, [Ov(TEST_CTX["principal"], "day", 0.0)])
 
         refusal = await runtime_module.allowance_refusal(TEST_CTX)
 

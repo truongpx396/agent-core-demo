@@ -29,15 +29,15 @@ FOO = np.array([4, 8, 12, 16], dtype=np.float32) / np.linalg.norm([4, 8, 12, 16]
 
 
 def _spec(**kw) -> ModelSpec:
-    base = dict(name=NAME, roles=("embed",), repo="r/r", file="f.onnx", revision="a" * 40, pooling="cls", normalize=True, max_length=8,
-                pad_token="[PAD]", licence="MIT", needs_prefix={"query": "q: ", "document": ""})
+    base = {"name": NAME, "roles": ("embed",), "repo": "r/r", "file": "f.onnx", "revision": "a" * 40, "pooling": "cls", "normalize": True, "max_length": 8,
+                "pad_token": "[PAD]", "licence": "MIT", "needs_prefix": {"query": "q: ", "document": ""}}
     return ModelSpec(**{**base, **kw})
 
 
 def _settings(**kw) -> Settings:
-    base = dict(rerank_model_name="x", guard_model_repo="x", rerank_max_batch_size=8, guard_max_batch_size=8, max_batch_wait_ms=2,
-                onnx_intra_op_threads=1, model_retry_base_s=0.02, model_retry_max_s=0.05, models_enabled=(), embed_max_items=4,
-                embed_max_chars=40, embed_batch_size=8)
+    base = {"rerank_model_name": "x", "guard_model_repo": "x", "rerank_max_batch_size": 8, "guard_max_batch_size": 8, "max_batch_wait_ms": 2,
+                "onnx_intra_op_threads": 1, "model_retry_base_s": 0.02, "model_retry_max_s": 0.05, "models_enabled": (), "embed_max_items": 4,
+                "embed_max_chars": 40, "embed_batch_size": 8}
     return Settings(**{**base, **kw})
 
 
@@ -204,9 +204,11 @@ def test_requests_items_and_errors_are_counted_per_model():
 async def test_concurrent_requests_share_model_passes():
     service, session = _service(settings=_settings(max_batch_wait_ms=60))
     app = _app(loader=lambda: service, settings=_settings(max_batch_wait_ms=60))
-    async with app.router.lifespan_context(app):
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://t") as client:
-            responses = await asyncio.gather(*(client.post("/v1/embeddings", json={"model": NAME, "input": ["hello", "foo"]}) for _ in range(6)))
+    async with (
+        app.router.lifespan_context(app),
+        httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://t") as client,
+    ):
+        responses = await asyncio.gather(*(client.post("/v1/embeddings", json={"model": NAME, "input": ["hello", "foo"]}) for _ in range(6)))
 
     assert all(r.status_code == 200 for r in responses)
     assert len(session.calls) <= 2  # twelve texts from six requests went through the model in one or two passes, not twelve

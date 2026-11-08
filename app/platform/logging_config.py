@@ -140,8 +140,7 @@ def configure_logging(level: int = logging.INFO) -> None:
     handlers again.
     """
     structlog.configure(
-        processors=_SHARED_PROCESSORS
-        + [structlog.stdlib.ProcessorFormatter.wrap_for_formatter],
+        processors=[*_SHARED_PROCESSORS, structlog.stdlib.ProcessorFormatter.wrap_for_formatter],
         logger_factory=structlog.stdlib.LoggerFactory(),
         wrapper_class=structlog.stdlib.BoundLogger,
         cache_logger_on_first_use=True,

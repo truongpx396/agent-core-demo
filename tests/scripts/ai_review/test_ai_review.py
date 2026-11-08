@@ -489,7 +489,7 @@ def test_fetch_full_files_skips_a_file_over_the_per_file_cap_even_with_budget_to
 
 def test_fetch_full_files_makes_a_bounded_number_of_requests_for_a_huge_pr():
     paths = [f"f{i}.py" for i in range(100)]
-    http = FakeHttp(files={p: "x" for p in paths})
+    http = FakeHttp(files=dict.fromkeys(paths, "x"))
     blocks, skipped = ai_review.fetch_full_files(ai_review.GitHub(http, _cfg()), "s", paths, 10**6)
     assert len(blocks) == ai_review._MAX_CONTEXT_FILES == len(http.calls)
     assert len(blocks) + len(skipped) == 100
@@ -726,12 +726,7 @@ def test_run_sends_numbered_changed_files_to_the_model(tmp_path, monkeypatch):
 
 # --- inline review comments (verified against GitHub's real API on a throwaway PR) -------------
 
-INLINE_DIFF = "\n".join(
-    [
-        "diff --git a/app/a.py b/app/a.py", "--- a/app/a.py", "+++ b/app/a.py", "@@ -1,3 +1,4 @@", " l1", "+l2", " l3", " l4",
-        "diff --git a/app/b.py b/app/b.py", "new file mode 100644", "--- /dev/null", "+++ b/app/b.py", "@@ -0,0 +1,3 @@", "+b1", "+b2", "+b3", "",
-    ]
-)
+INLINE_DIFF = "diff --git a/app/a.py b/app/a.py\n--- a/app/a.py\n+++ b/app/a.py\n@@ -1,3 +1,4 @@\n l1\n+l2\n l3\n l4\ndiff --git a/app/b.py b/app/b.py\nnew file mode 100644\n--- /dev/null\n+++ b/app/b.py\n@@ -0,0 +1,3 @@\n+b1\n+b2\n+b3\n"
 ANSWER = (
     "**[BLOCKER]** `app/a.py:2` - **Tenant is trusted.** unique-blocker-sentence explains why.\n\n"
     "**[CONCERN]** `app/b.py:1-3` - Whole new file is risky. unique-concern-sentence.\n\n"

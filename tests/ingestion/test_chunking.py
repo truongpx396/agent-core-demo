@@ -1,5 +1,7 @@
 """Tests for app/ingestion/chunking.py — pure functions, no I/O, so these run purely
 on string arithmetic (no mocking needed)."""
+import itertools
+
 import pytest
 
 from app.ingestion.chunking import chunk_text
@@ -47,7 +49,7 @@ class TestChunkText:
         assert len(children) > 1
         # Consecutive children share exactly `child_overlap` characters at
         # the boundary (the sliding window's step is child_chars - overlap).
-        for a, b in zip(children, children[1:], strict=False):
+        for a, b in itertools.pairwise(children):
             assert a[-75:] == b[:75]
 
     def test_children_reconstruct_the_full_parent_when_overlap_is_removed(self):

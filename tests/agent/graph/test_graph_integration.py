@@ -309,7 +309,7 @@ class TestHistorySummarization:
             turns.append(a)
         triggering_question = HumanMessage(content=questions[cls.N_TURNS])
         ceiling = _estimate_tokens(turns)
-        floor = _estimate_tokens(turns[2:] + [triggering_question])
+        floor = _estimate_tokens([*turns[2:], triggering_question])
         return ceiling, floor, questions
 
     async def test_oldest_turn_is_summarized_while_recent_turns_stay_verbatim(self):

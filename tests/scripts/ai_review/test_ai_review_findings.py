@@ -10,65 +10,7 @@ import pytest
 
 from scripts.ai_review import findings as f
 
-DIFF = "\n".join(
-    [
-        "diff --git a/README.md b/README.md",
-        "index 111..222 100644",
-        "--- a/README.md",
-        "+++ b/README.md",
-        "@@ -1,7 +1,9 @@",
-        " # title",
-        " ",  # an empty context line is a single space
-        " intro",
-        "-old line",
-        "+new line",
-        "+PROBE ONE",
-        "+PROBE TWO",
-        " ",
-        " | Tool |",
-        " |------|",
-        "@@ -896,6 +898,8 @@ way):",
-        " a",
-        " b",
-        " c",
-        "+PROBE THREE",
-        "+PROBE FOUR",
-        " d",
-        " e",
-        " f",
-        "diff --git a/probe_new.py b/probe_new.py",
-        "new file mode 100644",
-        "--- /dev/null",
-        "+++ b/probe_new.py",
-        "@@ -0,0 +1,3 @@",
-        "+a = 1",
-        "+b = 2",
-        "+c = 3",
-        "diff --git a/gone.py b/gone.py",
-        "deleted file mode 100644",
-        "--- a/gone.py",
-        "+++ /dev/null",
-        "@@ -1,2 +0,0 @@",
-        "-x = 1",
-        "-y = 2",
-        "diff --git a/old.py b/new.py",
-        "similarity index 100%",
-        "rename from old.py",
-        "rename to new.py",
-        "diff --git a/img.png b/img.png",
-        "Binary files a/img.png and b/img.png differ",
-        "diff --git a/tail.py b/tail.py",
-        "--- a/tail.py",
-        "+++ b/tail.py",
-        "@@ -1,2 +1,2 @@",
-        " keep",
-        "-old",
-        "\\ No newline at end of file",
-        "+new",
-        "\\ No newline at end of file",
-        "",
-    ]
-)
+DIFF = "diff --git a/README.md b/README.md\nindex 111..222 100644\n--- a/README.md\n+++ b/README.md\n@@ -1,7 +1,9 @@\n # title\n \n intro\n-old line\n+new line\n+PROBE ONE\n+PROBE TWO\n \n | Tool |\n |------|\n@@ -896,6 +898,8 @@ way):\n a\n b\n c\n+PROBE THREE\n+PROBE FOUR\n d\n e\n f\ndiff --git a/probe_new.py b/probe_new.py\nnew file mode 100644\n--- /dev/null\n+++ b/probe_new.py\n@@ -0,0 +1,3 @@\n+a = 1\n+b = 2\n+c = 3\ndiff --git a/gone.py b/gone.py\ndeleted file mode 100644\n--- a/gone.py\n+++ /dev/null\n@@ -1,2 +0,0 @@\n-x = 1\n-y = 2\ndiff --git a/old.py b/new.py\nsimilarity index 100%\nrename from old.py\nrename to new.py\ndiff --git a/img.png b/img.png\nBinary files a/img.png and b/img.png differ\ndiff --git a/tail.py b/tail.py\n--- a/tail.py\n+++ b/tail.py\n@@ -1,2 +1,2 @@\n keep\n-old\n\\ No newline at end of file\n+new\n\\ No newline at end of file\n"
 ADDR = f.addressable_lines(DIFF)
 
 

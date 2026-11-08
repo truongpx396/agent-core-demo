@@ -63,7 +63,8 @@ async def test_a_search_posts_the_query_with_the_key_in_a_header_and_asks_for_th
 
 
 async def test_results_come_back_as_hits_with_title_address_snippet_and_date():
-    handler = lambda request: _ok([_item(1, date="3 days ago"), _item(2)])  # a one-line stub
+    def handler(request):
+        return _ok([_item(1, date="3 days ago"), _item(2)])
 
     hits = await serper.search("q", client=_client(handler))
 
@@ -75,7 +76,8 @@ async def test_results_come_back_as_hits_with_title_address_snippet_and_date():
 
 async def test_the_number_of_hits_is_capped_even_when_the_provider_sends_more(monkeypatch):
     monkeypatch.setattr(serper, "WEB_SEARCH_MAX_RESULTS", 2)
-    handler = lambda request: _ok([_item(n) for n in range(1, 6)])
+    def handler(request):
+        return _ok([_item(n) for n in range(1, 6)])
 
     hits = await serper.search("q", client=_client(handler))
 

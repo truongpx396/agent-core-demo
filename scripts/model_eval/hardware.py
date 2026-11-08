@@ -20,9 +20,10 @@ def _cpu_brand() -> str:
         if sys.platform == "darwin":
             return subprocess.check_output(["sysctl", "-n", "machdep.cpu.brand_string"], text=True, timeout=5).strip()
         if sys.platform.startswith("linux"):
-            for line in open("/proc/cpuinfo", encoding="utf-8"):  # a small read, closed on garbage collection
-                if line.lower().startswith("model name"):
-                    return line.split(":", 1)[1].strip()
+            with open("/proc/cpuinfo", encoding="utf-8") as cpuinfo:
+                for line in cpuinfo:
+                    if line.lower().startswith("model name"):
+                        return line.split(":", 1)[1].strip()
     except (OSError, subprocess.SubprocessError):
         pass
     return platform.processor() or platform.machine() or "unknown"

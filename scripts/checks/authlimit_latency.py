@@ -28,7 +28,7 @@ from scripts.checks.authlimit_smoke import Door
 
 
 def percentile(sorted_ms: list[float], p: float) -> float:
-    return sorted_ms[min(len(sorted_ms) - 1, int(round(p / 100 * (len(sorted_ms) - 1))))]
+    return sorted_ms[min(len(sorted_ms) - 1, round(p / 100 * (len(sorted_ms) - 1)))]
 
 
 def summarise(name: str, ms: list[float]) -> dict[str, float]:

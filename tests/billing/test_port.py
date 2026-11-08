@@ -79,7 +79,7 @@ class StubBilling:
 
     async def account_balance(self, tenant):
         self.reads.append(tenant)
-        return None
+        return
 
     async def admit(self, tenant, *, reserved_usd):
         self.admissions.append((tenant, reserved_usd))

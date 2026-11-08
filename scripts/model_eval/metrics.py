@@ -190,7 +190,7 @@ def pgr_curve(
     order = np.argsort(-s, kind="stable")
     out = []
     for p in grid:
-        n = int(round(p * len(s)))
+        n = round(p * len(s))
         chosen = np.zeros(len(s), dtype=bool)
         chosen[order[:n]] = True
         quality = float(np.where(chosen, qs, ql).mean())

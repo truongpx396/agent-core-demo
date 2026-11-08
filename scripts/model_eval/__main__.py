@@ -127,7 +127,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         return cmd_run_all(args)
     if not args.kind:
         raise UsageError("--kind is required (or --all-kinds)")
-    candidate, output = _execute(args)
+    _candidate, output = _execute(args)
     suite = suite_for(args.kind, dataset=output.dataset["name"])
     baseline = None
     if not args.no_compare:
