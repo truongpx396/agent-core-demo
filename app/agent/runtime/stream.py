@@ -72,7 +72,7 @@ CancelCheck: TypeAlias = Callable[[], Awaitable[bool]]
 async def _record_turn_metrics(
     elapsed: float,
     outcome: str,
-    state: dict | None = None,
+    state: dict[str, Any] | None = None,
     *,
     observe_iterations: bool = True,
 ) -> None:
@@ -119,7 +119,7 @@ async def _record_unfinished_turn(graph: CompiledStateGraph, cfg: RunnableConfig
         logger.warning("unfinished_turn_record_failed", extra={"error_class": type(exc).__name__})
 
 
-def _text_content(content: str | list) -> str:
+def _text_content(content: str | list[Any]) -> str:
     """LangChain message `.content` is either a plain str or a list of
     multimodal parts (GRAPH_PATTERNS.md pattern 44 — an attached image
     rides alongside text in the same list); this flattens either shape to
@@ -131,7 +131,7 @@ def _text_content(content: str | list) -> str:
     return content
 
 
-def _turn_outcome(state: dict) -> str:
+def _turn_outcome(state: dict[str, Any]) -> str:
     # A semantic-cache hit is an answer served, not a refusal: it goes straight to check_output
     # and never reaches `agent`, so `iterations` stays 0 for it too.
     if state.get("cache_hit"):
@@ -169,7 +169,7 @@ async def _iterate_with_timeout(aiter: AsyncIterator[Any], timeout_seconds: floa
             return
 
 
-def _build_human_content(text: str, images: list[str] | None) -> str | list[str | dict]:
+def _build_human_content(text: str, images: list[str] | None) -> str | list[str | dict[str, Any]]:
     """Plain `str` when there's no image, so a text-only turn is
     byte-identical to before this feature existed. With images, returns
     the multimodal `[{"type": "text", ...}, {"type": "image_url", ...}]`
@@ -181,7 +181,7 @@ def _build_human_content(text: str, images: list[str] | None) -> str | list[str 
     """
     if not images:
         return text
-    parts: list[str | dict] = [{"type": "text", "text": text}]
+    parts: list[str | dict[str, Any]] = [{"type": "text", "text": text}]
     parts.extend({"type": "image_url", "image_url": {"url": img}} for img in images)
     return parts
 
@@ -195,7 +195,7 @@ def _build_human_content(text: str, images: list[str] | None) -> str | list[str 
 # Events are serialised to a unified SSE-safe dict so FastAPI/CLI don't
 # need to know the LangGraph version.
 
-def _open_trace(name: str, session_id: str, input_text: str) -> tuple[Any, list]:
+def _open_trace(name: str, session_id: str, input_text: str) -> tuple[Any, list[Any]]:
     """Best-effort: open a Langfuse trace and a CallbackHandler scoped to it.
 
     Returns (trace_or_None, callbacks_list). Never raises — Langfuse is
@@ -247,7 +247,7 @@ class _TurnTrace:
 
 
 @contextmanager
-def _turn_trace(name: str, session_id: str, input_text: str) -> Iterator[tuple[_TurnTrace, list]]:
+def _turn_trace(name: str, session_id: str, input_text: str) -> Iterator[tuple[_TurnTrace, list[Any]]]:
     """Opens a turn's trace (`_open_trace`) and guarantees it leaves with an output. `_run_graph_stream` finishes
     the trace on every exit it can see; this is the net under it, for a failure between opening the trace and
     starting the stream (building the input, say) or any exit it didn't handle, which would leave a trace with
@@ -274,7 +274,7 @@ def _turn_trace(name: str, session_id: str, input_text: str) -> Iterator[tuple[_
         raise
 
 
-async def _run_graph_stream(graph: CompiledStateGraph, graph_input: dict | Command | None, cfg: RunnableConfig, trace: _TurnTrace, cancel_check: CancelCheck | None = None) -> AsyncGenerator[dict, None]:
+async def _run_graph_stream(graph: CompiledStateGraph, graph_input: dict[str, Any] | Command[Any] | None, cfg: RunnableConfig, trace: _TurnTrace, cancel_check: CancelCheck | None = None) -> AsyncGenerator[dict[str, Any], None]:
     """Shared core of astream_events_turn/astream_events_resume: drives one `graph.astream_events()` call,
     translates events into typed shapes, and yields exactly one terminal event.
 
@@ -305,7 +305,7 @@ async def _run_graph_stream(graph: CompiledStateGraph, graph_input: dict | Comma
     trace = trace if isinstance(trace, _TurnTrace) else _TurnTrace(trace)
     start = time.monotonic()
     final_answer = []
-    used_citations: list[dict] = []
+    used_citations: list[dict[str, Any]] = []
     ungrounded_claims_count = 0
     followups: list[str] = []
     synthetic_token = ""
@@ -606,7 +606,7 @@ async def astream_events_turn(
     require_approval: bool = False,
     images: list[str] | None = None,
     cancel_check: CancelCheck | None = None,
-) -> AsyncGenerator[dict, None]:
+) -> AsyncGenerator[dict[str, Any], None]:
     """Production async generator — yields typed event dicts (see
     _run_graph_stream for the full shape list).
 
@@ -726,7 +726,7 @@ def _release_turn_budget_in_background(ctx: SecurityCtx | None, budget_hold: str
     release_task.add_done_callback(_log_if_release_task_failed)
 
 
-def _log_if_release_task_failed(task: asyncio.Task) -> None:
+def _log_if_release_task_failed(task: asyncio.Task[Any]) -> None:
     if task.cancelled():
         return
     exc = task.exception()
@@ -742,7 +742,7 @@ async def astream_events_turn_unattended(
     ctx: SecurityCtx,
     require_approval: bool = False,
     images: list[str] | None = None,
-) -> AsyncGenerator[dict, None]:
+) -> AsyncGenerator[dict[str, Any], None]:
     """astream_events_turn, but auto-declines an approval_required pause instead of yielding it, for callers with
     no human on this end: telegram.py (no inline-keyboard approve/reject UX) and fire-and-forget callers
     (pattern 43). Never approves.
@@ -769,7 +769,7 @@ async def astream_events_turn_unattended(
             yield event
 
 
-async def astream_events_continue_turn_unattended(thread_id: str, ctx: SecurityCtx) -> AsyncGenerator[dict, None]:
+async def astream_events_continue_turn_unattended(thread_id: str, ctx: SecurityCtx) -> AsyncGenerator[dict[str, Any], None]:
     """`astream_events_continue_turn`, with `astream_events_turn_unattended`'s decline loop.
 
     The reclaim path (`agent_worker.py`) continues a crashed turn through this when the job
@@ -785,7 +785,7 @@ async def astream_events_continue_turn_unattended(thread_id: str, ctx: SecurityC
             yield event
 
 
-async def _decline_every_pause(first_run: AsyncGenerator[dict, None], thread_id: str, ctx: SecurityCtx) -> AsyncGenerator[dict, None]:
+async def _decline_every_pause(first_run: AsyncGenerator[dict[str, Any], None], thread_id: str, ctx: SecurityCtx) -> AsyncGenerator[dict[str, Any], None]:
     """Forwards `first_run`'s events, then declines each approval pause it ends at.
 
     The one implementation behind `astream_events_turn_unattended` and
@@ -795,7 +795,7 @@ async def _decline_every_pause(first_run: AsyncGenerator[dict, None], thread_id:
     paused = False
     pending_tools: list[str] = []
 
-    async def _drain(stream: AsyncGenerator[dict, None]) -> AsyncGenerator[dict, None]:
+    async def _drain(stream: AsyncGenerator[dict[str, Any], None]) -> AsyncGenerator[dict[str, Any], None]:
         """Forward every event except a pause, which is held back and recorded
         in `paused`/`pending_tools` (a separate flag: a pause is a pause even
         if its tool list were somehow empty)."""
@@ -843,7 +843,7 @@ async def _decline_every_pause(first_run: AsyncGenerator[dict, None], thread_id:
 
 async def astream_events_resume(
     thread_id: str, approved: bool, ctx: SecurityCtx, cancel_check: CancelCheck | None = None, *, admitted: bool = False
-) -> AsyncGenerator[dict, None]:
+) -> AsyncGenerator[dict[str, Any], None]:
     """Resume a turn paused by astream_events_turn(require_approval=True): the streaming counterpart of
     `graph.invoke(Command(resume=approved), config)`. `thread_id` must match the paused turn.
 
@@ -902,7 +902,7 @@ async def astream_events_resume(
         _release_turn_budget_in_background(ctx, budget_hold)
 
 
-async def astream_events_continue_turn(thread_id: str, ctx: SecurityCtx, cancel_check: CancelCheck | None = None) -> AsyncGenerator[dict, None]:
+async def astream_events_continue_turn(thread_id: str, ctx: SecurityCtx, cancel_check: CancelCheck | None = None) -> AsyncGenerator[dict[str, Any], None]:
     """Continue a `"turn"` that started (its `HumanMessage` is checkpointed) but crashed before finishing: the
     streaming counterpart of `graph.astream_events(None, config)`. The ONLY caller is `agent_worker.py`'s
     reclaim path, for a job `_classify_reclaimed_turn` proved is genuinely mid-flight: not paused at
@@ -940,7 +940,7 @@ async def astream_events_continue_turn(thread_id: str, ctx: SecurityCtx, cancel_
         _release_turn_budget_in_background(ctx, budget_hold)
 
 
-async def _continue_turn_events(thread_id: str, ctx: SecurityCtx, cancel_check: CancelCheck | None) -> AsyncGenerator[dict, None]:
+async def _continue_turn_events(thread_id: str, ctx: SecurityCtx, cancel_check: CancelCheck | None) -> AsyncGenerator[dict[str, Any], None]:
     """The body of `astream_events_continue_turn`, split out so the hold above
     wraps every exit path of it with one try/finally."""
     graph = await runtime_module.init_graph_async()
@@ -996,7 +996,7 @@ async def cancel_run(thread_id: str, ctx: SecurityCtx) -> bool:
     return True
 
 
-async def get_session_messages(thread_id: str) -> list[dict]:
+async def get_session_messages(thread_id: str) -> list[dict[str, Any]]:
     """Session-switcher transcript replay (`GET /chat/sessions/{thread_id}/messages`, app/adapters/inbound/api/routers/chat.py).
     It reads the same Postgres checkpointer every resume/cancel path uses (`chat_sessions` in
     app/agent/runtime/sessions.py holds only title and timestamps, not content).
@@ -1032,7 +1032,7 @@ async def get_session_messages(thread_id: str) -> list[dict]:
     return messages
 
 
-async def get_pending_approval(thread_id: str) -> dict | None:
+async def get_pending_approval(thread_id: str) -> dict[str, Any] | None:
     """Session-switcher pause check
     (`GET /chat/sessions/{thread_id}/pending_approval`, app/adapters/inbound/api/routers/chat.py) —
     lets the web UI re-show the approve/reject banner when the user

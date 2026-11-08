@@ -10,6 +10,7 @@ loaded at is checked, not trusted, and reported by `/health/models`.
 """
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from ml_service.onnx_text import OnnxText
 from ml_service.registry import ModelSpec
@@ -23,7 +24,7 @@ class TextModel:
     dim: int
     revision: str  # the commit the weights were really read from
 
-    def info(self) -> dict:
+    def info(self) -> dict[str, Any]:
         """What /health/models and /v1/models report about it."""
         return {"revision": self.revision, "dim": self.dim, "licence": self.spec.licence, "file": self.spec.file}
 

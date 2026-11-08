@@ -8,7 +8,7 @@ provider model: it uses the gateway's aliases (`chat`, `embed`) and asks here on
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Protocol
+from typing import Any, Protocol
 
 from app.ports.slot import Slot
 
@@ -19,7 +19,7 @@ FAILED_LOOKUP_RETRY_SECONDS = 60.0
 
 
 class ModelCatalog(Protocol):
-    async def model_info(self) -> list[Mapping]:
+    async def model_info(self) -> list[Mapping[str, Any]]:
         """The gateway's `/model/info` entries (the price list the app reads). Raises when the gateway cannot be asked."""
         ...
 

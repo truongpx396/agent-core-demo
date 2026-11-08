@@ -11,7 +11,7 @@ Two properties belong to the contract, not to one adapter:
 """
 from __future__ import annotations
 
-from typing import Protocol
+from typing import Any, Protocol
 
 from langgraph.checkpoint.base import BaseCheckpointSaver
 
@@ -19,7 +19,7 @@ from app.ports.slot import Slot
 
 
 class Checkpointing(Protocol):
-    async def open(self) -> BaseCheckpointSaver:
+    async def open(self) -> BaseCheckpointSaver[Any]:
         """A durable saver bound to the calling loop, with its storage prepared."""
         ...
 

@@ -40,6 +40,7 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.runnables import RunnableConfig
@@ -302,7 +303,7 @@ def print_report(results: list[CaseResult]) -> None:
     )
 
 
-def _to_jsonable(results: list[CaseResult]) -> list[dict]:
+def _to_jsonable(results: list[CaseResult]) -> list[dict[str, Any]]:
     return [
         {
             "id": r.id,
@@ -322,7 +323,7 @@ def _to_jsonable(results: list[CaseResult]) -> list[dict]:
     ]
 
 
-def load_previous_run() -> dict[str, dict] | None:
+def load_previous_run() -> dict[str, dict[str, Any]] | None:
     latest = RESULTS_DIR / "latest.json"
     if not latest.exists():
         return None
@@ -338,7 +339,7 @@ def save_run(results: list[CaseResult]) -> Path:
     return RESULTS_DIR / f"{ts}.json"
 
 
-def print_comparison(results: list[CaseResult], previous: dict[str, dict]) -> None:
+def print_comparison(results: list[CaseResult], previous: dict[str, dict[str, Any]]) -> None:
     print(f"\n{'-' * 70}")
     print("Comparison vs. previous run")
     print("-" * 70)

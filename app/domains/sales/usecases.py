@@ -4,11 +4,12 @@ The tool layer (`tools.py`) is the agent's way in; the sweep is an unattended jo
 the `LeadStore` port (`ports.py`) from here. Both scope by `tenant`, as every method of the port does.
 """
 from datetime import datetime
+from typing import Any
 
 from app.domains.sales.ports import lead_store
 
 
-async def due_followups(tenant: str, as_of: datetime) -> list[dict]:
+async def due_followups(tenant: str, as_of: datetime) -> list[dict[str, Any]]:
     """Pending follow-ups due by `as_of`, each with its lead's name and contact, oldest first."""
     return await lead_store.get().due_followups(tenant, as_of)
 

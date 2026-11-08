@@ -8,7 +8,7 @@ mandatory-approval gate), `graph/tool_guards.py` (`batch_problem`, the malformed
 `graph/output_guardrails.py` (the heuristics behind its checks).
 """
 from collections.abc import Mapping
-from typing import Literal, cast
+from typing import Any, Literal, cast
 
 from langchain_core.messages import AIMessage
 from langgraph.prebuilt import tools_condition
@@ -139,7 +139,7 @@ def check_output(
     system_prompt: str,
     enforce_citations: bool = True,
     skill_required_tools: tuple[str, ...] = (),
-) -> dict:
+) -> dict[str, Any]:
     """Judge the final answer: strip a fabricated reference footer, cut a closing offer off a complete answer,
     repair a missing citation marker, then run every check in `graph/output_checks.py`'s registry. Returns
     `used_citations`/`ungrounded_claims_count` for the answer as shown, `output_findings` (`{code: detail}` of
@@ -161,7 +161,7 @@ def check_output(
     # Strip a fabricated reference-list footer FIRST, before any citation
     # computation — it isn't a real answer sentence to judge grounding on,
     # and every field below should reflect the cleaned text.
-    message_update: dict = {}
+    message_update: dict[str, Any] = {}
     cleaned_content = strip_fabricated_reference_footer(content)
     if cleaned_content != content:
         metrics.agent_reference_footer_stripped_total.inc()

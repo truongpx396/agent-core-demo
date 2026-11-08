@@ -105,11 +105,11 @@ class DocumentWriter(Protocol):
 
 
 class AnswerCache(Protocol):
-    async def get(self, ctx: SecurityCtx | None, query: str) -> tuple[str, list[dict]] | None:
+    async def get(self, ctx: SecurityCtx | None, query: str) -> tuple[str, list[dict[str, Any]]] | None:
         """A cached `(answer, citations)` for a semantically close query from the same tenant and person, or None."""
         ...
 
-    async def set(self, ctx: SecurityCtx | None, query: str, answer: str, citations: list[dict]) -> None:
+    async def set(self, ctx: SecurityCtx | None, query: str, answer: str, citations: list[dict[str, Any]]) -> None:
         """Remembers a finished answer. Best effort."""
         ...
 

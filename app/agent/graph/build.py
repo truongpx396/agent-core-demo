@@ -84,15 +84,15 @@ if TYPE_CHECKING:
     from app.ports.outbound.domains import AgentManifest, DomainPlugin
 
 
-async def default_cache_get(ctx: SecurityCtx | None, query: str) -> tuple[str, list[dict]] | None:
+async def default_cache_get(ctx: SecurityCtx | None, query: str) -> tuple[str, list[dict[str, Any]]] | None:
     return await answer_cache.get().get(ctx, query)
 
 
-async def default_cache_set(ctx: SecurityCtx | None, query: str, answer: str, citations: list[dict]) -> None:
+async def default_cache_set(ctx: SecurityCtx | None, query: str, answer: str, citations: list[dict[str, Any]]) -> None:
     await answer_cache.get().set(ctx, query, answer, citations)
 
 
-async def default_search(query: str, ctx: SecurityCtx | None) -> tuple[str, list[dict]]:
+async def default_search(query: str, ctx: SecurityCtx | None) -> tuple[str, list[dict[str, Any]]]:
     """Thin wrapper over `builtin.gather_context` matching the
     `Callable[[str, SecurityCtx | None], Awaitable[tuple[str, list[dict]]]]`
     shape `make_retrieve_context_node` expects, so tests can pass a plain
@@ -130,18 +130,18 @@ class GraphDeps:
     # "chat" for the main loop; a delegated run sets "subagent" so its spend is separable.
     meter_kind: str = "chat"
     search_docs: (
-        Callable[[str, "SecurityCtx | None"], Awaitable[tuple[str, list[dict]]]] | None
+        Callable[[str, "SecurityCtx | None"], Awaitable[tuple[str, list[dict[str, Any]]]]] | None
     ) = None
     cache_get: (
-        Callable[["SecurityCtx | None", str], Awaitable[tuple[str, list[dict]] | None]] | None
+        Callable[["SecurityCtx | None", str], Awaitable[tuple[str, list[dict[str, Any]]] | None]] | None
     ) = None
     cache_set: (
-        Callable[["SecurityCtx | None", str, str, list[dict]], Awaitable[None]] | None
+        Callable[["SecurityCtx | None", str, str, list[dict[str, Any]]], Awaitable[None]] | None
     ) = None
     # Builds the chat client from the domain's tools when `llm` is unset (default: `make_llm`, the
     # configured endpoint). A test pointing the graph at a local Ollama passes
     # `functools.partial(make_llm, model=..., base_url=...)` here instead of patching a module.
-    llm_factory: Callable[[list], Any] | None = None
+    llm_factory: Callable[[list[Any]], Any] | None = None
     # The function that pauses the graph at `human_approval` (default: langgraph's `interrupt`). A
     # test that wants an approval decision without driving a real pause passes a stand-in.
     interrupt: Callable[[Any], Any] | None = None
@@ -196,7 +196,7 @@ def build_graph(
     manifest: "AgentManifest",
     domain: "DomainPlugin",
     deps: GraphDeps | None = None,
-    checkpointer: BaseCheckpointSaver | None = None,
+    checkpointer: BaseCheckpointSaver[Any] | None = None,
     max_iterations: int | None = None,
     max_tokens_per_turn: int | None = None,
     max_cost_usd_per_turn: float | None = None,
@@ -433,7 +433,7 @@ def build_subagent_graph(
     manifest: "AgentManifest",
     domain: "DomainPlugin",
     deps: GraphDeps | None = None,
-    checkpointer: BaseCheckpointSaver | None = None,
+    checkpointer: BaseCheckpointSaver[Any] | None = None,
     max_iterations: int | None = None,
     max_tokens_per_turn: int | None = None,
     max_cost_usd_per_turn: float | None = None,

@@ -4,6 +4,7 @@ turn's real question (`messages.with_turn_notes`, pattern 79).
 """
 import logging
 from collections.abc import Awaitable, Callable
+from typing import Any
 
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 from langchain_core.runnables import RunnableConfig
@@ -58,7 +59,7 @@ def _question_index(messages: list[BaseMessage], anchor: int | None) -> int | No
     return next((i for i in range(len(messages) - 1, -1, -1) if is_user_message(messages[i])), None)
 
 
-def _refusal_update(state: State, block: ContentBlock) -> dict:
+def _refusal_update(state: State, block: ContentBlock) -> dict[str, Any]:
     """The turn's answer when the gateway's content guardrail refused the call.
 
     The refusal is flagged (`GATEWAY_REFUSAL_KEY`) so `should_continue` ends the turn on it. If the
@@ -71,7 +72,7 @@ def _refusal_update(state: State, block: ContentBlock) -> dict:
     question stays. The replacement keeps the message's id, which is how the reducer replaces it
     instead of appending a second one."""
     refusal = AIMessage(content=CANNOT_HELP_MESSAGE, additional_kwargs={GATEWAY_REFUSAL_KEY: True})
-    messages: list = [refusal]
+    messages: list[BaseMessage] = [refusal]
     asked = last_human_message(state["messages"]) if block.mode == "pre_call" else None
     if asked is not None and asked.id is not None:
         withheld = HumanMessage(
@@ -91,7 +92,7 @@ def make_agent_node(
     cannot_open_links: bool = False,
     *,
     system_prompt: str,
-) -> Callable[..., Awaitable[dict]]:
+) -> Callable[..., Awaitable[dict[str, Any]]]:
     """Factory, not a plain function, because `agent` needs an LLM client; tests build it with a fake (e.g.
     GenericFakeChatModel) via `make_agent_node(fake_llm)(state)` to cover message assembly without a network
     call (test_agent_node.py).
@@ -113,7 +114,7 @@ def make_agent_node(
       only to unit-test message assembly.
     """
 
-    async def agent(state: State, config: RunnableConfig | None = None) -> dict:
+    async def agent(state: State, config: RunnableConfig | None = None) -> dict[str, Any]:
         """Call the LLM with the retrieved context carried by the turn's question.
 
         The domain's system prompt goes first on every call (see `make_agent_node`);

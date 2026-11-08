@@ -54,7 +54,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
-from typing import Literal
+from typing import Any, Literal
 
 from app.agent.cost import budget_holds, budget_policies, spend
 from app.billing_integration import port as billing_port
@@ -81,7 +81,7 @@ _WINDOW_WORD = {"day": "daily", "month": "monthly"}
 # the day or month they were logged in. A tenant that sits at 90% all afternoon would otherwise
 # log on every turn it runs; the counter still counts every turn, this only de-noises the log.
 # Cleared outright when it grows past _LOGGED_MAX so a long-lived worker cannot leak memory.
-_logged_crossings: dict[tuple, str] = {}
+_logged_crossings: dict[tuple[Any, ...], str] = {}
 _LOGGED_MAX = 10_000
 
 
@@ -426,7 +426,7 @@ def refusal_envelope(allowance: Allowance) -> ErrorEnvelope:
             details={"scope": "tenant"},
         )
     word = _WINDOW_WORD[allowance.window]
-    details: dict = {"scope": allowance.scope, "window": allowance.window}
+    details: dict[str, Any] = {"scope": allowance.scope, "window": allowance.window}
     if allowance.resets_at is not None:
         details["resets_at"] = allowance.resets_at.isoformat()
     if allowance.scope == "principal":

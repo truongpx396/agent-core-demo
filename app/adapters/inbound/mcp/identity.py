@@ -23,6 +23,7 @@ refusal, not an unscoped result. A gateway request whose token lacks a usable te
 the same way (no valid token at all was already a 401).
 """
 from collections.abc import Callable
+from typing import Any
 
 from mcp.server.auth.middleware.auth_context import get_access_token
 
@@ -71,7 +72,7 @@ def launcher_source(*, tenant: str | None = None) -> IdentitySource:
     return lambda: launcher_ctx(tenant=tenant)
 
 
-def _claim(claims: dict, name: str) -> str:
+def _claim(claims: dict[str, Any], name: str) -> str:
     """A claim as text, or empty. Only a string counts: a list or a number in the tenant claim is a token that was not issued the
     way this service expects, and must not be coerced into something that happens to match a row."""
     value = claims.get(name)

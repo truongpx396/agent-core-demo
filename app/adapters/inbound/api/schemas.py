@@ -2,6 +2,7 @@
 import uuid
 from datetime import datetime
 from decimal import Decimal
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -97,7 +98,7 @@ class SessionMessage(BaseModel):
 
 
 class PendingApproval(BaseModel):
-    tool_calls: list[dict] = Field(
+    tool_calls: list[dict[str, Any]] = Field(
         ..., description="The tool call(s) awaiting approval, same shape as the approval_required SSE event."
     )
     resumable: bool = Field(

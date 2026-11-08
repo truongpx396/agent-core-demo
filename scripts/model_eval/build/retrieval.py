@@ -23,6 +23,7 @@ import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from scripts.model_eval import datasets as ds
 from scripts.model_eval.lexical import tokenize
@@ -82,7 +83,7 @@ def extra_sources() -> list[Source]:
     return out
 
 
-def make_corpus(sources: list[Source]) -> list[dict]:
+def make_corpus(sources: list[Source]) -> list[dict[str, Any]]:
     """One corpus row per child chunk, with a deterministic id (`<domain>/<slug>#<n>`): the chunker's own parent ids are random."""
     from app.ingestion.chunking import chunk_text
 
@@ -145,11 +146,11 @@ def split_of(chunk_id: str) -> str:
     return "dev" if int(hashlib.sha256(chunk_id.encode()).hexdigest()[:8], 16) % 100 < DEV_SHARE_PERCENT else "test"
 
 
-def build_items(corpus: list[dict], generate: Generator) -> tuple[list[dict], dict]:
+def build_items(corpus: list[dict[str, Any]], generate: Generator) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Generate, filter and label. Returns (items, stats). `generate(prompt) -> raw model output`."""
     texts = {c["id"]: c["text"] for c in corpus}
     cover = {cid: content_words(text) for cid, text in texts.items()}
-    items: list[dict] = []
+    items: list[dict[str, Any]] = []
     kept_texts: list[str] = []
     stats = {"generated": 0, "copied": 0, "duplicate": 0, "malformed": 0}
     for chunk in corpus:
@@ -175,9 +176,9 @@ def build_items(corpus: list[dict], generate: Generator) -> tuple[list[dict], di
     return items, stats
 
 
-def split_items(items: list[dict]) -> dict[str, list[dict]]:
+def split_items(items: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
     """dev/test by source chunk; any test question that is a near-duplicate of a dev question is dropped, not moved."""
-    out: dict[str, list[dict]] = {"dev": [], "test": []}
+    out: dict[str, list[dict[str, Any]]] = {"dev": [], "test": []}
     for item in items:
         out[split_of(item["qid"].rsplit(".q", 1)[0])].append(item)
     leaks = {j for _i, j, _s in ds.near_duplicates([i["query"] for i in out["dev"]], [i["query"] for i in out["test"]])}
@@ -185,7 +186,7 @@ def split_items(items: list[dict]) -> dict[str, list[dict]]:
     return out
 
 
-def write_dataset(corpus: list[dict], splits: dict[str, list[dict]], *, generator: str, prompt: str, generated_at: str, version: str = "v1", root: Path = OUT) -> Path:
+def write_dataset(corpus: list[dict[str, Any]], splits: dict[str, list[dict[str, Any]]], *, generator: str, prompt: str, generated_at: str, version: str = "v1", root: Path = OUT) -> Path:
     target = root / version
     target.mkdir(parents=True, exist_ok=True)
     manifest = {

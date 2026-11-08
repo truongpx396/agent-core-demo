@@ -8,6 +8,8 @@ Deliberately NOT `tenant`-scoped, unlike support_tickets/crm_leads: this
 app's own operational metrics have no per-tenant dimension to inherit
 (see postgres-init/10-ops-incidents.sql's comment).
 """
+from typing import Any
+
 from app.platform.sql_store import fetch_dicts, fetch_row, get_connection
 
 
@@ -37,7 +39,7 @@ async def log_incident(
         return int(incident_id)
 
 
-async def list_recent_incidents(limit: int = 10, status: str | None = None) -> list[dict]:
+async def list_recent_incidents(limit: int = 10, status: str | None = None) -> list[dict[str, Any]]:
     """Most recent incidents first, optionally narrowed to one `status`
     ('open'/'resolved'), so an investigation can check "has this happened
     before?" without digging through team-channel history."""
@@ -45,7 +47,7 @@ async def list_recent_incidents(limit: int = 10, status: str | None = None) -> l
         "SELECT id, opened_by, summary, detail, status, resolution, created_at, resolved_at "
         "FROM ops_incidents"
     )
-    params: list = []
+    params: list[Any] = []
     if status is not None:
         sql += " WHERE status = %s"
         params.append(status)

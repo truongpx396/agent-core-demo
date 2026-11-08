@@ -55,7 +55,7 @@ from collections import defaultdict
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from decimal import Decimal
-from typing import Literal
+from typing import Any, Literal
 
 from psycopg import AsyncConnection
 
@@ -242,7 +242,7 @@ async def _record(conn: AsyncConnection, provider: str, tenant: str, event_id: s
             "UPDATE billing_export_outbox SET status = 'sent', attempts = attempts + 1, sent_at = now(), last_error_class = NULL "
             "WHERE provider = %s AND tenant = %s AND event_id = %s"
         )
-        params: tuple = (provider, tenant, event_id)
+        params: tuple[Any, ...] = (provider, tenant, event_id)
     elif verdict.status == "failed":
         sql = (
             "UPDATE billing_export_outbox SET status = 'failed', attempts = attempts + 1, last_error_class = %s "

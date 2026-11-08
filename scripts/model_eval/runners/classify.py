@@ -114,7 +114,7 @@ class TieredRouter:
         self.identity = f"rules-and-labels:{topics_backend.identity}"
         self.revision, self.size_bytes, self.rss_mb = topics_backend.revision, topics_backend.size_bytes, topics_backend.rss_mb
 
-    def decisions(self, texts: Sequence[str]) -> list:
+    def decisions(self, texts: Sequence[str]) -> list[Any]:
         """The app's own `Decision` for each text."""
         cutoff = self._topics.min_similarity
         out = []
@@ -163,7 +163,7 @@ def find_outcomes(dataset_dir: Path, explicit: Path | None) -> Path | None:
     return found[0] if found else None
 
 
-def evaluate(backend: ClassifierBackend, rows: Sequence[dict], *, runs: int = 3) -> tuple[ItemData, dict]:
+def evaluate(backend: ClassifierBackend, rows: Sequence[dict[str, Any]], *, runs: int = 3) -> tuple[ItemData, dict[str, Any]]:
     """`rows`: {id, text, label (0/1), q_local, q_strong}. Scores in one batch for the quality figures, then one prompt at a time for latency."""
     texts = [r["text"] for r in rows]
     started = time.perf_counter()

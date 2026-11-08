@@ -28,6 +28,7 @@ import math
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass
+from typing import Any
 
 from app.core import metrics
 from app.core.config import (
@@ -80,7 +81,7 @@ def _rate(value: object) -> float | None:
 GATEWAY_ROUTER_PREFIX = "auto_router/"
 
 
-def _is_gateway_router(entry: Mapping) -> bool:
+def _is_gateway_router(entry: Mapping[str, Any]) -> bool:
     """True for an alias whose model is chosen by the GATEWAY, per call, from a set of models (LiteLLM's complexity, adaptive, quality and semantic
     routers). Such an alias has no price of its own: `/model/info` reports it at input and output 0, which this module would read as "free" and
     meter every routed call at $0 while the gateway's own spend log (priced per real model) is right. Verified against a real 1.94.1 gateway, and the
@@ -92,7 +93,7 @@ def _is_gateway_router(entry: Mapping) -> bool:
     return (isinstance(model, str) and model.startswith(GATEWAY_ROUTER_PREFIX)) or bool(params.get("complexity_router_config"))
 
 
-def _deployment_price(entry: Mapping) -> ModelPrice | None:
+def _deployment_price(entry: Mapping[str, Any]) -> ModelPrice | None:
     if _is_gateway_router(entry):
         return None  # unknown is not free: the cost depends on which model the gateway picks, which this response does not say
     info = entry.get("model_info") or {}
@@ -103,7 +104,7 @@ def _deployment_price(entry: Mapping) -> ModelPrice | None:
     return ModelPrice(input_rate, output_rate, _rate(info.get("cache_read_input_token_cost")))
 
 
-def _alias_price(entries: list[Mapping]) -> ModelPrice | None:
+def _alias_price(entries: list[Mapping[str, Any]]) -> ModelPrice | None:
     prices = [_deployment_price(entry) for entry in entries]
     if any(price is None for price in prices):
         return None
@@ -120,10 +121,10 @@ def _alias_price(entries: list[Mapping]) -> ModelPrice | None:
     )
 
 
-def parse_model_info(entries: list[Mapping]) -> dict[str, ModelPrice | None]:
+def parse_model_info(entries: list[Mapping[str, Any]]) -> dict[str, ModelPrice | None]:
     """`/model/info`'s `data` list -> alias -> price. Entries sharing a
     `model_name` are deployments of one alias (see the module docstring)."""
-    by_alias: dict[str, list[Mapping]] = {}
+    by_alias: dict[str, list[Mapping[str, Any]]] = {}
     for entry in entries:
         alias = entry.get("model_name")
         if isinstance(alias, str):
@@ -131,7 +132,7 @@ def parse_model_info(entries: list[Mapping]) -> dict[str, ModelPrice | None]:
     return {alias: _alias_price(group) for alias, group in by_alias.items()}
 
 
-async def _fetch_model_info() -> list[Mapping]:
+async def _fetch_model_info() -> list[Mapping[str, Any]]:
     return await ports.model_catalog.get().model_info()
 
 
@@ -213,7 +214,7 @@ class PricedCall:
         return self.total_tokens > 0
 
 
-async def price_call(alias: str, usage: Mapping) -> PricedCall:
+async def price_call(alias: str, usage: Mapping[str, Any]) -> PricedCall:
     """Prices one LLM call from its LangChain `usage_metadata`, keeping the token split and the
     price used. A call that spent nothing prices to `cost_usd=0.0`; one on an unpriced model
     prices to None and is counted once here (`note_unpriced`).
@@ -238,7 +239,7 @@ async def price_call(alias: str, usage: Mapping) -> PricedCall:
     return PricedCall(input_tokens, output_tokens, cached, total_tokens, cost, price)
 
 
-async def price_usage(alias: str, usage: Mapping) -> float:
+async def price_usage(alias: str, usage: Mapping[str, Any]) -> float:
     """Dollars for one LLM call; 0.0 (and `note_unpriced`) when the model has no price, 0.0 when
     nothing was spent. The running-total callers (the in-run ceiling, the per-turn ledger row)
     want a number, so unknown folds to 0.0 here; a usage event keeps the None (`price_call`)."""

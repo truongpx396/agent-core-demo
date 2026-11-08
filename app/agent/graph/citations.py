@@ -6,13 +6,14 @@ sentence-matching machinery (`_uncited_citation_matches`, `find_likely_uncited`,
 `insert_missing_citation_markers`, `find_likely_misattributed`).
 """
 import re
+from typing import Any
 
 from app.agent.graph.messages import content_words, split_sentences
 
 _CITATION_MARKER_RE = re.compile(r"\[(\d+)\]")
 
 
-def find_used_citations(content: str, citations: list[dict]) -> list[dict]:
+def find_used_citations(content: str, citations: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """`citations` (every numbered source retrieve_context offered)
     filtered down to the markers the final answer actually used — the
     grounded, cited-answer output (GRAPH_PATTERNS.md pattern 20). Computed
@@ -29,7 +30,7 @@ def find_used_citations(content: str, citations: list[dict]) -> list[dict]:
     ]
 
 
-def count_ungrounded_claims(content: str, citations: list[dict]) -> int:
+def count_ungrounded_claims(content: str, citations: list[dict[str, Any]]) -> int:
     """How many `[n]` markers in `content` don't correspond to any real
     citation offered — the model inventing a source number (SYSTEM_PROMPT
     says never to; GRAPH_PATTERNS.md pattern 39). `0` is a meaningful
@@ -60,8 +61,8 @@ _UNCITED_OVERLAP_RATIO = 0.6
 
 
 def _uncited_citation_matches(
-    content: str, citations: list[dict], used: list[dict]
-) -> list[tuple[dict, str]]:
+    content: str, citations: list[dict[str, Any]], used: list[dict[str, Any]]
+) -> list[tuple[dict[str, Any], str]]:
     """For each citation not referenced by marker in `content`, its single
     BEST-matching answer sentence (most shared distinctive vocabulary,
     gated by `_UNCITED_OVERLAP_RATIO`) — paired as `(citation, sentence)`.
@@ -101,8 +102,8 @@ def _uncited_citation_matches(
 
 
 def find_likely_uncited(
-    content: str, citations: list[dict], used: list[dict]
-) -> list[dict]:
+    content: str, citations: list[dict[str, Any]], used: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
     """Citations offered but never referenced by marker in `content`, where at least one answer SENTENCE shares
     enough distinctive vocabulary with the citation's text to suggest the model drew on it without attributing
     it: a stronger signal than "citations were merely offered" (metrics.agent_zero_citations_total).
@@ -122,8 +123,8 @@ def find_likely_uncited(
 
 
 def insert_missing_citation_markers(
-    content: str, citations: list[dict], used: list[dict]
-) -> tuple[str, list[dict]]:
+    content: str, citations: list[dict[str, Any]], used: list[dict[str, Any]]
+) -> tuple[str, list[dict[str, Any]]]:
     """Mechanically append each flagged citation's `[n]` marker to the sentence `_uncited_citation_matches`
     matched it to, instead of asking the model to redo it. Live-verified necessary: on Langfuse trace
     `057e3594` (2026-09-09) neither the standard reminder, six rewordings, nor the exact retry feedback got
@@ -181,8 +182,8 @@ _MISATTRIBUTED_OVERLAP_RATIO = 0.25
 
 
 def find_likely_misattributed(
-    content: str, citations: list[dict], used: list[dict]
-) -> list[dict]:
+    content: str, citations: list[dict[str, Any]], used: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
     """Mirror of `find_likely_uncited`: a real, in-range marker used on a sentence that shares no meaningful
     vocabulary with THAT marker's source. Found live (Langfuse `ed435567`): the model cited [3] on every
     sentence though [3]'s content had nothing to do with it. Neither `count_ungrounded_claims` (the marker is

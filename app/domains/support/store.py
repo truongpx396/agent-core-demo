@@ -4,6 +4,8 @@
 generated SQL, every query explicitly `WHERE tenant = %s`, reusing
 sql_store's pooled `appdata` connection.
 """
+from typing import Any
+
 from app.platform.sql_store import fetch_dict, fetch_dicts, fetch_row, get_connection
 
 
@@ -51,7 +53,7 @@ async def create_ticket(
         return int(ticket_id)
 
 
-async def get_ticket(tenant: str, ticket_id: int) -> dict | None:
+async def get_ticket(tenant: str, ticket_id: int) -> dict[str, Any] | None:
     """One ticket, scoped to `tenant` — a ticket id from another tenant
     returns None, never that tenant's row.
 
@@ -81,7 +83,7 @@ async def get_ticket(tenant: str, ticket_id: int) -> dict | None:
         return await fetch_dict(cur)
 
 
-async def list_tickets_for_requester(tenant: str, requester: str, limit: int = 10) -> list[dict]:
+async def list_tickets_for_requester(tenant: str, requester: str, limit: int = 10) -> list[dict[str, Any]]:
     """A customer's own tickets, most recent first, so they don't need to
     already know a ticket number. Scoped to `tenant` AND `requester` —
     narrower than `get_ticket`'s tenant-only scoping, since there's no

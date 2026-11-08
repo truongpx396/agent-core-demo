@@ -243,7 +243,7 @@ def evaluate(
     *,
     runs: int = 3,
     batch: int = INGEST_BATCH,
-) -> tuple[ItemData, dict, list[str], int]:
+) -> tuple[ItemData, dict[str, Any], list[str], int]:
     """Embed the corpus, then each question on its own (as the app does), rank by cosine similarity, and score every question.
     Returns (per-question data, efficiency, warnings, vector dimension)."""
     t0 = time.perf_counter()

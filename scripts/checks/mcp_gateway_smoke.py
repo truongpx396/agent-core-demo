@@ -19,6 +19,7 @@ import secrets
 import ssl
 import sys
 import urllib.parse
+from typing import Any
 
 import httpx
 import httpx2  # the SDK's own HTTP client library (mcp 2.x depends on it): the client handed to it must be one of these
@@ -36,7 +37,7 @@ def check(label: str, ok: bool, detail: str = "") -> None:
         FAILED.append(label)
 
 
-def _json_part(token: str, index: int) -> dict:
+def _json_part(token: str, index: int) -> dict[str, Any]:
     part = token.split(".")[index]
     return json.loads(base64.urlsafe_b64decode(part + "=" * (-len(part) % 4)))
 
@@ -47,7 +48,7 @@ class Stack:
         self.admin = httpx.AsyncClient(base_url=auth, verify=tls, timeout=20.0)
         self.users: list[tuple[str, str]] = []  # (organization, name) created by this run, deleted at the end
         self.passwords: dict[tuple[str, str], str] = {}
-        self.applications: dict[str, dict] = {}
+        self.applications: dict[str, dict[str, Any]] = {}
 
     async def start(self) -> None:
         reply = (
@@ -59,7 +60,7 @@ class Stack:
         if reply.get("status") != "ok":
             sys.exit(f"admin login failed: {reply.get('msg')} (stopping rather than retrying: Casdoor locks an account after five failures)")
 
-    async def application(self, name: str) -> dict | None:
+    async def application(self, name: str) -> dict[str, Any] | None:
         if name not in self.applications:
             reply = (await self.admin.get("/api/get-application", params={"id": f"admin/{name}"})).json()
             self.applications[name] = reply.get("data")
@@ -83,7 +84,7 @@ class Stack:
         for organization, name in self.users:
             await self.admin.post("/api/delete-user", json={"owner": organization, "name": name})
 
-    async def token(self, application: str, user: tuple[str, str], resource: str | None, scope: str) -> tuple[str | None, dict]:
+    async def token(self, application: str, user: tuple[str, str], resource: str | None, scope: str) -> tuple[str | None, dict[str, Any]]:
         """Log in and exchange the code, as a public client (no secret). Returns (access token or None, the last reply)."""
         app = await self.application(application)
         if app is None:
@@ -120,7 +121,7 @@ class Stack:
         ):
             return sorted(t.name for t in (await client.list_tools()).tools)
 
-    async def call(self, token: str, path: str, tool: str, arguments: dict | None = None) -> str:
+    async def call(self, token: str, path: str, tool: str, arguments: dict[str, Any] | None = None) -> str:
         async with (
             httpx2.AsyncClient(verify=self.tls, headers={"Authorization": f"Bearer {token}"}, timeout=30.0) as http,
             Client(streamable_http_client(self.mcp + path, http_client=http)) as client,

@@ -23,6 +23,7 @@ import signal
 from collections.abc import AsyncGenerator
 from contextlib import aclosing
 from dataclasses import dataclass, field
+from typing import Any
 
 import httpx
 import redis.asyncio as redis
@@ -105,7 +106,7 @@ def _replay_key(update_id: int) -> str:
     return f"telegram:{AGENT_DOMAIN}:update:{update_id}"
 
 
-def _format_reply(text: str, citations: list[dict]) -> str:
+def _format_reply(text: str, citations: list[dict[str, Any]]) -> str:
     if not citations:
         return text
     sources = "\n".join(f"{c.get('marker', '')} {c.get('title') or c.get('doc_id', '?')}" for c in citations)
@@ -161,8 +162,8 @@ class Outcome:
     """What one stream of the worker's events came to."""
 
     text: str = ""
-    citations: list[dict] = field(default_factory=list)
-    paused: list[dict] | None = None  # tool calls awaiting a decision
+    citations: list[dict[str, Any]] = field(default_factory=list)
+    paused: list[dict[str, Any]] | None = None  # tool calls awaiting a decision
     error: bool = False
     code: str | None = None  # the API's error code; None for a refusal the door itself made (no sign-in, rate limit, unreachable)
     events: int = 0
@@ -184,13 +185,13 @@ class Bot:
 
     # --- updates ---
 
-    async def handle_update(self, update: dict) -> None:
+    async def handle_update(self, update: dict[str, Any]) -> None:
         if isinstance(update.get("callback_query"), dict):
             await self._on_button(update["callback_query"])
         elif isinstance(update.get("message"), dict):
             await self._on_message(update["message"], update.get("update_id"))
 
-    async def _on_message(self, message: dict, update_id: int | None) -> None:
+    async def _on_message(self, message: dict[str, Any], update_id: int | None) -> None:
         chat_id = message["chat"]["id"]
         user_id = message.get("from", {}).get("id", chat_id)
         text = message.get("text")
@@ -256,7 +257,7 @@ class Bot:
             door.stream_turn(text, thread_id, unattended=False, replay_key=None if replay_key is None else f"{replay_key}:cleared"), sink, door, thread_id
         )
 
-    async def _collect(self, events: AsyncGenerator[dict, None], sink: ReplySink, door: Door, thread_id: str) -> Outcome:
+    async def _collect(self, events: AsyncGenerator[dict[str, Any], None], sink: ReplySink, door: Door, thread_id: str) -> Outcome:
         out = Outcome()
         # `aclosing`: an early return leaves the stream open for the event loop's finalizer to close what it abandoned.
         async with aclosing(events) as stream:
@@ -288,7 +289,7 @@ class Bot:
         text = outcome.text if outcome.error else _format_reply(outcome.text, outcome.citations)
         await sink.finish(text if text.strip() else _NO_REPLY_FALLBACK)
 
-    async def _decline_pause(self, door: Door, thread_id: str, event: dict) -> str:
+    async def _decline_pause(self, door: Door, thread_id: str, event: dict[str, Any]) -> str:
         """An unattended turn should never end at a pause: the worker declines it. One that does was run by a worker that predates the flag (a
         rolling deploy that upgraded this channel first), which ran it as an ordinary turn. Nothing ran, but the conversation is left paused and an
         unattended channel can never resolve a pause (pattern 8), so the channel cancels it itself rather than depend on the worker's version."""
@@ -303,7 +304,7 @@ class Bot:
 
     # --- approvals ---
 
-    async def _ask(self, door: Door, chat_id: int, user_id: int, thread_id: str, tool_calls: list[dict]) -> None:
+    async def _ask(self, door: Door, chat_id: int, user_id: int, thread_id: str, tool_calls: list[dict[str, Any]]) -> None:
         assert self.approvals is not None  # `_attended` is the only way here
         if await self.approvals.for_thread(thread_id):
             return  # a redelivered update replayed a pause that already has its buttons
@@ -324,7 +325,7 @@ class Bot:
         except Exception as exc:  # noqa: BLE001 - reported to the person as what was done (nothing); the operator sees the class here
             logger.warning("telegram_cancel_failed", extra={"error_class": type(exc).__name__})
 
-    async def _on_button(self, query: dict) -> None:
+    async def _on_button(self, query: dict[str, Any]) -> None:
         callback_id = str(query.get("id", ""))
         user_id = (query.get("from") or {}).get("id")
         message = query.get("message") or {}
@@ -350,7 +351,7 @@ class Bot:
         await self.api.answer_callback(callback_id, "Approved — running it…" if approve else "Rejected.")
         await self._decide(pending, approve)
 
-    async def _close_message(self, message: dict, note: str) -> None:
+    async def _close_message(self, message: dict[str, Any], note: str) -> None:
         chat_id, message_id = (message.get("chat") or {}).get("id"), message.get("message_id")
         if isinstance(chat_id, int) and isinstance(message_id, int):
             await self.api.edit_message(chat_id, message_id, f"{message.get('text') or ''}\n\n{note}".strip())
@@ -409,7 +410,7 @@ class Bot:
                 await self.api.edit_message(chat_id, pending.message_id, f"{pending.text}\n\n🚫 Cancelled", reply_markup=NO_KEYBOARD)
         await self.api.send_message(chat_id, "Cancelled." if pending is not None else "Asked the agent to stop what it was doing.")
 
-    async def _link_command(self, name: str, message: dict, user_id: int) -> None:
+    async def _link_command(self, name: str, message: dict[str, Any], user_id: int) -> None:
         chat = message["chat"]
         if self.linker is None:
             await self.api.send_message(chat["id"], "Connecting an account is not set up for this bot.")

@@ -21,6 +21,7 @@ import os
 import traceback
 from dataclasses import asdict, dataclass
 from enum import Enum
+from typing import Any
 
 
 class ErrorCode(str, Enum):
@@ -97,9 +98,9 @@ def error_origin(exc: BaseException) -> str:
 class ErrorEnvelope:
     code: ErrorCode
     message: str
-    details: dict | None = None
+    details: dict[str, Any] | None = None
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> dict[str, Any]:
         """JSON-safe: `code` (an Enum member) becomes its plain string
         value, so this can be dropped straight into an SSE `data: ...`
         payload or a Pydantic response field without a custom encoder."""

@@ -123,6 +123,9 @@ warn_redundant_casts = true
 # generators). Where the real type is a third party's untyped object or a test's fake the annotation is an explicit `Any`.
 disallow_untyped_defs = true
 disallow_incomplete_defs = true
+# A bare `dict`, `list`, `Callable`, `Task` or `Mapping` is `dict[Any, Any]` without saying so; 397 were left in annotations. Each now names its
+# type arguments, and where the real type is a free-form JSON payload or a framework's untyped object the argument is an explicit `Any`.
+disallow_any_generics = true
 # Third-party stubs this app depends on (redis-py's Streams commands,
 # qdrant-client's Filter/Condition unions, RediSearch's create_index) are
 # themselves imprecise in ways this app's own code isn't — see the `cast`/

@@ -16,7 +16,7 @@ All tools are `async def`, matching app/agent/tools/builtin.py's async-first
 design (store queries, HTTP clients, and the sandbox MCP session all await
 real I/O).
 """
-from typing import Annotated
+from typing import Annotated, Any
 
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import InjectedToolCallId, tool
@@ -296,7 +296,7 @@ class RunCommandInSandboxArgs(BaseModel):
         return v
 
 
-async def _raw_sandbox_tools_or_raise() -> dict:
+async def _raw_sandbox_tools_or_raise() -> dict[str, Any]:
     raw = await sandbox_session.load_raw_sandbox_tools()
     if not raw:
         raise sandbox_session.SandboxCallFailedError(

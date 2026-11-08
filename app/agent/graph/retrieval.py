@@ -7,6 +7,7 @@ The search callable is injected (`GraphDeps.search_docs`, defaulting to `graph/b
 """
 import logging
 from collections.abc import Awaitable, Callable
+from typing import Any
 
 from app.agent.graph.messages import (
     human_text,
@@ -23,15 +24,15 @@ logger = logging.getLogger(__name__)
 
 # --- Node: enrich context (multi-step pattern) ---
 def make_retrieve_context_node(
-    search: Callable[[str, "SecurityCtx | None"], Awaitable[tuple[str, list[dict]]]],
-) -> Callable[[State], Awaitable[dict]]:
+    search: Callable[[str, "SecurityCtx | None"], Awaitable[tuple[str, list[dict[str, Any]]]]],
+) -> Callable[[State], Awaitable[dict[str, Any]]]:
     """Factory, not a plain function, because retrieve_context needs a
     search client — same rationale as make_agent_node for `agent`. Tests
     inject a fake via `make_retrieve_context_node(fake)(state)` instead of
     monkeypatching a module global (see tests/agent/graph/test_nodes.py).
     """
 
-    async def retrieve_context(state: State) -> dict:
+    async def retrieve_context(state: State) -> dict[str, Any]:
         """Fetch relevant docs (and this principal's memories) before the
         agent reasons, plus citation records for each numbered source
         (pattern 20).

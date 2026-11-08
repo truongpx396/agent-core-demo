@@ -145,10 +145,10 @@ class State(TypedDict):
     # from here on; no other node may write this key. See
     # app/core/security.py's SecurityCtx and route_after_validation's
     # fail-closed check.
-    citations: list[dict]  # Set by retrieve_context — every numbered [n]
+    citations: list[dict[str, Any]]  # Set by retrieve_context — every numbered [n]
     # source retrieve_context's pre-fetch could have cited, whether or not
     # the final answer actually used it. See app/agent/tools/builtin.py::gather_context.
-    used_citations: list[dict]  # Set by check_output — `citations` filtered
+    used_citations: list[dict[str, Any]]  # Set by check_output — `citations` filtered
     # down to the markers that actually appear in the final answer text
     # (GRAPH_PATTERNS.md pattern 20). What the streamed `citations` SSE event carries.
     ungrounded_claims_count: int  # Set by check_output — [n] markers the

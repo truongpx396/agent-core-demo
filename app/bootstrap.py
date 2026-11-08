@@ -12,6 +12,8 @@ Adding a port is three edits, and `tests/core/test_bootstrap.py` fails on the fi
 
 A test that wants a different adapter for one port uses `Slot.overriding` (or binds a fake from `tests/fakes/`) and never edits this file.
 """
+from typing import Any
+
 import psycopg
 
 from app.adapters.outbound.crawl4ai.web_crawler import Crawl4aiPageRenderer
@@ -71,7 +73,7 @@ from app.ports.outbound import (
 from app.ports.slot import PortNotBoundError, Slot, unbound
 
 
-def adapters() -> dict[Slot, object]:
+def adapters() -> dict[Slot[Any], object]:
     """The production adapter for every port, new instances each call. One table, so `wire()`, `verify_wired()` and the tests that check each
     adapter against its Protocol all read the same list."""
     return {

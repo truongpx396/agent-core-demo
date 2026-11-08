@@ -25,6 +25,7 @@ import json
 import logging
 import secrets
 from dataclasses import dataclass
+from typing import Any
 
 import httpx
 import redis.asyncio as redis
@@ -79,10 +80,10 @@ class LinkStore:
         self._redis = client
         self._fernet = Fernet(key.encode())
 
-    def _seal(self, payload: dict) -> str:
+    def _seal(self, payload: dict[str, Any]) -> str:
         return self._fernet.encrypt(json.dumps(payload).encode()).decode()
 
-    def _open(self, raw: str | bytes | None) -> dict | None:
+    def _open(self, raw: str | bytes | None) -> dict[str, Any] | None:
         if raw is None:
             return None
         try:
@@ -99,16 +100,16 @@ class LinkStore:
         await self._redis.set(f"telegram:link:state:{state}", self._seal(record), ex=settings.telegram_link_state_ttl_seconds)
         return state, challenge
 
-    async def take_state(self, state: str) -> dict | None:
+    async def take_state(self, state: str) -> dict[str, Any] | None:
         """The login `state` stood for, exactly once: reading it deletes it (`GETDEL`)."""
         return self._open(await self._redis.getdel(f"telegram:link:state:{state}"))
 
-    async def hold_for_confirmation(self, record: dict) -> str:
+    async def hold_for_confirmation(self, record: dict[str, Any]) -> str:
         token = secrets.token_urlsafe(24)
         await self._redis.set(f"telegram:link:confirm:{token}", self._seal(record), ex=_CONFIRM_SECONDS)
         return token
 
-    async def take_confirmation(self, token: str) -> dict | None:
+    async def take_confirmation(self, token: str) -> dict[str, Any] | None:
         return self._open(await self._redis.getdel(f"telegram:link:confirm:{token}"))
 
     def _user_key(self, user_id: int) -> str:
@@ -117,7 +118,7 @@ class LinkStore:
     async def save(self, user_id: int, *, refresh_token: str, sub: str, account: str) -> None:
         await self._redis.set(self._user_key(user_id), self._seal({"refresh_token": refresh_token, "sub": sub, "account": account}))
 
-    async def load(self, user_id: int) -> dict | None:
+    async def load(self, user_id: int) -> dict[str, Any] | None:
         return self._open(await self._redis.get(self._user_key(user_id)))
 
     async def delete(self, user_id: int) -> bool:
@@ -195,7 +196,7 @@ class LinkFlow:
         self._http = http
         self._api = api
 
-    async def login(self, chat_id: int, user_id: int, sender: dict) -> None:
+    async def login(self, chat_id: int, user_id: int, sender: dict[str, Any]) -> None:
         name = " ".join(str(sender.get(k)) for k in ("first_name", "last_name") if sender.get(k)) or f"user {user_id}"
         if sender.get("username"):
             name += f" (@{sender['username']})"

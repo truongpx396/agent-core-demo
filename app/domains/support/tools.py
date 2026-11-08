@@ -343,7 +343,7 @@ class RunCommandInSandboxArgs(BaseModel):
         return v
 
 
-async def _raw_sandbox_tools_or_raise() -> dict:
+async def _raw_sandbox_tools_or_raise() -> dict[str, Any]:
     raw = await sandbox_session.load_raw_sandbox_tools()
     if not raw:
         raise sandbox_session.SandboxCallFailedError(

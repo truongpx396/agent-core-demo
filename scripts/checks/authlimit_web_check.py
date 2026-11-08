@@ -84,7 +84,7 @@ async def one_tenant(browser: Any, door: Door, tenant: str, api: str) -> None:
         " el.innerHTML = ''; const o = document.createElement('option'); o.value = other; o.textContent = other; el.appendChild(o); el.value = other; } }",
         other,
     )
-    sent: list[dict] = []
+    sent: list[dict[str, Any]] = []
     page.on("request", lambda req: sent.append(req.headers) if req.url.startswith(api + "/chat/stream/queued") else None)
     await page.fill("#input", "list the employees")
     await page.click("#send")

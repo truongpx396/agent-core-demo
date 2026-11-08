@@ -17,6 +17,8 @@ names (pattern 23).
 """
 from dataclasses import dataclass
 
+from langchain_core.tools import BaseTool
+
 from app.agent.tools.builtin import (
     SHARED_TOOL_CAPABILITIES,
     ask_clarification,
@@ -104,7 +106,7 @@ conversation's history, so describe everything it needs to know."""
 
 @dataclass
 class _SupportDomainPlugin:
-    def tools(self) -> list:
+    def tools(self) -> list[BaseTool]:
         return skill_tools_first(_SUPPORT_TOOLS, _REUSED_READ_ONLY_TOOLS, _RUN_SUBAGENT)
 
     def tool_capabilities(self) -> dict[str, str]:

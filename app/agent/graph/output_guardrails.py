@@ -9,6 +9,8 @@ checks are in `graph/citations.py`.
 """
 import re
 
+from langchain_core.messages import BaseMessage
+
 from app.agent.graph.messages import (
     content_words,
     current_turn_messages,
@@ -223,7 +225,7 @@ def strip_fabricated_reference_footer(content: str) -> str:
 _DOLLAR_FIGURE_RE = re.compile(r"\$[\d,]+(?:\.\d{1,2})?")
 
 
-def skipped_required_sandbox_after_skill(messages: list, required_tools: tuple[str, ...]) -> str | None:
+def skipped_required_sandbox_after_skill(messages: list[BaseMessage], required_tools: tuple[str, ...]) -> str | None:
     """The tool name `pending_skill_required_tool` still names, if the
     model's final answer (no more tool_calls) states a specific dollar
     figure without ever calling it — the model ignored a skill's own

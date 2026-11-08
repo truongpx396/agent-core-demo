@@ -38,7 +38,7 @@ import logging
 import re
 import time
 from collections.abc import Sequence
-from typing import cast
+from typing import Any, cast
 from uuid import UUID
 
 from qdrant_client import AsyncQdrantClient
@@ -229,7 +229,7 @@ async def _maintenance_alias(collection: str | None) -> str:
     return live_name(logical)
 
 
-def _collection_config() -> dict:
+def _collection_config() -> dict[str, Any]:
     return {
         "vectors_config": {DENSE_VECTOR_NAME: VectorParams(size=0, distance=Distance.COSINE)},
         "sparse_vectors_config": {
@@ -252,7 +252,7 @@ async def create_physical(physical: str, dim: int) -> None:
 async def repoint_live(collection: str, physical: str) -> None:
     """Make `<collection>-live` point at `physical`, atomically: one request deletes the old alias (if any) and creates the new one, so
     no search ever sees a moment without it and none sees both collections."""
-    ops: list = []
+    ops: list[Any] = []
     if await alias_target(collection) is not None:
         ops.append(DeleteAliasOperation(delete_alias=DeleteAlias(alias_name=live_name(collection))))
     ops.append(CreateAliasOperation(create_alias=CreateAlias(collection_name=physical, alias_name=live_name(collection))))
@@ -276,7 +276,7 @@ async def ensure_collection(dim: int, collection: str | None = None) -> None:
 def build_point(
     point_id: str | int,
     dense_vector: list[float],
-    payload: dict,
+    payload: dict[str, Any],
     sparse_vector: tuple[list[int], list[float]] | None = None,
 ) -> PointStruct:
     """One point, both vector legs — the single place that assembles the
@@ -285,7 +285,7 @@ def build_point(
     schema. `sparse_vector` is optional (a point missing it just never
     surfaces via that leg's Prefetch, still findable dense-only) so a
     failed sparse embedding doesn't lose the whole write."""
-    vector: dict = {DENSE_VECTOR_NAME: dense_vector}
+    vector: dict[str, Any] = {DENSE_VECTOR_NAME: dense_vector}
     if sparse_vector is not None:
         indices, values = sparse_vector
         vector[SPARSE_VECTOR_NAME] = SparseVector(indices=indices, values=values)

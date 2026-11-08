@@ -10,7 +10,7 @@ pause passes a stand-in there; nothing patches a module attribute.
 from collections.abc import Callable
 from typing import Any, Literal, cast
 
-from langchain_core.messages import AIMessage
+from langchain_core.messages import AIMessage, ToolCall
 from langchain_core.runnables import RunnableConfig
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import StateSnapshot
@@ -77,7 +77,7 @@ async def resumability_error_async(graph: CompiledStateGraph, config: RunnableCo
     return _resumability_error_from_state(await graph.aget_state(config))
 
 
-async def paused_approval_async(graph: CompiledStateGraph, config: RunnableConfig) -> dict | None:
+async def paused_approval_async(graph: CompiledStateGraph, config: RunnableConfig) -> dict[str, Any] | None:
     """Is `config`'s thread parked at a real human_approval interrupt? Returns `None` if not (the common case),
     else `{"tool_calls": [...], "resumable": bool}`.
 
@@ -100,7 +100,7 @@ async def paused_approval_async(graph: CompiledStateGraph, config: RunnableConfi
     state = await graph.aget_state(config)
     if not state.next or not any(task.interrupts for task in state.tasks):
         return None
-    tool_calls: list = []
+    tool_calls: list[ToolCall] = []
     for task in state.tasks:
         for intr in task.interrupts:
             tool_calls = intr.value.get("tool_calls", [])
@@ -113,10 +113,10 @@ async def paused_approval_async(graph: CompiledStateGraph, config: RunnableConfi
 CANCEL_SENTINEL = "cancelled"  # app/agent/runtime/stream.py::cancel_run resumes a paused run with this value
 
 
-def make_human_approval_node(interrupt_fn: Callable[[Any], Any]) -> Callable[[State], dict]:
+def make_human_approval_node(interrupt_fn: Callable[[Any], Any]) -> Callable[[State], dict[str, Any]]:
     """Factory over the function that pauses the graph (see the module docstring)."""
 
-    def human_approval(state: State) -> dict:
+    def human_approval(state: State) -> dict[str, Any]:
         """Pause the graph and ask a human to approve pending tool calls.
 
         `interrupt()` suspends execution here; the caller resumes with

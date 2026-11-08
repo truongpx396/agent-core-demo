@@ -5,7 +5,7 @@ This is the worker's own technology, so it is here and not behind a port: nothin
 owns only the Streams mechanics.
 """
 import json
-from typing import cast
+from typing import Any, cast
 
 import redis.asyncio as redis
 
@@ -83,7 +83,7 @@ async def release_thread_lock(client: redis.Redis, thread_id: str, token: str) -
     await client.eval(_RELEASE_LOCK_SCRIPT, 1, thread_lock_key(thread_id), token)
 
 
-async def publish_result(client: redis.Redis, request_id: str, event: dict) -> None:
+async def publish_result(client: redis.Redis, request_id: str, event: dict[str, Any]) -> None:
     """Consumer side: append one typed event (same shapes
     `runtime/stream.py::_run_graph_stream` yields — token, tool_start,
     tool_end, citations, error, done) to this request's results stream,
@@ -152,7 +152,7 @@ async def reclaim_stale_entries(
 
 
 async def publish_dead_letter(
-    client: redis.Redis, *, requests_stream: str, entry_id: str, payload: dict, reason: str
+    client: redis.Redis, *, requests_stream: str, entry_id: str, payload: dict[str, Any], reason: str
 ) -> None:
     """Archives one reclaimed (presumed-crashed-worker) job for operator
     inspection or manual replay. Callers ack the original entry separately,
@@ -174,7 +174,7 @@ async def publish_dead_letter(
 RECLAIM_ATTEMPTS_FIELD = "_reclaim_attempts"  # leading underscore: an internal
 
 
-async def republish_job(client: redis.Redis, *, requests_stream: str, payload: dict) -> str:
+async def republish_job(client: redis.Redis, *, requests_stream: str, payload: dict[str, Any]) -> str:
     """Re-enqueues `payload` onto `requests_stream` as a brand-new entry —
     the recovery half of a reclaim decided safe to retry (see
     `app/adapters/inbound/workers/agent_worker.py::_handle_reclaimed_job`/

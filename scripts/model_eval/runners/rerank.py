@@ -154,7 +154,7 @@ class CandidateList:
     gains: dict[str, int]  # relevant id -> gain
 
 
-def evaluate(backend: RerankBackend, lists: Sequence[CandidateList], *, runs: int = 3) -> tuple[ItemData, dict, list[str]]:
+def evaluate(backend: RerankBackend, lists: Sequence[CandidateList], *, runs: int = 3) -> tuple[ItemData, dict[str, Any], list[str]]:
     ids, ndcg, mrr, latencies, scored, dropped = [], [], [], [], 0, 0
     wall = time.perf_counter()
     for run in range(max(runs, 1)):

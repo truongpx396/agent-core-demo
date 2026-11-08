@@ -12,7 +12,7 @@ reviews and sends it, same "no send button" boundary as
 add_note/remember and support/tools.py's escalate_to_human.
 """
 from datetime import UTC, datetime, timedelta
-from typing import Annotated
+from typing import Annotated, Any
 
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import InjectedToolCallId, tool
@@ -433,7 +433,7 @@ class RunCommandInSandboxArgs(BaseModel):
         return v
 
 
-async def _raw_sandbox_tools_or_raise() -> dict:
+async def _raw_sandbox_tools_or_raise() -> dict[str, Any]:
     raw = await sandbox_session.load_raw_sandbox_tools()
     if not raw:
         raise sandbox_session.SandboxCallFailedError(

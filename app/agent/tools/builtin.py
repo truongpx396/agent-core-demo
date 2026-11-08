@@ -38,7 +38,7 @@ import logging
 import operator
 from collections.abc import Callable, Sequence
 from enum import Enum
-from typing import Literal, TypeVar
+from typing import Any, Literal, TypeVar
 
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import BaseTool, tool
@@ -135,7 +135,7 @@ def _display_text(hit: SearchHit) -> str:
     return payload.get("parent_text") or payload.get("text", "")
 
 
-def _dedupe_by_parent(hits: list) -> list:
+def _dedupe_by_parent(hits: list[SearchHit]) -> list[SearchHit]:
     """Multiple child chunks from the same parent (app/ingestion/chunking.py)
     can all score highly for one query — without this they'd show up as
     redundant citations. Keeps the highest-ranked hit per `parent_id` (hits
@@ -154,7 +154,7 @@ def _dedupe_by_parent(hits: list) -> list:
     return deduped
 
 
-def _format_cited_context(hits: list, offset: int = 0) -> str:
+def _format_cited_context(hits: list[SearchHit], offset: int = 0) -> str:
     """`[n] chunk text`, one per line — shared convention across
     search_docs/gather_context so the model sees the same shape whether
     context was pre-fetched or fetched via a tool call. `offset` lets
@@ -164,7 +164,7 @@ def _format_cited_context(hits: list, offset: int = 0) -> str:
     )
 
 
-def _citation_records(hits: list, offset: int = 0) -> list[dict]:
+def _citation_records(hits: list[SearchHit], offset: int = 0) -> list[dict[str, Any]]:
     """Structured citation metadata — marker, source id, title, text,
     relevance score — one per hit, same numbering as
     `_format_cited_context`. app/agent/graph/core.py stores these in
@@ -304,7 +304,7 @@ def _unwrap(result: _T | BaseException) -> _T:
     return result
 
 
-async def gather_context(ctx: SecurityCtx | None, query: str) -> tuple[str, list[dict]]:
+async def gather_context(ctx: SecurityCtx | None, query: str) -> tuple[str, list[dict[str, Any]]]:
     """Documents + this principal's memories, hybrid-searched and combined
     into ONE continuously-numbered citation sequence — called by
     app/agent/graph/core.py's `default_search` (the automatic pre-fetch every
@@ -324,7 +324,7 @@ async def gather_context(ctx: SecurityCtx | None, query: str) -> tuple[str, list
     if not valid_ctx(ctx):
         return "", []
 
-    async def nothing() -> list:
+    async def nothing() -> list[SearchHit]:
         return []
 
     results = await asyncio.gather(
@@ -353,7 +353,7 @@ class UseSkillArgs(BaseModel):
     )
 
 
-def _format_skill_hits(hits: list) -> str:
+def _format_skill_hits(hits: list[SearchHit]) -> str:
     lines = [
         f"- {(h.payload or {}).get('name')}: {(h.payload or {}).get('description')}"
         for h in hits
@@ -372,14 +372,14 @@ _SKILL_SEARCH_FETCH_K = max(SKILLS_SEARCH_TOP_K * 4, 10)  # over-fetch before
 # make_skill_tools's own docstring for why.
 
 
-def _filter_skill_hits_by_domain(hits: list, domain: str, catalog: dict) -> list:
+def _filter_skill_hits_by_domain(hits: list[SearchHit], domain: str, catalog: dict[str, Any]) -> list[SearchHit]:
     """Keeps only hits visible to `domain`. A hit whose `name` isn't in
     `catalog` (a stale Qdrant entry for a since-removed/renamed SKILL.md) is
     dropped too — disk stays authoritative."""
     kept = []
     for h in hits:
         name = (h.payload or {}).get("name")
-        record = catalog.get(name)
+        record = catalog.get(name) if isinstance(name, str) else None
         if record is not None and _skill_visible_to_domain(record, domain):
             kept.append(h)
     return kept

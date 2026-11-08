@@ -17,6 +17,7 @@ import secrets
 import time
 import urllib.parse
 from dataclasses import dataclass
+from typing import Any
 
 import httpx
 
@@ -51,7 +52,7 @@ def pkce_pair() -> tuple[str, str]:
     return verifier, base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b"=").decode()
 
 
-def jwt_claims(token: str) -> dict:
+def jwt_claims(token: str) -> dict[str, Any]:
     """The payload of a token WITHOUT checking it. Only ever used to NAME something (the person's id in a conversation id): the front door is
     what verifies the token, and a request made with a forged one is refused there."""
     try:
@@ -77,7 +78,7 @@ def authorize_url(issuer: str, *, client_id: str, redirect_uri: str, scope: str,
     return f"{issuer.rstrip('/')}/login/oauth/authorize?{query}"
 
 
-def _tokens(body: dict) -> Tokens:
+def _tokens(body: dict[str, Any]) -> Tokens:
     access = body.get("access_token")
     if not isinstance(access, str) or not access:
         raise SignInRefusedError("credentials")

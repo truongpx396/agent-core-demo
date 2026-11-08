@@ -77,7 +77,7 @@ import socket
 import uuid
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import aclosing
-from typing import TypeAlias, cast
+from typing import Any, TypeAlias, cast
 
 import redis.asyncio as redis
 from langgraph.graph.state import CompiledStateGraph
@@ -169,7 +169,7 @@ def _read_count_per_stream(domains: int) -> int:
     return max(1, _READ_COUNT // domains)
 
 
-async def _publish_events(client: redis.Redis, request_id: str, events: AsyncGenerator[dict, None], release_lock: ReleaseLock) -> None:
+async def _publish_events(client: redis.Redis, request_id: str, events: AsyncGenerator[dict[str, Any], None], release_lock: ReleaseLock) -> None:
     """Publishes a turn's events to its results stream, releasing the thread lock just before the terminal one.
 
     The stream is closed on EVERY exit, with `aclosing`: a bare `async for` does not close the
@@ -197,7 +197,7 @@ async def _publish_events(client: redis.Redis, request_id: str, events: AsyncGen
             await publish_result(client, request_id, event)
 
 
-async def _process_turn(client: redis.Redis, request_id: str, payload: dict, release_lock: ReleaseLock) -> None:
+async def _process_turn(client: redis.Redis, request_id: str, payload: dict[str, Any], release_lock: ReleaseLock) -> None:
     thread_id = payload["thread_id"]
     # A stale flag from an EARLIER turn on this thread_id (e.g. /chat/cancel
     # raced with that turn already finishing on its own) must not
@@ -231,7 +231,7 @@ async def _process_turn(client: redis.Redis, request_id: str, payload: dict, rel
     await _publish_events(client, request_id, events, release_lock)
 
 
-async def _process_turn_continue(client: redis.Redis, request_id: str, payload: dict, release_lock: ReleaseLock) -> None:
+async def _process_turn_continue(client: redis.Redis, request_id: str, payload: dict[str, Any], release_lock: ReleaseLock) -> None:
     """Reclaim-only counterpart to `_process_turn`: same payload shape (the
     original `"turn"` job's, `kind` flipped by
     `_handle_reclaimed_job`/`_classify_reclaimed_turn`), but drives
@@ -257,7 +257,7 @@ async def _process_turn_continue(client: redis.Redis, request_id: str, payload: 
     await _publish_events(client, request_id, events, release_lock)
 
 
-async def _process_resume(client: redis.Redis, request_id: str, payload: dict, release_lock: ReleaseLock) -> None:
+async def _process_resume(client: redis.Redis, request_id: str, payload: dict[str, Any], release_lock: ReleaseLock) -> None:
     thread_id = payload["thread_id"]
     # Same reasoning as `_process_turn`: a flag left from the streaming phase
     # that led to this pause (a /chat/cancel that raced the turn pausing on
@@ -277,7 +277,7 @@ async def _process_resume(client: redis.Redis, request_id: str, payload: dict, r
     )
 
 
-async def _process_cancel(client: redis.Redis, request_id: str, payload: dict, release_lock: ReleaseLock) -> None:
+async def _process_cancel(client: redis.Redis, request_id: str, payload: dict[str, Any], release_lock: ReleaseLock) -> None:
     """Cancels a PAUSED turn only — an actively-streaming one is a no-op
     here (`cancel_run` reports "nothing to cancel", same as a thread never
     paused at all; see module docstring)."""
@@ -299,7 +299,7 @@ _DISPATCH = {
 }
 
 
-async def process_request(client: redis.Redis, entry_id: str, fields: dict, *, domain: str) -> None:
+async def process_request(client: redis.Redis, entry_id: str, fields: dict[str, Any], *, domain: str) -> None:
     """Dispatch one job by `payload["kind"]` and stream its events back, on `domain`'s graph. Always ack (on
     `domain`'s stream), even on failure: a redelivered, already-attempted request would re-run the same
     side-effecting tool calls.
@@ -388,7 +388,7 @@ async def process_request(client: redis.Redis, entry_id: str, fields: dict, *, d
 
 
 async def _process_with_limit(
-    client: redis.Redis, entry_id: str, fields: dict, semaphore: asyncio.Semaphore, *, domain: str
+    client: redis.Redis, entry_id: str, fields: dict[str, Any], semaphore: asyncio.Semaphore, *, domain: str
 ) -> None:
     """Runs one job under `semaphore` and releases it when done, success or
     failure — `process_request` already acks regardless of outcome, so this
@@ -460,7 +460,7 @@ async def _classify_reclaimed_turn(graph: CompiledStateGraph, thread_id: str) ->
     return "retry_continue"
 
 
-async def _handle_reclaimed_job(client: redis.Redis, entry_id: str, fields: dict, *, graph: CompiledStateGraph, domain: str) -> None:
+async def _handle_reclaimed_job(client: redis.Redis, entry_id: str, fields: dict[str, Any], *, graph: CompiledStateGraph, domain: str) -> None:
     """One entry `_reclaim_loop` found idle past
     `AGENT_WORKER_RECLAIM_IDLE_SECONDS` — its original consumer almost
     certainly died before ever reaching `process_request`'s own ack (a live
@@ -536,7 +536,7 @@ async def _handle_reclaimed_job(client: redis.Redis, entry_id: str, fields: dict
     await _dead_letter_reclaimed(client, entry_id, payload, reason="worker_lost", domain=domain)
 
 
-async def _dead_letter_reclaimed(client: redis.Redis, entry_id: str, payload: dict, *, reason: str, domain: str) -> None:
+async def _dead_letter_reclaimed(client: redis.Redis, entry_id: str, payload: dict[str, Any], *, reason: str, domain: str) -> None:
     stream = requests_stream_key(domain)
     metrics.agent_worker_job_reclaimed_total.labels(queue="agent", outcome="dead_lettered").inc()
     await publish_dead_letter(client, requests_stream=stream, entry_id=entry_id, payload=payload, reason=reason)
@@ -610,7 +610,7 @@ async def run() -> None:
     # created, so a full semaphore also backpressures reading: entries stay
     # pending for the group instead of piling up unbounded in `in_flight`.
     semaphore = asyncio.Semaphore(_MAX_CONCURRENCY)
-    in_flight: set[asyncio.Task] = set()
+    in_flight: set[asyncio.Task[Any]] = set()
 
     read_count = _read_count_per_stream(len(domains))
     while not stop_event.is_set():

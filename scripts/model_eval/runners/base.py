@@ -4,6 +4,7 @@ import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 
@@ -64,5 +65,5 @@ def public_entry(settings: RunSettings, entry_id: str) -> ds.PublicEntry:
     return entry
 
 
-def public_block(entry: ds.PublicEntry) -> dict:
+def public_block(entry: ds.PublicEntry) -> dict[str, Any]:
     return {"id": entry.id, "revision": entry.sources[0].revision, "licence": entry.licence}

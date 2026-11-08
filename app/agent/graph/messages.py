@@ -16,11 +16,12 @@
 `tests/agent/graph/test_multimodal.py`.
 """
 import re
-from typing import TypeGuard
+from typing import Any, TypeGuard
 
 from langchain_core.messages import (
     BaseMessage,
     HumanMessage,
+    ToolCall,
     ToolMessage,
 )
 
@@ -95,7 +96,7 @@ def with_turn_notes(question: HumanMessage, before: list[str], after: list[str])
     """
     lead, tail = "\n\n".join(before), "\n\n".join(after)
     content = question.content
-    new_content: str | list[str | dict]
+    new_content: str | list[str | dict[str, Any]]
     if isinstance(content, str):
         new_content = "\n\n".join(part for part in (lead, content, tail) if part)
     else:
@@ -184,7 +185,7 @@ def human_has_content(message: BaseMessage | None) -> bool:
     return any(isinstance(part, dict) and part.get("type") == "image_url" for part in content)
 
 
-def current_turn_messages(messages: list) -> list:
+def current_turn_messages(messages: list[BaseMessage]) -> list[BaseMessage]:
     """Messages in the CURRENT turn only — from the most recent message the
     person sent (inclusive; `retry_output`'s feedback is a HumanMessage too but
     not a turn start, see `is_user_message`) onward, never spanning into a
@@ -199,7 +200,7 @@ def current_turn_messages(messages: list) -> list:
     return messages[last_human_index:] if last_human_index is not None else messages
 
 
-def reject_tool_calls(tool_calls: list, reason: str) -> list[ToolMessage]:
+def reject_tool_calls(tool_calls: list[ToolCall], reason: str) -> list[ToolMessage]:
     """Every pending tool_call needs a matching ToolMessage, or the next LLM
     call fails OpenAI's tool-response validation — shared by
     human_approval's rejection path and too_many_tool_calls below, which

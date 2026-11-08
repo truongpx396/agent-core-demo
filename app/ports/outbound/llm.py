@@ -51,7 +51,7 @@ class LlmFailures(Protocol):
 
 
 class ChatModels(Protocol):
-    def build(self, tools: list, *, model: str, base_url: str, api_key: str) -> ChatModel:
+    def build(self, tools: list[Any], *, model: str, base_url: str, api_key: str) -> ChatModel:
         """A chat model for `model` at `base_url`, bound to `tools` (already shaped as the caller wants them bound). Streams token usage, so the
         per-turn token budget and the traces see real numbers."""
         ...

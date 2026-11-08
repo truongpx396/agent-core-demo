@@ -9,7 +9,7 @@ searching first is the tool-batch guard's concern: `graph/tool_guards.py`.)
 next generation) and `graph/output_guardrails.py`'s `skipped_required_sandbox_after_skill`
 (reactive `check_output` rejection).
 """
-from langchain_core.messages import ToolMessage
+from langchain_core.messages import BaseMessage, ToolMessage
 
 # Tools a skill's body names as required (currently just
 # run_python_in_sandbox, used by deal-economics/vendor-incident-postmortem/
@@ -25,7 +25,7 @@ from langchain_core.messages import ToolMessage
 SKILL_REQUIRED_TOOL_MARKERS = ("run_python_in_sandbox",)
 
 
-def pending_skill_required_tool(turn_messages: list, required_tools: tuple[str, ...]) -> str | None:
+def pending_skill_required_tool(turn_messages: list[BaseMessage], required_tools: tuple[str, ...]) -> str | None:
     """Name of a tool a skill loaded THIS TURN (via use_skill) named as
     required, if not yet called this turn — or None. `turn_messages` is
     already scoped to the current turn (see current_turn_messages).

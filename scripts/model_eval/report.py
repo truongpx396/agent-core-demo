@@ -10,6 +10,7 @@ The JSON is the record; the Markdown is a view of it. Rules the code enforces be
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from scripts.model_eval import baselines
 from scripts.model_eval.controls import (
@@ -28,15 +29,15 @@ class RunOutput:
     """What a runner hands back: the per-item data plus everything a report says about the candidate and the dataset."""
 
     kind: str
-    candidate: dict  # name, identity, licence, path (+ revision, size_bytes, dim)
-    dataset: dict  # name, version, split, items, reviewed_share (+ public)
+    candidate: dict[str, Any]  # name, identity, licence, path (+ revision, size_bytes, dim)
+    dataset: dict[str, Any]  # name, version, split, items, reviewed_share (+ public)
     data: ItemData
-    efficiency: dict  # query_ms {p50, p95}, ms_per_chunk, rss_mb, run_seconds
+    efficiency: dict[str, Any]  # query_ms {p50, p95}, ms_per_chunk, rss_mb, run_seconds
     warnings: list[str] = field(default_factory=list)
     tradeoffs: list[str] = field(default_factory=list)  # extra lines the runner knows and the report cannot derive (e.g. the routing controls' curves)
 
 
-def _tradeoffs(report: dict, baseline: baselines.Baseline | None, hw_id: str) -> list[str]:
+def _tradeoffs(report: dict[str, Any], baseline: baselines.Baseline | None, hw_id: str) -> list[str]:
     lines: list[str] = []
     deltas = report.get("deltas", {})
     if deltas:
@@ -72,17 +73,17 @@ def build_report(
     suite: Suite,
     baseline: baselines.Baseline | None,
     *,
-    hardware: dict,
+    hardware: dict[str, Any],
     repo_revision: str,
     ran_at: str,
     seed: int = SEED,
     n_boot: int = N_BOOT,
-) -> dict:
+) -> dict[str, Any]:
     if baseline is not None:
         baselines.check_comparable(baseline, run.dataset["name"], run.dataset["version"])
     quality = {name: {"value": mv.value, "ci95": list(mv.ci95)} for name, mv in measure(suite, run.data, seed=seed, n_boot=n_boot).items()}
     warnings = list(run.warnings)
-    deltas: dict = {}
+    deltas: dict[str, Any] = {}
     baseline_block = None
     candidate_deltas = None
     if baseline is not None:
@@ -142,7 +143,7 @@ def build_report(
     return report
 
 
-def validate(report: dict) -> list[str]:
+def validate(report: dict[str, Any]) -> list[str]:
     """Schema errors for `report` (empty = valid). jsonschema is a dev dependency; the harness itself never needs it."""
     import jsonschema
 
@@ -150,7 +151,7 @@ def validate(report: dict) -> list[str]:
     return sorted(e.message for e in jsonschema.Draft202012Validator(schema).iter_errors(report))
 
 
-def render_markdown(report: dict) -> str:
+def render_markdown(report: dict[str, Any]) -> str:
     c, d, eff = report["candidate"], report["dataset"], report["efficiency"]
     out = [f"# {report['kind']} evaluation: {c['name']}", "", f"**Status: {report['status'].upper()}**", ""]
     for w in report["warnings"]:

@@ -17,6 +17,7 @@ import tempfile
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 DEFAULT_MARGIN = 0.2  # strong - local must reach this for a prompt to count as "needs the stronger model"
 _LABEL_PLACES = 9  # see label(): compare gaps at nine decimals so 0.7 - 0.5 is the 0.2 it was written as
@@ -37,7 +38,7 @@ class Outcome:
     def complete(self) -> bool:
         return self.local is not None and self.strong is not None
 
-    def as_row(self) -> dict:
+    def as_row(self) -> dict[str, Any]:
         return {"id": self.id, "local": self.local, "strong": self.strong, "judge": self.judge}
 
 

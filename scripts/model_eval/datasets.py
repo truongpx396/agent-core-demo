@@ -55,18 +55,18 @@ def sha256_file(path: Path) -> str:
     return h.hexdigest()
 
 
-def read_jsonl(path: Path) -> list[dict]:
+def read_jsonl(path: Path) -> list[dict[str, Any]]:
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
 
 
-def write_jsonl(path: Path, rows: Iterable[dict]) -> str:
+def write_jsonl(path: Path, rows: Iterable[dict[str, Any]]) -> str:
     """Writes rows deterministically (sorted keys, one per line) and returns the sha256, so a manifest can record it."""
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("".join(json.dumps(r, sort_keys=True, ensure_ascii=False) + "\n" for r in rows), encoding="utf-8")
     return sha256_file(path)
 
 
-def reviewed_share(items: Sequence[dict]) -> float:
+def reviewed_share(items: Sequence[dict[str, Any]]) -> float:
     """Share of items a person has reviewed. Computed from the items, never typed into a manifest."""
     return (sum(1 for i in items if i.get("reviewed") is True) / len(items)) if items else 0.0
 
@@ -97,7 +97,7 @@ def near_duplicates(left: Sequence[str], right: Sequence[str], threshold: float 
 @dataclass(frozen=True)
 class Manifest:
     root: Path
-    raw: dict
+    raw: dict[str, Any]
 
     @property
     def name(self) -> str:
@@ -111,10 +111,10 @@ class Manifest:
     def kind(self) -> str:
         return self.raw["kind"]
 
-    def split_items(self, split: str) -> list[dict]:
+    def split_items(self, split: str) -> list[dict[str, Any]]:
         return read_jsonl(self.root / self.raw["splits"][split]["file"])
 
-    def corpus(self) -> list[dict]:
+    def corpus(self) -> list[dict[str, Any]]:
         return read_jsonl(self.root / self.raw["corpus"]["file"])
 
 
@@ -189,13 +189,13 @@ def load_verified(root: Path) -> Manifest:
     return load_manifest(root)
 
 
-def dataset_summary(manifest: Manifest, split: str = "test") -> dict:
+def dataset_summary(manifest: Manifest, split: str = "test") -> dict[str, Any]:
     """The `dataset` block of a report: identity and the computed reviewed share (never item text)."""
     items = manifest.split_items(split)
     return {"name": manifest.name, "version": manifest.version, "split": split, "items": len(items), "reviewed_share": reviewed_share(items)}
 
 
-def overlap(train_texts: Sequence[str], eval_texts: Sequence[str]) -> dict:
+def overlap(train_texts: Sequence[str], eval_texts: Sequence[str]) -> dict[str, Any]:
     """Exact and near-duplicate overlap between data a head or threshold was fitted on and the data it is reported on (FR-010)."""
     exact = len({t.strip().lower() for t in train_texts} & {t.strip().lower() for t in eval_texts})
     near = near_duplicates(train_texts, eval_texts)
@@ -318,7 +318,7 @@ def fetch_public(
 def pin_entry(
     entry_id: str, kind: str, hub_repo_files: dict[str, list[str]], *, licence: str, licence_source: str,
     revisions: dict[str, str], downloader: Downloader, work: Path, notes: str = "",
-) -> dict:
+) -> dict[str, Any]:
     """Build a lock entry by downloading each file at the given revision and hashing it. Used once, by the maintainer, to create or
     refresh `public.lock.json`; the result is reviewed and committed."""
     sources = []

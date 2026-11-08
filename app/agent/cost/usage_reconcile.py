@@ -34,6 +34,7 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
+from typing import Any
 
 from app.core import gateway, metrics
 from app.core.config import (
@@ -133,7 +134,7 @@ class Report:
             return "drift"
         return "incomplete" if self.incomplete else "ok"
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "window": {"start": self.window.start.isoformat(), "end": self.window.end.isoformat()},
             "tolerance": {"usd": str(self.tolerance.usd), "pct": str(self.tolerance.pct)},

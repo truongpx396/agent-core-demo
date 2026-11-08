@@ -213,13 +213,13 @@ def _compared(compare: Collection[str] | None, vocabulary: Sequence[str]) -> lis
     return ["kind", *(field for field in vocabulary if field in set(compare))]
 
 
-def _differences(stored: Mapping, new: Mapping, fields: Sequence[str]) -> dict[str, tuple[str | None, str | None]]:
+def _differences(stored: Mapping[str, Any], new: Mapping[str, Any], fields: Sequence[str]) -> dict[str, tuple[str | None, str | None]]:
     """The compared fields on which the stored request and the new one differ. A field the stored request does not contain (a request
     recorded by an older version with fewer keys) is skipped, so adding a field later never makes an old row conflict."""
     return {field: (stored[field], new.get(field)) for field in fields if field in stored and stored[field] != new.get(field)}
 
 
-async def _one(cur: AsyncCursor[Any]) -> tuple:
+async def _one(cur: AsyncCursor[Any]) -> tuple[Any, ...]:
     """The row a statement is certain to return (an INSERT ... RETURNING, an aggregate)."""
     row = await cur.fetchone()
     if row is None:

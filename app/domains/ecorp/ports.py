@@ -8,7 +8,7 @@ second one (Principle IV), and `tenant`/`owner` come from the caller's `Security
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Protocol
+from typing import Any, Protocol
 
 from app.ports.slot import Slot
 
@@ -24,7 +24,7 @@ class KnowledgeBase(Protocol):
 
 
 class EmployeeDirectory(Protocol):
-    async def query_employees(self, tenant: str, department: str | None, name_contains: str | None, limit: int) -> list[dict]:
+    async def query_employees(self, tenant: str, department: str | None, name_contains: str | None, limit: int) -> list[dict[str, Any]]:
         """Employees of `tenant`, optionally narrowed by department and name, at most `limit`."""
         ...
 

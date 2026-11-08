@@ -4,6 +4,7 @@ Separate from the chat queue's (`streams.py`) on purpose, as the streams themsel
 side is `app/adapters/outbound/redis/ingest_queue.py`.
 """
 import json
+from typing import Any
 
 import redis.asyncio as redis
 
@@ -25,7 +26,7 @@ async def ensure_consumer_group(client: redis.Redis) -> None:
             raise
 
 
-async def publish_result(client: redis.Redis, job_id: str, event: dict) -> None:
+async def publish_result(client: redis.Redis, job_id: str, event: dict[str, Any]) -> None:
     """Consumer side: append one typed event (see
     app/adapters/inbound/workers/ingest_worker.py::process_job for the shapes — started, done,
     error) to this job's results stream, refreshing its TTL on every

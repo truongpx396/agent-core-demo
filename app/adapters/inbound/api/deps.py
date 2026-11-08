@@ -24,7 +24,7 @@ field, never a default identity, never a ctx the caller wrote.
 by construction (the verifier refuses an empty tenant or subject); a header-mode ctx may carry an empty
 string, which the consumers refuse.
 """
-from typing import Annotated
+from typing import Annotated, Any
 
 from fastapi import Header, HTTPException
 from fastapi.exceptions import RequestValidationError
@@ -36,7 +36,7 @@ from app.domains.registry import DOMAINS
 from app.platform.internal_identity import Identity
 
 
-def _missing_header(name: str) -> dict:
+def _missing_header(name: str) -> dict[str, Any]:
     """The entry FastAPI itself reports for a required header that was not sent (so header mode's 422 is unchanged by being optional here)."""
     return {"type": "missing", "loc": ("header", name), "msg": "Field required", "input": None}
 

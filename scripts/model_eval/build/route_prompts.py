@@ -9,6 +9,7 @@ import hashlib
 import json
 from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 from scripts.model_eval import datasets as ds
 from scripts.model_eval.build.retrieval import (
@@ -38,8 +39,8 @@ def parse_prompts(raw: str) -> list[str]:
     return parse_questions(raw, "prompts")
 
 
-def build_items(generate: Callable[[str], str], *, calls_per_cell: int = 2, per_call: int = 13) -> tuple[list[dict], dict]:
-    items: list[dict] = []
+def build_items(generate: Callable[[str], str], *, calls_per_cell: int = 2, per_call: int = 13) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    items: list[dict[str, Any]] = []
     seen: list[str] = []
     stats = {"generated": 0, "duplicate": 0, "too_short": 0}
     for domain, domain_text in DOMAINS.items():
@@ -57,14 +58,14 @@ def build_items(generate: Callable[[str], str], *, calls_per_cell: int = 2, per_
     return items, stats
 
 
-def split(items: list[dict]) -> dict[str, list[dict]]:
-    out: dict[str, list[dict]] = {"dev": [], "test": []}
+def split(items: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+    out: dict[str, list[dict[str, Any]]] = {"dev": [], "test": []}
     for it in items:
         out["dev" if int(hashlib.sha256(it["id"].encode()).hexdigest()[:8], 16) % 100 < DEV_SHARE_PERCENT else "test"].append(it)
     return out
 
 
-def write_dataset(splits: dict[str, list[dict]], *, generator: str, prompt: str, generated_at: str, version: str = "v1", root: Path = OUT) -> Path:
+def write_dataset(splits: dict[str, list[dict[str, Any]]], *, generator: str, prompt: str, generated_at: str, version: str = "v1", root: Path = OUT) -> Path:
     target = root / version
     target.mkdir(parents=True, exist_ok=True)
     manifest = {

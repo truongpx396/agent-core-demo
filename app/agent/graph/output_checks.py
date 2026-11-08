@@ -29,7 +29,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
-from langchain_core.messages import ToolMessage
+from langchain_core.messages import BaseMessage, ToolMessage
 
 from app.agent.graph.citations import find_likely_misattributed, find_likely_uncited
 from app.agent.graph.messages import current_turn_messages
@@ -59,11 +59,11 @@ class CheckContext:
 
     content: str
     body: str
-    messages: list
-    citations: list[dict]
-    used: list[dict]  # `citations` that `body` cites (citations.find_used_citations)
+    messages: list[BaseMessage]
+    citations: list[dict[str, Any]]
+    used: list[dict[str, Any]]  # `citations` that `body` cites (citations.find_used_citations)
     shown: str
-    shown_used: list[dict]  # `citations` that `shown` cites
+    shown_used: list[dict[str, Any]]  # `citations` that `shown` cites
     system_prompt: str
     enforce_citations: bool
     # Tools a loaded skill may name as required, restricted to the ones THIS domain really has:
@@ -113,7 +113,7 @@ def _skipped_tool(ctx: CheckContext) -> Any:
     return skipped_required_sandbox_after_skill(ctx.messages, ctx.skill_required_tools)
 
 
-def _tool_failed_this_turn(messages: list) -> bool:
+def _tool_failed_this_turn(messages: list[BaseMessage]) -> bool:
     return any(isinstance(m, ToolMessage) and m.status == "error" for m in current_turn_messages(messages))
 
 
@@ -211,7 +211,7 @@ def _deferred_feedback(_detail: Any) -> str:
     )
 
 
-def _uncited_feedback(markers: list[dict]) -> str:
+def _uncited_feedback(markers: list[dict[str, Any]]) -> str:
     names = ", ".join(c["marker"] for c in markers)
     return (
         f"That answer uses facts from source(s) {names} without citing "
@@ -222,7 +222,7 @@ def _uncited_feedback(markers: list[dict]) -> str:
     )
 
 
-def _misattributed_feedback(markers: list[dict]) -> str:
+def _misattributed_feedback(markers: list[dict[str, Any]]) -> str:
     names = ", ".join(c["marker"] for c in markers)
     return (
         f"That answer cites {names}, but its content does not actually "

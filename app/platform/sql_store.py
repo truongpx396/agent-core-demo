@@ -141,7 +141,7 @@ async def query_employees(
     department: str | None = None,
     name_contains: str | None = None,
     limit: int | None = None,
-) -> list[dict]:
+) -> list[dict[str, Any]]:
     """The one fixed query this module exposes: employees for `tenant`,
     optionally narrowed by exact `department` and/or substring `name`
     match. Both are optional filters ANDed onto the mandatory tenant
@@ -156,7 +156,7 @@ async def query_employees(
     cursor/tuple.
     """
     where = ["tenant = %s"]
-    params: list = [tenant]
+    params: list[Any] = [tenant]
     if department:
         where.append("department = %s")
         params.append(department)

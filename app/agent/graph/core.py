@@ -23,7 +23,7 @@ import logging
 import os
 import subprocess
 import uuid
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from langchain_core.messages import AIMessage
 from langchain_core.runnables import RunnableConfig
@@ -116,8 +116,8 @@ def _graph_version() -> str:
 # content) and stamped ONCE, here — the ONLY node that writes state["ctx"];
 # everything else reads it read-only. route_after_validation fails closed
 # on an invalid one before retrieve_context ever runs.
-def validate_input(state: State, config: RunnableConfig) -> dict:
-    updates: dict = {
+def validate_input(state: State, config: RunnableConfig) -> dict[str, Any]:
+    updates: dict[str, Any] = {
         "iterations": 0,
         "total_tokens": 0,
         "total_cost_usd": 0.0,
@@ -185,7 +185,7 @@ def route_after_validation(
 # --- Node: input moderation (GRAPH_PATTERNS.md pattern 25) — runs BEFORE
 # the semantic cache lookup or retrieval, so a screened-out input never
 # reaches either. ---
-async def moderate_input(state: State) -> dict:
+async def moderate_input(state: State) -> dict[str, Any]:
     """Screens the TEXT only (`human_text`) — app/core/moderation.py is a pattern
     screen + ML classifier over that text, neither can inspect an image's
     actual content. An image-only message has empty `human_text`, so it
@@ -207,7 +207,7 @@ def route_after_moderation(
     return "reject_moderation" if state.get("moderation_blocked") else "check_semantic_cache"
 
 
-def reject_moderation(state: State) -> dict:
+def reject_moderation(state: State) -> dict[str, Any]:
     """Screened out by moderate_input — short-circuits BEFORE the
     semantic cache, retrieval, or any LLM call, same as reject_input/
     reject_context above it in the turn."""
@@ -218,7 +218,7 @@ def reject_moderation(state: State) -> dict:
     }
 
 
-def reject_input(state: State) -> dict:
+def reject_input(state: State) -> dict[str, Any]:
     # AIMessage, not HumanMessage: the *system* is producing this text,
     # not the user.
     return {
@@ -228,7 +228,7 @@ def reject_input(state: State) -> dict:
     }
 
 
-def reject_context(state: State) -> dict:
+def reject_context(state: State) -> dict[str, Any]:
     """Fail closed on a missing/malformed SecurityCtx — before any
     retrieval, any tool call, any spend. See route_after_validation."""
     metrics.agent_missing_ctx_total.inc()
@@ -256,7 +256,7 @@ def route_after_compaction(
     return "retrieve_context"
 
 
-def context_window_exceeded(state: State) -> dict:
+def context_window_exceeded(state: State) -> dict[str, Any]:
     """Terminal node for route_after_compaction's over-budget branch — a
     dead-end conversation, not a crash: the thread's history_summary grew
     past MAX_HISTORY_SUMMARY_CHARS even after compact_history just tried

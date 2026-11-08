@@ -55,7 +55,7 @@ def b64(data: bytes) -> str:
     return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
 
 
-def public_jwk(key: rsa.RSAPrivateKey, kid: str) -> dict:
+def public_jwk(key: rsa.RSAPrivateKey, kid: str) -> dict[str, Any]:
     nums = key.public_key().public_numbers()
     size = (nums.n.bit_length() + 7) // 8
     return {
@@ -64,7 +64,7 @@ def public_jwk(key: rsa.RSAPrivateKey, kid: str) -> dict:
     }
 
 
-def claims(**over: Any) -> dict:
+def claims(**over: Any) -> dict[str, Any]:
     """A realistic Casdoor `JWT-Standard` payload for the chat API; `None` removes a claim."""
     base = {
         "iss": ISSUER, "aud": [API_AUDIENCE], "sub": "user-1", "owner": "ecorp", "name": "alice",
@@ -80,19 +80,19 @@ def main() -> None:
     ed = ed25519.Ed25519PrivateKey.generate()
     public_pem = key.public_key().public_bytes(serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo)
 
-    def sign(payload: dict, *, signer: Any = None, kid: str | None = KID, alg: str = "RS256") -> str:
+    def sign(payload: dict[str, Any], *, signer: Any = None, kid: str | None = KID, alg: str = "RS256") -> str:
         headers = {"kid": kid} if kid else {}
         return jwt.encode(payload, signer or key, algorithm=alg, headers=headers)
 
-    def valid(tenant: str = "ecorp", principal: str = "user-1") -> dict:
+    def valid(tenant: str = "ecorp", principal: str = "user-1") -> dict[str, Any]:
         return {"result": "valid", "tenant": tenant, "principal": principal}
 
-    def refused(reason: str) -> dict:
+    def refused(reason: str) -> dict[str, Any]:
         return {"result": "refused", "reason": reason}
 
-    vectors: list[dict] = []
+    vectors: list[dict[str, Any]] = []
 
-    def vec(name: str, token: str, chat: dict, identify: dict, mcp: dict, note: str) -> None:
+    def vec(name: str, token: str, chat: dict[str, Any], identify: dict[str, Any], mcp: dict[str, Any], note: str) -> None:
         vectors.append({"name": name, "note": note, "token": token, "expect": {"chat": chat, "identify": identify, "mcp": mcp}})
 
     bad_aud = refused("bad_audience")

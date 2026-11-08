@@ -5,6 +5,7 @@ own four safety-net exits — max iterations/tokens/cost, no-progress). The reas
 their fallback text are the registry in `graph/output_checks.py`.
 """
 from collections.abc import Callable
+from typing import Any
 
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 
@@ -31,7 +32,7 @@ def _as_retry_artifact(message: BaseMessage | None) -> list[BaseMessage]:
     ]
 
 
-def retry_output(state: State) -> dict:
+def retry_output(state: State) -> dict[str, Any]:
     """Send the agent back with corrective feedback instead of looping on
     the same messages; MAX_ITERATIONS in should_continue still bounds the
     total number of retries.
@@ -68,8 +69,8 @@ def retry_output(state: State) -> dict:
 # run_subagent), but check_output HAS already judged this content here, so
 # trust is reason-dependent (OutputCheck.trust_on_exhaust) rather than
 # always-trusted the way no_answer_fallback's orphaned content is. ---
-def make_retry_exhausted_node(emit_message: bool = True) -> Callable[[State], dict]:
-    def retry_exhausted(state: State) -> dict:
+def make_retry_exhausted_node(emit_message: bool = True) -> Callable[[State], dict[str, Any]]:
+    def retry_exhausted(state: State) -> dict[str, Any]:
         last = state["messages"][-1] if state.get("messages") else None
         content = getattr(last, "content", "") or ""
         if trusts_content(state.get("last_retry_reason")) and (isinstance(content, str) and content.strip()):
@@ -115,8 +116,8 @@ def make_no_answer_fallback_node(
     system_prompt: str,
     enforce_citations: bool = True,
     skill_required_tools: tuple[str, ...] = (),
-) -> Callable[[State], dict]:
-    def no_answer_fallback(state: State) -> dict:
+) -> Callable[[State], dict[str, Any]]:
+    def no_answer_fallback(state: State) -> dict[str, Any]:
         last = state["messages"][-1]
         # A safety net can trip on the very round whose AIMessage is asking for tools. Those calls
         # will never run, and a call with no ToolMessage fails the next LLM call on this thread
@@ -158,7 +159,7 @@ def make_no_answer_fallback_node(
             and isinstance(content, str)
             and bool(content.strip())
         )
-        updates: dict = {
+        updates: dict[str, Any] = {
             "used_citations": fresh["used_citations"],
             "ungrounded_claims_count": fresh["ungrounded_claims_count"],
         }

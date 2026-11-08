@@ -33,6 +33,7 @@ import os
 import re
 import secrets
 import sys
+from typing import Any
 
 import httpx
 
@@ -73,13 +74,13 @@ class Casdoor:
         if reply.get("status") != "ok":
             raise CasdoorError(f"admin login failed ({reply.get('msg') or reply.get('code')}); stopping rather than retrying (Casdoor locks after 5)")
 
-    def read(self, path: str, **params: str) -> dict:
+    def read(self, path: str, **params: str) -> dict[str, Any]:
         reply = self.http.get(path, params=params).json()
         if reply.get("status") == "error":
             raise CasdoorError(f"GET {path}: {reply.get('msg')}")
         return reply.get("data")
 
-    def write(self, path: str, body: dict, **params: str) -> None:
+    def write(self, path: str, body: dict[str, Any], **params: str) -> None:
         reply = self.http.post(path, json=body, params=params).json()
         if reply.get("status") != "ok":
             raise CasdoorError(f"POST {path}: {reply.get('msg')}")

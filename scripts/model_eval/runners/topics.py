@@ -102,7 +102,7 @@ def load_labelset(name: str, directory: Path = LABELSET_DIR) -> Any:
     return parsed
 
 
-def _arrays(backend: TopicBackend, rows: Sequence[dict], none_label: str) -> dict[str, np.ndarray]:
+def _arrays(backend: TopicBackend, rows: Sequence[dict[str, Any]], none_label: str) -> dict[str, np.ndarray]:
     index = {label: i for i, label in enumerate(backend.labels)}
     matches = backend.nearest([r["text"] for r in rows])
     return {
@@ -113,7 +113,7 @@ def _arrays(backend: TopicBackend, rows: Sequence[dict], none_label: str) -> dic
     }
 
 
-def calibrate(backend: TopicBackend, rows: Sequence[dict], none_label: str, keep: float = DEFAULT_KEEP) -> dict:
+def calibrate(backend: TopicBackend, rows: Sequence[dict[str, Any]], none_label: str, keep: float = DEFAULT_KEEP) -> dict[str, Any]:
     """The cutoff that keeps `keep` of the in-scope sentences in `rows` (use the DEV split), rounded DOWN to three decimals so the kept share is
     never below what was asked, and what that cutoff does to the `none` sentences of the same rows."""
     if not 0.0 < keep < 1.0:
@@ -204,7 +204,7 @@ def run(candidate: Candidate, settings: RunSettings, *, backend: TopicBackend | 
     return RunOutput("classifier", cand, dataset, data, efficiency, [], _tradeoffs(backend, arrays, name, n_examples))
 
 
-def calibration_for(candidate: Candidate, settings: RunSettings, *, name: str = "route-topics", keep: float = DEFAULT_KEEP, backend: TopicBackend | None = None) -> dict:
+def calibration_for(candidate: Candidate, settings: RunSettings, *, name: str = "route-topics", keep: float = DEFAULT_KEEP, backend: TopicBackend | None = None) -> dict[str, Any]:
     """What `labelset-calibrate` prints: the cutoff from the dev split for this candidate's model, ready to paste under `calibration`."""
     version_dir = latest_version(settings.dataset_root, name)
     manifest = ds.load_verified(version_dir)

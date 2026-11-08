@@ -27,6 +27,7 @@ import traceback
 from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
+from typing import TextIO
 
 import structlog
 from structlog.typing import EventDict, Processor, WrappedLogger
@@ -117,7 +118,7 @@ def build_formatter() -> structlog.stdlib.ProcessorFormatter:
     )
 
 
-class _DynamicStreamHandler(logging.StreamHandler):
+class _DynamicStreamHandler(logging.StreamHandler[TextIO]):
     """`logging.StreamHandler()` resolves `sys.stderr` ONCE at construction
     and holds that reference — breaks if stderr is later swapped/closed
     (surfaced by pytest's per-test capture: a finalizer logging during

@@ -12,6 +12,7 @@ defaults to `"ecorp"` and is set ONLY on first insert — immutable after,
 like `title`.
 """
 import logging
+from typing import Any
 
 from app.core.security import SecurityCtx, valid_ctx
 from app.ports.outbound.sessions import session_store
@@ -84,7 +85,7 @@ async def claim_session(
     return await session_store.get().claim(ctx["tenant"], ctx["principal"], thread_id, _display_title(title), domain)
 
 
-async def list_sessions(ctx: SecurityCtx | None, domain: str = "ecorp") -> list[dict]:
+async def list_sessions(ctx: SecurityCtx | None, domain: str = "ecorp") -> list[dict[str, Any]]:
     """Every session for ctx's tenant+principal AND `domain`, most
     recently active first. Owner-level isolation (like `Policy.lower` for
     memories, not tenant-shared documents), with domain as a third

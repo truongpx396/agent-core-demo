@@ -87,7 +87,7 @@ def legacy_end_user_id(tenant: str) -> str:
     return "tenant_" + hashlib.sha256(tenant.encode()).hexdigest()[:16]
 
 
-def call_identity(ctx: SecurityCtx | None, session_id: str | None = None) -> dict:
+def call_identity(ctx: SecurityCtx | None, session_id: str | None = None) -> dict[str, Any]:
     """Keyword arguments to pass to `llm.ainvoke(...)` so the gateway can attribute the call.
     Empty for an invalid ctx: an unattributable call is sent as it always was. `session_id` (the
     conversation's `thread_id`) is added when there is one. The cron scripts pass a synthetic
@@ -107,7 +107,7 @@ def call_identity(ctx: SecurityCtx | None, session_id: str | None = None) -> dic
     return {"user": end_user_id(ctx["tenant"], ctx["principal"]), "extra_body": extra_body}
 
 
-def identity_from_config(config: Mapping[str, Any] | None) -> dict:
+def identity_from_config(config: Mapping[str, Any] | None) -> dict[str, Any]:
     """`call_identity` for the ctx and conversation a LangGraph node finds in its own `config`.
     `config` is optional because tests and scripts call a node with just a state; LangGraph passes
     it in a real run."""

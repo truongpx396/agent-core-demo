@@ -12,6 +12,7 @@ attribute.
 import html
 import json
 from pathlib import Path
+from typing import Any
 
 from app.core.config import settings
 
@@ -22,7 +23,7 @@ PLACEHOLDER = "__AGENT_AUTH__"
 SCRIPT_PATH = Path(__file__).parent / "static" / "auth.js"
 
 
-def page_config() -> dict:
+def page_config() -> dict[str, Any]:
     """What the page is told. In header mode only the mode: nothing about an authorization server that is not in use."""
     if settings.auth_mode != "identity":
         return {"mode": "headers"}

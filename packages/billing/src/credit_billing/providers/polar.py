@@ -313,7 +313,7 @@ async def _send(call: Awaitable[httpx.Response]) -> httpx.Response:
         raise CheckoutError(f"could not reach Polar ({type(exc).__name__})", retryable=True, code="network") from exc
 
 
-def _json(response: httpx.Response) -> dict:
+def _json(response: httpx.Response) -> dict[str, Any]:
     try:
         body = response.json()
     except ValueError:

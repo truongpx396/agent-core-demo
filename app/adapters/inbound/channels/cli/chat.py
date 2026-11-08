@@ -30,6 +30,7 @@ import sys
 import uuid
 from collections.abc import AsyncGenerator
 from contextlib import aclosing
+from typing import Any
 
 from app.adapters.inbound.channels.cli.auth import (
     CliAuth,
@@ -54,12 +55,12 @@ _RESET = "\033[0m"
 _RED   = "\033[31m"
 
 
-def _format_call(name: str, args: dict) -> str:
+def _format_call(name: str, args: dict[str, Any]) -> str:
     args_str = ", ".join(f"{k}={v!r}" for k, v in args.items())
     return f"{name}({args_str})"
 
 
-async def _render_stream(events: AsyncGenerator[dict, None]) -> bool:
+async def _render_stream(events: AsyncGenerator[dict[str, Any], None]) -> bool:
     """Render one turn's or resume's events (`stream_turn`/`stream_resume`).
 
     Returns True if the run paused awaiting tool-call approval (the caller
