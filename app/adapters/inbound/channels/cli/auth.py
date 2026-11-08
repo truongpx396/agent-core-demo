@@ -47,7 +47,7 @@ class SessionStore:
     def load(self, *, issuer: str, client_id: str) -> Tokens | None:
         """The saved session, or None when there is none, it is unreadable, or it belongs to another authorization server or client."""
         try:
-            record = json.loads(self.path.read_text())
+            record = json.loads(self.path.read_text(encoding="utf-8"))
             if record["issuer"] != issuer or record["client_id"] != client_id:
                 return None
             refresh = record.get("refresh_token")
@@ -66,7 +66,7 @@ class SessionStore:
         }
         temporary = self.path.with_name(f"{self.path.name}.{secrets.token_hex(4)}.tmp")
         descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        with os.fdopen(descriptor, "w") as handle:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
             json.dump(record, handle)
         os.replace(temporary, self.path)
 

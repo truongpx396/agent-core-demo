@@ -61,24 +61,24 @@ def write_baseline(root: Path, record: dict, data: ItemData, *, force: bool = Fa
     record = {**record, "schema_version": SCHEMA_VERSION, "provisional": ds.get("reviewed_share", 0.0) < 1.0, "per_query": _items_path(path).name}
     path.parent.mkdir(parents=True, exist_ok=True)
     items_text = json.dumps(data.to_json(), sort_keys=True) + "\n"
-    _items_path(path).write_text(items_text)
+    _items_path(path).write_text(items_text, encoding="utf-8")
     record["per_query_sha256"] = hashlib.sha256(items_text.encode()).hexdigest()  # so `verify` notices a hand-edited per-item file
-    path.write_text(json.dumps(record, indent=2, sort_keys=True) + "\n")
+    path.write_text(json.dumps(record, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return path
 
 
 def merge_efficiency(path: Path, hardware_id: str, efficiency: dict) -> None:
     """A second machine adds its latency numbers under its own hardware id without touching the quality figures or the first machine's."""
-    record = json.loads(path.read_text())
+    record = json.loads(path.read_text(encoding="utf-8"))
     record.setdefault("efficiency", {})[hardware_id] = efficiency
-    path.write_text(json.dumps(record, indent=2, sort_keys=True) + "\n")
+    path.write_text(json.dumps(record, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
 def read_baseline(path: Path) -> Baseline:
-    record = json.loads(path.read_text())
+    record = json.loads(path.read_text(encoding="utf-8"))
     if record.get("schema_version") != SCHEMA_VERSION:
         raise BaselineMismatch(f"{path}: schema_version {record.get('schema_version')!r} is not understood (this build reads {SCHEMA_VERSION})")
-    data = ItemData.from_json(json.loads((path.parent / record["per_query"]).read_text()))
+    data = ItemData.from_json(json.loads((path.parent / record["per_query"]).read_text(encoding="utf-8")))
     return Baseline(record, data, path)
 
 

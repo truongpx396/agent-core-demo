@@ -61,7 +61,7 @@ async def test_over_stdio_the_schema_has_no_identity_argument_and_every_call_is_
         command=sys.executable, args=["-m", "app.adapters.inbound.mcp.server"], cwd=str(tmp_path),
         env=_env(MCP_TENANT="ecorp", MCP_PRINCIPAL="alice"),
     )
-    with tempfile.TemporaryFile("w+") as stderr:
+    with tempfile.TemporaryFile("w+", encoding="utf-8") as stderr:
         async with asyncio.timeout(90):
             async with stdio_client(params, errlog=stderr) as (read, write), ClientSession(read, write) as session:
                 await session.initialize()
@@ -88,7 +88,7 @@ async def test_the_operations_server_lists_its_tools_over_stdio_with_only_the_la
     params = StdioServerParameters(
         command=sys.executable, args=["-m", module], cwd=str(tmp_path), env=_env(MCP_PRINCIPAL="oncall"),
     )
-    with tempfile.TemporaryFile("w+") as stderr:
+    with tempfile.TemporaryFile("w+", encoding="utf-8") as stderr:
         async with asyncio.timeout(90):
             async with stdio_client(params, errlog=stderr) as (read, write), ClientSession(read, write) as session:
                 await session.initialize()

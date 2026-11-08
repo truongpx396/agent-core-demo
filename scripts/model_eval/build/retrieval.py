@@ -63,7 +63,7 @@ Generator = Callable[[str], str]  # raw model output for a chunk's text
 def load_sources(root: Path = SOURCES) -> list[Source]:
     out = []
     for path in sorted(root.glob("*/*.md")):
-        head, _, body = path.read_text().partition("\n---\n")
+        head, _, body = path.read_text(encoding="utf-8").partition("\n---\n")
         meta = dict(line.split(": ", 1) for line in head.removeprefix("---\n").splitlines() if ": " in line)
         out.append(Source(path.parent.name, path.stem, meta.get("title", path.stem), body.strip()))
     return out
@@ -206,7 +206,7 @@ def write_dataset(corpus: list[dict], splits: dict[str, list[dict]], *, generato
         "splits": {name: {"file": f"{name}.jsonl", "sha256": ds.write_jsonl(target / f"{name}.jsonl", rows), "items": len(rows)} for name, rows in splits.items()},
         "corpus": {"file": "corpus.jsonl", "sha256": ds.write_jsonl(target / "corpus.jsonl", corpus), "chunks": len(corpus)},
     }
-    (target / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
+    (target / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return target
 
 

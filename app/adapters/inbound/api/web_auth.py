@@ -41,4 +41,4 @@ def render(page: str) -> str:
 
 
 def script() -> str:
-    return SCRIPT_PATH.read_text()
+    return SCRIPT_PATH.read_text(encoding="utf-8")

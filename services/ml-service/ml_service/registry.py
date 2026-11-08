@@ -102,7 +102,7 @@ def parse_model_specs(text: str) -> list[ModelSpec]:
 
 
 def load_model_specs(path: Path) -> list[ModelSpec]:
-    return parse_model_specs(path.read_text()) if path.exists() else []
+    return parse_model_specs(path.read_text(encoding="utf-8")) if path.exists() else []
 
 
 def enabled_specs(specs: list[ModelSpec], override: tuple[str, ...]) -> list[ModelSpec]:

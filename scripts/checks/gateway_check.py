@@ -49,7 +49,7 @@ TENANT, PRINCIPAL, THREAD = "acme-check", "alice-check@example.com", "thread-gat
 
 def pinned_image() -> str:
     """The image `make up` runs, exactly as the dev compose file pins it."""
-    return yaml.safe_load(DEV_COMPOSE.read_text())["services"]["litellm"]["image"]
+    return yaml.safe_load(DEV_COMPOSE.read_text(encoding="utf-8"))["services"]["litellm"]["image"]
 
 
 def build_config(dev: dict, host: str, port: int) -> dict:
@@ -107,7 +107,7 @@ def main() -> int:
     from app.agent.cost.pricing import parse_model_info
     from app.core import gateway
 
-    dev = yaml.safe_load(DEV_CONFIG.read_text())
+    dev = yaml.safe_load(DEV_CONFIG.read_text(encoding="utf-8"))
     prices = {e["model_name"]: e["model_info"] for e in dev["model_list"]} | {COMPAT: {"input_cost_per_token": 0.000001, "output_cost_per_token": 0.000002}}
     # The container reaches the stub through the host. Docker Desktop answers `host.docker.internal` itself; `--add-host` makes Linux do the same.
     # The stub therefore listens on every interface, which is harmless here: it answers one canned reply and records what it was sent.
@@ -117,7 +117,7 @@ def main() -> int:
     failures: list[str] = []
     with tempfile.TemporaryDirectory() as scratch:
         config_path = Path(scratch) / "config.yaml"
-        config_path.write_text(yaml.safe_dump(build_config(dev, "host.docker.internal", STUB_PORT), sort_keys=False))
+        config_path.write_text(yaml.safe_dump(build_config(dev, "host.docker.internal", STUB_PORT), sort_keys=False), encoding="utf-8")
         config_path.chmod(0o644)  # the container's user must be able to read it, and the directory (mkdtemp is 0700, which a Linux bind mount honours)
         Path(scratch).chmod(0o755)
         subprocess.run([docker, "rm", "-f", name], capture_output=True)

@@ -54,7 +54,7 @@ def _latest_report() -> Path | None:
 def _summarize(report_path: Path) -> None:
     print(f"\ngarak report: {report_path}")
     print(f"{'probe':<20} {'detector':<25} {'result'}")
-    for line in report_path.read_text().splitlines():
+    for line in report_path.read_text(encoding="utf-8").splitlines():
         entry = json.loads(line)
         if entry.get("entry_type") != "eval":
             continue
@@ -85,10 +85,10 @@ def _config_with_absolute_report_dir() -> Path:
     the report where CI's `actions/upload-artifact` step (and a local
     `garak_runs/`, already in .gitignore) expects it.
     """
-    config = yaml.safe_load(CONFIG_PATH.read_text())
+    config = yaml.safe_load(CONFIG_PATH.read_text(encoding="utf-8"))
     config.setdefault("reporting", {})["report_dir"] = str(REPORT_DIR)
     fd, path = tempfile.mkstemp(suffix=".yaml")
-    with os.fdopen(fd, "w") as f:
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
         yaml.safe_dump(config, f)
     return Path(path)
 

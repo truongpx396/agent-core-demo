@@ -21,7 +21,7 @@ NONE = "none"
 
 def read_rows(path: Path = SOURCES) -> list[tuple[str, str, str]]:
     rows = []
-    for number, line in enumerate(path.read_text().splitlines(), start=1):
+    for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
         if not line.strip():
             continue
         parts = line.split("\t", 2)
@@ -32,7 +32,7 @@ def read_rows(path: Path = SOURCES) -> list[tuple[str, str, str]]:
 
 
 def labelset_examples(path: Path = LABELSET) -> dict[str, list[str]]:
-    return json.loads(path.read_text())["labels"]
+    return json.loads(path.read_text(encoding="utf-8"))["labels"]
 
 
 def build_splits(rows: list[tuple[str, str, str]], labels: list[str]) -> dict[str, list[dict]]:
@@ -69,7 +69,7 @@ def write_dataset(splits: dict[str, list[dict]], labels: list[str], *, version: 
                        "sources": ["evals/sources/route-topics/prompts.tsv"]},
         "splits": {name: {"file": f"{name}.jsonl", "sha256": ds.write_jsonl(target / f"{name}.jsonl", items), "items": len(items)} for name, items in splits.items()},
     }
-    (target / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
+    (target / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return target
 
 

@@ -98,8 +98,8 @@ def _write_report(report: dict, out_dir: Path) -> Path:
     out_dir.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S")
     stem = f"{report['kind']}-{report['candidate']['name']}-{report['dataset']['name']}-{stamp}"
-    (out_dir / f"{stem}.json").write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
-    (out_dir / f"{stem}.md").write_text(render_markdown(report))
+    (out_dir / f"{stem}.json").write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    (out_dir / f"{stem}.md").write_text(render_markdown(report), encoding="utf-8")
     return out_dir / f"{stem}.json"
 
 
@@ -205,7 +205,7 @@ def cmd_verify(args: argparse.Namespace) -> int:
         if path.name.endswith(".items.json"):
             continue
         try:
-            record = json.loads(path.read_text())
+            record = json.loads(path.read_text(encoding="utf-8"))
             items = path.parent / record["per_query"]
             import hashlib
 

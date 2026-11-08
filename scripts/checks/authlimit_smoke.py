@@ -315,7 +315,7 @@ def verify_identity(identity: str, keys: dict[str, Any]) -> dict | None:
 def mint_identity(keys_dir: Path, tenant: str, sub: str) -> str | None:
     """A VALIDLY SIGNED internal identity for `tenant`, made with the service's own current private key (this process runs as the user who owns the
     key directory). It is the strongest forgery there is: a header the API would accept if it ever reached it. The door must still replace it."""
-    keyset = json.loads((keys_dir / "keyset.json").read_text())
+    keyset = json.loads((keys_dir / "keyset.json").read_text(encoding="utf-8"))
     now = int(time.time())
     usable = [k for k in keyset["keys"] if k["use_from"] <= now and (k["retire_at"] == 0 or k["retire_at"] > now)]
     if not usable:
@@ -557,7 +557,7 @@ async def stage_logs(d: Door, keys_dir: Path) -> None:
     check(f"none of the {len(set(SECRETS_SEEN))} tokens this run obtained appears in any log", not leaked, str(leaked))
     pem_bodies = []
     for pem in keys_dir.glob("*.pem"):
-        pem_bodies += [line for line in pem.read_text().splitlines() if len(line) > 20 and not line.startswith("-----")]
+        pem_bodies += [line for line in pem.read_text(encoding="utf-8").splitlines() if len(line) > 20 and not line.startswith("-----")]
     check("no private key material appears in any log", not any(b in text for b in pem_bodies) and "BEGIN PRIVATE KEY" not in text)
     check("no JWT-shaped string is logged by authlimit", not re.search(r"eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.", "\n".join(l for l in text.splitlines() if "authlimit-" in l and "casdoor" not in l)))
     errors = [l for l in text.splitlines() if "authlimit-" in l and '"level":"ERROR"' in l]

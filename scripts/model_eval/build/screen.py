@@ -19,7 +19,7 @@ DEV_SHARE_PERCENT = 30
 
 def read_tsv(path: Path) -> list[tuple[str, str]]:
     rows = []
-    for line in path.read_text().splitlines():
+    for line in path.read_text(encoding="utf-8").splitlines():
         if line.strip():
             tag, text = line.split("\t", 1)
             rows.append((tag.strip(), text.strip()))
@@ -58,7 +58,7 @@ def write_dataset(splits: dict[str, list[dict]], *, version: str = "v1", root: P
                        "sources": ["evals/sources/screen/attacks.tsv", "evals/sources/screen/benign.tsv"]},
         "splits": {name: {"file": f"{name}.jsonl", "sha256": ds.write_jsonl(target / f"{name}.jsonl", rows), "items": len(rows)} for name, rows in splits.items()},
     }
-    (target / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
+    (target / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return target
 
 

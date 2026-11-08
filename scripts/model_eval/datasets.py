@@ -56,13 +56,13 @@ def sha256_file(path: Path) -> str:
 
 
 def read_jsonl(path: Path) -> list[dict]:
-    return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
 
 
 def write_jsonl(path: Path, rows: Iterable[dict]) -> str:
     """Writes rows deterministically (sorted keys, one per line) and returns the sha256, so a manifest can record it."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text("".join(json.dumps(r, sort_keys=True, ensure_ascii=False) + "\n" for r in rows))
+    path.write_text("".join(json.dumps(r, sort_keys=True, ensure_ascii=False) + "\n" for r in rows), encoding="utf-8")
     return sha256_file(path)
 
 
@@ -122,7 +122,7 @@ def load_manifest(root: Path) -> Manifest:
     path = root / "manifest.json"
     if not path.exists():
         raise DatasetError(f"{root}: no manifest.json")
-    return Manifest(root, json.loads(path.read_text()))
+    return Manifest(root, json.loads(path.read_text(encoding="utf-8")))
 
 
 def verify_dataset(root: Path) -> list[str]:
@@ -249,7 +249,7 @@ def parse_public_lock(text: str) -> list[PublicEntry]:
 
 
 def load_public_lock(path: Path = DATASETS_ROOT / "public.lock.json") -> list[PublicEntry]:
-    return parse_public_lock(path.read_text()) if path.exists() else []
+    return parse_public_lock(path.read_text(encoding="utf-8")) if path.exists() else []
 
 
 def cache_path(entry: PublicEntry, source: PublicSource, relpath: str, root: Path = PUBLIC_CACHE) -> Path:

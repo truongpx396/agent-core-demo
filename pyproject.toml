@@ -64,7 +64,11 @@ src = [".", "packages/billing/src", "services/ml-service"]
 # PLE: pylint's error rules, among them invisible and bidirectional characters in source (a literal zero-width space sat in
 # scripts/ai_review/review.py). RUF100: a `noqa` that suppresses nothing, which would silently cover the rule if the code under it
 # later changed. ASYNC: a blocking call (file, subprocess, input) inside `async def`, which stalls every other task on the loop.
-select = ["F", "I", "UP", "B", "BLE", "S110", "PLE", "RUF100", "ASYNC"]
+# PLW1514: a text file opened without `encoding=` reads and writes in the machine's locale (cp1252 on Windows), not UTF-8; it is a
+# preview rule, and `explicit-preview-rules` turns on that one and no other.
+select = ["F", "I", "UP", "B", "BLE", "S110", "PLE", "RUF100", "ASYNC", "PLW1514"]
+preview = true
+explicit-preview-rules = true
 ignore = [
     "B008",   # FastAPI's Depends()/File() in an argument default is the framework's own idiom
     "UP042",  # str+Enum -> StrEnum for ErrorCode/Topic/Department is a deliberate call for a
