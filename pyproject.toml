@@ -65,8 +65,10 @@ src = [".", "packages/billing/src", "services/ml-service"]
 # scripts/ai_review/review.py). RUF100: a `noqa` that suppresses nothing, which would silently cover the rule if the code under it
 # later changed. ASYNC: a blocking call (file, subprocess, input) inside `async def`, which stalls every other task on the loop.
 # PLW1514: a text file opened without `encoding=` reads and writes in the machine's locale (cp1252 on Windows), not UTF-8; it is a
-# preview rule, and `explicit-preview-rules` turns on that one and no other.
-select = ["F", "I", "UP", "B", "BLE", "S110", "PLE", "RUF100", "ASYNC", "PLW1514"]
+# preview rule, and `explicit-preview-rules` turns on that one and no other. INP001: a directory of modules with no `__init__.py` is an
+# implicit namespace package; one sat inside the billing package (`credit_billing/cli`), and `setuptools.find_packages()` skips such a
+# directory, so a wheel built that way would have shipped without the six console-script modules.
+select = ["F", "I", "UP", "B", "BLE", "S110", "PLE", "RUF100", "ASYNC", "PLW1514", "INP001"]
 preview = true
 explicit-preview-rules = true
 ignore = [
@@ -81,6 +83,10 @@ ignore = [
 "scripts/**" = ["ASYNC"]
 "tests/**" = ["ASYNC"]
 "packages/*/tests/**" = ["ASYNC"]
+# Standalone programs run by path (or loaded by name, like `sitecustomize`), not packages anything imports.
+"garak/**" = ["INP001"]
+"loadtest/**" = ["INP001"]
+"deploy/**" = ["INP001"]
 
 [tool.mypy]
 # No explicit python_version pin: mypy infers it from whatever interpreter
