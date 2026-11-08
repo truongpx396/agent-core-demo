@@ -8,6 +8,13 @@
 ruff==0.16.4
 mypy==2.3.1
 
+# The test runner and its asyncio plugin live here, not in requirements.txt, so the lock file and the app image carry no test tool. The plugin is
+# what `asyncio_mode = "auto"` (pyproject.toml) needs: without it every `async def test_...` fails with "async def functions are not natively
+# supported". CI's four pytest jobs name both pins on their own install line, because they install the lock, not this file
+# (tests/core/test_test_tools_are_not_runtime_dependencies.py keeps all five equal).
+pytest==8.4.2
+pytest-asyncio==1.4.0
+
 # Parallel test execution (pytest -n auto — see Makefile's `test` target and
 # tests/containers.py's own docstring for why this is safe against a suite
 # that's otherwise 100% hermetic/mocked).
