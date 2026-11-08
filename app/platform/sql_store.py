@@ -11,7 +11,9 @@ tenant = %s` from `SecurityCtx`, never caller-supplied text — same
 pre-filter discipline as `qdrant_store.py::hybrid_search`.
 """
 import asyncio
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from typing import Any
 
 from psycopg_pool import AsyncConnectionPool
 
@@ -70,7 +72,7 @@ async def _get_pool() -> AsyncConnectionPool:
 
 
 @asynccontextmanager
-async def get_connection():
+async def get_connection() -> AsyncIterator[Any]:  # psycopg types `cursor.description` as Optional; callers read it after a SELECT
     """A pooled connection, checked out and returned (not closed) on exit. It commits on normal exit, which every
     single-statement writer here (`usage_events._insert`, the budget holds) depends on. It is its own
     `@asynccontextmanager` so the pool is only looked up (and lazily opened) from inside a real `async with`.

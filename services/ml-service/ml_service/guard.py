@@ -7,9 +7,11 @@ conversion, although the compute already runs through ONNX Runtime either way. T
 arrays and returns `logits` directly (verified via `InferenceSession.get_inputs()/get_outputs()` against the real model).
 """
 import asyncio
+from typing import Any
 
 import numpy as np
 from fastapi import APIRouter, Request
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from ml_service.batching import MicroBatcher
@@ -80,7 +82,7 @@ router = APIRouter()
 
 
 @router.post("/prompt-guard", response_model=None)
-async def prompt_guard(req: PromptGuardRequest, request: Request):
+async def prompt_guard(req: PromptGuardRequest, request: Request) -> JSONResponse | list[dict[str, Any]]:
     service: GuardService | None = request.app.state.registry.ready_value("prompt-guard")
     if service is None:
         return unavailable(request, "prompt-guard")

@@ -18,6 +18,8 @@ download/load cost, not import time) and cached in a module global — same
 reason as `app/agent/runtime/core.py`'s lazy singleton graph: don't pay startup
 cost for a path a process might never exercise.
 """
+from typing import TYPE_CHECKING
+
 import httpx
 from langchain_openai import OpenAIEmbeddings
 from pydantic import SecretStr
@@ -32,6 +34,9 @@ from app.core.config import (
     SPARSE_MODEL,
 )
 from app.ports.outbound.retrieval import EMBED_BATCH_SIZE, SparseVector
+
+if TYPE_CHECKING:  # fastembed is imported on first use, not at module load
+    from fastembed import SparseTextEmbedding
 
 embeddings = OpenAIEmbeddings(
     model=EMBED_MODEL,
@@ -90,11 +95,11 @@ def reset_embedding_dim_cache() -> None:
     _embedding_dim = None
 
 
-_sparse_model = None
+_sparse_model: "SparseTextEmbedding | None" = None
 _RERANK_TIMEOUT_SECONDS = 10
 
 
-def _get_sparse_model():
+def _get_sparse_model() -> "SparseTextEmbedding":
     global _sparse_model
     if _sparse_model is None:
         from fastembed import SparseTextEmbedding

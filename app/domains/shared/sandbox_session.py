@@ -34,6 +34,7 @@ int|None, "logs": {"stdout": [{"text"}], "stderr": [{"text"}]}}`; file_read `{"p
 import hashlib
 import json
 import logging
+from typing import Any
 
 from langchain_core.tools import BaseTool
 
@@ -101,7 +102,7 @@ async def load_raw_sandbox_tools() -> dict[str, BaseTool]:
     return _raw_sandbox_tools_cache
 
 
-async def _call_raw_tool(raw: dict[str, BaseTool], name: str, **kwargs) -> dict:
+async def _call_raw_tool(raw: dict[str, BaseTool], name: str, **kwargs: Any) -> dict:
     """Calls one of OpenSandbox's raw MCP tools by name, parses the result
     into a dict. Uses `.ainvoke` (the standard Runnable interface, not the
     StructuredTool-specific `.func`/`.coroutine`), since

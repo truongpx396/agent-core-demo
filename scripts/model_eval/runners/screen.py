@@ -8,7 +8,7 @@ OR the model), which is what a person using the product experiences.
 """
 import time
 from collections.abc import Sequence
-from typing import Protocol
+from typing import Any, Protocol
 
 import numpy as np
 
@@ -75,7 +75,7 @@ class ServiceScreen:
     size_bytes: int | None = None
     rss_mb: float | None = None
 
-    def __init__(self, candidate: Candidate, client=None) -> None:
+    def __init__(self, candidate: Candidate, client: Any = None) -> None:
         import httpx
 
         from app.core.config import ML_SERVICE_URL

@@ -13,7 +13,7 @@ import asyncio
 import time
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Any, Protocol
 
 import numpy as np
 
@@ -126,7 +126,7 @@ class ServiceEmbedding:
     size_bytes: int | None = None
     rss_mb: float | None = None
 
-    def __init__(self, candidate: Candidate, base_url: str | None = None, client=None) -> None:
+    def __init__(self, candidate: Candidate, base_url: str | None = None, client: Any = None) -> None:
         import httpx
 
         from app.core.config import ML_SERVICE_URL

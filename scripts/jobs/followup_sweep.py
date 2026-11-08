@@ -31,6 +31,7 @@ from app.core.security import SecurityCtx
 from app.domains.sales import usecases
 from app.domains.sales.domain import SALES_MANIFEST
 from app.platform.job_runtime import scheduled_job
+from app.ports.outbound.llm import ChatModel
 from app.ports.outbound.notify import team_channel
 
 _CRON_CTX: SecurityCtx = {"tenant": DEFAULT_TENANT, "principal": "sales-followup-cron", "claims": {}}
@@ -56,7 +57,7 @@ def build_followup_prompt(lead_name: str, contact: str, note: str) -> str:
     )
 
 
-async def run_followup_sweep(tenant: str = DEFAULT_TENANT, llm=None) -> list[str]:
+async def run_followup_sweep(tenant: str = DEFAULT_TENANT, llm: ChatModel | None = None) -> list[str]:
     """Sweep every due follow-up for `tenant`, draft a nudge for each, post
     it to the team channel, mark it done. Returns the list of drafted
     texts (empty if nothing was due). `llm` is DI for tests, same pattern

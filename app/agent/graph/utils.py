@@ -12,6 +12,8 @@ import asyncio
 import functools
 import logging
 import time
+from collections.abc import Awaitable, Callable
+from typing import Any, TypeAlias, TypeVar, cast
 
 from langchain_core.runnables import RunnableBinding
 from langgraph.errors import GraphBubbleUp
@@ -20,12 +22,16 @@ from app.core.config import CHAT_MODEL, OPENAI_API_BASE, OPENAI_API_KEY, setting
 from app.core.errors import is_store_error
 from app.core.tool_idempotency import MutatingToolTimedOut
 from app.core.tool_schema import strict_tool_schema
-from app.ports.outbound.llm import chat_models
+from app.ports.outbound.llm import ChatModel, chat_models
 
 logger = logging.getLogger(__name__)
 
+F = TypeVar("F", bound=Callable[..., Any])
+# A graph node: `(state)` or `(state, config)` returning the state update, sync or async (`instrumented` handles both).
+NodeFn: TypeAlias = Callable[..., "dict | Awaitable[dict]"]
 
-def instrumented(node_name: str):
+
+def instrumented(node_name: str) -> Callable[[F], F]:
     """Wrap a node with structured start/complete/failed/paused lifecycle logs.
 
     Applied once, at registration (build_graph), to every node, never hand-rolled inside one, so the logged
@@ -46,11 +52,11 @@ def instrumented(node_name: str):
     per LangGraph's guidance). Detected via `asyncio.iscoroutinefunction(fn)`, not a flag.
     """
 
-    def decorator(fn):
+    def decorator(fn: F) -> F:
         if asyncio.iscoroutinefunction(fn):
 
             @functools.wraps(fn)
-            async def async_wrapper(state, *args, **kwargs):
+            async def async_wrapper(state: Any, *args: Any, **kwargs: Any) -> Any:
                 run_id = state.get("run_id", "-") if isinstance(state, dict) else "-"
                 logger.info("node_started", extra={"node": node_name, "run_id": run_id})
                 start = time.monotonic()
@@ -82,10 +88,10 @@ def instrumented(node_name: str):
                 )
                 return result
 
-            return async_wrapper
+            return cast(F, async_wrapper)
 
         @functools.wraps(fn)
-        def wrapper(state, *args, **kwargs):
+        def wrapper(state: Any, *args: Any, **kwargs: Any) -> Any:
             run_id = state.get("run_id", "-") if isinstance(state, dict) else "-"
             logger.info("node_started", extra={"node": node_name, "run_id": run_id})
             start = time.monotonic()
@@ -117,7 +123,7 @@ def instrumented(node_name: str):
             )
             return result
 
-        return wrapper
+        return cast(F, wrapper)
 
     return decorator
 
@@ -168,7 +174,7 @@ def friendly_tool_error(error: Exception) -> str:
 _TOOL_KWARGS = frozenset({"tools", "tool_choice", "parallel_tool_calls", "functions", "function_call"})
 
 
-def without_tools(llm):
+def without_tools(llm: ChatModel) -> ChatModel:
     """`llm` with the tool schemas `make_llm` bound taken off, for a call that has no use for tools.
 
     `make_llm` binds the domain's tools to the one client every node is given. A node that sends a
@@ -192,7 +198,7 @@ def make_llm(
     base_url: str = OPENAI_API_BASE,
     api_key: str = OPENAI_API_KEY,
     strict: bool | None = None,
-):
+) -> ChatModel:
     # `strict=None` follows TOOL_CALLS_STRICT. The tools are bound as dicts only when strict, so the off position is the
     # exact call this function made before the setting existed.
     use_strict = settings.tool_calls_strict if strict is None else strict

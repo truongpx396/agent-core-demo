@@ -56,9 +56,9 @@ import json
 import math
 import re
 import time
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, NoReturn
 
 import httpx
 
@@ -256,7 +256,7 @@ class PolarProvider:
     async def export_usage(self, customer: BillingCustomer, events: Sequence[UsageEvent]) -> ExportResult:
         raise NotImplementedError("the polar adapter declares no USAGE_EXPORT capability (spec D16: prepaid packs)")
 
-    async def read_balance(self, *args, **kwargs):
+    async def read_balance(self, *args: Any, **kwargs: Any) -> NoReturn:
         raise NotImplementedError("the polar adapter declares no BALANCE_READ capability")
 
 
@@ -306,7 +306,7 @@ def _session(item: Any) -> CheckoutSession | None:
     return CheckoutSession(session_ref=ref, url=url) if isinstance(ref, str) and isinstance(url, str) and ref and url else None
 
 
-async def _send(call) -> httpx.Response:
+async def _send(call: Awaitable[httpx.Response]) -> httpx.Response:
     try:
         return await call
     except httpx.HTTPError as exc:

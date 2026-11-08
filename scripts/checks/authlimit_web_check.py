@@ -23,6 +23,7 @@ import argparse
 import asyncio
 import os
 import sys
+from typing import Any
 
 from playwright.async_api import Page, async_playwright
 
@@ -46,7 +47,7 @@ async def sign_in(page: Page, organization: str, username: str, password: str) -
     await page.wait_for_selector("#authSignOut:not([hidden])", timeout=TIMEOUT_MS)
 
 
-async def one_tenant(browser, door: Door, tenant: str, api: str) -> None:
+async def one_tenant(browser: Any, door: Door, tenant: str, api: str) -> None:
     print(f"\n== {tenant}: a real browser, the real login form, the real door")
     organization, username = await door.user(tenant)
     password = door.passwords[(organization, username)]

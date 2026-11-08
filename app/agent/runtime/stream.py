@@ -16,10 +16,13 @@ module's globals. Tests patch `app.agent.runtime.stream._open_trace` directly.
 import asyncio
 import logging
 import time
-from collections.abc import Iterator
+from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, Iterator
 from contextlib import aclosing, contextmanager
+from typing import Any, TypeAlias
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from langchain_core.runnables import RunnableConfig
+from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import Command
 
 from app.agent.graph.hitl import (
@@ -62,6 +65,10 @@ except Exception:  # noqa: BLE001 - Langfuse optional if keys unset
 UNFINISHED_TURN_STATE_READ_TIMEOUT_SECONDS = 2.0
 
 
+# Polled once per event by a turn the HTTP caller may cancel (`agent_worker.py` wires it to a Redis flag); True stops the turn.
+CancelCheck: TypeAlias = Callable[[], Awaitable[bool]]
+
+
 async def _record_turn_metrics(
     elapsed: float,
     outcome: str,
@@ -85,7 +92,7 @@ async def _record_turn_metrics(
             metrics.agent_tokens_total.inc(total_tokens)
 
 
-async def _record_unfinished_turn(graph, cfg, start: float, outcome: str) -> None:
+async def _record_unfinished_turn(graph: CompiledStateGraph, cfg: RunnableConfig, start: float, outcome: str) -> None:
     """Records a turn that ended by timeout, error or cancellation: the outcome and latency always, and the
     tokens it had already spent when its last checkpoint holds any (`agent_tokens_total`).
 
@@ -112,7 +119,7 @@ async def _record_unfinished_turn(graph, cfg, start: float, outcome: str) -> Non
         logger.warning("unfinished_turn_record_failed", extra={"error_class": type(exc).__name__})
 
 
-def _text_content(content) -> str:
+def _text_content(content: str | list) -> str:
     """LangChain message `.content` is either a plain str or a list of
     multimodal parts (GRAPH_PATTERNS.md pattern 44 — an attached image
     rides alongside text in the same list); this flattens either shape to
@@ -134,7 +141,7 @@ def _turn_outcome(state: dict) -> str:
     return "rejected" if state.get("iterations", 0) == 0 else "success"
 
 
-async def _iterate_with_timeout(aiter, timeout_seconds: float, cancel_check=None):
+async def _iterate_with_timeout(aiter: AsyncIterator[Any], timeout_seconds: float, cancel_check: CancelCheck | None = None) -> AsyncGenerator[Any, None]:
     """Wrap an async iterator so the whole run aborts once total wall-clock
     time exceeds `timeout_seconds` (enforces REQUEST_TIMEOUT_SECONDS).
     Raises TimeoutError on the next pending event; callers already wrap
@@ -188,7 +195,7 @@ def _build_human_content(text: str, images: list[str] | None) -> str | list[str 
 # Events are serialised to a unified SSE-safe dict so FastAPI/CLI don't
 # need to know the LangGraph version.
 
-def _open_trace(name: str, session_id: str, input_text: str):
+def _open_trace(name: str, session_id: str, input_text: str) -> tuple[Any, list]:
     """Best-effort: open a Langfuse trace and a CallbackHandler scoped to it.
 
     Returns (trace_or_None, callbacks_list). Never raises — Langfuse is
@@ -228,11 +235,11 @@ class _TurnTrace:
     non-blocking call that logs rather than raises), so what reaches it is unchanged.
     """
 
-    def __init__(self, trace=None):
+    def __init__(self, trace: Any = None) -> None:
         self._trace = trace
         self.finished = False
 
-    def update(self, **fields) -> None:
+    def update(self, **fields: Any) -> None:
         if "output" in fields:
             self.finished = True
         if self._trace is not None:
@@ -267,7 +274,7 @@ def _turn_trace(name: str, session_id: str, input_text: str) -> Iterator[tuple[_
         raise
 
 
-async def _run_graph_stream(graph, graph_input, cfg, trace, cancel_check=None):
+async def _run_graph_stream(graph: CompiledStateGraph, graph_input: dict | Command | None, cfg: RunnableConfig, trace: _TurnTrace, cancel_check: CancelCheck | None = None) -> AsyncGenerator[dict, None]:
     """Shared core of astream_events_turn/astream_events_resume: drives one `graph.astream_events()` call,
     translates events into typed shapes, and yields exactly one terminal event.
 
@@ -598,8 +605,8 @@ async def astream_events_turn(
     ctx: SecurityCtx,
     require_approval: bool = False,
     images: list[str] | None = None,
-    cancel_check=None,
-):
+    cancel_check: CancelCheck | None = None,
+) -> AsyncGenerator[dict, None]:
     """Production async generator — yields typed event dicts (see
     _run_graph_stream for the full shape list).
 
@@ -677,7 +684,7 @@ async def astream_events_turn(
             }
         await runtime_module.upsert_session(ctx, thread_id, text)
         with _turn_trace("chat-turn-stream", thread_id, text) as (trace, callbacks):
-            cfg = {
+            cfg: RunnableConfig = {
                 "configurable": {"thread_id": thread_id, "ctx": ctx},
                 "callbacks": callbacks,
                 "recursion_limit": runtime_module.RECURSION_LIMIT,
@@ -735,7 +742,7 @@ async def astream_events_turn_unattended(
     ctx: SecurityCtx,
     require_approval: bool = False,
     images: list[str] | None = None,
-):
+) -> AsyncGenerator[dict, None]:
     """astream_events_turn, but auto-declines an approval_required pause instead of yielding it, for callers with
     no human on this end: telegram.py (no inline-keyboard approve/reject UX) and fire-and-forget callers
     (pattern 43). Never approves.
@@ -762,7 +769,7 @@ async def astream_events_turn_unattended(
             yield event
 
 
-async def astream_events_continue_turn_unattended(thread_id: str, ctx: SecurityCtx):
+async def astream_events_continue_turn_unattended(thread_id: str, ctx: SecurityCtx) -> AsyncGenerator[dict, None]:
     """`astream_events_continue_turn`, with `astream_events_turn_unattended`'s decline loop.
 
     The reclaim path (`agent_worker.py`) continues a crashed turn through this when the job
@@ -778,7 +785,7 @@ async def astream_events_continue_turn_unattended(thread_id: str, ctx: SecurityC
             yield event
 
 
-async def _decline_every_pause(first_run, thread_id: str, ctx: SecurityCtx):
+async def _decline_every_pause(first_run: AsyncGenerator[dict, None], thread_id: str, ctx: SecurityCtx) -> AsyncGenerator[dict, None]:
     """Forwards `first_run`'s events, then declines each approval pause it ends at.
 
     The one implementation behind `astream_events_turn_unattended` and
@@ -788,7 +795,7 @@ async def _decline_every_pause(first_run, thread_id: str, ctx: SecurityCtx):
     paused = False
     pending_tools: list[str] = []
 
-    async def _drain(stream):
+    async def _drain(stream: AsyncGenerator[dict, None]) -> AsyncGenerator[dict, None]:
         """Forward every event except a pause, which is held back and recorded
         in `paused`/`pending_tools` (a separate flag: a pause is a pause even
         if its tool list were somehow empty)."""
@@ -835,8 +842,8 @@ async def _decline_every_pause(first_run, thread_id: str, ctx: SecurityCtx):
 
 
 async def astream_events_resume(
-    thread_id: str, approved: bool, ctx: SecurityCtx, cancel_check=None, *, admitted: bool = False
-):
+    thread_id: str, approved: bool, ctx: SecurityCtx, cancel_check: CancelCheck | None = None, *, admitted: bool = False
+) -> AsyncGenerator[dict, None]:
     """Resume a turn paused by astream_events_turn(require_approval=True): the streaming counterpart of
     `graph.invoke(Command(resume=approved), config)`. `thread_id` must match the paused turn.
 
@@ -881,7 +888,7 @@ async def astream_events_resume(
         with _turn_trace(
             "chat-turn-stream-resume", thread_id, f"resume(approved={approved})"
         ) as (trace, callbacks):
-            cfg = {
+            cfg: RunnableConfig = {
                 "configurable": {"thread_id": thread_id, "ctx": ctx},
                 "callbacks": callbacks,
                 "recursion_limit": runtime_module.RECURSION_LIMIT,
@@ -895,7 +902,7 @@ async def astream_events_resume(
         _release_turn_budget_in_background(ctx, budget_hold)
 
 
-async def astream_events_continue_turn(thread_id: str, ctx: SecurityCtx, cancel_check=None):
+async def astream_events_continue_turn(thread_id: str, ctx: SecurityCtx, cancel_check: CancelCheck | None = None) -> AsyncGenerator[dict, None]:
     """Continue a `"turn"` that started (its `HumanMessage` is checkpointed) but crashed before finishing: the
     streaming counterpart of `graph.astream_events(None, config)`. The ONLY caller is `agent_worker.py`'s
     reclaim path, for a job `_classify_reclaimed_turn` proved is genuinely mid-flight: not paused at
@@ -933,11 +940,11 @@ async def astream_events_continue_turn(thread_id: str, ctx: SecurityCtx, cancel_
         _release_turn_budget_in_background(ctx, budget_hold)
 
 
-async def _continue_turn_events(thread_id: str, ctx: SecurityCtx, cancel_check):
+async def _continue_turn_events(thread_id: str, ctx: SecurityCtx, cancel_check: CancelCheck | None) -> AsyncGenerator[dict, None]:
     """The body of `astream_events_continue_turn`, split out so the hold above
     wraps every exit path of it with one try/finally."""
     graph = await runtime_module.init_graph_async()
-    cfg_probe = {"configurable": {"thread_id": thread_id}}
+    cfg_probe: RunnableConfig = {"configurable": {"thread_id": thread_id}}
     state = await graph.aget_state(cfg_probe)
     if state.next and any(task.interrupts for task in state.tasks):
         # The crashed attempt reached human_approval's interrupt() but
@@ -956,7 +963,7 @@ async def _continue_turn_events(thread_id: str, ctx: SecurityCtx, cancel_check):
         return
 
     with _turn_trace("chat-turn-stream-continue", thread_id, "continue(crash-recovery)") as (trace, callbacks):
-        cfg = {
+        cfg: RunnableConfig = {
             "configurable": {"thread_id": thread_id, "ctx": ctx},
             "callbacks": callbacks,
             "recursion_limit": runtime_module.RECURSION_LIMIT,
@@ -983,7 +990,7 @@ async def cancel_run(thread_id: str, ctx: SecurityCtx) -> bool:
     error = await resumability_error_async(graph, {"configurable": {"thread_id": thread_id}})
     if error:
         return False
-    cfg = {"configurable": {"thread_id": thread_id, "ctx": ctx}, "recursion_limit": runtime_module.RECURSION_LIMIT}
+    cfg: RunnableConfig = {"configurable": {"thread_id": thread_id, "ctx": ctx}, "recursion_limit": runtime_module.RECURSION_LIMIT}
     await graph.ainvoke(Command(resume=CANCEL_SENTINEL), config=cfg)
     metrics.agent_cancellation_total.inc()
     return True

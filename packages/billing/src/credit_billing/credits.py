@@ -44,9 +44,9 @@ from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import ROUND_HALF_UP, Decimal
-from typing import Literal
+from typing import Any, Literal, TypeAlias
 
-from psycopg import AsyncConnection
+from psycopg import AsyncConnection, AsyncCursor
 from psycopg.types.json import Jsonb
 
 from credit_billing import metrics
@@ -98,7 +98,11 @@ class Balance:
     debt: Decimal  # what is owed to the wallet, as a positive number
 
 
-def credits_amount(value) -> Decimal:
+# A number as the caller wrote it. A float or a string is read through its shortest repr, not its binary value (see `credits_amount`).
+Number: TypeAlias = Decimal | int | float | str
+
+
+def credits_amount(value: Number) -> Decimal:
     """`value` as an exact six-place decimal, rounding half up. A float is converted through its
     shortest repr (as a person wrote it), not its binary value, so 0.0000005 rounds up to 0.000001
     instead of down because its binary form happens to sit just below the half."""
@@ -108,7 +112,7 @@ def credits_amount(value) -> Decimal:
     return amount.quantize(_UNIT, rounding=ROUND_HALF_UP)
 
 
-def credits_for_cost(cost_usd, credits_per_usd, markup) -> Decimal:
+def credits_for_cost(cost_usd: Number, credits_per_usd: Number, markup: Number) -> Decimal:
     """`credits = round_half_up(cost_usd x credits_per_usd x markup, 6)` (spec 010 data model).
 
     The cost is used at FULL precision and only the result is rounded. Rounding the cost first (it is
@@ -168,7 +172,7 @@ class IdempotencyConflict(ValueError):
         )
 
 
-def _decimal(value) -> str | None:
+def _decimal(value: Number | None) -> str | None:
     """A number as fixed-point text without an exponent or trailing zeros, so equal numbers are equal strings (0.0100 and 0.01 are
     both '0.01'; 100 is '100', not '1E+2'). It is the value the CALLER passed, not what Postgres stored after rounding it."""
     if value is None:
@@ -180,14 +184,14 @@ def _instant(value: datetime | None) -> str | None:
     return None if value is None else value.astimezone(UTC).isoformat(timespec="microseconds")
 
 
-def _grant_request(credits: Decimal, source: str, provider, external_ref, expires_at, reason, actor) -> dict[str, str | None]:
+def _grant_request(credits: Decimal, source: str, provider: str | None, external_ref: str | None, expires_at: datetime | None, reason: str | None, actor: str) -> dict[str, str | None]:
     return {
         "kind": "grant", "amount": format(credits, "f"), "source": source, "provider": provider, "external_ref": external_ref,
         "expires_at": _instant(expires_at), "reason": reason, "actor": actor,
     }
 
 
-def _debit_request(kind: str, credits: Decimal, usage_event_id, pricing: "Pricing | None", reason, actor) -> dict[str, str | None]:
+def _debit_request(kind: str, credits: Decimal, usage_event_id: str | None, pricing: "Pricing | None", reason: str | None, actor: str) -> dict[str, str | None]:
     return {
         "kind": kind, "amount": format(credits, "f"), "usage_event_id": usage_event_id,
         "cost_usd": _decimal(pricing.cost_usd) if pricing else None,
@@ -215,7 +219,7 @@ def _differences(stored: Mapping, new: Mapping, fields: Sequence[str]) -> dict[s
     return {field: (stored[field], new.get(field)) for field in fields if field in stored and stored[field] != new.get(field)}
 
 
-async def _one(cur) -> tuple:
+async def _one(cur: AsyncCursor[Any]) -> tuple:
     """The row a statement is certain to return (an INSERT ... RETURNING, an aggregate)."""
     row = await cur.fetchone()
     if row is None:
@@ -304,7 +308,7 @@ async def _overdraft_lot(conn: AsyncConnection, tenant: str, *, create: bool) ->
 async def grant_in(
     conn: AsyncConnection,
     tenant: str,
-    amount,
+    amount: Number,
     *,
     source: str,
     idempotency_key: str,
@@ -368,7 +372,7 @@ async def grant_in(
 async def debit_in(
     conn: AsyncConnection,
     tenant: str,
-    amount,
+    amount: Number,
     *,
     idempotency_key: str,
     usage_event_id: str | None = None,
@@ -432,7 +436,7 @@ async def debit_in(
 async def clawback_in(
     conn: AsyncConnection,
     tenant: str,
-    amount,
+    amount: Number,
     *,
     idempotency_key: str,
     actor: str,
@@ -451,7 +455,7 @@ async def clawback_in(
 async def adjust_in(
     conn: AsyncConnection,
     tenant: str,
-    amount,
+    amount: Number,
     *,
     idempotency_key: str,
     actor: str,
@@ -563,17 +567,17 @@ async def verify_in(conn: AsyncConnection, tenant: str) -> list[str]:
     return [f"lot {lot_id}: remaining {remaining} but its entries sum to {total}" for lot_id, remaining, total in await cur.fetchall()]
 
 
-async def grant(tenant: str, amount, **kwargs) -> Applied:
+async def grant(tenant: str, amount: Number, **kwargs: Any) -> Applied:
     async with get_connection() as conn:
         return await grant_in(conn, tenant, amount, **kwargs)
 
 
-async def debit(tenant: str, amount, **kwargs) -> Applied:
+async def debit(tenant: str, amount: Number, **kwargs: Any) -> Applied:
     async with get_connection() as conn:
         return await debit_in(conn, tenant, amount, **kwargs)
 
 
-async def adjust(tenant: str, amount, **kwargs) -> Applied:
+async def adjust(tenant: str, amount: Number, **kwargs: Any) -> Applied:
     async with get_connection() as conn:
         return await adjust_in(conn, tenant, amount, **kwargs)
 

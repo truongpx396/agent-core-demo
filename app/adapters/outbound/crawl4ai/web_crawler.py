@@ -32,6 +32,7 @@ which is a real answer: `result.success=False`) and, via `app/core/resilience.py
 after enough in a row, so calls don't each pay the connect timeout while the container is down.
 """
 import logging
+from typing import Any
 
 from crawl4ai import CacheMode, CrawlerRunConfig
 from crawl4ai.docker_client import ConnectionError as Crawl4aiConnectionError
@@ -73,7 +74,7 @@ async def _crawl(url: str) -> str:
         verbose=False,
     )
 
-    async def _attempt():
+    async def _attempt() -> Any:
         # A fresh client (and connection pool) per attempt — a retry after
         # a dropped connection shouldn't reuse whatever socket just failed.
         async with Crawl4aiDockerClient(

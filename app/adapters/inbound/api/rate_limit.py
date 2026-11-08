@@ -18,7 +18,7 @@ and app/core/moderation.py.
 import logging
 
 from limits import RateLimitItemPerMinute, storage, strategies
-from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 
@@ -39,7 +39,7 @@ _webhook_limit = RateLimitItemPerMinute(BILLING_WEBHOOK_RATE_LIMIT_PER_MINUTE)
 
 
 class WebhookRateLimitMiddleware(BaseHTTPMiddleware):
-    async def dispatch(self, request: Request, call_next) -> Response:
+    async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
         if not request.url.path.startswith(WEBHOOK_PATH_PREFIX):
             return await call_next(request)
 

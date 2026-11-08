@@ -55,7 +55,7 @@ class _BoundCounter:
 class Counter:
     """prometheus_client.Counter-shaped wrapper around an OTel Counter."""
 
-    def __init__(self, name: str, description: str = "", labelnames=()):
+    def __init__(self, name: str, description: str = "", labelnames: Iterable[str] = ()) -> None:
         self.name = name  # read by tests/conftest.py::metric_value to look up this
         # instrument's recorded data points via an InMemoryMetricReader —
         # OTel instruments don't expose their own name back once created.
@@ -86,7 +86,7 @@ class Gauge:
     """prometheus_client.Gauge-shaped wrapper around an OTel synchronous Gauge: the LAST value set wins, which is what a
     "how old is the oldest unsent thing right now" reading needs and a Counter cannot say."""
 
-    def __init__(self, name: str, description: str = "", unit: str = "", labelnames=()):
+    def __init__(self, name: str, description: str = "", unit: str = "", labelnames: Iterable[str] = ()) -> None:
         self.name = name
         self._instrument = _meter.create_gauge(name, description=description, unit=unit)
         self._labelnames = tuple(labelnames)

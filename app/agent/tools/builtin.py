@@ -38,7 +38,7 @@ import logging
 import operator
 from collections.abc import Callable, Sequence
 from enum import Enum
-from typing import Literal
+from typing import Literal, TypeVar
 
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import BaseTool, tool
@@ -125,7 +125,7 @@ class CalculatorArgs(BaseModel):
         return v
 
 
-def _display_text(hit) -> str:
+def _display_text(hit: SearchHit) -> str:
     """The text a citation shows: `parent_text` when the hit is a child
     chunk of a larger parent (app/ingestion/chunking.py) — the child is what
     was embedded/matched, but the model gets the richer passage — falling
@@ -294,7 +294,10 @@ async def ask_clarification(question: str, options: list[str]) -> str:
     return await arun_with_timeout(_ask_clarification_impl, question, options)
 
 
-def _unwrap(result):
+_T = TypeVar("_T")
+
+
+def _unwrap(result: _T | BaseException) -> _T:
     """A `gather(..., return_exceptions=True)` result, re-raised if it is an exception."""
     if isinstance(result, BaseException):
         raise result

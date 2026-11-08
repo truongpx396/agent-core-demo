@@ -21,6 +21,7 @@ from app.core.config import CHAT_MODEL, DEFAULT_TENANT, OPENAI_API_BASE, OPENAI_
 from app.core.security import SecurityCtx
 from app.domains.ops import usecases
 from app.platform.job_runtime import scheduled_job
+from app.ports.outbound.llm import ChatModel
 from app.ports.outbound.notify import team_channel
 
 # The automated job's own identity — never a real person's — so usage-event
@@ -53,7 +54,7 @@ def build_digest_prompt(readings: dict[str, float | None], anomalies: list[str])
     return "\n".join(lines)
 
 
-async def run_digest(llm=None) -> str:
+async def run_digest(llm: ChatModel | None = None) -> str:
     """Fetch → summarize → post. Returns the posted summary text. `llm` is
     DI for tests (mirrors app/agent/tools/run_subagent.py::run_subagent_impl's own
     `llm` override) — defaults to a real ChatOpenAI client via the LiteLLM

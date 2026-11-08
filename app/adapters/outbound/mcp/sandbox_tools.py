@@ -102,7 +102,7 @@ async def load_sandbox_tools() -> tuple[list[BaseTool], dict[str, str]]:
     `sandbox_session.py::load_raw_sandbox_tools`, is async too) instead of
     dispatching to a worker thread and blocking that loop.
     """
-    async def _attempt():
+    async def _attempt() -> tuple[list[BaseTool], dict[str, str]]:
         return await arun_with_timeout(
             mcp_client.load_remote_tools,
             command=sys.executable,

@@ -23,7 +23,7 @@ from collections.abc import Sequence
 from functools import partial
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Protocol
+from typing import Any, Protocol
 
 import numpy as np
 
@@ -59,7 +59,7 @@ class TopicBackend(Protocol):
 
 
 class InProcessTopics:
-    def __init__(self, candidate: Candidate, labelset, threads: int | None = None) -> None:
+    def __init__(self, candidate: Candidate, labelset: Any, threads: int | None = None) -> None:
         try:
             from ml_service import labelsets as service
         except ImportError as exc:  # the Makefile exports PYTHONPATH with services/ml-service; a bare `python -m` may not
@@ -87,7 +87,7 @@ class InProcessTopics:
         return [(self.labels.index(r["nearest"]), float(r["similarity"])) for r in results]
 
 
-def load_labelset(name: str, directory: Path = LABELSET_DIR):
+def load_labelset(name: str, directory: Path = LABELSET_DIR) -> Any:
     """The named label set, parsed by the SERVICE's own parser, so a file the service would refuse cannot be scored here."""
     try:
         from ml_service import labelsets as service
@@ -155,7 +155,7 @@ def _tradeoffs(backend: TopicBackend, arrays: dict[str, np.ndarray], labelset_na
     return lines
 
 
-def build_backend(candidate: Candidate, labelset, settings: RunSettings, via: str | None = None) -> TopicBackend:
+def build_backend(candidate: Candidate, labelset: Any, settings: RunSettings, via: str | None = None) -> TopicBackend:
     path = via or candidate.path
     if candidate.name in ("constant", "random-router", "baseline-as-candidate"):
         raise PrerequisiteMissing(f"{candidate.name!r} is a control for routing outcomes; a label set is scored on its own (the shuffled-predictions control is built in)")

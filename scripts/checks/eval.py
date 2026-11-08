@@ -42,6 +42,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.runnables import RunnableConfig
+from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import Command
 
 from app.agent.graph.build import build_graph
@@ -147,9 +149,9 @@ class CaseResult:
     ungrounded_claims_count: int  # SUMMED across repetitions
 
 
-async def _run_case_once(graph, case: GoldenCase) -> _Attempt:
+async def _run_case_once(graph: CompiledStateGraph, case: GoldenCase) -> _Attempt:
     thread_id = f"eval-{case.id}-{uuid.uuid4()}"
-    config = {
+    config: RunnableConfig = {
         "configurable": {
             "thread_id": thread_id,
             "ctx": _EVAL_CTX,
@@ -231,7 +233,7 @@ async def _run_case_once(graph, case: GoldenCase) -> _Attempt:
     )
 
 
-async def run_case(graph, case: GoldenCase, repetitions: int = EVAL_REPETITIONS) -> CaseResult:
+async def run_case(graph: CompiledStateGraph, case: GoldenCase, repetitions: int = EVAL_REPETITIONS) -> CaseResult:
     """Runs `case` `repetitions` times and aggregates — see module
     docstring for why this is a rate, not a single pass/fail."""
     attempts = [await _run_case_once(graph, case) for _ in range(repetitions)]

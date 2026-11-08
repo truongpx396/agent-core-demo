@@ -134,7 +134,7 @@ router = APIRouter()
 
 
 @router.post("/v1/decide", response_model=None)
-async def decide(request: Request):
+async def decide(request: Request) -> JSONResponse:
     app = request.app
     try:
         body = await request.json()

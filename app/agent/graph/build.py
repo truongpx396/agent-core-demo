@@ -23,13 +23,15 @@ This is the composition root, so the one module that imports every node; nothing
 back, which is why no graph module needs a deferred import.
 """
 import functools
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Hashable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from langchain_core.runnables import RunnableConfig
+from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
+from langgraph.graph.state import CompiledStateGraph
 from langgraph.prebuilt import ToolNode
 from langgraph.types import interrupt
 
@@ -72,7 +74,7 @@ from app.agent.graph.state import (
     State,
 )
 from app.agent.graph.tool_guards import tool_batch_guard
-from app.agent.graph.utils import friendly_tool_error, instrumented, make_llm
+from app.agent.graph.utils import NodeFn, friendly_tool_error, instrumented, make_llm
 from app.agent.tools import builtin
 from app.core.config import CHAT_MODEL, MAX_COST_USD_PER_TURN
 from app.core.security import SecurityCtx
@@ -194,7 +196,7 @@ def build_graph(
     manifest: "AgentManifest",
     domain: "DomainPlugin",
     deps: GraphDeps | None = None,
-    checkpointer=None,
+    checkpointer: BaseCheckpointSaver | None = None,
     max_iterations: int | None = None,
     max_tokens_per_turn: int | None = None,
     max_cost_usd_per_turn: float | None = None,
@@ -203,7 +205,7 @@ def build_graph(
     history_token_floor: int | None = None,
     *,
     profile: GraphProfile = FULL_PROFILE,
-):
+) -> CompiledStateGraph:
     """Compile the graph.
 
     `deps` bundles the swappable clients (LLM, search); tests inject fakes through a `GraphDeps` to run full
@@ -280,7 +282,7 @@ def build_graph(
     # its result (messages, or Commands from a tool like run_subagent) is returned unchanged.
     tool_node = ToolNode(domain_tools, handle_tool_errors=friendly_tool_error)
 
-    async def run_tools(state: State, config: RunnableConfig):
+    async def run_tools(state: State, config: RunnableConfig) -> Any:
         return await tool_node.ainvoke(state, config)
 
     builder = StateGraph(State)
@@ -288,7 +290,7 @@ def build_graph(
     # Every node below is wrapped in instrumented(name) at registration time, not by editing the
     # node functions themselves (pattern 14). Plain module-level functions stay undecorated so
     # they're directly callable from tests.
-    def add(name: str, fn, **kwargs) -> None:
+    def add(name: str, fn: NodeFn, **kwargs: Any) -> None:
         builder.add_node(name, instrumented(name)(fn), **kwargs)
 
     add("validate_input", validate_input)
@@ -362,11 +364,11 @@ def build_graph(
         if present
     ]
 
-    def route_after_check_bound(state: State):
+    def route_after_check_bound(state: State) -> Hashable | list[Hashable]:
         route = route_after_check(state)
         if route != "finish":
             return route
-        return finish_steps or END
+        return [*finish_steps] if finish_steps else END  # a list display: LangGraph's router type is list[Hashable]
 
     builder.add_edge(START, "validate_input")
     builder.add_conditional_edges("validate_input", route_after_validation)
@@ -431,12 +433,12 @@ def build_subagent_graph(
     manifest: "AgentManifest",
     domain: "DomainPlugin",
     deps: GraphDeps | None = None,
-    checkpointer=None,
+    checkpointer: BaseCheckpointSaver | None = None,
     max_iterations: int | None = None,
     max_tokens_per_turn: int | None = None,
     max_cost_usd_per_turn: float | None = None,
     emit_no_answer_message: bool = True,
-):
+) -> CompiledStateGraph:
     """`build_graph` with `SUBAGENT_PROFILE`, for a NESTED subagent run
     (`app/agent/tools/run_subagent.py`, pattern 46). Parameters mirror `build_graph`'s, minus
     `history_token_ceiling`/`history_token_floor`: there is no `compact_history` to size."""

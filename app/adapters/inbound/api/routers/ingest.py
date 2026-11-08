@@ -9,6 +9,7 @@ import asyncio
 import json
 import logging
 import uuid
+from collections.abc import AsyncIterator
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
@@ -173,7 +174,7 @@ async def ingest_stream(job_id: str) -> StreamingResponse:
     (this pipeline keeps no job directory) — `job_id` is a `uuid4().hex`,
     unguessable in practice, same posture as the chat results streams.
     """
-    async def generate():
+    async def generate() -> AsyncIterator[str]:
         try:
             async for event in ingest_queue.get().read_results(
                 job_id, first_event_deadline_seconds=INGEST_FIRST_RESPONSE_DEADLINE_SECONDS

@@ -116,6 +116,10 @@ ignore_missing_imports = true
 check_untyped_defs = true
 warn_unused_ignores = true
 warn_redundant_casts = true
+# Every function says what it takes and returns (about 160 did not: the graph nodes' `config`, the workers' Redis `client`, the stream
+# generators). Where the real type is a third party's untyped object or a test's fake the annotation is an explicit `Any`.
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
 # Third-party stubs this app depends on (redis-py's Streams commands,
 # qdrant-client's Filter/Condition unions, RediSearch's create_index) are
 # themselves imprecise in ways this app's own code isn't — see the `cast`/

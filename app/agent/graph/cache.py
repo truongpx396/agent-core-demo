@@ -25,7 +25,7 @@ from app.core.security import SecurityCtx
 # --- Node: semantic cache lookup (GRAPH_PATTERNS.md pattern 22) ---
 def make_check_semantic_cache_node(
     cache_get: Callable[["SecurityCtx | None", str], Awaitable[tuple[str, list[dict]] | None]],
-):
+) -> Callable[[State], Awaitable[dict]]:
     """Factory, same rationale as make_retrieve_context_node: needs an
     injected client so tests can fake it (see tests/agent/graph/test_nodes.py) instead
     of monkeypatching app.adapters.outbound.redis.semantic_cache directly.
@@ -81,7 +81,7 @@ def _turn_acted(state: State, tool_capabilities: Mapping[str, str]) -> bool:
 def make_write_semantic_cache_node(
     cache_set: Callable[["SecurityCtx | None", str, str, list[dict]], Awaitable[None]],
     tool_capabilities: Mapping[str, str],
-):
+) -> Callable[[State], Awaitable[dict]]:
     """Factory, same rationale as make_check_semantic_cache_node.
     `tool_capabilities` is the calling domain's own tier map (`build_graph`
     passes it), used to tell a turn that merely answered from one that acted."""

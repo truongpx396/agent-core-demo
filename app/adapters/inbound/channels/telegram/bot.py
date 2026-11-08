@@ -20,6 +20,7 @@ runs the support copilot, unmodified. Each domain is its own process with its ow
 import asyncio
 import logging
 import signal
+from collections.abc import AsyncGenerator
 from contextlib import aclosing
 from dataclasses import dataclass, field
 
@@ -255,7 +256,7 @@ class Bot:
             door.stream_turn(text, thread_id, unattended=False, replay_key=None if replay_key is None else f"{replay_key}:cleared"), sink, door, thread_id
         )
 
-    async def _collect(self, events, sink: ReplySink, door: Door, thread_id: str) -> Outcome:
+    async def _collect(self, events: AsyncGenerator[dict, None], sink: ReplySink, door: Door, thread_id: str) -> Outcome:
         out = Outcome()
         # `aclosing`: an early return leaves the stream open for the event loop's finalizer to close what it abandoned.
         async with aclosing(events) as stream:

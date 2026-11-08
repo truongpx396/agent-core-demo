@@ -57,6 +57,8 @@ from dataclasses import dataclass
 from decimal import Decimal
 from typing import Literal
 
+from psycopg import AsyncConnection
+
 from credit_billing import metrics
 from credit_billing.db import get_connection
 from credit_billing.providers.base import (
@@ -234,7 +236,7 @@ async def _send(
         return None, exc
 
 
-async def _record(conn, provider: str, tenant: str, event_id: str, verdict: Verdict) -> None:
+async def _record(conn: AsyncConnection, provider: str, tenant: str, event_id: str, verdict: Verdict) -> None:
     if verdict.status == "sent":
         sql = (
             "UPDATE billing_export_outbox SET status = 'sent', attempts = attempts + 1, sent_at = now(), last_error_class = NULL "
@@ -269,5 +271,5 @@ async def _set_age_gauge(provider: str) -> None:
     metrics.agent_usage_export_oldest_pending_age_seconds.labels(provider=provider).set(float(age))
 
 
-def _decimal(value) -> Decimal | None:
+def _decimal(value: Decimal | float | str | None) -> Decimal | None:
     return None if value is None else Decimal(value)
