@@ -125,7 +125,7 @@ PROBES: tuple[Probe, ...] = (
 
 def alias_settings(alias: str, config: Path = CONFIG) -> tuple[str, str, dict[str, float]]:
     """`(ollama model tag, base url, forwarded options)` for a gateway alias in the dev config."""
-    entries = [m for m in yaml.safe_load(config.read_text())["model_list"] if m["model_name"] == alias]
+    entries = [m for m in yaml.safe_load(config.read_text(encoding="utf-8"))["model_list"] if m["model_name"] == alias]
     if len(entries) != 1:
         raise SystemExit(f"{config.name} defines {len(entries)} entries named {alias!r}, expected exactly one")
     params = entries[0]["litellm_params"]

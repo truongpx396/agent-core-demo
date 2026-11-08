@@ -13,6 +13,8 @@ sync mock — that leg is genuinely local ONNX compute, unchanged.
 """
 
 import socket
+import threading
+from pathlib import Path
 
 import httpx
 import pytest
@@ -232,6 +234,26 @@ class TestIngestFile:
         count = await ingestor.ingest_file(str(p), ctx=TEST_CTX)
 
         assert count >= 1
+
+    async def test_reads_the_file_off_the_event_loop(self, tmp_path, monkeypatch):
+        """Read inline, an upload-sized file stalls every other coroutine in the process for the length of the read."""
+        _mock_embeddings(monkeypatch)
+        _mock_upsert(monkeypatch, {})
+        read_on: list[int] = []
+        real_read_text = Path.read_text
+
+        def recording_read_text(self, *args, **kwargs):
+            read_on.append(threading.get_ident())
+            return real_read_text(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "read_text", recording_read_text)
+        p = tmp_path / "notes.txt"
+        p.write_text("Some notes about the project.", encoding="utf-8")
+
+        await ingestor.ingest_file(str(p), ctx=TEST_CTX)
+
+        assert read_on, "the file was never read through Path.read_text"
+        assert threading.get_ident() not in read_on  # this test runs on the event loop's thread
 
 
 class TestAssertSafeUrl:

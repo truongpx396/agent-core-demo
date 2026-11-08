@@ -23,7 +23,7 @@ def ui() -> str:
     disk per request (not cached) so editing the file and refreshing is
     enough during development — this isn't a hot path.
     """
-    return web_auth.render(_UI_HTML_PATH.read_text())
+    return web_auth.render(_UI_HTML_PATH.read_text(encoding="utf-8"))
 
 
 @router.get("/static/auth.js", include_in_schema=False)

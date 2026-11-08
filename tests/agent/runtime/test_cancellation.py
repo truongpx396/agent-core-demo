@@ -250,7 +250,7 @@ class TestAstreamEventsTurnRawAsyncioCancellation:
             raised = None
             try:
                 await task
-            except asyncio.CancelledError as exc:  # noqa: BLE001 - captured for the assertion below
+            except asyncio.CancelledError as exc:  # captured for the assertion below
                 raised = exc
             return raised
 

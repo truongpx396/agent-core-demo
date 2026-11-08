@@ -55,7 +55,7 @@ def make_domain_subagent_tool(
     )
 
     class _RunSubagentArgs(BaseModel):
-        subagent_name: domain_subagent_name = Field(  # type: ignore[valid-type]
+        subagent_name: domain_subagent_name = Field(
             ..., description=f"Which subagent to delegate to. Options:\n{menu}"
         )
         task: str = Field(

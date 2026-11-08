@@ -96,7 +96,7 @@ def load_labelset(name: str, directory: Path = LABELSET_DIR):
     path = directory / f"{name}.json"
     if not path.exists():
         raise PrerequisiteMissing(f"no label set named {name!r} at {path}")
-    parsed = service.parse_labelset(path.read_text(), name)
+    parsed = service.parse_labelset(path.read_text(encoding="utf-8"), name)
     if isinstance(parsed, service.Refused):
         raise PrerequisiteMissing(f"the label set {name!r} is refused by the service's own parser: {parsed.reason}")
     return parsed

@@ -28,7 +28,7 @@ REFERENCE = re.compile(r"(?<![\w/.-])((?:app|scripts|tests|packages)/[\w./-]+?\.
 
 def _names_defined_in(path: Path) -> set[str]:
     names: set[str] = set()
-    for node in ast.walk(ast.parse(path.read_text())):
+    for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
             names.add(node.name)
         elif isinstance(node, ast.Assign):

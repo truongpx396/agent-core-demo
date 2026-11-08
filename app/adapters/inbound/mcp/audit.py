@@ -48,6 +48,7 @@ def audited(server: str, identity: IdentitySource):
                 outcome = _outcome(result)
                 return result
             finally:
+                who: dict[str, str | None]
                 try:
                     ctx = identity()
                     who = {"tenant": ctx["tenant"], "principal": ctx["principal"]}

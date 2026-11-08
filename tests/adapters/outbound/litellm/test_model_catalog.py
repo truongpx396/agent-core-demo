@@ -168,7 +168,7 @@ class TestAFailedLookupIsNotRepeatedOnEveryCall:
 class _SlowModelInfo(BaseHTTPRequestHandler):
     delay_seconds = 0.5
 
-    def do_GET(self):  # noqa: N802 - http.server's required name
+    def do_GET(self):  # http.server's required name
         time.sleep(self.delay_seconds)
         body = json.dumps(_MODEL_INFO).encode()
         self.send_response(200)

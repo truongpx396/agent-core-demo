@@ -42,7 +42,7 @@ def test_the_pad_id_is_the_vocabulary_id_even_when_it_is_not_zero():
 
     model.embed(["hello world", "hello"])
 
-    assert model._session.calls[0]["input_ids"].tolist() == [[1, 2], [1, 7]]  # noqa: SLF001 - the padded feed is the assertion
+    assert model._session.calls[0]["input_ids"].tolist() == [[1, 2], [1, 7]]  # the padded feed is the assertion
 
 
 # ---- the MiniLM trap: a tokenizer.json that bakes in fixed-length padding ---------------------------------------------------

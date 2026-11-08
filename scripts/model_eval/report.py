@@ -146,7 +146,7 @@ def validate(report: dict) -> list[str]:
     """Schema errors for `report` (empty = valid). jsonschema is a dev dependency; the harness itself never needs it."""
     import jsonschema
 
-    schema = json.loads(SCHEMA_PATH.read_text())
+    schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
     return sorted(e.message for e in jsonschema.Draft202012Validator(schema).iter_errors(report))
 
 

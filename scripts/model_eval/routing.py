@@ -68,7 +68,7 @@ def read_outcomes(path: Path) -> dict[str, Outcome]:
     """Every row of an outcomes file by prompt id. A malformed row or a repeated id is an error, not something to skip: a head must not be
     trained on a file nobody could vouch for."""
     out: dict[str, Outcome] = {}
-    for number, line in enumerate(path.read_text().splitlines(), start=1):
+    for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
         if not line.strip():
             continue
         where = f"{path.name} line {number}"

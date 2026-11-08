@@ -47,7 +47,7 @@ def write_dataset(source: ds.Manifest, lists: dict[str, list[dict]], *, k: int, 
                        "derived_from": {"name": source.name, "version": source.version}},
         "splits": {name: {"file": f"{name}.jsonl", "sha256": ds.write_jsonl(target / f"{name}.jsonl", rows), "items": len(rows)} for name, rows in lists.items()},
     }
-    (target / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
+    (target / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return target
 
 

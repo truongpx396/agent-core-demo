@@ -42,7 +42,7 @@ def main() -> None:
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": "{{user_message}}"},
         ]
-        (PROMPTS_DIR / f"{name}.json").write_text(json.dumps(messages, indent=2))
+        (PROMPTS_DIR / f"{name}.json").write_text(json.dumps(messages, indent=2), encoding="utf-8")
         print(f"wrote {PROMPTS_DIR / f'{name}.json'}")
 
 

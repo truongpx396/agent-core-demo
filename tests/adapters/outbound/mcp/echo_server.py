@@ -29,7 +29,7 @@ async def slow(seconds: float) -> str:
 @mcp.tool()
 async def bump(path: str) -> str:
     """A side effect that must not run twice: appends one line to `path`."""
-    with open(path, "a") as f:
+    with open(path, "a", encoding="utf-8") as f:
         f.write("ran\n")
     return "bumped"
 
@@ -37,7 +37,7 @@ async def bump(path: str) -> str:
 @mcp.tool()
 async def bump_then_die(path: str) -> str:
     """Runs the side effect and then dies before it can answer: the call that may have run, whose reply was lost."""
-    with open(path, "a") as f:
+    with open(path, "a", encoding="utf-8") as f:
         f.write("ran\n")
     os._exit(3)
 

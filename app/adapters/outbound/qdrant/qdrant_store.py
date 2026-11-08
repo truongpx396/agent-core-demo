@@ -157,7 +157,7 @@ async def ensure_live(collection: str | None = None) -> str | None:
             "adopted a pre-identity vector collection; its embedding identity cannot be verified until it is re-embedded",
             extra={"collection": logical},
         )
-    except Exception:  # noqa: BLE001 - another process may have created the alias a moment ago; re-read before deciding it failed
+    except Exception:  # another process may have created the alias a moment ago; re-read before deciding it failed
         target = await alias_target(logical)
         if target is None:
             raise

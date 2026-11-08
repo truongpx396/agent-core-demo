@@ -54,7 +54,7 @@ COMPARED = ("alert", "expr", "for", "labels")
 
 
 def _rules(path: Path) -> dict[str, dict]:
-    return {rule["alert"]: rule for group in yaml.safe_load(path.read_text())["groups"] for rule in group["rules"]}
+    return {rule["alert"]: rule for group in yaml.safe_load(path.read_text(encoding="utf-8"))["groups"] for rule in group["rules"]}
 
 
 def _same(package_rule: dict, app_rule: dict) -> list[str]:
@@ -95,7 +95,7 @@ def test_the_rule_comparison_would_notice_drift_in_each_field(field):
 # --- the dashboard --------------------------------------------------------------------------------------------------
 
 def _panels(path: Path) -> dict[str, dict]:
-    return {p["title"]: p for p in json.loads(path.read_text())["panels"] if p["type"] != "row"}
+    return {p["title"]: p for p in json.loads(path.read_text(encoding="utf-8"))["panels"] if p["type"] != "row"}
 
 
 def _queries(panel: dict) -> set[tuple[str, str]]:

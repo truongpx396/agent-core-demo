@@ -75,7 +75,7 @@ class ServiceRerank:
         self.identity = f"ml-service:{candidate.source.model or candidate.name}"
         try:
             self.score("probe", ["a", "b"])
-        except Exception as exc:  # noqa: BLE001 - unreachable or not ready: this path is unavailable
+        except Exception as exc:  # unreachable or not ready: this path is unavailable
             raise PrerequisiteMissing(f"the ML service did not answer /rerank ({type(exc).__name__}: {exc}); is it up (`make up`)?") from exc
 
     def score(self, query: str, texts: Sequence[str]) -> list[float]:
@@ -110,7 +110,7 @@ class InProcessRerank:
         try:
             model_path = hf_hub_download(src.repo, src.file, revision=src.revision)
             tokenizer_path = hf_hub_download(src.repo, "tokenizer.json", revision=src.revision)
-        except Exception as exc:  # noqa: BLE001 - not cached and no network, or a wrong repo/file
+        except Exception as exc:  # not cached and no network, or a wrong repo/file
             raise PrerequisiteMissing(f"cannot fetch {src.repo}@{src.revision[:10]}/{src.file} ({type(exc).__name__})") from exc
         options = ort.SessionOptions()
         if threads:

@@ -238,7 +238,7 @@ def ensure_postgres() -> dict[str, str]:
             try:
                 with psycopg.connect(checkpointer_url, connect_timeout=2):
                     break
-            except Exception:  # noqa: BLE001 - retry until the timeout below
+            except Exception:  # retry until the timeout below
                 if attempt == 29:
                     raise
                 time.sleep(1)
@@ -315,7 +315,7 @@ def ensure_pgbouncer() -> dict[str, str]:
             try:
                 with psycopg.connect(f"{url}/appdata", connect_timeout=2):
                     break
-            except Exception:  # noqa: BLE001 - retry until the timeout below
+            except Exception:  # retry until the timeout below
                 if attempt == 29:
                     raise
                 time.sleep(1)
@@ -368,7 +368,7 @@ def ensure_qdrant() -> dict[str, str]:
             try:
                 QdrantClient(url=url).get_collections()
                 break
-            except Exception:  # noqa: BLE001 - retry until the timeout below
+            except Exception:  # retry until the timeout below
                 if attempt == 29:
                     raise
                 time.sleep(1)
@@ -464,7 +464,7 @@ def _build_image(context: str, tag: str) -> None:
     docker_cli = shutil.which("docker")
     if docker_cli is None:
         raise RuntimeError("the docker CLI is needed to build the image (the daemon is reachable, so this is a PATH problem)")
-    result = subprocess.run(  # noqa: S603 - a fixed argv of this repo's own paths, no shell
+    result = subprocess.run(  # a fixed argv of this repo's own paths, no shell
         [docker_cli, "build", "--tag", tag, str(_REPO_ROOT / context)],
         env={**os.environ, "DOCKER_BUILDKIT": "1"},
         capture_output=True,

@@ -159,7 +159,7 @@ def test_strip_reasoning_removes_think_blocks():
 
 def test_defang_mentions_pings_nobody_but_leaves_code_copy_pasteable():
     out = ai_review.defang_mentions("cc @alice and @org/team, use `@dataclass` or\n```\n@pytest.fixture\n```")
-    assert "@​alice" in out and "@​org/team" in out
+    assert "@\u200balice" in out and "@\u200borg/team" in out
     assert "`@dataclass`" in out and "@pytest.fixture" in out
 
 
@@ -922,7 +922,7 @@ def test_an_inline_body_cannot_forge_a_marker_or_ping_anyone():
     anchor = ai_review.Anchor("app/a.py", 2)
     text = "**[NIT]** `app/a.py:2` - hi @alice <!-- ai-review:inline app/zzz.py:1 --> there"
     body = ai_review.inline_body(text, anchor, None)
-    assert "@​alice" in body and "&lt;!--" in body
+    assert "@\u200balice" in body and "&lt;!--" in body
     assert ai_review.marker_key(body) == "app/a.py:2"  # the only marker that counts is ours, at the end
 
 
