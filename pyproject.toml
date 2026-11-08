@@ -77,6 +77,12 @@ ignore = [
 # nothing to do with this app's own code. CI pins the actual interpreter
 # version directly instead (see .github/workflows/ci.yml).
 ignore_missing_imports = true
+# The body of a function with no annotations is skipped by default, so a wrong type inside an untyped decorator wrapper went
+# unseen (app/adapters/inbound/mcp/audit.py). A `type: ignore` that no longer ignores anything, or a `cast` to the type the
+# value already has, is a stale claim about the code: both fail the build.
+check_untyped_defs = true
+warn_unused_ignores = true
+warn_redundant_casts = true
 # Third-party stubs this app depends on (redis-py's Streams commands,
 # qdrant-client's Filter/Condition unions, RediSearch's create_index) are
 # themselves imprecise in ways this app's own code isn't — see the `cast`/
