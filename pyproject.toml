@@ -63,13 +63,20 @@ src = [".", "packages/billing/src", "services/ml-service"]
 # trace flush, a cosmetic typing indicator) are individually noqa'd.
 # PLE: pylint's error rules, among them invisible and bidirectional characters in source (a literal zero-width space sat in
 # scripts/ai_review/review.py). RUF100: a `noqa` that suppresses nothing, which would silently cover the rule if the code under it
-# later changed.
-select = ["F", "I", "UP", "B", "BLE", "S110", "PLE", "RUF100"]
+# later changed. ASYNC: a blocking call (file, subprocess, input) inside `async def`, which stalls every other task on the loop.
+select = ["F", "I", "UP", "B", "BLE", "S110", "PLE", "RUF100", "ASYNC"]
 ignore = [
     "B008",   # FastAPI's Depends()/File() in an argument default is the framework's own idiom
     "UP042",  # str+Enum -> StrEnum for ErrorCode/Topic/Department is a deliberate call for a
               # separate change, not something a lint-config pass should silently rewrite
+    "ASYNC109",  # a `timeout` parameter handed on to httpx/anyio is the function's API, not a missing `asyncio.timeout`
 ]
+
+[tool.ruff.lint.per-file-ignores]
+# One-shot operator tools and tests are synchronous by nature: blocking there stalls nothing but themselves.
+"scripts/**" = ["ASYNC"]
+"tests/**" = ["ASYNC"]
+"packages/*/tests/**" = ["ASYNC"]
 
 [tool.mypy]
 # No explicit python_version pin: mypy infers it from whatever interpreter

@@ -44,7 +44,7 @@ async def post_to_team_channel(channel: str, message: str) -> str:
 
     try:
         _LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
-        with _LOG_PATH.open("a", encoding="utf-8") as f:
+        with _LOG_PATH.open("a", encoding="utf-8") as f:  # noqa: ASYNC230 - a few bytes, inline on purpose (see the docstring)
             f.write(line + "\n")
         metrics.agent_team_channel_notify_total.labels(sink="local", outcome="ok").inc()
     except OSError as exc:

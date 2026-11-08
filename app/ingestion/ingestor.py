@@ -189,7 +189,8 @@ async def ingest_file(path: str, ctx: SecurityCtx | None, topic: str | None = No
         raise IngestRefused(
             f"unsupported file type {p.suffix!r} — only {sorted(_ALLOWED_FILE_SUFFIXES)} are supported"
         )
-    text = p.read_text(encoding="utf-8", errors="replace")
+    # Off the loop: an upload-sized read inline would stall every other coroutine in the process while it lasts.
+    text = await asyncio.to_thread(p.read_text, encoding="utf-8", errors="replace")
     return await ingest_text(text, title=p.stem, ctx=ctx, source=f"file:{p.name}", topic=topic)
 
 
