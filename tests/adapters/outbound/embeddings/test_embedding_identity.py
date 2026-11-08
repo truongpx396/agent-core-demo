@@ -13,7 +13,7 @@ from app.ports.outbound import models as model_ports
 
 
 def _identity(**overrides) -> EmbeddingIdentity:
-    base = dict(alias="embed", resolved_model="ollama/nomic-embed-text", dim=768, query_prefix="", document_prefix="", revision_label="")
+    base = {"alias": "embed", "resolved_model": "ollama/nomic-embed-text", "dim": 768, "query_prefix": "", "document_prefix": "", "revision_label": ""}
     return EmbeddingIdentity(**{**base, **overrides})
 
 

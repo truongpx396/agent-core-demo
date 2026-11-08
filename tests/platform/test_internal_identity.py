@@ -149,7 +149,7 @@ def _tamper(token: str) -> str:
     body = json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
     body["tenant"] = "someone-elses"
     forged = base64.urlsafe_b64encode(json.dumps(body).encode()).rstrip(b"=").decode()
-    return ".".join([header, forged, signature])
+    return f"{header}.{forged}.{signature}"
 
 
 REFUSALS = {

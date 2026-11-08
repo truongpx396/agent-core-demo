@@ -134,7 +134,7 @@ class TestSemanticCacheAndRetrievalUseTextOnly:
 
         async def fake_cache_get(ctx, query):
             captured["query"] = query
-            return None
+            return
 
         check_semantic_cache = graph_cache.make_check_semantic_cache_node(fake_cache_get)
         state = {

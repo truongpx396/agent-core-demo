@@ -730,7 +730,7 @@ class TestSkillSearch:
 
 class TestUseSkill:
     async def test_needs_no_ctx_it_is_a_bundled_capability_not_tenant_data(self, monkeypatch):
-        monkeypatch.setattr(skills_module, "get_skills", lambda: {})
+        monkeypatch.setattr(skills_module, "get_skills", dict)
         result = await use_skill.ainvoke({"name": "whatever"})
         assert "Refused" not in result
 
@@ -749,7 +749,7 @@ class TestUseSkill:
         assert result == record.body
 
     async def test_unknown_name_returns_a_clear_message_not_an_exception(self, monkeypatch):
-        monkeypatch.setattr(skills_module, "get_skills", lambda: {})
+        monkeypatch.setattr(skills_module, "get_skills", dict)
         result = await use_skill.ainvoke({"name": "does-not-exist"})
         assert "No skill named" in result
         assert "skill_search" in result
@@ -1618,7 +1618,7 @@ class TestSubagentDomainPluginCapabilityFix:
 
 class TestMakeDomainSubagentTool:
     def test_returns_none_when_no_subagent_is_declared_for_the_domain(self, monkeypatch):
-        monkeypatch.setattr(subagents_module, "get_subagents", lambda: {})
+        monkeypatch.setattr(subagents_module, "get_subagents", dict)
         assert make_domain_subagent_tool("support", list(TOOLS), TOOL_CAPABILITIES) is None
 
     def test_builds_a_working_tool_scoped_to_the_domains_own_universe(self, monkeypatch):

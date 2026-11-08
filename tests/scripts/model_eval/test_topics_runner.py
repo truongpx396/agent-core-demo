@@ -104,7 +104,7 @@ def test_the_trade_offs_name_the_label_set_the_cutoff_per_topic_results_and_the_
 
 # ---- what it refuses ----------------------------------------------------------------------------------------------------------------
 def test_a_label_set_with_no_cutoff_for_the_candidates_model_cannot_be_scored():
-    with pytest.raises(PrerequisiteMissing, match="no calibration for 'bge-small-en-v1.5'.*labelset-calibrate"):
+    with pytest.raises(PrerequisiteMissing, match=r"no calibration for 'bge-small-en-v1.5'.*labelset-calibrate"):
         topics.run(CANDIDATE, settings(), backend=FakeTopics(min_similarity=None))
 
 
@@ -166,9 +166,11 @@ class Scripted:
         i_in, i_none, out = 0, 0, []
         for text in texts:
             if text.startswith("none"):
-                out.append((0, self.none[i_none])); i_none += 1
+                out.append((0, self.none[i_none]))
+                i_none += 1
             else:
-                out.append((0, self.in_scope[i_in])); i_in += 1
+                out.append((0, self.in_scope[i_in]))
+                i_in += 1
         return out
 
 

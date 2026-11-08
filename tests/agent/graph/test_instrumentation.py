@@ -57,9 +57,8 @@ def test_logs_failed_and_reraises_on_exception(caplog):
     def node(state):
         raise ValueError("boom")
 
-    with caplog.at_level(logging.WARNING, logger="app.agent.graph.utils"):
-        with pytest.raises(ValueError, match="boom"):
-            node({"run_id": "abc123"})
+    with caplog.at_level(logging.WARNING, logger="app.agent.graph.utils"), pytest.raises(ValueError, match="boom"):
+        node({"run_id": "abc123"})
 
     failed = next(r for r in caplog.records if r.message == "node_failed")
     assert failed.node == "dummy"
@@ -77,9 +76,8 @@ def test_graph_interrupt_is_logged_as_paused_not_failed_and_still_propagates(cap
     def node(state):
         raise GraphInterrupt()
 
-    with caplog.at_level(logging.INFO, logger="app.agent.graph.utils"):
-        with pytest.raises(GraphInterrupt):
-            node({"run_id": "abc123"})
+    with caplog.at_level(logging.INFO, logger="app.agent.graph.utils"), pytest.raises(GraphInterrupt):
+        node({"run_id": "abc123"})
 
     messages = [r.message for r in caplog.records]
     assert "node_paused" in messages

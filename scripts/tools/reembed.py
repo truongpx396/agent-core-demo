@@ -73,7 +73,7 @@ class Report:
             return [f"{self.collection}: already under the configured embedding identity ({self.target}); nothing to do"]
         out = [f"{self.collection}: {self.source} -> {self.target}: {self.points} points"]
         if self.dry_run:
-            return out + ["dry run: nothing written"]
+            return [*out, "dry run: nothing written"]
         out.append(f"copied {self.copied}, skipped {len(self.skipped)} without text, in {self.seconds:.1f}s")
         out.append(
             f"swapped: {self.collection}-live now points at {self.target}; the old collection {self.source} is NOT deleted "

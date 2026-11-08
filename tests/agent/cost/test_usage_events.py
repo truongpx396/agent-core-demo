@@ -359,10 +359,12 @@ class TestAFailedWriteNeverFailsTheTurnAndIsNeverSilent:
         before = _count("usage_event_table_missing")
         write_before = _count("usage_event_write")
 
-        with cost_ports.usage_events.overriding(_FailingStore(UsageTableMissing())):
-            with caplog.at_level("WARNING", logger=usage_events.logger.name):
-                for _ in range(3):
-                    await self._record()
+        with (
+            cost_ports.usage_events.overriding(_FailingStore(UsageTableMissing())),
+            caplog.at_level("WARNING", logger=usage_events.logger.name),
+        ):
+            for _ in range(3):
+                await self._record()
 
         assert _count("usage_event_table_missing") == before + 3
         assert _count("usage_event_write") == write_before, "an unapplied migration is not a write failure"

@@ -42,7 +42,7 @@ EXPECTED_CLASS = {
 
 
 def _segments(path: str) -> list[str]:
-    return [s for s in path.strip("/").split("/")] if path.strip("/") else []
+    return path.strip("/").split("/") if path.strip("/") else []
 
 
 def _matches(pattern: str, segs: list[str]) -> bool:

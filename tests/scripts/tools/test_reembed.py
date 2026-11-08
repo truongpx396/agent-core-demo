@@ -299,6 +299,6 @@ def test_nothing_under_app_can_import_the_reembed_script():
                 names = [node.module or "", *[(node.module or "") + "." + a.name for a in node.names]]
             elif isinstance(node, ast.Import):
                 names = [a.name for a in node.names]
-            if any(n == "scripts.tools.reembed" or n.endswith(".reembed") and n.startswith("scripts") for n in names):
+            if any(n == "scripts.tools.reembed" or (n.endswith(".reembed") and n.startswith("scripts")) for n in names):
                 offenders.append(path.relative_to(REPO).as_posix())
     assert offenders == []

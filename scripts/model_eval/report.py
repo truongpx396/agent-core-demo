@@ -155,9 +155,9 @@ def render_markdown(report: dict) -> str:
     out = [f"# {report['kind']} evaluation: {c['name']}", "", f"**Status: {report['status'].upper()}**", ""]
     for w in report["warnings"]:
         out.append(f"> {w}")
-    out += ["", f"Dataset {d['name']} {d['version']} ({d['items']} items, {round(d['reviewed_share'] * 100)}% reviewed). "
+    out += ["", (f"Dataset {d['name']} {d['version']} ({d['items']} items, {round(d['reviewed_share'] * 100)}% reviewed). "
             f"Hardware {report['hardware']['id']} ({report['hardware']['cpu']}, {report['hardware']['threads']} threads). "
-            f"Candidate path: {c['path']}.", "", "## Quality", "", "| metric | value | 95% CI | vs baseline | verdict |", "|---|---|---|---|---|"]
+            f"Candidate path: {c['path']}."), "", "## Quality", "", "| metric | value | 95% CI | vs baseline | verdict |", "|---|---|---|---|---|"]
     for name, q in report["quality"].items():
         delta = report["deltas"].get(name)
         cell = f"{delta['delta']:+.4f}" if delta else "-"

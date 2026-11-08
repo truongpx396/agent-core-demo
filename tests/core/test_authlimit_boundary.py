@@ -13,7 +13,7 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
 SERVICE = REPO / "services" / "authlimit"
-GO_FILES = [p for p in SERVICE.rglob("*.go")]
+GO_FILES = list(SERVICE.rglob("*.go"))
 NON_TEST_GO = [p for p in GO_FILES if not p.name.endswith("_test.go")]
 
 

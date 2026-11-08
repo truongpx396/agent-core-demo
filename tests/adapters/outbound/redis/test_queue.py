@@ -667,7 +667,7 @@ class TestTurnQueueAdapter:
 
     async def test_a_repeated_submission_reuses_the_first_attempts_request_id_until_it_is_released(self, adapter):
         turn_queue, _ = adapter
-        claim = dict(thread_id="t", digest="d", ttl_seconds=60)
+        claim = {"thread_id": "t", "digest": "d", "ttl_seconds": 60}
 
         assert await turn_queue.claim_or_get_existing_submission(request_id="r1", **claim) == ("r1", True)
         assert await turn_queue.claim_or_get_existing_submission(request_id="r2", **claim) == ("r1", False)

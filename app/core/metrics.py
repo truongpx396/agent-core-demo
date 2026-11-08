@@ -42,7 +42,7 @@ def _fingerprint(text: str) -> str:
 
 
 class _BoundCounter:
-    __slots__ = ("_instrument", "_attributes")
+    __slots__ = ("_attributes", "_instrument")
 
     def __init__(self, instrument: metrics_api.Counter, attributes: Mapping[str, str]):
         self._instrument = instrument
@@ -70,7 +70,7 @@ class Counter:
 
 
 class _BoundHistogram:
-    __slots__ = ("_instrument", "_attributes")
+    __slots__ = ("_attributes", "_instrument")
 
     def __init__(self, instrument: metrics_api.Histogram, attributes: Mapping[str, str]):
         self._instrument = instrument
@@ -98,7 +98,7 @@ class Histogram:
 
 
 class _BoundGauge:
-    __slots__ = ("_instrument", "_attributes")
+    __slots__ = ("_attributes", "_instrument")
 
     # `Any`: this OpenTelemetry release exposes the synchronous Gauge only under a private name (`_Gauge`), while
     # `Meter.create_gauge` that returns it is public; naming the private class here would break on the next release.

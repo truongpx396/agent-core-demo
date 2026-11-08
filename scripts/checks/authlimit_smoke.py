@@ -47,6 +47,7 @@ import argparse
 import asyncio
 import base64
 import hashlib
+import itertools
 import json
 import os
 import re
@@ -432,7 +433,7 @@ async def stage_spoofing(d: Door, keys: dict[str, Any]) -> None:
     tricks = ["/static/../chat/stream/queued", "/static/%2e%2e/chat/stream/queued", "/static/..%2fchat/stream/queued", "/health/../chat/resume",
               "//chat/stream/queued", "/chat/./stream/queued", "/static/a%5c..%5cchat/resume", "/billing/webhooks/../../chat/resume"]
     for target in tricks:
-        status, headers, body = await d.raw(target, method="POST")
+        status, _headers, body = await d.raw(target, method="POST")
         reached = b'"headers"' in body and status == 200
         check(f"path trick {target!r} does not reach the upstream unauthenticated", not reached, f"{status} {body[:100]!r}")
 
@@ -559,14 +560,14 @@ async def stage_logs(d: Door, keys_dir: Path) -> None:
     for pem in keys_dir.glob("*.pem"):
         pem_bodies += [line for line in pem.read_text(encoding="utf-8").splitlines() if len(line) > 20 and not line.startswith("-----")]
     check("no private key material appears in any log", not any(b in text for b in pem_bodies) and "BEGIN PRIVATE KEY" not in text)
-    check("no JWT-shaped string is logged by authlimit", not re.search(r"eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.", "\n".join(l for l in text.splitlines() if "authlimit-" in l and "casdoor" not in l)))
-    errors = [l for l in text.splitlines() if "authlimit-" in l and '"level":"ERROR"' in l]
+    check("no JWT-shaped string is logged by authlimit", not re.search(r"eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.", "\n".join(line for line in text.splitlines() if "authlimit-" in line and "casdoor" not in line)))
+    errors = [line for line in text.splitlines() if "authlimit-" in line and '"level":"ERROR"' in line]
     check("authlimit logged no errors", not errors, "\n".join(errors[:3]))
     if d.upstream == "api":
-        app_lines = [l for l in text.splitlines() if l.startswith(("api-", "agent-worker-"))]  # compose prefixes a line with the service and replica
+        app_lines = [line for line in text.splitlines() if line.startswith(("api-", "agent-worker-"))]  # compose prefixes a line with the service and replica
         check("the API and the worker logged something to look through", len(app_lines) > 5, f"{len(app_lines)} lines")
         jwt_shaped = re.compile(r"eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.")
-        check("no JWT-shaped string (the internal identity or the external token) is logged by the API or the worker", not any(jwt_shaped.search(l) for l in app_lines))
+        check("no JWT-shaped string (the internal identity or the external token) is logged by the API or the worker", not any(jwt_shaped.search(line) for line in app_lines))
 
 
 def seed_second_tenant(d: Door) -> bool:
@@ -751,7 +752,7 @@ async def stage_replica(d: Door) -> None:
     bad = [(round(t, 1), s) for t, s in results if s != 200]
     check(f"traffic through the kill: {len(results)} requests, {len(bad)} failed", len(bad) <= 2, f"{bad[:8]}")
     info(f"failures (seconds since start, status): {bad}")
-    slow = max((b - a for (a, _), (b, _) in zip(results, results[1:], strict=False)), default=0.0)
+    slow = max((b - a for (a, _), (b, _) in itertools.pairwise(results)), default=0.0)
     info(f"the longest gap between two answers was {round(slow, 2)} s (a request that picked the dead replica waits for a dial timeout)")
     check("no request waited longer than 2 seconds on the dead replica", slow <= 2.5, f"{round(slow, 2)} s")
     d.compose("up -d --no-deps authlimit")

@@ -29,7 +29,7 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 import httpx
 import yaml
@@ -77,7 +77,7 @@ def leaks(seen: dict, needles: list[str]) -> list[str]:
 
 
 class _Stub(BaseHTTPRequestHandler):
-    seen: list[dict] = []
+    seen: ClassVar[list[dict]] = []
 
     def do_POST(self) -> None:  # http.server's name
         body = json.loads(self.rfile.read(int(self.headers.get("content-length", 0))) or b"{}")

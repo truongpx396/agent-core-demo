@@ -166,8 +166,8 @@ def test_a_migration_that_did_not_complete_exits_4_with_one_error_line_and_no_tr
 
     assert code == 4 and out == ""
     assert err.strip().splitlines() == [
-        "error: 20-credit-wallet.sql did not complete: could not get a lock within 2s (another transaction holds a table this script needs, "
-        "or another migration is running). Nothing from this script was applied; running again is safe."
+        ("error: 20-credit-wallet.sql did not complete: could not get a lock within 2s (another transaction holds a table this script needs, "
+         "or another migration is running). Nothing from this script was applied; running again is safe.")
     ]
 
 

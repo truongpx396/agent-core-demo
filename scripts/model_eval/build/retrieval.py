@@ -167,7 +167,7 @@ def build_items(corpus: list[dict], generate: Generator) -> tuple[list[dict], di
                 continue
             wanted = content_words(q)
             others = [cid for cid, words in cover.items() if cid != chunk["id"] and wanted and len(wanted & words) / len(wanted) >= 0.9]
-            relevant = {chunk["id"]: 1, **{cid: 1 for cid in others}}
+            relevant = {chunk["id"]: 1, **dict.fromkeys(others, 1)}
             items.append({"qid": f"{chunk['id']}.q{taken}", "domain": chunk["domain"], "query": q, "relevant": relevant,
                           "kind": "adversarial" if others else "direct", "reviewed": False})
             kept_texts.append(q)

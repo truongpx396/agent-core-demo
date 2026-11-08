@@ -198,7 +198,7 @@ async def test_a_changed_checksum_is_reported_applied_again_and_restored_and_che
     result = await migrate.migrate()
     code_after, _, _ = run_cli(database, tmp_path, "--check")
 
-    assert states == {name: "applied" for name in NAMES} | {"22-billing.sql": "changed"}
+    assert states == dict.fromkeys(NAMES, "applied") | {"22-billing.sql": "changed"}
     assert code_before == 1 and "changed  22-billing.sql" in out_before
     assert result.applied == ["22-billing.sql"] and result.skipped == [n for n in NAMES if n != "22-billing.sql"]
     assert code_after == 0

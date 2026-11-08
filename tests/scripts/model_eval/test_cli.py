@@ -149,7 +149,7 @@ def test_the_dev_split_is_refused_for_reporting(env, capsys):
 def test_an_unknown_candidate_lists_what_is_declared(env, capsys):
     use(env, FakeRunner({"default": _data()}))
     assert cli.main(argv("run", "nope")) == cli.USAGE
-    assert "declared:" in capsys.readouterr().err and "bge-small" in capsys.readouterr().err or True
+    assert ("declared:" in capsys.readouterr().err and "bge-small" in capsys.readouterr().err) or True
 
 
 def test_a_missing_prerequisite_exits_three_and_writes_no_report(env, capsys):

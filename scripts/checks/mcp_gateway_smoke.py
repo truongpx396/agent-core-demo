@@ -114,15 +114,19 @@ class Stack:
                                    headers={"Accept": "application/json, text/event-stream"})
 
     async def tools(self, token: str, path: str) -> list[str]:
-        async with httpx2.AsyncClient(verify=self.tls, headers={"Authorization": f"Bearer {token}"}, timeout=30.0) as http:
-            async with Client(streamable_http_client(self.mcp + path, http_client=http)) as client:
-                return sorted(t.name for t in (await client.list_tools()).tools)
+        async with (
+            httpx2.AsyncClient(verify=self.tls, headers={"Authorization": f"Bearer {token}"}, timeout=30.0) as http,
+            Client(streamable_http_client(self.mcp + path, http_client=http)) as client,
+        ):
+            return sorted(t.name for t in (await client.list_tools()).tools)
 
     async def call(self, token: str, path: str, tool: str, arguments: dict | None = None) -> str:
-        async with httpx2.AsyncClient(verify=self.tls, headers={"Authorization": f"Bearer {token}"}, timeout=30.0) as http:
-            async with Client(streamable_http_client(self.mcp + path, http_client=http)) as client:
-                result = await client.call_tool(tool, arguments or {})
-                return "".join(block.text for block in result.content if isinstance(block, TextContent))
+        async with (
+            httpx2.AsyncClient(verify=self.tls, headers={"Authorization": f"Bearer {token}"}, timeout=30.0) as http,
+            Client(streamable_http_client(self.mcp + path, http_client=http)) as client,
+        ):
+            result = await client.call_tool(tool, arguments or {})
+            return "".join(block.text for block in result.content if isinstance(block, TextContent))
 
 
 async def run(stack: Stack) -> None:
