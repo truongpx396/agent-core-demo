@@ -51,7 +51,7 @@ class ErrorCode(str, Enum):
     INTERNAL = "internal"
 
 
-class TurnCancelled(Exception):
+class TurnCancelledError(Exception):
     """Raised by `runtime/stream.py::_iterate_with_timeout` when `cancel_check`
     reports a user-initiated stop mid-turn (the "actively streaming, not
     paused at approval" case — a paused run is cancelled directly via

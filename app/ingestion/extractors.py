@@ -17,7 +17,7 @@ from pypdf.errors import PdfReadError
 logger = logging.getLogger(__name__)
 
 
-class ExtractionFailed(Exception):
+class ExtractionFailedError(Exception):
     """A file that claims to be a PDF/DOCX but isn't valid (encrypted,
     corrupt, unreadable) — an expected, caller-facing outcome
     (`ingest_worker.py` reports it as a normal job failure), not a bug."""
@@ -31,12 +31,12 @@ def extract_pdf_text(data: bytes) -> str:
     try:
         reader = PdfReader(io.BytesIO(data))
         if reader.is_encrypted:
-            raise ExtractionFailed("PDF is password-protected")
+            raise ExtractionFailedError("PDF is password-protected")
         return "\n\n".join((page.extract_text() or "") for page in reader.pages)
-    except ExtractionFailed:
+    except ExtractionFailedError:
         raise
     except (PdfReadError, ValueError) as exc:
-        raise ExtractionFailed(f"could not parse PDF: {exc}") from exc
+        raise ExtractionFailedError(f"could not parse PDF: {exc}") from exc
 
 
 def extract_docx_text(data: bytes) -> str:
@@ -47,7 +47,7 @@ def extract_docx_text(data: bytes) -> str:
         doc = Document(io.BytesIO(data))
     except Exception as exc:  # python-docx raises a mix of
         # exception types for "not a real docx"; all mean the same thing here.
-        raise ExtractionFailed(f"could not parse DOCX: {exc}") from exc
+        raise ExtractionFailedError(f"could not parse DOCX: {exc}") from exc
     return "\n\n".join(p.text for p in doc.paragraphs if p.text.strip())
 
 

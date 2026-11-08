@@ -575,7 +575,7 @@ approval and exactly-once side effects.
 | 🔁 The same tool call runs twice (reclaimed `resume`, crash replay) | `app/core/tool_idempotency.py::idempotent` wraps every `mutating`/`outward` tool, keyed by `tool_call_id` in `tool_call_dedup`; a second call returns the first's cached result. Fails open (`ToolCallDedupDegraded`): a dedup outage must not block a write |
 | 🏁 The dedup claim races | Row-level backstop: `tool_call_id UNIQUE` + `ON CONFLICT DO NOTHING`, and Qdrant point ids derived from `tool_call_id` or content |
 | 💥 A worker dies mid-turn | `XAUTOCLAIM` reclaim **continues** the checkpointed turn rather than restarting it (a restart re-asks the LLM and mints new ids). Finished, approval-paused or unreadable turns, and anything past `MAX_AUTO_RECLAIM_RETRIES`, are dead-lettered |
-| ⏱️ A tool times out but its write lands | `MutatingToolTimedOut` steers the agent to verify with a read-only tool before retrying, since a retry would be a fresh id |
+| ⏱️ A tool times out but its write lands | `MutatingToolTimedOutError` steers the agent to verify with a read-only tool before retrying, since a retry would be a fresh id |
 | 🖱️ A client resubmits | Submission dedup on `(thread_id, message, images)`, or on the caller's `replay_key` (Telegram sends its update number) for as long as the results stream lives |
 
 `tests/domains/test_write_tools_contract.py` enumerates every domain's non-read-only tool, so a new write tool that skips

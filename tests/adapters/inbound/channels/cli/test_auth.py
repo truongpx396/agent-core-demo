@@ -13,7 +13,7 @@ import pytest
 from app.adapters.inbound.channels import oauth
 from app.adapters.inbound.channels.cli import auth as cli_auth
 from app.adapters.inbound.channels.cli.auth import CliAuth, SessionStore
-from app.adapters.inbound.channels.oauth import SignInRefused, Tokens
+from app.adapters.inbound.channels.oauth import SignInRefusedError, Tokens
 from app.core.config import settings
 from tests.adapters.inbound.channels.fake_casdoor import (
     AUDIENCE,
@@ -166,7 +166,7 @@ class TestSigningInWithABrowser:
         browser = _Browser(casdoor, state_override="not-the-state")
         auth, http = make_auth(casdoor, store, browser)
 
-        with pytest.raises(SignInRefused) as exc:
+        with pytest.raises(SignInRefusedError) as exc:
             await auth.headers()
         await http.aclose()
 
@@ -178,7 +178,7 @@ class TestSigningInWithABrowser:
         monkeypatch.setattr(cli_auth, "SIGN_IN_TIMEOUT_SECONDS", 0.2)
         auth, http = make_auth(casdoor, store, lambda url: None)
 
-        with pytest.raises(SignInRefused) as exc:
+        with pytest.raises(SignInRefusedError) as exc:
             await auth.headers()
         await http.aclose()
 
@@ -191,7 +191,7 @@ class TestSigningInWithABrowser:
         with socket.socket() as blocker:
             blocker.bind(("127.0.0.1", settings.channel_cli_callback_port))
             blocker.listen()
-            with pytest.raises(SignInRefused) as exc:
+            with pytest.raises(SignInRefusedError) as exc:
                 await auth.headers()
         await http.aclose()
 
@@ -246,7 +246,7 @@ class TestRenewing:
         again, http2 = make_auth(casdoor, store, browser)
         casdoor.down = True
 
-        with pytest.raises(SignInRefused) as exc:
+        with pytest.raises(SignInRefusedError) as exc:
             await again.headers()
         await http.aclose()
         await http2.aclose()

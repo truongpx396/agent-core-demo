@@ -275,7 +275,7 @@ async def test_a_table_held_by_another_session_stops_the_run_within_the_wait_and
         await holder.execute("LOCK TABLE credit_transactions IN ACCESS EXCLUSIVE MODE")  # held until rollback: the script's trigger DDL needs this table
 
         started = time.monotonic()
-        with pytest.raises(migrate.MigrationLockTimeout) as raised:
+        with pytest.raises(migrate.MigrationLockTimeoutError) as raised:
             await asyncio.wait_for(migrate.migrate(lock_timeout_seconds=1), timeout=30)
         elapsed = time.monotonic() - started
 
@@ -302,7 +302,7 @@ async def test_a_runner_waiting_for_another_gives_up_at_its_own_timeout_instead_
         await holder.execute("SELECT pg_advisory_xact_lock(%s, %s)", (first, second))
 
         started = time.monotonic()
-        with pytest.raises(migrate.MigrationLockTimeout):
+        with pytest.raises(migrate.MigrationLockTimeoutError):
             await asyncio.wait_for(migrate.migrate(lock_timeout_seconds=1), timeout=30)
 
         assert time.monotonic() - started < 6
@@ -321,7 +321,7 @@ async def test_a_script_that_fails_midway_is_rolled_back_whole_and_the_earlier_s
         migrate, "statements", lambda name: "CREATE TABLE migtest_half_done (x int); SELECT 1/0;" if name == broken.name else original(name)
     )
 
-    with pytest.raises(migrate.MigrationFailed) as raised:
+    with pytest.raises(migrate.MigrationFailedError) as raised:
         await migrate.migrate()
 
     assert raised.value.script == "30-broken.sql" and raised.value.detail == "division by zero"

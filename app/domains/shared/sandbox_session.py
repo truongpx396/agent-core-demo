@@ -67,7 +67,7 @@ SANDBOX_CALL_TIMEOUT_SECONDS = 60  # own budget vs TOOL_TIMEOUT_SECONDS:
 # fixed by launching the bridge with `--use-server-proxy` (app/adapters/outbound/mcp/sandbox_tools.py), so 60s is generous again.
 
 
-class SandboxCallFailed(Exception):
+class SandboxCallFailedError(Exception):
     """A raw OpenSandbox MCP tool call errored, or returned a shape this
     module couldn't parse — an expected outcome that propagates to the
     calling tool's normal exception handling (graph.py's
@@ -108,17 +108,17 @@ async def _call_raw_tool(raw: dict[str, BaseTool], name: str, **kwargs: Any) -> 
     StructuredTool-specific `.func`/`.coroutine`), since
     `_wrap_remote_tool` (app/adapters/outbound/mcp/client.py) gives each tool a native async
     coroutine and every caller here is already `async def`. Raises
-    SandboxCallFailed on a remote tool error or an unparseable/non-dict
+    SandboxCallFailedError on a remote tool error or an unparseable/non-dict
     response, rather than silently returning a wrong shape."""
     raw_text = await raw[name].ainvoke(kwargs)
     if raw_text.startswith(REMOTE_ERROR_PREFIX):
-        raise SandboxCallFailed(raw_text)
+        raise SandboxCallFailedError(raw_text)
     try:
         parsed = json.loads(raw_text)
     except json.JSONDecodeError as exc:
-        raise SandboxCallFailed(f"{name} returned an unparseable response: {raw_text[:300]}") from exc
+        raise SandboxCallFailedError(f"{name} returned an unparseable response: {raw_text[:300]}") from exc
     if not isinstance(parsed, dict):
-        raise SandboxCallFailed(f"{name} returned an unexpected shape: {raw_text[:300]}")
+        raise SandboxCallFailedError(f"{name} returned an unexpected shape: {raw_text[:300]}")
     return parsed
 
 
@@ -133,7 +133,7 @@ def _owner_tags(tenant: str, thread_id: str) -> dict[str, str]:
     sharing this exists to prevent. Upstream `valid_ctx` already guarantees a
     non-empty tenant; this keeps the module safe if a caller ever skips it."""
     if not tenant.strip() or not thread_id.strip():
-        raise SandboxCallFailed("refusing to find or create a sandbox without a tenant and a conversation id")
+        raise SandboxCallFailedError("refusing to find or create a sandbox without a tenant and a conversation id")
     return {SANDBOX_TENANT_KEY: _tag_value(tenant), SANDBOX_THREAD_KEY: _tag_value(thread_id)}
 
 
@@ -149,7 +149,7 @@ async def _find_existing_sandbox_id(raw: dict[str, BaseTool], tags: dict[str, st
     never a shared one."""
     try:
         result = await _call_raw_tool(raw, "sandbox_list", filter={"metadata": tags, "states": ["RUNNING"]})
-    except SandboxCallFailed as exc:
+    except SandboxCallFailedError as exc:
         logger.warning("sandbox_list_failed", extra={"error": str(exc)[:300]})
         return None
     for info in result.get("sandbox_infos") or []:
@@ -161,7 +161,7 @@ async def _find_existing_sandbox_id(raw: dict[str, BaseTool], tags: dict[str, st
 
 async def get_or_create_sandbox_id(raw: dict[str, BaseTool], thread_id: str, *, tenant: str) -> str:
     """Reuse this (tenant, conversation)'s existing sandbox if sandbox_list
-    finds one, else create a fresh one tagged for it. Raises SandboxCallFailed
+    finds one, else create a fresh one tagged for it. Raises SandboxCallFailedError
     if creation fails (e.g. opensandbox-server unreachable, pattern 50) —
     nothing to fall back to. `tenant` is keyword-only and has no default on
     purpose: a caller that forgets it must fail loudly, not share a bucket."""
@@ -178,7 +178,7 @@ async def get_or_create_sandbox_id(raw: dict[str, BaseTool], thread_id: str, *, 
     )
     sandbox_id = created.get("sandbox_id")
     if not sandbox_id:
-        raise SandboxCallFailed(f"sandbox_create did not return a sandbox_id: {created}")
+        raise SandboxCallFailedError(f"sandbox_create did not return a sandbox_id: {created}")
     return sandbox_id
 
 

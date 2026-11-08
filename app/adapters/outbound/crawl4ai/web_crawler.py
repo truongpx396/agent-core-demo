@@ -45,7 +45,7 @@ from app.core.url_safety import assert_safe_url_async
 from app.ports.outbound.web import (
     CRAWL_RENDER_TIMEOUT_SECONDS,
     CRAWL_TOOL_TIMEOUT_SECONDS,
-    CrawlFailed,
+    CrawlFailedError,
 )
 
 logger = logging.getLogger(__name__)
@@ -60,7 +60,7 @@ _CRAWL4AI_RETRY_BASE_DELAY_SECONDS = 0.5
 CRAWL_TIMEOUT_SECONDS = CRAWL_RENDER_TIMEOUT_SECONDS  # headless-browser render (30 s, the port's) is slower than a bare
 # GET (ingestor.py's _URL_TIMEOUT_SECONDS=10). Passed to crawl4ai as
 # page_timeout, so a hung page fails cleanly INSIDE _crawl (a real
-# CrawlFailed) rather than only via the outer thread-kill below.
+# CrawlFailedError) rather than only via the outer thread-kill below.
 
 _MAX_MARKDOWN_CHARS = 20_000  # bounded like ingestor.py's _MAX_URL_BYTES —
 # a full page's markdown could otherwise blow past what's reasonable in a
@@ -97,12 +97,12 @@ async def _crawl(url: str) -> str:
             base_delay=_CRAWL4AI_RETRY_BASE_DELAY_SECONDS,
         )
     except (Crawl4aiConnectionError, Crawl4aiRequestError) as exc:
-        raise CrawlFailed(f"could not reach the crawl4ai server for {url}: {exc}") from exc
+        raise CrawlFailedError(f"could not reach the crawl4ai server for {url}: {exc}") from exc
     except CircuitOpenError as exc:
-        raise CrawlFailed(str(exc)) from exc
+        raise CrawlFailedError(str(exc)) from exc
     if not result.success:
         first_line = (result.error_message or "unknown error").strip().splitlines()[0]
-        raise CrawlFailed(f"could not render {url}: {first_line}")
+        raise CrawlFailedError(f"could not render {url}: {first_line}")
     return str(result.markdown or "")
 
 
@@ -111,7 +111,7 @@ async def render_url_to_markdown(url: str) -> str:
     clean Markdown — truncated to `_MAX_MARKDOWN_CHARS`, marked when it is.
 
     Raises `UnsafeURLError` (app/core/url_safety.py) before launching a
-    browser, or `CrawlFailed` if the render fails. Unlike `ingestor.py`,
+    browser, or `CrawlFailedError` if the render fails. Unlike `ingestor.py`,
     neither is wrapped in a module-specific refusal type — this isn't an
     "ingest" (nothing writes to Qdrant), so the calling tool's normal
     exception handling is enough.
@@ -124,7 +124,7 @@ async def render_url_to_markdown(url: str) -> str:
 
 
 class Crawl4aiPageRenderer:
-    """The `PageRenderer` adapter (`app/ports/outbound/web.py`): `render_url_to_markdown` behind the port, looked up at CALL time. `CrawlFailed` propagates up like any
+    """The `PageRenderer` adapter (`app/ports/outbound/web.py`): `render_url_to_markdown` behind the port, looked up at CALL time. `CrawlFailedError` propagates up like any
     other exception (`app/agent/graph/core.py`'s handle_tool_errors turns it into a ToolMessage); no domain tool catches it itself."""
 
     async def render(self, url: str) -> str:

@@ -52,7 +52,7 @@ def test_the_comment_in_env_example_names_the_adapters_that_exist_and_an_unbuilt
     in config.py) instead of leaving it to mislead.
     """
     assert set(providers.FACTORIES) == {"fake", "stripe", "polar"}
-    with pytest.raises(providers.UnknownProvider):
+    with pytest.raises(providers.UnknownProviderError):
         providers.build_configured(("paypal",), {"paypal": "whsec_x"})
     for name in ("stripe", "polar"):
         assert providers.build_configured((name,), {name: "whsec_x"})[name].name == name

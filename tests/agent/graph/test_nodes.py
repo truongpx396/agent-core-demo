@@ -1371,7 +1371,7 @@ class TestAToolThatFailedIsNotADeferral:
                 HumanMessage(content="run this log through a script and count db_timeout"),
                 AIMessage(content="", tool_calls=[{"name": "run_python_in_sandbox", "args": {}, "id": "c1"}]),
                 ToolMessage(
-                    content="Tool failed (SandboxCallFailed: ...). Try a different approach.",
+                    content="Tool failed (SandboxCallFailedError: ...). Try a different approach.",
                     tool_call_id="c1",
                     name="run_python_in_sandbox",
                     status=tool_status,

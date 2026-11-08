@@ -17,8 +17,8 @@ from credit_billing.providers.base import (
     Capability,
     CreditProduct,
     EventKind,
-    InvalidPayload,
-    InvalidSignature,
+    InvalidPayloadError,
+    InvalidSignatureError,
     UsageEvent,
 )
 from tests.contract import HARNESSES, Delivery, registered_without_a_harness
@@ -74,27 +74,27 @@ class TestAForgeryIsRefused:
         good = harness.purchase()
         tampered = Delivery(good.headers, good.body[:-2] + bytes([good.body[-2] ^ 1]) + good.body[-1:])
 
-        with pytest.raises(InvalidSignature):
+        with pytest.raises(InvalidSignatureError):
             parse(harness, tampered)
 
     def test_a_delivery_signed_with_another_secret_is_refused(self, harness):
-        with pytest.raises(InvalidSignature):
+        with pytest.raises(InvalidSignatureError):
             parse(harness, harness.forged(harness.purchase()))
 
     def test_a_delivery_with_no_signature_is_refused(self, harness):
-        with pytest.raises(InvalidSignature):
+        with pytest.raises(InvalidSignatureError):
             harness.provider.parse_webhook({}, harness.purchase().body)
 
     def test_a_replayed_delivery_outside_the_providers_window_is_refused(self, harness):
         if harness.replay_window_seconds is None:
             pytest.skip("this provider defines no replay window")
 
-        with pytest.raises(InvalidSignature):
+        with pytest.raises(InvalidSignatureError):
             parse(harness, harness.purchase(age_seconds=harness.replay_window_seconds + 60))
 
     def test_the_refusal_says_nothing_about_why(self, harness):
         """What was wrong with a forgery is information for the forger."""
-        with pytest.raises(InvalidSignature) as exc:
+        with pytest.raises(InvalidSignatureError) as exc:
             harness.provider.parse_webhook({}, b"{}")
 
         assert not exc.value.args
@@ -141,7 +141,7 @@ class TestWhatItDoesNotUnderstand:
         assert event.raw_type, "the inbox row records what it was"
 
     def test_an_authentic_body_in_the_wrong_shape_is_an_invalid_payload_not_a_forgery_or_a_crash(self, harness):
-        with pytest.raises(InvalidPayload):
+        with pytest.raises(InvalidPayloadError):
             parse(harness, harness.signed_garbage())
 
 

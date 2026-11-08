@@ -73,9 +73,12 @@ src = [".", "packages/billing/src", "services/ml-service"]
 # style), G (lazy logging arguments, not f-strings), E7 (ambiguous names like `l`, lambda assignment, `;`), ISC (implicit string
 # concatenation in a collection), and RUF (unused unpacked values, a mutable class attribute without `ClassVar`, `[*a, b]` over
 # `a + [b]`, `round()` over `int(round())`; RUF100 above is one of them).
+# N818: an exception class's name ends in `Error` (PEP 8), so `except SearchFailedError` reads as what it catches and a grep for `Error`
+# finds every one. 40 classes did not (`IngestRefused`, `PortNotBound`, `_Reject`, ...); only this one pep8-naming rule is on, the others
+# would rename functions and arguments that other code and the docs call by name.
 select = [
     "F", "I", "UP", "B", "BLE", "S110", "PLE", "ASYNC", "PLW1514", "INP001",
-    "SIM", "C4", "PIE", "RET", "G", "E7", "ISC", "RUF",
+    "SIM", "C4", "PIE", "RET", "G", "E7", "ISC", "RUF", "N818",
 ]
 preview = true
 explicit-preview-rules = true

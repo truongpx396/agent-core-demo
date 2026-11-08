@@ -21,7 +21,7 @@ Enforced by `tests/billing/test_billing_core_boundary.py` (an AST walk over ever
 ConnectionProvider = Callable[[], AbstractAsyncContextManager[AsyncConnection]]
 def configure(*, connection: ConnectionProvider | None) -> None
 @asynccontextmanager
-async def get_connection() -> AsyncIterator[AsyncConnection]   # raises BillingNotConfigured when unset
+async def get_connection() -> AsyncIterator[AsyncConnection]   # raises BillingNotConfiguredError when unset
 ```
 - The provider must behave like `app.platform.sql_store.get_connection`: **commit on clean exit, roll back on an exception**, one transaction per `async with`. `get_connection()` delegates with `async with provider() as conn: yield conn`, so the caller's exception reaches the provider.
 - Unset means **refused**, never a default connection and never a connection string (Principle I: unknown resolves to refusal).

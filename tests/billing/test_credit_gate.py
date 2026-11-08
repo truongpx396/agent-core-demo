@@ -248,7 +248,7 @@ class TestTheRuntimeBinding:
             assert not hasattr(runtime_module, name), name
 
 
-class _GraphTouched(AssertionError):
+class _GraphTouchedError(AssertionError):
     pass
 
 
@@ -262,7 +262,7 @@ class TestEntryPointsRefuseBeforeAnyModelWork:
         reserved = []
 
         async def boom(*args, **kwargs):
-            raise _GraphTouched("the graph must not be touched for a tenant with no credits")
+            raise _GraphTouchedError("the graph must not be touched for a tenant with no credits")
 
         async def reserve(ctx):
             reserved.append(ctx)
@@ -290,5 +290,5 @@ class TestEntryPointsRefuseBeforeAnyModelWork:
         """US3's independent test, hermetically: the same call, now with credits, reaches graph work."""
         self.world["gate"].answer = billing_port.Admission("allowed")
 
-        with pytest.raises(_GraphTouched):
+        with pytest.raises(_GraphTouchedError):
             [event async for event in stream_module.astream_events_turn("hi", "t1", TEST_CTX)]

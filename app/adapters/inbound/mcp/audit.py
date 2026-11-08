@@ -16,7 +16,7 @@ import time
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-from app.adapters.inbound.mcp.identity import IdentityMissing, IdentitySource
+from app.adapters.inbound.mcp.identity import IdentityMissingError, IdentitySource
 
 logger = logging.getLogger(__name__)
 
@@ -53,7 +53,7 @@ def audited(server: str, identity: IdentitySource) -> Callable[[Callable[..., Aw
                 try:
                     ctx = identity()
                     who = {"tenant": ctx["tenant"], "principal": ctx["principal"]}
-                except IdentityMissing:
+                except IdentityMissingError:
                     who = {"tenant": None, "principal": None}
                 logger.info(
                     "mcp_tool_call",

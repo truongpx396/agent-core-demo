@@ -23,7 +23,7 @@ from qdrant_client.models import PointStruct, SparseVector
 from app.adapters.outbound.embeddings import embedding_identity, embeddings
 from app.adapters.outbound.embeddings.embedding_identity import (
     EmbeddingIdentity,
-    EmbeddingIdentityMismatch,
+    EmbeddingIdentityMismatchError,
 )
 from app.adapters.outbound.qdrant import qdrant_store
 from app.adapters.outbound.redis import semantic_cache
@@ -146,9 +146,9 @@ async def test_a_collection_from_another_model_is_refused_rebuilt_and_served_aga
     assert len(await qdrant_store.hybrid_search("refund", collection=logical, rerank_results=False)) > 0  # works before
 
     _use_identity(monkeypatch, OTHER)  # the operator swaps the embedding model
-    with pytest.raises(EmbeddingIdentityMismatch):
+    with pytest.raises(EmbeddingIdentityMismatchError):
         await qdrant_store.hybrid_search("refund", collection=logical, rerank_results=False)
-    with pytest.raises(EmbeddingIdentityMismatch):
+    with pytest.raises(EmbeddingIdentityMismatchError):
         await qdrant_store.upsert([_point(99, "must not land")], collection=logical)
 
     report = await reembed.reembed(logical, embed=_embed)

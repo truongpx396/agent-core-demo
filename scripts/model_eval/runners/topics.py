@@ -31,7 +31,7 @@ from scripts.model_eval import datasets as ds
 from scripts.model_eval.candidates import Candidate
 from scripts.model_eval.report import RunOutput
 from scripts.model_eval.runners.base import (
-    PrerequisiteMissing,
+    PrerequisiteMissingError,
     RunSettings,
     latest_version,
     percentiles,
@@ -63,12 +63,12 @@ class InProcessTopics:
         try:
             from ml_service import labelsets as service
         except ImportError as exc:  # the Makefile exports PYTHONPATH with services/ml-service; a bare `python -m` may not
-            raise PrerequisiteMissing(f"cannot import the ML service package ({exc}); run through `make model-eval` or set PYTHONPATH=services/ml-service") from exc
+            raise PrerequisiteMissingError(f"cannot import the ML service package ({exc}); run through `make model-eval` or set PYTHONPATH=services/ml-service") from exc
         from scripts.model_eval.runners.embedding import InProcessEmbedding
 
         model = candidate.source.model
         if not model:
-            raise PrerequisiteMissing(f"candidate {candidate.name!r} declares no source.model; the label set stores its cutoff per model name")
+            raise PrerequisiteMissingError(f"candidate {candidate.name!r} declares no source.model; the label set stores its cutoff per model name")
         self._service = service
         self._embedding = InProcessEmbedding(candidate, threads)
         self.identity, self.revision = self._embedding.identity, self._embedding.revision
@@ -92,13 +92,13 @@ def load_labelset(name: str, directory: Path = LABELSET_DIR) -> Any:
     try:
         from ml_service import labelsets as service
     except ImportError as exc:
-        raise PrerequisiteMissing(f"cannot import the ML service package ({exc}); run through `make model-eval` or set PYTHONPATH=services/ml-service") from exc
+        raise PrerequisiteMissingError(f"cannot import the ML service package ({exc}); run through `make model-eval` or set PYTHONPATH=services/ml-service") from exc
     path = directory / f"{name}.json"
     if not path.exists():
-        raise PrerequisiteMissing(f"no label set named {name!r} at {path}")
+        raise PrerequisiteMissingError(f"no label set named {name!r} at {path}")
     parsed = service.parse_labelset(path.read_text(encoding="utf-8"), name)
     if isinstance(parsed, service.Refused):
-        raise PrerequisiteMissing(f"the label set {name!r} is refused by the service's own parser: {parsed.reason}")
+        raise PrerequisiteMissingError(f"the label set {name!r} is refused by the service's own parser: {parsed.reason}")
     return parsed
 
 
@@ -121,7 +121,7 @@ def calibrate(backend: TopicBackend, rows: Sequence[dict], none_label: str, keep
     arrays = _arrays(backend, rows, none_label)
     inside = arrays["oos"] == 0
     if not inside.any():
-        raise PrerequisiteMissing("the calibration split has no in-scope sentence")
+        raise PrerequisiteMissingError("the calibration split has no in-scope sentence")
     # The epsilon is float noise: 0.519 can be computed as 0.5189999999999999, and flooring that to three decimals would silently lower the cutoff.
     cutoff = float(np.floor(np.quantile(arrays["confidence"][inside], 1.0 - keep) * 1000.0 + 1e-6) / 1000.0)
     outside = ~inside
@@ -158,9 +158,9 @@ def _tradeoffs(backend: TopicBackend, arrays: dict[str, np.ndarray], labelset_na
 def build_backend(candidate: Candidate, labelset: Any, settings: RunSettings, via: str | None = None) -> TopicBackend:
     path = via or candidate.path
     if candidate.name in ("constant", "random-router", "baseline-as-candidate"):
-        raise PrerequisiteMissing(f"{candidate.name!r} is a control for routing outcomes; a label set is scored on its own (the shuffled-predictions control is built in)")
+        raise PrerequisiteMissingError(f"{candidate.name!r} is a control for routing outcomes; a label set is scored on its own (the shuffled-predictions control is built in)")
     if path != "inprocess":
-        raise PrerequisiteMissing(f"a label set is evaluated in-process (path 'inprocess'), not {path!r}: the service answers the same way but does not publish its cutoff")
+        raise PrerequisiteMissingError(f"a label set is evaluated in-process (path 'inprocess'), not {path!r}: the service answers the same way but does not publish its cutoff")
     return InProcessTopics(candidate, labelset, settings.threads)
 
 
@@ -170,15 +170,15 @@ def run(candidate: Candidate, settings: RunSettings, *, backend: TopicBackend | 
     version_dir = latest_version(settings.dataset_root, name)
     manifest = ds.load_verified(version_dir)
     if manifest.kind != "topics":
-        raise PrerequisiteMissing(f"dataset {name!r} is of kind {manifest.kind!r}, not 'topics'")
+        raise PrerequisiteMissingError(f"dataset {name!r} is of kind {manifest.kind!r}, not 'topics'")
     labelset = load_labelset(name)
     if sorted(labelset.labels) != sorted(manifest.raw["labels"]):
-        raise PrerequisiteMissing(f"the label set {name!r} and the dataset disagree on the labels: {sorted(labelset.labels)} against {sorted(manifest.raw['labels'])}")
+        raise PrerequisiteMissingError(f"the label set {name!r} and the dataset disagree on the labels: {sorted(labelset.labels)} against {sorted(manifest.raw['labels'])}")
     none_label = manifest.raw["none_label"]
     rows = manifest.split_items(settings.split)
     backend = backend or build_backend(candidate, labelset, settings, via)
     if backend.min_similarity is None:
-        raise PrerequisiteMissing(
+        raise PrerequisiteMissingError(
             f"the label set {name!r} has no calibration for {candidate.source.model!r}, so the service would not serve it with this model either. "
             "Run `python -m scripts.model_eval labelset-calibrate` for it and put the printed line under `calibration`."
         )

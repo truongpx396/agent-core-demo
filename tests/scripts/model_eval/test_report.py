@@ -87,7 +87,7 @@ def test_a_control_candidate_that_comes_out_equal_to_the_baseline_makes_the_repo
 
 
 def test_a_baseline_from_another_dataset_version_is_refused(tmp_path):
-    with pytest.raises(baselines.BaselineMismatch, match="different evaluations"):
+    with pytest.raises(baselines.BaselineMismatchError, match="different evaluations"):
         _report(_run(_data(), version="v2"), _baseline(tmp_path))
 
 

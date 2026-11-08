@@ -18,7 +18,7 @@ import sys
 
 from credit_billing.cli._runtime import (
     EXIT_DATABASE_UNAVAILABLE,
-    DatabaseUnavailable,
+    DatabaseUnavailableError,
     scheduled_job,
     wired_pool,
 )
@@ -67,7 +67,7 @@ def main() -> None:
     with scheduled_job("credit-billing-usage-sweep"):
         try:
             print(describe(asyncio.run(run_sweep())))
-        except DatabaseUnavailable as exc:
+        except DatabaseUnavailableError as exc:
             print(f"error: {exc}", file=sys.stderr)
             raise SystemExit(EXIT_DATABASE_UNAVAILABLE) from exc
 

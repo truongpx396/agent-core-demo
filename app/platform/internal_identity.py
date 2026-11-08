@@ -103,7 +103,7 @@ def check_settings(s: Settings) -> None:
         raise AuthConfigError("AUTHLIMIT_KEYS_URL must be https (plain http is accepted for a loopback address or an in-network name without a dot only)")
 
 
-class KeysUnavailable(Exception):
+class KeysUnavailableError(Exception):
     """The public keys cannot be confirmed current: they could not be fetched, and the ones held are older than the TTL plus the grace."""
 
 
@@ -144,7 +144,7 @@ class InternalKeys:
         return age is not None and age < self._ttl + self._grace
 
     async def key_for(self, kid: str) -> jwt.PyJWK | None:
-        """The key published under this `kid`, or None if the front door publishes no such key. Raises `KeysUnavailable`."""
+        """The key published under this `kid`, or None if the front door publishes no such key. Raises `KeysUnavailableError`."""
         now = self._clock()
         if self._fresh(now) and kid in self._keys:
             return self._keys[kid]
@@ -155,7 +155,7 @@ class InternalKeys:
             if self._last_attempt is None or now - self._last_attempt >= self._min_refresh:
                 await self._refresh(now)
             if not self._usable(self._clock()):
-                raise KeysUnavailable("the public keys are older than the TTL plus the grace and could not be refreshed")
+                raise KeysUnavailableError("the public keys are older than the TTL plus the grace and could not be refreshed")
             return self._keys.get(kid)
 
     async def aclose(self) -> None:
@@ -254,7 +254,7 @@ class InternalIdentityVerifier:
             return self._refuse("unknown_kid")
         try:
             key = await self._keys.key_for(kid)
-        except KeysUnavailable:
+        except KeysUnavailableError:
             return self._refuse("keys_unavailable", unavailable=True)
         if key is None:
             return self._refuse("unknown_kid")

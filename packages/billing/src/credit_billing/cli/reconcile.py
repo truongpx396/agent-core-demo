@@ -25,7 +25,7 @@ import sys
 from credit_billing import reconcile
 from credit_billing.cli._runtime import (
     EXIT_DATABASE_UNAVAILABLE,
-    DatabaseUnavailable,
+    DatabaseUnavailableError,
     scheduled_job,
     wired_pool,
 )
@@ -106,7 +106,7 @@ def main() -> None:
     with scheduled_job("credit-billing-reconcile"):
         try:
             raise SystemExit(asyncio.run(run(loop=args.loop, days=args.days, as_json=args.as_json)))
-        except DatabaseUnavailable as exc:
+        except DatabaseUnavailableError as exc:
             print(f"error: {exc}", file=sys.stderr)
             raise SystemExit(EXIT_DATABASE_UNAVAILABLE) from exc
 

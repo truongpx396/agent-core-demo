@@ -24,7 +24,7 @@ from app.core import errors, metrics
 from tests.conftest import TEST_CTX, metric_value
 
 
-class _GraphTouched(AssertionError):
+class _GraphTouchedError(AssertionError):
     pass
 
 
@@ -53,7 +53,7 @@ def budget(monkeypatch):
 
 def _graph_fails(monkeypatch):
     async def boom(*args, **kwargs):
-        raise _GraphTouched("the graph must not be touched")
+        raise _GraphTouchedError("the graph must not be touched")
 
     monkeypatch.setattr(runtime_module, "init_graph_async", boom)
 
@@ -94,7 +94,7 @@ class TestResume:
     async def test_an_under_budget_tenant_reaches_the_graph_holding_a_reservation(self, monkeypatch, budget):
         _graph_fails(monkeypatch)
 
-        with pytest.raises(_GraphTouched):
+        with pytest.raises(_GraphTouchedError):
             await _collect(stream_module.astream_events_resume("t1", True, TEST_CTX))
         await _drain_release_tasks()
 
@@ -106,7 +106,7 @@ class TestResume:
         budget["over"] = True  # would be refused if it were checked
         _graph_fails(monkeypatch)
 
-        with pytest.raises(_GraphTouched):
+        with pytest.raises(_GraphTouchedError):
             await _collect(stream_module.astream_events_resume("t1", False, TEST_CTX, admitted=True))
         await _drain_release_tasks()
 
@@ -168,7 +168,7 @@ class TestContinueTurn:
         budget["over"] = True  # an over-budget tenant's admitted turn still finishes
         _graph_fails(monkeypatch)
 
-        with pytest.raises(_GraphTouched):
+        with pytest.raises(_GraphTouchedError):
             await _collect(stream_module.astream_events_continue_turn("t1", TEST_CTX))
         await _drain_release_tasks()
 

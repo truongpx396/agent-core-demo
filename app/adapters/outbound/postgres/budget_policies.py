@@ -3,7 +3,7 @@
 
 Statements only. The cache, the validation of a write (`period`, a negative limit) and the posture on a failed read are the application's
 (`app/agent/cost/budget_policies.py`, `budgets.check`). A table that does not exist is the one database error this adapter translates, into
-`PolicyTableMissing`: it means the migration has not been applied, and the application reads it as "no overrides" with one warning.
+`PolicyTableMissingError`: it means the migration has not been applied, and the application reads it as "no overrides" with one warning.
 """
 from decimal import Decimal
 
@@ -14,7 +14,7 @@ from app.ports.outbound.cost import (
     ALL_PRINCIPALS,
     TENANT_SUBJECT,
     Override,
-    PolicyTableMissing,
+    PolicyTableMissingError,
 )
 
 
@@ -34,7 +34,7 @@ class PgBudgetPolicyStore:
                 )
                 rows = await cur.fetchall()
         except pg_errors.UndefinedTable as exc:
-            raise PolicyTableMissing from exc
+            raise PolicyTableMissingError from exc
         return [_override(row) for row in rows]
 
     async def for_tenant(self, tenant: str) -> list[Override]:

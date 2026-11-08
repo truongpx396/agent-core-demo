@@ -13,10 +13,10 @@ from qdrant_client.models import Filter, PointStruct
 from app.adapters.outbound.embeddings import embeddings
 from app.adapters.outbound.embeddings.embedding_identity import (
     EmbeddingIdentity,
-    EmbeddingIdentityMismatch,
+    EmbeddingIdentityMismatchError,
 )
 from app.adapters.outbound.qdrant import qdrant_store
-from tests.adapters.outbound.qdrant.fake_qdrant import FakeQdrant, NotFound
+from tests.adapters.outbound.qdrant.fake_qdrant import FakeQdrant, NotFoundError
 from tests.conftest import TEST_EMBEDDING_IDENTITY
 
 H = TEST_EMBEDDING_IDENTITY.hash8()
@@ -132,7 +132,7 @@ async def test_an_identity_that_could_not_be_resolved_is_still_served_and_counte
 async def test_a_search_over_a_collection_from_another_model_is_refused_and_names_the_fix(world):
     _live_collection(world, OTHER_H)
 
-    with pytest.raises(EmbeddingIdentityMismatch) as refused:
+    with pytest.raises(EmbeddingIdentityMismatchError) as refused:
         await qdrant_store.hybrid_search("hello")
 
     assert refused.value.expected == H and refused.value.found == OTHER_H and refused.value.write is False
@@ -150,7 +150,7 @@ async def test_the_refusal_comes_before_the_query_embedding_is_spent(world, monk
 
     monkeypatch.setattr(embeddings, "embed_query", embed_query)
 
-    with pytest.raises(EmbeddingIdentityMismatch):
+    with pytest.raises(EmbeddingIdentityMismatchError):
         await qdrant_store.hybrid_search("hello")
 
     assert spent == [] and not any(c[0] == "query_points" for c in world.qdrant.calls)
@@ -159,7 +159,7 @@ async def test_the_refusal_comes_before_the_query_embedding_is_spent(world, monk
 async def test_a_write_to_a_collection_from_another_model_is_refused_and_nothing_is_stored(world):
     physical = _live_collection(world, OTHER_H)
 
-    with pytest.raises(EmbeddingIdentityMismatch) as refused:
+    with pytest.raises(EmbeddingIdentityMismatchError) as refused:
         await qdrant_store.upsert([_point()])
 
     assert refused.value.write is True
@@ -175,7 +175,7 @@ async def test_turning_a_prefix_on_makes_every_existing_collection_a_mismatch(wo
     prefixed = EmbeddingIdentity(**{**TEST_EMBEDDING_IDENTITY.__dict__, "query_prefix": "search_query: "})
     _use_identity(monkeypatch, prefixed)
 
-    with pytest.raises(EmbeddingIdentityMismatch):
+    with pytest.raises(EmbeddingIdentityMismatchError):
         await qdrant_store.hybrid_search("hello")
 
 
@@ -183,7 +183,7 @@ async def test_every_refused_call_is_counted_so_the_alert_keeps_firing_while_req
     _live_collection(world, OTHER_H)
 
     for _ in range(3):
-        with pytest.raises(EmbeddingIdentityMismatch):
+        with pytest.raises(EmbeddingIdentityMismatchError):
             await qdrant_store.hybrid_search("hello")
 
     assert world.counter.outcomes().count("mismatch") == 3
@@ -204,7 +204,7 @@ async def test_collections_are_judged_independently(world):
     _live_collection(world, OTHER_H, "skills")
 
     await qdrant_store.hybrid_search("hello")  # docs is fine
-    with pytest.raises(EmbeddingIdentityMismatch):
+    with pytest.raises(EmbeddingIdentityMismatchError):
         await qdrant_store.hybrid_search("hello", collection="skills")
 
 
@@ -252,7 +252,7 @@ async def test_an_alias_failure_that_is_not_a_lost_race_is_raised(world):
 
 
 async def test_with_nothing_there_yet_a_fresh_install_reports_its_own_missing_collection_not_an_identity_error(world):
-    with pytest.raises(NotFound):
+    with pytest.raises(NotFoundError):
         await qdrant_store.upsert([_point()])
     assert world.counter.events == []
 
@@ -271,7 +271,7 @@ async def test_another_process_swapping_the_alias_is_noticed_within_the_cache_wi
     await qdrant_store.hybrid_search("hello")  # inside the window: still the cached answer, still served
 
     now["t"] += 6.0
-    with pytest.raises(EmbeddingIdentityMismatch):  # past the window: the new target is read and judged
+    with pytest.raises(EmbeddingIdentityMismatchError):  # past the window: the new target is read and judged
         await qdrant_store.hybrid_search("hello")
 
 
@@ -282,5 +282,5 @@ async def test_the_process_that_repoints_the_alias_sees_it_at_once(world):
     world.qdrant.seed(f"docs-{OTHER_H}")
     await qdrant_store.repoint_live("docs", f"docs-{OTHER_H}")
 
-    with pytest.raises(EmbeddingIdentityMismatch):  # no waiting for the TTL: repointing clears this process's cache
+    with pytest.raises(EmbeddingIdentityMismatchError):  # no waiting for the TTL: repointing clears this process's cache
         await qdrant_store.hybrid_search("hello")

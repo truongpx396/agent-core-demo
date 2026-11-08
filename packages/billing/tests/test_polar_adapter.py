@@ -30,8 +30,8 @@ from credit_billing.providers.base import (
     CheckoutError,
     CreditProduct,
     EventKind,
-    InvalidPayload,
-    InvalidSignature,
+    InvalidPayloadError,
+    InvalidSignatureError,
 )
 from credit_billing.providers.polar import ATTEMPT_KEY, PolarProvider, _signing_keys
 from tests.fake_polar_api import FakePolarApi
@@ -84,18 +84,18 @@ class TestTheSignature:
         assert parse(provider(), headers(f"{OLD_SIG} v2,AAAA {NEW_SIG}"))
 
     def test_a_signature_made_with_the_other_style_of_key_does_not_cross_secrets(self):
-        with pytest.raises(InvalidSignature):
+        with pytest.raises(InvalidSignatureError):
             parse(provider(LEGACY_SECRET), headers(NEW_SIG))
 
     def test_another_endpoints_secret_is_refused(self):
-        with pytest.raises(InvalidSignature):
+        with pytest.raises(InvalidSignatureError):
             parse(provider(OTHER_SECRET), headers(NEW_SIG))
 
     def test_a_version_other_than_v1_is_never_enough_even_for_an_arithmetically_right_signature(self):
         right_mac = NEW_SIG.split(",", 1)[1]
 
         for label in ("v2", "v0", "v1a", ""):
-            with pytest.raises(InvalidSignature):
+            with pytest.raises(InvalidSignatureError):
                 parse(provider(), headers(f"{label},{right_mac}"))
 
     @pytest.mark.parametrize("missing", ["webhook-id", "webhook-timestamp", "webhook-signature"])
@@ -103,17 +103,17 @@ class TestTheSignature:
         hdrs = headers()
         del hdrs[missing]
 
-        with pytest.raises(InvalidSignature):
+        with pytest.raises(InvalidSignatureError):
             parse(provider(), hdrs)
 
     @pytest.mark.parametrize("stamp", ["", "abc", "nan", "inf", "-inf", "1e999", "0x10"])
     def test_a_malformed_timestamp_is_refused_not_a_crash(self, stamp):
-        with pytest.raises(InvalidSignature):
+        with pytest.raises(InvalidSignatureError):
             parse(provider(), headers(stamp=stamp))
 
     @pytest.mark.parametrize("signature", ["", "garbage", "v1,", "v1,!!!not-base64!!!", "v1,AAAA", ",,,", "v1", "  "])
     def test_a_malformed_signature_is_refused_not_a_crash(self, signature):
-        with pytest.raises(InvalidSignature):
+        with pytest.raises(InvalidSignatureError):
             parse(provider(), headers(signature))
 
     def test_the_window_is_symmetric_and_inclusive_exactly_as_polars_own_verifier_is(self):
@@ -121,19 +121,19 @@ class TestTheSignature:
         for edge in (T + 300, T - 300):
             assert parse(provider(now=edge), headers())
         for beyond in (T + 301, T - 301):
-            with pytest.raises(InvalidSignature):
+            with pytest.raises(InvalidSignatureError):
                 parse(provider(now=beyond), headers())
 
     def test_the_event_id_is_bound_into_the_mac_so_a_delivery_cannot_be_replayed_as_another_event(self):
-        with pytest.raises(InvalidSignature):
+        with pytest.raises(InvalidSignatureError):
             parse(provider(), headers(event_id="msg_someone_elses"))
 
     def test_the_timestamp_is_bound_into_the_mac_so_it_cannot_be_moved_to_make_an_old_delivery_look_fresh(self):
-        with pytest.raises(InvalidSignature):
+        with pytest.raises(InvalidSignatureError):
             parse(provider(now=T + 400), headers(stamp=str(T + 100)))
 
     def test_a_body_altered_after_signing_is_refused(self):
-        with pytest.raises(InvalidSignature):
+        with pytest.raises(InvalidSignatureError):
             parse(provider(), headers(), KNOWN_BODY.replace(b"ord_ka_1", b"ord_ka_2"))
 
     def test_header_names_are_case_insensitive(self):
@@ -373,15 +373,15 @@ class TestAnAuthenticBodyInTheWrongShape:
          {"type": "", "data": {}}, {"type": 5, "data": {}}, {"data": {}}],
     )
     def test_it_is_an_invalid_payload_never_a_forgery_and_never_a_crash(self, payload):
-        with pytest.raises(InvalidPayload):
+        with pytest.raises(InvalidPayloadError):
             deliver(payload)
 
     def test_a_body_that_is_not_json_is_an_invalid_payload(self):
-        with pytest.raises(InvalidPayload):
+        with pytest.raises(InvalidPayloadError):
             deliver(b"<html>not json</html>")
 
     def test_an_event_id_too_long_for_the_inbox_is_an_invalid_payload(self):
-        with pytest.raises(InvalidPayload):
+        with pytest.raises(InvalidPayloadError):
             deliver(order(), event_id="m" * 256)
 
     def test_the_longest_event_id_the_inbox_takes_is_accepted(self):

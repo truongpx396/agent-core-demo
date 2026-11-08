@@ -10,7 +10,7 @@ Two conventions every adapter keeps, because the application's fail-open and fai
   policy; `record_call` counts and carries on); an adapter never swallows it.
 - every method takes the tenant as an argument and scopes the statement by it. The tenant is never inferred.
 
-`UsageTableMissing` and `PolicyTableMissing` are the one error an adapter translates: a database that has not had its migration
+`UsageTableMissingError` and `PolicyTableMissingError` are the one error an adapter translates: a database that has not had its migration
 applied is a state the application tolerates with a single warning, and it must not have to know what psycopg calls it.
 """
 from __future__ import annotations
@@ -40,13 +40,13 @@ class Override:
     limit_usd: float | None
 
 
-class PolicyTableMissing(Exception):
+class PolicyTableMissingError(Exception):
     """The budget-overrides table does not exist: the migration (postgres-init/18) has not been applied."""
 
 
 class BudgetPolicyStore(Protocol):
     async def for_person(self, tenant: str, principal: str) -> list[Override]:
-        """The tenant's own override, the tenant-wide personal default and this person's. Raises `PolicyTableMissing` when the table is absent."""
+        """The tenant's own override, the tenant-wide personal default and this person's. Raises `PolicyTableMissingError` when the table is absent."""
         ...
 
     async def for_tenant(self, tenant: str) -> list[Override]:
@@ -126,14 +126,14 @@ class EventsByTenantDay:
     events: int
 
 
-class UsageTableMissing(Exception):
+class UsageTableMissingError(Exception):
     """The usage-events table (or a column of it) does not exist: the migration (postgres-init/19) has not been applied."""
 
 
 class UsageEventStore(Protocol):
     async def insert(self, row: UsageEventRow) -> bool:
         """Writes one event, idempotent on `event_id`: True if it was written, False if it was already there. A newly written event is
-        handed to billing in the same transaction (a duplicate is not). Raises `UsageTableMissing` when the table is absent."""
+        handed to billing in the same transaction (a duplicate is not). Raises `UsageTableMissingError` when the table is absent."""
         ...
 
     async def totals(self, tenant: str, principal: str | None = None, since: datetime | None = None) -> UsageTotals:

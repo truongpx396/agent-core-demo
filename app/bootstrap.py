@@ -68,7 +68,7 @@ from app.ports.outbound import (
     storage,
     web,
 )
-from app.ports.slot import PortNotBound, Slot, unbound
+from app.ports.slot import PortNotBoundError, Slot, unbound
 
 
 def adapters() -> dict[Slot, object]:
@@ -118,10 +118,10 @@ def wire() -> None:
 
 
 def verify_wired() -> None:
-    """Raises `PortNotBound`, naming them, if any port module that has been imported still has no adapter."""
+    """Raises `PortNotBoundError`, naming them, if any port module that has been imported still has no adapter."""
     missing = unbound()
     if missing:
-        raise PortNotBound("ports with no adapter: " + ", ".join(sorted(missing)) + " (add them to app/bootstrap.py::adapters)")
+        raise PortNotBoundError("ports with no adapter: " + ", ".join(sorted(missing)) + " (add them to app/bootstrap.py::adapters)")
 
 
 async def close_adapters() -> None:

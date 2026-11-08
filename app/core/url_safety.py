@@ -31,7 +31,7 @@ class UnsafeURLError(Exception):
     """A URL that fails the SSRF guard — non-https, no hostname,
     unresolvable, or resolving to a private/loopback/link-local/reserved/
     multicast/unspecified address. Callers translate this into their own
-    domain-facing refusal (e.g. app/ingestion/ingestor.py::IngestRefused)
+    domain-facing refusal (e.g. app/ingestion/ingestor.py::IngestRefusedError)
     rather than this module raising something ingest-specific — a
     headless-browser crawl is refused the same way but isn't an "ingest"."""
 

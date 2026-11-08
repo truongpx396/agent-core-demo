@@ -178,7 +178,7 @@ SECOND = p.Provider("fallback 2", "https://other.example/v1", "m3", "")
 CHAIN = [PRIMARY, FIRST, SECOND]
 
 
-class Boom(Exception):
+class BoomError(Exception):
     """Stands in for ReviewError: the exception type that means 'this provider failed for good'."""
 
 
@@ -190,7 +190,7 @@ class Clock:
         return self.now
 
 
-def walk(attempt, *, chain=CHAIN, http=None, sleep=None, clock=None, failure=Boom, notify=None):
+def walk(attempt, *, chain=CHAIN, http=None, sleep=None, clock=None, failure=BoomError, notify=None):
     return p.walk_chain(chain, attempt, http=http or (lambda *a: None), sleep=sleep or (lambda s: None),
                         clock=clock or Clock(), failure=failure, notify=notify or (lambda line: None))
 
@@ -206,9 +206,9 @@ def test_a_single_provider_is_just_the_attempt_on_the_original_http_and_sleep_wi
     assert seen == [(PRIMARY, http, sleep)]  # not wrapped: no deadline, no clamping, nothing changed
 
     def failing(provider, h, s):
-        raise Boom("the raw message")
+        raise BoomError("the raw message")
 
-    with pytest.raises(Boom, match=r"^the raw message$"):  # not rewrapped as "every provider failed"
+    with pytest.raises(BoomError, match=r"^the raw message$"):  # not rewrapped as "every provider failed"
         walk(failing, chain=[PRIMARY])
 
 
@@ -227,7 +227,7 @@ def test_a_failure_moves_on_and_the_hand_over_is_announced_with_names_and_the_re
 
     def attempt(provider, h, s):
         if provider is PRIMARY:
-            raise Boom("HTTP 429 RESOURCE_EXHAUSTED (after 3 attempts)")
+            raise BoomError("HTTP 429 RESOURCE_EXHAUSTED (after 3 attempts)")
         return "rescued"
 
     assert walk(attempt, notify=notices.append) == ("rescued", FIRST)
@@ -239,9 +239,9 @@ def test_a_failure_moves_on_and_the_hand_over_is_announced_with_names_and_the_re
 
 def test_when_every_provider_fails_the_error_is_the_callers_type_and_names_each_in_order():
     def attempt(provider, h, s):
-        raise Boom(f"down: {provider.model}")
+        raise BoomError(f"down: {provider.model}")
 
-    with pytest.raises(Boom) as exc:
+    with pytest.raises(BoomError) as exc:
         walk(attempt)
     assert str(exc.value) == "every provider failed: primary (main-model): down: main-model; fallback 1 (m2): down: m2; fallback 2 (m3): down: m3"
 
@@ -258,19 +258,19 @@ def test_only_the_callers_failure_type_moves_on_and_anything_else_is_a_bug_that_
     assert asked == ["primary"]  # the second provider was NOT tried: a bug must not hide behind it
 
     def wrong_type(provider, h, s):
-        raise Boom("not what this walker was told to catch")
+        raise BoomError("not what this walker was told to catch")
 
-    with pytest.raises(Boom):
+    with pytest.raises(BoomError):
         walk(wrong_type, failure=ValueError)  # the exception type is a parameter, not a hard-coded class
 
 
 def test_the_default_notify_prints_the_notice_to_the_log(capsys):
     def attempt(provider, h, s):
         if provider is PRIMARY:
-            raise Boom("x")
+            raise BoomError("x")
         return "ok"
 
-    p.walk_chain(CHAIN, attempt, http=lambda *a: None, sleep=lambda s: None, clock=Clock(), failure=Boom)
+    p.walk_chain(CHAIN, attempt, http=lambda *a: None, sleep=lambda s: None, clock=Clock(), failure=BoomError)
     assert capsys.readouterr().out.strip() == p.handover_notice(PRIMARY, "x", FIRST)
 
 
@@ -284,7 +284,7 @@ def test_each_request_is_clamped_to_the_time_left_on_the_shared_deadline():
         h("POST", "u", {}, None, 180.0)  # every request asks for the usual 180s
         if provider is PRIMARY:
             clock.now += 400.0  # and the first provider burns 400s of the 480
-            raise Boom("slow")
+            raise BoomError("slow")
         return "ok"
 
     assert walk(attempt, http=http, clock=clock)[1] is FIRST
@@ -317,7 +317,7 @@ def test_a_retry_wait_that_would_overrun_the_deadline_raises_instead_of_sleeping
         s(5.0)  # 2s are left, so a 5s wait cannot happen
         return "never reached"
 
-    with pytest.raises(Boom, match=r"primary \(main-model\): out of time for this review; fallback 1 \(m2\): not tried, out of time"):
+    with pytest.raises(BoomError, match=r"primary \(main-model\): out of time for this review; fallback 1 \(m2\): not tried, out of time"):
         walk(attempt, sleep=slept.append, clock=clock)
     assert slept == []
 
@@ -327,9 +327,9 @@ def test_a_provider_is_not_started_when_less_than_the_minimum_time_is_left():
 
     def attempt(provider, h, s):
         clock.now += 470.0
-        raise Boom("slow")
+        raise BoomError("slow")
 
-    with pytest.raises(Boom) as exc:
+    with pytest.raises(BoomError) as exc:
         walk(attempt, clock=clock)
     assert str(exc.value) == "every provider failed: primary (main-model): slow; fallback 1 (m2): not tried, out of time"
 

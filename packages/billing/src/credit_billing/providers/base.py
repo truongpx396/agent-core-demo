@@ -40,12 +40,12 @@ class EventKind(Enum):
     IGNORED = "ignored"  # a type the app does not act on: recorded so it is not re-fetched
 
 
-class InvalidSignature(Exception):
+class InvalidSignatureError(Exception):
     """The delivery is not authentic (bad or missing signature, or outside the replay window). Carries no
     detail: what was wrong is information for an attacker, and the caller only needs to refuse."""
 
 
-class InvalidPayload(ValueError):
+class InvalidPayloadError(ValueError):
     """The delivery IS authentic but its body is not in a shape this adapter understands."""
 
 
@@ -151,7 +151,7 @@ class BillingProvider(Protocol):
 
     def parse_webhook(self, headers: Mapping[str, str], body: bytes) -> list[BillingEvent]:
         """Verify the signature FIRST (and any replay window the provider defines), then normalize.
-        Raises `InvalidSignature` on any authenticity failure and `InvalidPayload` on an authentic but
+        Raises `InvalidSignatureError` on any authenticity failure and `InvalidPayloadError` on an authentic but
         unreadable body. Pure: no I/O, no database. Never raises for an unknown event TYPE: that is an
         `IGNORED` event, recorded and left alone."""
         ...

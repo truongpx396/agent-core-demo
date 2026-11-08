@@ -21,7 +21,7 @@ import logging
 import httpx
 
 from app.adapters.inbound.channels import oauth
-from app.adapters.inbound.channels.oauth import SignInRefused, Tokens
+from app.adapters.inbound.channels.oauth import SignInRefusedError, Tokens
 from app.core import metrics
 from app.core.config import settings
 
@@ -76,7 +76,7 @@ class PersonAuth:
         self._tokens = None
         try:
             await self.sign_in()
-        except SignInRefused:
+        except SignInRefusedError:
             return False
         return True
 
@@ -108,14 +108,14 @@ class TelegramPeople:
         async with self._locks.setdefault(user_id, asyncio.Lock()):
             try:
                 tokens = await self._password_sign_in(user_id)
-            except SignInRefused as exc:
+            except SignInRefusedError as exc:
                 if exc.reason != "unknown_person" or not settings.telegram_auto_provision:
                     metrics.channel_signin_total.labels(channel="telegram", outcome=exc.reason).inc()
                     raise
                 await self._provision(user_id)
                 try:
                     tokens = await self._password_sign_in(user_id)
-                except SignInRefused as again:
+                except SignInRefusedError as again:
                     metrics.channel_signin_total.labels(channel="telegram", outcome=again.reason).inc()
                     raise
             metrics.channel_signin_total.labels(channel="telegram", outcome="ok").inc()
@@ -155,9 +155,9 @@ class TelegramPeople:
             body = reply.json()
         except (httpx.HTTPError, ValueError) as exc:
             metrics.channel_person_provisioned_total.labels(outcome="failed").inc()
-            raise SignInRefused("unavailable") from exc
+            raise SignInRefusedError("unavailable") from exc
         if not isinstance(body, dict) or body.get("status") != "ok":
             metrics.channel_person_provisioned_total.labels(outcome="failed").inc()
             logger.warning("telegram_person_not_created", extra={"telegram_user_id": user_id})
-            raise SignInRefused("credentials")
+            raise SignInRefusedError("credentials")
         metrics.channel_person_provisioned_total.labels(outcome="created").inc()

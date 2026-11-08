@@ -13,7 +13,7 @@ outbox and worker, the wallet reconciliation, the credit gate), and what remains
 **The wiring.** Importing this package tells the core where database connections come from: the agent's single
 pool, `app.platform.sql_store.get_connection`. Every host module that imports `credit_billing` also imports this
 package (tests/billing/test_billing_core_boundary.py scans for a miss), so no entry point (API, queue worker,
-chat CLI, cron script) can reach the core unwired. The core refuses to run unwired (`BillingNotConfigured`),
+chat CLI, cron script) can reach the core unwired. The core refuses to run unwired (`BillingNotConfiguredError`),
 so a miss is a loud failure, not a silent default.
 
 Wiring at import time is fine here although `app/platform/telemetry.py` insists on start-up only: that rule exists

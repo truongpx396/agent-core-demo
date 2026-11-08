@@ -37,7 +37,7 @@ from scripts.model_eval.report import RunOutput
 from scripts.model_eval.routing import label, outcomes_dir, read_outcomes
 from scripts.model_eval.runners import topics
 from scripts.model_eval.runners.base import (
-    PrerequisiteMissing,
+    PrerequisiteMissingError,
     RunSettings,
     latest_version,
     percentiles,
@@ -132,7 +132,7 @@ def build_tiered_router(candidate: Candidate, settings: RunSettings) -> TieredRo
     labelset = topics.load_labelset("route-topics")
     backend = topics.InProcessTopics(candidate, labelset, settings.threads)
     if backend.min_similarity is None:
-        raise PrerequisiteMissing(f"the label set has no calibration for {candidate.source.model!r}; run `make labelset-calibrate CANDIDATE={candidate.name}`")
+        raise PrerequisiteMissingError(f"the label set has no calibration for {candidate.source.model!r}; run `make labelset-calibrate CANDIDATE={candidate.name}`")
     return TieredRouter(backend, seed=settings.seed)
 
 
@@ -144,7 +144,7 @@ def build_backend(candidate: Candidate, settings: RunSettings, via: str | None =
         return RandomRouter(settings.seed)
     if candidate.name in TIERED_ROUTERS:
         return build_tiered_router(candidate, settings)
-    raise PrerequisiteMissing(
+    raise PrerequisiteMissingError(
         f"a router is evaluated through the controls or the app's own router, not through path {path!r}: the ML service no longer serves a trained "
         "routing head (spec 016); to evaluate another router pass it to run(backend=...)"
     )
@@ -155,11 +155,11 @@ def find_outcomes(dataset_dir: Path, explicit: Path | None) -> Path | None:
     about different model pairs), so the operator names one; none means routing quality is unmeasured."""
     if explicit is not None:
         if not explicit.exists():
-            raise PrerequisiteMissing(f"--outcomes {explicit} does not exist")
+            raise PrerequisiteMissingError(f"--outcomes {explicit} does not exist")
         return explicit
     found = sorted(outcomes_dir(dataset_dir).glob("*.jsonl")) if outcomes_dir(dataset_dir).exists() else []
     if len(found) > 1:
-        raise PrerequisiteMissing(f"{len(found)} outcomes files in {outcomes_dir(dataset_dir)} ({', '.join(p.name for p in found)}); pass --outcomes to say which")
+        raise PrerequisiteMissingError(f"{len(found)} outcomes files in {outcomes_dir(dataset_dir)} ({', '.join(p.name for p in found)}); pass --outcomes to say which")
     return found[0] if found else None
 
 
@@ -208,7 +208,7 @@ def run(candidate: Candidate, settings: RunSettings, *, backend: ClassifierBacke
     rows = manifest.split_items(settings.split)
     outcomes_path = find_outcomes(version_dir, settings.outcomes)
     if outcomes_path is None:
-        raise PrerequisiteMissing(
+        raise PrerequisiteMissingError(
             f"UNMEASURED: there are no routing outcomes for {name} {manifest.version}, so routing quality cannot be stated and no report is written "
             f"(a number computed from nothing would be worse than none). Label the prompts with `make router-label JUDGE=<alias>`; they go to "
             f"{outcomes_dir(version_dir)}."
@@ -221,10 +221,10 @@ def run(candidate: Candidate, settings: RunSettings, *, backend: ClassifierBacke
         if r["id"] in outcomes and outcomes[r["id"]].complete
     ]
     if not usable:
-        raise PrerequisiteMissing(f"UNMEASURED: none of the {len(rows)} {settings.split} prompts has both scores in {outcomes_path.name}; run `make router-label` for them")
+        raise PrerequisiteMissingError(f"UNMEASURED: none of the {len(rows)} {settings.split} prompts has both scores in {outcomes_path.name}; run `make router-label` for them")
     gap = float(np.mean([u["q_strong"] for u in usable]) - np.mean([u["q_local"] for u in usable]))
     if gap <= 0.0:
-        raise PrerequisiteMissing(
+        raise PrerequisiteMissingError(
             f"UNMEASURED: on these {len(usable)} prompts the strong model did not score above the local one (mean gap {gap:+.3f}), so there is no "
             "quality to recover by routing and a cost-quality curve is undefined. A different model pair or a different judge is needed."
         )

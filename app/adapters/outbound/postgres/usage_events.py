@@ -2,7 +2,7 @@
 (postgres-init/19-usage-events.sql), the agent's meter and the spend its caps sum.
 
 Statements only. What to write, when to skip, what a failed write costs the turn (nothing: it is counted) and how an event is priced are the
-application's (`app/agent/cost/usage_events.py`). The table's missing migration is the one database error translated, into `UsageTableMissing`.
+application's (`app/agent/cost/usage_events.py`). The table's missing migration is the one database error translated, into `UsageTableMissingError`.
 
 `insert` hands a newly written event to billing in the SAME transaction, through `app.billing_integration.port`: the record, the debit and
 the export row are atomic with the event, which is what stops a replay from double-debiting (`packages/billing/docs/PATTERNS.md`). That
@@ -18,7 +18,7 @@ from app.platform.sql_store import get_connection
 from app.ports.outbound.cost import (
     EventsByTenantDay,
     UsageEventRow,
-    UsageTableMissing,
+    UsageTableMissingError,
     UsageTotals,
     Window,
 )
@@ -76,7 +76,7 @@ class PgUsageEventStore:
         try:
             return await _insert(row)
         except (pg_errors.UndefinedTable, pg_errors.UndefinedColumn) as exc:
-            raise UsageTableMissing from exc
+            raise UsageTableMissingError from exc
 
     async def totals(self, tenant: str, principal: str | None = None, since: datetime | None = None) -> UsageTotals:
         where = ["tenant = %s"]

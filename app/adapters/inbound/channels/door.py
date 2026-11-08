@@ -19,7 +19,7 @@ from typing import Protocol
 
 import httpx
 
-from app.adapters.inbound.channels.oauth import SignInRefused
+from app.adapters.inbound.channels.oauth import SignInRefusedError
 from app.core import metrics
 from app.core.config import settings
 
@@ -34,13 +34,13 @@ SIGNIN_MESSAGES = {
 }
 
 
-class DoorRefused(Exception):
+class DoorRefusedError(Exception):
     """A cancel the front door did not accept (cancel has no stream to carry the words in)."""
 
 
 class Auth(Protocol):
     async def headers(self) -> dict[str, str]:
-        """What identifies the caller on the next request. Raises `SignInRefused` when there is no way to produce it."""
+        """What identifies the caller on the next request. Raises `SignInRefusedError` when there is no way to produce it."""
         ...
 
     async def reauthenticate(self) -> bool:
@@ -112,7 +112,7 @@ class Door:
         for attempt in (0, 1):
             try:
                 headers = {**await self._auth.headers(), "X-Domain": self._domain, "Accept": "text/event-stream"}
-            except SignInRefused as exc:
+            except SignInRefusedError as exc:
                 yield self._error(exc.reason, SIGNIN_MESSAGES.get(exc.reason, SIGNIN_MESSAGES["credentials"]))
                 return
             try:
@@ -171,7 +171,7 @@ class Door:
         and publishes the cancel job BEFORE it begins to stream (app/adapters/inbound/api/routers/chat.py::chat_cancel), and the stream is only the paused-run
         job's outcome, which nobody here waits for. `wait` reads that outcome too, for a caller that sends its next request on the same
         conversation straight after (a stale pause cleared before a new message): without it the new turn can arrive before the cancel is done.
-        Raises `DoorRefused` when the door or the API did not accept it, so a caller that logs can say why."""
+        Raises `DoorRefusedError` when the door or the API did not accept it, so a caller that logs can say why."""
         async for event in self._stream("/chat/cancel", {"thread_id": thread_id}, read_body=wait):
             if event.get("type") == "error" and not (wait and event.get("code") == "cancelled"):
-                raise DoorRefused(str(event.get("content")))
+                raise DoorRefusedError(str(event.get("content")))

@@ -12,7 +12,7 @@ from types import SimpleNamespace
 from typing import Any
 
 
-class NotFound(Exception):
+class NotFoundError(Exception):
     pass
 
 
@@ -28,7 +28,7 @@ class FakeQdrant:
     def _physical(self, name: str) -> str:
         physical = self.aliases.get(name, name)
         if physical not in self.collections:
-            raise NotFound(f"Collection `{name}` doesn't exist!")
+            raise NotFoundError(f"Collection `{name}` doesn't exist!")
         return physical
 
     def seed(self, name: str, points: list | None = None) -> None:
@@ -55,12 +55,12 @@ class FakeQdrant:
             if getattr(op, "delete_alias", None) is not None:
                 name = op.delete_alias.alias_name
                 if name not in staged:
-                    raise NotFound(f"Alias `{name}` doesn't exist")
+                    raise NotFoundError(f"Alias `{name}` doesn't exist")
                 del staged[name]
             elif getattr(op, "create_alias", None) is not None:
                 alias, target = op.create_alias.alias_name, op.create_alias.collection_name
                 if target not in self.collections:
-                    raise NotFound(f"Collection `{target}` doesn't exist!")
+                    raise NotFoundError(f"Collection `{target}` doesn't exist!")
                 if alias in staged or alias in self.collections:
                     raise ValueError(f"`{alias}` already exists")
                 staged[alias] = target

@@ -69,7 +69,7 @@ class TestIterateWithTimeoutCancelCheck:
 
         events, raised = await _run()
         assert events == []
-        assert isinstance(raised, stream_module.TurnCancelled)
+        assert isinstance(raised, stream_module.TurnCancelledError)
 
     async def test_no_cancel_check_behaves_exactly_as_before(self):
         """Regression guard: every existing caller passes nothing here —
@@ -203,7 +203,7 @@ class TestAstreamEventsTurnRawAsyncioCancellation:
     the caller's own task getting cancelled from outside (the ASGI layer
     tearing down a disconnected request, an asyncio.wait_for elsewhere
     timing out and cancelling this task as a side effect) — as opposed to
-    TestAstreamEventsTurnCancellation above's TurnCancelled, which only
+    TestAstreamEventsTurnCancellation above's TurnCancelledError, which only
     ever comes from cancel_check's own cooperative Redis-flag poll.
 
     Distinct code path on purpose: CancelledError is a BaseException

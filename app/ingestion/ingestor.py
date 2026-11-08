@@ -32,7 +32,7 @@ from app.ports.outbound.retrieval import (
     document_writer,
     embedder,
 )
-from app.ports.outbound.web import PageFetchFailed, page_fetcher
+from app.ports.outbound.web import PageFetchFailedError, page_fetcher
 
 logger = logging.getLogger(__name__)
 
@@ -67,7 +67,7 @@ def _content_point_id(tenant: str, source: str, index: int, text: str) -> str:
     return uuid.uuid5(_POINT_ID_NAMESPACE, f"{tenant}|{source}|{index}|{digest}").hex
 
 
-class IngestRefused(Exception):
+class IngestRefusedError(Exception):
     """A refused ingest (bad ctx, disallowed file type, SSRF-blocked URL,
     fetch too large, ...) — expected and caller-facing, not a bug. Every
     raise site also records `agent_ingest_refused_total{reason=...}`
@@ -131,7 +131,7 @@ async def ingest_text(
     """
     if not valid_ctx(ctx):
         metrics.agent_ingest_refused_total.labels(reason="no_ctx").inc()
-        raise IngestRefused("a valid tenant+principal ctx is required to ingest content")
+        raise IngestRefusedError("a valid tenant+principal ctx is required to ingest content")
 
     parents = chunk_text(text)
     if not parents:
@@ -186,7 +186,7 @@ async def ingest_file(path: str, ctx: SecurityCtx | None, topic: str | None = No
     p = Path(path)
     if p.suffix.lower() not in _ALLOWED_FILE_SUFFIXES:
         metrics.agent_ingest_refused_total.labels(reason="bad_file_type").inc()
-        raise IngestRefused(
+        raise IngestRefusedError(
             f"unsupported file type {p.suffix!r} — only {sorted(_ALLOWED_FILE_SUFFIXES)} are supported"
         )
     # Off the loop: an upload-sized read inline would stall every other coroutine in the process while it lasts.
@@ -224,7 +224,7 @@ class _TextExtractor(html.parser.HTMLParser):
 async def _assert_safe_url(url: str) -> None:
     """SSRF guard — the actual check lives in `app/core/url_safety.py`,
     shared with `app/adapters/outbound/crawl4ai/web_crawler.py`'s render path. This wrapper
-    just translates `UnsafeURLError` into this module's `IngestRefused` and
+    just translates `UnsafeURLError` into this module's `IngestRefusedError` and
     records the refusal metric; see `url_safety.py` for the disclosed
     DNS-rebinding gap. Async because the name lookup must not block the event
     loop this runs on."""
@@ -232,7 +232,7 @@ async def _assert_safe_url(url: str) -> None:
         await _assert_safe_url_impl(url)
     except UnsafeURLError as exc:
         metrics.agent_ingest_refused_total.labels(reason="ssrf_blocked").inc()
-        raise IngestRefused(str(exc)) from exc
+        raise IngestRefusedError(str(exc)) from exc
 
 
 async def ingest_url(url: str, ctx: SecurityCtx | None, topic: str | None = None) -> int:
@@ -243,16 +243,16 @@ async def ingest_url(url: str, ctx: SecurityCtx | None, topic: str | None = None
     await _assert_safe_url(url)
     try:
         page = await page_fetcher.get().fetch(url, max_bytes=_MAX_URL_BYTES)
-    except PageFetchFailed as exc:
+    except PageFetchFailedError as exc:
         metrics.agent_ingest_refused_total.labels(reason="fetch_failed").inc()
-        raise IngestRefused(f"fetch failed: {exc}") from exc
+        raise IngestRefusedError(f"fetch failed: {exc}") from exc
 
     if page.status_code >= 400:
         metrics.agent_ingest_refused_total.labels(reason="fetch_failed").inc()
-        raise IngestRefused(f"fetch failed with status {page.status_code}")
+        raise IngestRefusedError(f"fetch failed with status {page.status_code}")
     if page.size > _MAX_URL_BYTES:
         metrics.agent_ingest_refused_total.labels(reason="too_large").inc()
-        raise IngestRefused(f"response exceeds the {_MAX_URL_BYTES}-byte fetch limit")
+        raise IngestRefusedError(f"response exceeds the {_MAX_URL_BYTES}-byte fetch limit")
 
     if "html" in page.content_type:
         extractor = _TextExtractor()

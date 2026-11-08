@@ -23,8 +23,8 @@ from credit_billing.providers.base import (
     CheckoutError,
     CreditProduct,
     EventKind,
-    InvalidPayload,
-    InvalidSignature,
+    InvalidPayloadError,
+    InvalidSignatureError,
 )
 from credit_billing.providers.stripe import StripeProvider
 from tests.fake_stripe_api import FakeStripeApi
@@ -62,7 +62,7 @@ class TestTheSignatureHeader:
 
     def test_the_fake_v0_scheme_alone_is_never_enough(self):
         """Stripe adds a `v0` signature to TEST events; accepting it would let anyone who knows the (public) fake scheme in."""
-        with pytest.raises(InvalidSignature):
+        with pytest.raises(InvalidSignatureError):
             parse(provider(), V0_ONLY_HEADER)
 
     def test_only_the_v1_label_counts_even_for_a_signature_that_is_arithmetically_right(self):
@@ -70,11 +70,11 @@ class TestTheSignatureHeader:
         one carries the CORRECT v1 MAC under the `v0` label, so only the scheme label can be what refuses it."""
         right_mac = KNOWN_HEADER.split("v1=")[1]
 
-        with pytest.raises(InvalidSignature):
+        with pytest.raises(InvalidSignatureError):
             parse(provider(), f"t={T},v0={right_mac}")
 
     def test_a_header_signed_with_another_secret_is_refused(self):
-        with pytest.raises(InvalidSignature):
+        with pytest.raises(InvalidSignatureError):
             parse(StripeProvider("whsec_someone_else", api_key="x", clock=lambda: T + 10), KNOWN_HEADER)
 
     @pytest.mark.parametrize(
@@ -83,18 +83,18 @@ class TestTheSignatureHeader:
         ids=["empty", "garbage", "blank-values", "no-timestamp", "no-signature", "bad-timestamp", "commas", "empty-signature"],
     )
     def test_a_malformed_header_is_refused_not_a_crash(self, header):
-        with pytest.raises(InvalidSignature):
+        with pytest.raises(InvalidSignatureError):
             parse(provider(), header)
 
     def test_the_timestamp_is_bound_into_the_mac_so_it_cannot_be_moved_to_make_an_old_delivery_look_fresh(self):
         moved = KNOWN_HEADER.replace("t=1760000000", "t=1760000300")
 
-        with pytest.raises(InvalidSignature):
+        with pytest.raises(InvalidSignatureError):
             parse(provider(now=T + 310), moved)
 
     def test_the_window_refuses_a_stale_delivery_and_accepts_one_at_the_edge(self):
         assert parse(provider(now=T + 300), KNOWN_HEADER)
-        with pytest.raises(InvalidSignature):
+        with pytest.raises(InvalidSignatureError):
             parse(provider(now=T + 301), KNOWN_HEADER)
 
     def test_a_future_dated_delivery_is_not_refused_exactly_as_stripes_own_verifier_does_not(self):
@@ -106,7 +106,7 @@ class TestTheSignatureHeader:
         assert provider().parse_webhook({"STRIPE-SIGNATURE": KNOWN_HEADER}, KNOWN_BODY)
 
     def test_a_body_altered_after_signing_is_refused(self):
-        with pytest.raises(InvalidSignature):
+        with pytest.raises(InvalidSignatureError):
             parse(provider(), KNOWN_HEADER, KNOWN_BODY.replace(b"ch_1", b"ch_2"))
 
     def test_a_tolerance_of_zero_is_refused_because_it_disables_the_check(self):
@@ -267,7 +267,7 @@ class TestAnAuthenticBodyInTheWrongShape:
          {"id": "", "type": "x", "data": {"object": {}}}, {"id": "e", "type": "", "data": {"object": {}}}, {"id": 1, "type": "x", "data": {"object": {}}}],
     )
     def test_it_is_an_invalid_payload_never_a_forgery_and_never_a_crash(self, payload):
-        with pytest.raises(InvalidPayload):
+        with pytest.raises(InvalidPayloadError):
             normalize(payload)
 
     def test_a_body_that_is_not_json_is_an_invalid_payload(self):
@@ -277,7 +277,7 @@ class TestAnAuthenticBodyInTheWrongShape:
         body = b"<html>not json</html>"
         mac = hmac.new(SECRET.encode(), f"{T}.".encode() + body, hashlib.sha256).hexdigest()
 
-        with pytest.raises(InvalidPayload):
+        with pytest.raises(InvalidPayloadError):
             provider(now=T).parse_webhook({"stripe-signature": f"t={T},v1={mac}"}, body)
 
 

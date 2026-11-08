@@ -70,7 +70,7 @@ def load_embed_service(spec: ModelSpec, settings: Settings) -> EmbedService:
     )
 
 
-class _Reject(Exception):
+class _RejectError(Exception):
     def __init__(self, status: int, code: str, message: str) -> None:
         self.status, self.code, self.message = status, code, message
 
@@ -79,27 +79,27 @@ def _validate(body: Any, specs: dict[str, ModelSpec], settings: Settings) -> tup
     """The request's (model, inputs, encoding), or the rejection it earns. The order is the contract's: a malformed body, then an
     unknown model, then the parameters, then the input and its bounds."""
     if not isinstance(body, dict):
-        raise _Reject(400, "invalid_input", "the request body must be a JSON object")
+        raise _RejectError(400, "invalid_input", "the request body must be a JSON object")
     name = body.get("model")
     if not isinstance(name, str) or not name:
-        raise _Reject(400, "invalid_input", "`model` is required")
+        raise _RejectError(400, "invalid_input", "`model` is required")
     spec = specs.get(name)
     if spec is None:
-        raise _Reject(404, "model_not_found", f"model {name!r} is not served here; served models: {sorted(specs) or 'none'}")
+        raise _RejectError(404, "model_not_found", f"model {name!r} is not served here; served models: {sorted(specs) or 'none'}")
     if body.get("dimensions") is not None:
-        raise _Reject(400, "dimensions_unsupported", "this service does not truncate embeddings; `dimensions` is not supported")
+        raise _RejectError(400, "dimensions_unsupported", "this service does not truncate embeddings; `dimensions` is not supported")
     encoding = body.get("encoding_format") or "float"
     if encoding not in ("float", "base64"):
-        raise _Reject(400, "invalid_input", "`encoding_format` must be \"float\" or \"base64\"")
+        raise _RejectError(400, "invalid_input", "`encoding_format` must be \"float\" or \"base64\"")
     raw = body.get("input")
     inputs = [raw] if isinstance(raw, str) else raw
     if not isinstance(inputs, list) or not inputs or not all(isinstance(t, str) and t for t in inputs):
-        raise _Reject(400, "invalid_input", "`input` must be a non-empty string or a non-empty list of non-empty strings")
+        raise _RejectError(400, "invalid_input", "`input` must be a non-empty string or a non-empty list of non-empty strings")
     if len(inputs) > settings.embed_max_items:
-        raise _Reject(400, "batch_too_large", f"{len(inputs)} inputs exceeds the limit of {settings.embed_max_items}; split the request")
+        raise _RejectError(400, "batch_too_large", f"{len(inputs)} inputs exceeds the limit of {settings.embed_max_items}; split the request")
     for index, text in enumerate(inputs):
         if len(text) > settings.embed_max_chars:
-            raise _Reject(400, "input_too_long", f"input {index} has {len(text)} characters; the limit is {settings.embed_max_chars}")
+            raise _RejectError(400, "input_too_long", f"input {index} has {len(text)} characters; the limit is {settings.embed_max_chars}")
     return spec, inputs, encoding
 
 
@@ -124,7 +124,7 @@ async def create_embeddings(request: Request) -> JSONResponse:
         return error(400, "invalid_input", "the request body is not valid JSON")
     try:
         spec, inputs, encoding = _validate(body, app.state.embed_specs, settings)
-    except _Reject as rejected:
+    except _RejectError as rejected:
         metrics.embed_errors.labels(model=str(body.get("model", "unknown")) if isinstance(body, dict) else "unknown", code=rejected.code).inc()
         return error(rejected.status, rejected.code, rejected.message)
 

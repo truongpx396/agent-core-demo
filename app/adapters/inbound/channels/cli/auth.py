@@ -22,7 +22,7 @@ from pathlib import Path
 import httpx
 
 from app.adapters.inbound.channels import oauth
-from app.adapters.inbound.channels.oauth import SignInRefused, Tokens
+from app.adapters.inbound.channels.oauth import SignInRefusedError, Tokens
 from app.core import metrics
 from app.core.config import settings
 
@@ -119,7 +119,7 @@ class CliAuth:
         async with self._lock:
             try:
                 self._tokens = await self._renew(self._tokens)
-            except SignInRefused:
+            except SignInRefusedError:
                 return False
             return True
 
@@ -133,7 +133,7 @@ class CliAuth:
                 tokens = await oauth.refresh_tokens(
                     self._http, self._issuer, client_id=self._client_id, refresh_token=current.refresh_token, scope=self._scope, resource=self._audience
                 )
-            except SignInRefused as exc:
+            except SignInRefusedError as exc:
                 if exc.reason == "unavailable":
                     metrics.channel_signin_total.labels(channel="cli", outcome="unavailable").inc()
                     raise
@@ -178,7 +178,7 @@ class CliAuth:
         except OSError as exc:
             self._say(f"Sign-in needs the local port {self._port} (CHANNEL_CLI_CALLBACK_PORT) and it is in use: {type(exc).__name__}")
             metrics.channel_signin_total.labels(channel="cli", outcome="unavailable").inc()
-            raise SignInRefused("unavailable") from exc
+            raise SignInRefusedError("unavailable") from exc
         async with server:
             self._say(f"Sign in to continue. Opening your browser; if it does not open, go to:\n  {url}")
             self._open_browser(url)
@@ -186,16 +186,16 @@ class CliAuth:
                 query = await asyncio.wait_for(arrived, SIGN_IN_TIMEOUT_SECONDS)
             except TimeoutError as exc:
                 metrics.channel_signin_total.labels(channel="cli", outcome="credentials").inc()
-                raise SignInRefused("credentials") from exc
+                raise SignInRefusedError("credentials") from exc
         code = query.get("code")
         if not code or not secrets.compare_digest(query.get("state", ""), state):
             metrics.channel_signin_total.labels(channel="cli", outcome="credentials").inc()
-            raise SignInRefused("credentials")
+            raise SignInRefusedError("credentials")
         try:
             tokens = await oauth.exchange_code(
                 self._http, self._issuer, client_id=self._client_id, code=code, verifier=verifier, redirect_uri=self.redirect_uri, resource=self._audience
             )
-        except SignInRefused as exc:
+        except SignInRefusedError as exc:
             metrics.channel_signin_total.labels(channel="cli", outcome=exc.reason).inc()
             raise
         self._store.save(tokens, issuer=self._issuer, client_id=self._client_id)

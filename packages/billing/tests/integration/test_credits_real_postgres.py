@@ -269,13 +269,13 @@ class TestReplayAndAtomicity:
         tenant = tenant_name()
         await grant(tenant, 100)
 
-        class Boom(Exception):
+        class BoomError(Exception):
             pass
 
-        with pytest.raises(Boom):
+        with pytest.raises(BoomError):
             async with credits.get_connection() as conn:
                 await credits.debit_in(conn, tenant, 10, idempotency_key="event-1")
-                raise Boom
+                raise BoomError
 
         assert (await credits.balance(tenant)).available == D("100")
         assert (await debit(tenant, 10, "event-1")).applied, "the rolled-back key is usable again"

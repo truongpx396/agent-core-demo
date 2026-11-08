@@ -210,7 +210,7 @@ One self-contained HTML file (`app/adapters/inbound/api/static/index.html`, inli
 One shape, `{code, message, details}`, from a single `ErrorCode` enum (`app/core/errors.py`) for every SSE `error` event and CLI error. It isn't applied to `ToolMessage` content, which is prose for the model.
 - `internal_error_envelope(exc)` returns a fixed message plus `error_class`, never `str(exc)`; the text goes to the trace.
 - **Bug:** both catch-alls (`runtime/stream.py::_run_graph_stream`, `agent_worker.py::process_request`) sent `str(exc)` to the caller, leaking internal hosts, SQL fragments or DSNs; the worker's had no `code` either. Three tests asserted the leak. They now assert a hostname-shaped sentinel never appears.
-- **Gap:** the ingest worker's `process_job` has the same catch-all but mixes uploader-facing messages with unexpected failures, so it needs a per-exception decision; `CrawlFailed`/`IngestRefused` also embed a raw `{exc}`. Read from code, not reproduced.
+- **Gap:** the ingest worker's `process_job` has the same catch-all but mixes uploader-facing messages with unexpected failures, so it needs a per-exception decision; `CrawlFailedError`/`IngestRefusedError` also embed a raw `{exc}`. Read from code, not reproduced.
 
 ### 31. DB connection pool
 One lazy `psycopg_pool.ConnectionPool` singleton (`min_size=1`, `max_size=10`) behind `get_connection()` in `app/platform/sql_store.py`, so call sites didn't change. `close_pool()` runs in the API lifespan shutdown; without it, background pool threads outlived the process (a reproduced bug).
@@ -475,7 +475,7 @@ Langfuse traces `889b5405` and `475b073a` (2026-10-24), asked "why is this so sl
 
 ### 80. A stopped turn is taken out of the thread, because the model reads the thread and not the click
 Trace `d6a00248` (2026-10-24): "run it through a script and count db_timeout" was stopped with `POST /chat/cancel`, then "Check our API docs page ..." was sent. The model was shown both messages with nothing between them, answered the older one, and paused for approval to run the script the person had just stopped. The stop was only accounted for (`_record_unfinished_turn`); the thread kept the question.
-- **Fix:** `runtime/cancelled_turn.discard_cancelled_turn`, called on `TurnCancelled` only, removes the turn's messages (`RemoveMessage`) with `aupdate_state(as_node=START)`. A timeout, an error or a closed connection keeps the question, so "try again" has something to retry. If a TOOL had already run in the turn, the turn stays and is closed with an assistant line, `[The person stopped this request before it finished.]`: its result is a fact the model must keep, and forgetting a filed ticket invites filing it again under a new call id, which the exactly-once guard can't catch.
+- **Fix:** `runtime/cancelled_turn.discard_cancelled_turn`, called on `TurnCancelledError` only, removes the turn's messages (`RemoveMessage`) with `aupdate_state(as_node=START)`. A timeout, an error or a closed connection keeps the question, so "try again" has something to retry. If a TOOL had already run in the turn, the turn stays and is closed with an assistant line, `[The person stopped this request before it finished.]`: its result is a fact the model must keep, and forgetting a filed ticket invites filing it again under a new call id, which the exactly-once guard can't catch.
 - **Read in the installed LangGraph 0.2.76, not assumed:** `update_state` without `as_node` raises "Ambiguous update" after a run that stopped part-way; it applies the writes of tasks that had already finished; and the next turn's input discards the tasks left pending. The end-to-end test runs the turn after the stop on a real in-memory checkpointer and reads what the model was sent.
 - **Metric:** `agent_cancelled_turn_discarded_total{outcome=dropped|closed|nothing|failed}`, no alert (the stop is the person's). It never raises: a failure leaves the thread as it was and counts `failed`.
 - **Tests:** `tests/agent/runtime/test_cancelled_turn.py`; the two end-to-end ones fail without the call.
@@ -490,7 +490,7 @@ Traces `de85f4e8` and `e0ca1456` (2026-10-24).
 - **Bug 3: a database that predates a schema script said "ready".** `postgres-init/` runs on a fresh volume only. The dev database lacked seven tables, so a tool failed per call, the exactly-once guard ran degraded (`tool_call_dedup_degraded`), nothing was metered and the budget check failed open on every turn, each a warning in a log. `GET /health/ready` now lists the missing tables and the scripts to apply, in order (`health.APPDATA_TABLES`, kept equal to what the scripts create by a test); it never changes the status. The warnings tests used to read whichever database the machine had; they get a fake schema now.
 - **Tests:** `TestAToolThatFailedIsNotADeferral` (`test_nodes.py`), `TestADatabaseFailureDoesNotLeakItsStatement` (`test_graph_utils.py`), `tests/adapters/inbound/api/test_readiness_warnings.py`.
 - **Gap: any failed tool excuses the whole turn's narration.** A failure of an unrelated tool earlier in the same turn also excuses a real deferral later in it.
-- **Gap: only the database driver's errors are redacted.** A sandbox network error still reaches the model as `Tool failed (SandboxCallFailed: ...). Try a different approach.`, and "try a different approach" is wrong advice for an outage.
+- **Gap: only the database driver's errors are redacted.** A sandbox network error still reaches the model as `Tool failed (SandboxCallFailedError: ...). Try a different approach.`, and "try a different approach" is wrong advice for an outage.
 - **Gap: the schema warning checks tables, not columns** (`11`, `14`), and leaves the billing package's scripts to its own tool. It applies nothing: `15` drops the `notes` columns and that stays a person's decision.
 - **Not fixed, environment:** the sandbox container wasn't running although `run_python_in_sandbox` is offered; each failed call took 9 s (list, then create, each retried).
 
@@ -716,7 +716,7 @@ Two kinds of duplicate: a **replay** sees the same `tool_call_id` twice; a **re-
 | A finished zero-tool turn is reclaimed before its ack | `reclaimed_turn.turn_already_completed` refuses it (a rejected, tagged answer is not a finished one); a tool-call check alone re-ran it and double-recorded its cost |
 | Ingest jobs on reclaim | Idempotent by construction (`_content_point_id`, 24), so retried unconditionally |
 | A client resubmits the same message | `claim_or_get_existing_submission` reuses the first attempt's `request_id` within `CHAT_SUBMIT_DEDUP_TTL_SECONDS`. This exposed a bug: results streams were deleted when any reader saw the terminal event, unsafe once two readers share one, so they now rely on the TTL. `release_submission_claim` undoes a claim whose publish failed |
-| A tool times out but its write lands | `MutatingToolTimedOut` steers the agent to verify with a read-only tool first. `asyncio.wait_for` cancels the awaiting task, not necessarily the write, and "retry" would be a fresh id |
+| A tool times out but its write lands | `MutatingToolTimedOutError` steers the agent to verify with a read-only tool first. `asyncio.wait_for` cancels the awaiting task, not necessarily the write, and "retry" would be a fresh id |
 | The dedup claim races (`result IS NULL` → run again) | `add_note`/`remember` point ids are `uuid5` of `tool_call_id`; `create_ticket`/`log_incident`/`add_followup` carry `tool_call_id UNIQUE` + `ON CONFLICT DO NOTHING` (`14-`) |
 | An append to a text column has no row for `ON CONFLICT` | `15-` makes each append its own row (`support_ticket_comments`, `crm_lead_notes`); flattened text is computed at read time, so `tools.py` didn't change. `find_or_create_lead`'s upsert is naturally idempotent and needs no key |
 | Nobody ever publishes (no worker, or a poisoned dedup claim) | `read_results` bounds the wait for the **first** event only (`first_event_deadline_seconds`), so long ingest jobs aren't cut short |
@@ -725,7 +725,7 @@ Two kinds of duplicate: a **replay** sees the same `tool_call_id` twice; a **re-
 | `usage_ledger` grows forever | Retired: the table is frozen, nothing writes it. The same question for the events is `make usage-events-sweep` (63) |
 | Telegram redelivers after a restart | Durable offset in Redis (42) |
 
-**Deliberately not built:** a business-key rule ("one open ticket per tenant + requester + subject") for two *different* ids used for the same request. What counts as "the same ticket" is a product decision; `MutatingToolTimedOut`'s steering is the general mitigation until a domain needs one.
+**Deliberately not built:** a business-key rule ("one open ticket per tenant + requester + subject") for two *different* ids used for the same request. What counts as "the same ticket" is a product decision; `MutatingToolTimedOutError`'s steering is the general mitigation until a domain needs one.
 
 ### Next PR: the LangGraph upgrade (decided, not started)
 

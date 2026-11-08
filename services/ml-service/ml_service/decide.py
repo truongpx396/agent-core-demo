@@ -55,7 +55,7 @@ QUESTION_KEYS = frozenset({"type", "instructions", "criteria"})
 RETRY_AFTER_S = "1"  # an index that is still being built is ready within a supervisor tick
 
 
-class _Reject(Exception):
+class _RejectError(Exception):
     def __init__(self, status: int, code: str, message: str) -> None:
         self.status, self.code, self.message = status, code, message
 
@@ -71,59 +71,59 @@ def _text(value: Any) -> bool:
 
 
 def _check_question(name: Any, question: Any) -> dict[str, str]:
-    """The question's options (option -> description) if it is a well-formed `choice` question; a _Reject for anything else."""
+    """The question's options (option -> description) if it is a well-formed `choice` question; a _RejectError for anything else."""
     if not isinstance(name, str) or not NAME.match(name):
-        raise _Reject(400, "invalid_input", f"a question name must match {NAME.pattern}")
+        raise _RejectError(400, "invalid_input", f"a question name must match {NAME.pattern}")
     if not isinstance(question, dict):
-        raise _Reject(400, "invalid_input", f"question {name!r} must be an object")
+        raise _RejectError(400, "invalid_input", f"question {name!r} must be an object")
     unknown = sorted(set(question) - QUESTION_KEYS)
     if unknown:
-        raise _Reject(400, "invalid_input", f"question {name!r} has fields this interface does not define: {', '.join(map(str, unknown))}")
+        raise _RejectError(400, "invalid_input", f"question {name!r} has fields this interface does not define: {', '.join(map(str, unknown))}")
     kind = question.get("type")
     if kind not in QUESTION_TYPES:
-        raise _Reject(400, "invalid_input", f"question {name!r}: `type` must be one of {', '.join(QUESTION_TYPES)}")
+        raise _RejectError(400, "invalid_input", f"question {name!r}: `type` must be one of {', '.join(QUESTION_TYPES)}")
     if kind not in IMPLEMENTED:
-        raise _Reject(422, "unsupported_question_type", f"question {name!r}: this service answers {', '.join(IMPLEMENTED)} questions, not {kind!r}")
+        raise _RejectError(422, "unsupported_question_type", f"question {name!r}: this service answers {', '.join(IMPLEMENTED)} questions, not {kind!r}")
     if not _text(question.get("instructions")):
-        raise _Reject(400, "invalid_input", f"question {name!r}: `instructions` must be a non-empty string")
+        raise _RejectError(400, "invalid_input", f"question {name!r}: `instructions` must be a non-empty string")
     criteria = question.get("criteria")
     if not isinstance(criteria, dict) or not 1 <= len(criteria) <= MAX_OPTIONS:
-        raise _Reject(400, "invalid_input", f"question {name!r}: `criteria` must be an object of 1..{MAX_OPTIONS} options")
+        raise _RejectError(400, "invalid_input", f"question {name!r}: `criteria` must be an object of 1..{MAX_OPTIONS} options")
     if not all(isinstance(option, str) and option and isinstance(description, str) for option, description in criteria.items()):
-        raise _Reject(400, "invalid_input", f"question {name!r}: every option needs a name and a string description")
+        raise _RejectError(400, "invalid_input", f"question {name!r}: every option needs a name and a string description")
     return dict(criteria)
 
 
 def _validate(body: Any, settings: Settings, labeller: Labeller) -> Parsed:
     if not isinstance(body, dict):
-        raise _Reject(400, "invalid_input", "the request body must be a JSON object")
+        raise _RejectError(400, "invalid_input", "the request body must be a JSON object")
     if "assets" in body:
-        raise _Reject(422, "unsupported_field", "`assets` (images) are not supported by this service")
+        raise _RejectError(422, "unsupported_field", "`assets` (images) are not supported by this service")
     unknown = sorted(set(body) - REQUEST_KEYS)
     if unknown:
-        raise _Reject(400, "invalid_input", f"the request has fields this interface does not define: {', '.join(map(str, unknown))}")
+        raise _RejectError(400, "invalid_input", f"the request has fields this interface does not define: {', '.join(map(str, unknown))}")
     if "model" in body and body["model"] != LOCAL_MODEL:
-        raise _Reject(400, "unknown_model", f'`model` can only be "{LOCAL_MODEL}" (or left out) on this service')
+        raise _RejectError(400, "unknown_model", f'`model` can only be "{LOCAL_MODEL}" (or left out) on this service')
     state = body.get("state")
     if isinstance(state, dict | list):
-        raise _Reject(422, "unsupported_state", "`state` must be a string on this service (an object or an array is not supported)")
+        raise _RejectError(422, "unsupported_state", "`state` must be a string on this service (an object or an array is not supported)")
     if not isinstance(state, str) or not state.strip():  # (not _text(): mypy cannot narrow through a helper)
-        raise _Reject(400, "invalid_input", "`state` must be a non-empty string")
+        raise _RejectError(400, "invalid_input", "`state` must be a non-empty string")
     if len(state) > settings.classify_max_chars:
-        raise _Reject(413, "input_too_long", f"`state` has {len(state)} characters; the limit is {settings.classify_max_chars}")
+        raise _RejectError(413, "input_too_long", f"`state` has {len(state)} characters; the limit is {settings.classify_max_chars}")
     questions = body.get("questions")
     if not isinstance(questions, dict) or not questions:
-        raise _Reject(400, "invalid_input", "`questions` must be an object with at least one question")
+        raise _RejectError(400, "invalid_input", "`questions` must be an object with at least one question")
     if len(questions) > MAX_QUESTIONS:
-        raise _Reject(400, "too_many_questions", f"{len(questions)} questions exceeds the limit of {MAX_QUESTIONS}")
+        raise _RejectError(400, "too_many_questions", f"{len(questions)} questions exceeds the limit of {MAX_QUESTIONS}")
     options = {name: _check_question(name, question) for name, question in questions.items()}
     for name, given in options.items():
         if not labeller.knows(name):
-            raise _Reject(400, "unknown_decision", f"no decision named {name!r}; a question is named after a label set, and GET /health/models lists them")
+            raise _RejectError(400, "unknown_decision", f"no decision named {name!r}; a question is named after a label set, and GET /health/models lists them")
         labels = labeller.labels_of(name)
         if labels is not None and set(given) != set(labels):
             missing, extra = sorted(set(labels) - set(given)), sorted(set(given) - set(labels))
-            raise _Reject(
+            raise _RejectError(
                 400, "criteria_mismatch",
                 f"question {name!r}: `criteria` must name exactly the set's options; missing {missing or 'none'}, not in the set {extra or 'none'}",
             )
@@ -142,7 +142,7 @@ async def decide(request: Request) -> JSONResponse:
         return error(400, "invalid_input", "the request body is not valid JSON")
     try:
         parsed = _validate(body, app.state.settings, app.state.labeller)
-    except _Reject as rejected:
+    except _RejectError as rejected:
         return error(rejected.status, rejected.code, rejected.message)
     started = time.perf_counter()
     decided = await app.state.labeller.decide(list(parsed.names), parsed.state)

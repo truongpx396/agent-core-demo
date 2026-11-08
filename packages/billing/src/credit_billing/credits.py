@@ -11,7 +11,7 @@ verified purchase webhook, opens an account.
   event that caused it.
 - **A key stands for ONE request** (spec 012). The transaction stores a normalised description of its request
   (`credit_transactions.request`) and a reused key is compared with it: the same request is a harmless
-  `duplicate`; a DIFFERENT one raises `IdempotencyConflict` naming the differing fields and changes nothing
+  `duplicate`; a DIFFERENT one raises `IdempotencyConflictError` naming the differing fields and changes nothing
   (before, a 600-credit request under a key that had granted 500 was told "already applied" and lost). Which
   fields identify a request is chosen per call (`compare=`, default every field). A row from before the column
   has no stored request and behaves as it did.
@@ -157,7 +157,7 @@ def _shown(value: str | None) -> str:
     return repr(value[:80]) + ("…" if len(value) > 80 else "")
 
 
-class IdempotencyConflict(ValueError):
+class IdempotencyConflictError(ValueError):
     """An idempotency key was reused for a DIFFERENT request. Nothing was written. `differences` maps each differing field to
     (the value the key was first used with, the value now); the message truncates long values, the attribute does not.
 
@@ -245,7 +245,7 @@ async def _begin_transaction(
     pricing: Pricing | None = None,
 ) -> tuple[str | None, str | None]:
     """Inserts the idempotency row, with the request the key stands for. Returns (new_id, None), or (None, existing_id) for a replay of
-    the SAME request. Raises IdempotencyConflict, having written nothing, for a replay of a DIFFERENT one.
+    the SAME request. Raises IdempotencyConflictError, having written nothing, for a replay of a DIFFERENT one.
 
     The comparison reads the row by `(tenant, key)`: a conflict is only ever found in the caller's own tenant and can never quote
     another tenant's request (constitution I). It compares the caller's values (`request`), not the stored columns, because the pricing
@@ -275,7 +275,7 @@ async def _begin_transaction(
         differences = _differences(stored, request, fields)
         if differences:
             logger.warning("credit_idempotency_conflict", extra={"tenant": tenant, "key": key, "fields": sorted(differences)})
-            raise IdempotencyConflict(key, tenant, differences)
+            raise IdempotencyConflictError(key, tenant, differences)
     return None, str(existing)
 
 
@@ -322,7 +322,7 @@ async def grant_in(
     """Adds a lot. Opens the tenant's account if it has none. Any debt is repaid from it first.
 
     A reused `idempotency_key` is judged on `compare` (names from GRANT_FIELDS; default all; the kind always): the same request is a
-    `duplicate`, a different one raises IdempotencyConflict. Narrow it only when the key names a fact and the other fields are
+    `duplicate`, a different one raises IdempotencyConflictError. Narrow it only when the key names a fact and the other fields are
     incidental, and say why at the call site (the webhook grant leaves out `expires_at`, which it computes as now + days)."""
     fields = _compared(compare, GRANT_FIELDS)
     credits = credits_amount(amount)

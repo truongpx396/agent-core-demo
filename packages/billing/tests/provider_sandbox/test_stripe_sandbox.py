@@ -30,7 +30,7 @@ from credit_billing.providers.base import (
     CheckoutError,
     CreditProduct,
     EventKind,
-    InvalidSignature,
+    InvalidSignatureError,
 )
 from credit_billing.providers.stripe import StripeProvider
 from tests.provider_sandbox.stripe_listener import StripeListener, redact
@@ -167,28 +167,28 @@ class TestARealSignedDelivery:
     def test_the_v0_signature_alone_is_refused(self, listener, purchase):
         parts = [p for p in purchase.headers["stripe-signature"].split(",") if not p.startswith("v1=")]
 
-        with pytest.raises(InvalidSignature):
+        with pytest.raises(InvalidSignatureError):
             StripeProvider(listener.secret).parse_webhook({"stripe-signature": ",".join(parts)}, purchase.body)
 
     def test_the_v1_signature_under_the_v0_label_is_refused(self, listener, purchase):
         fields = dict(part.split("=", 1) for part in purchase.headers["stripe-signature"].split(","))
 
-        with pytest.raises(InvalidSignature):
+        with pytest.raises(InvalidSignatureError):
             StripeProvider(listener.secret).parse_webhook({"stripe-signature": f"t={fields['t']},v0={fields['v1']}"}, purchase.body)
 
     def test_one_extra_byte_is_refused(self, listener, purchase):
-        with pytest.raises(InvalidSignature):
+        with pytest.raises(InvalidSignatureError):
             StripeProvider(listener.secret).parse_webhook(purchase.headers, purchase.body + b" ")
 
     def test_another_secret_is_refused(self, purchase):
-        with pytest.raises(InvalidSignature):
+        with pytest.raises(InvalidSignatureError):
             StripeProvider("whsec_not_the_cli_session_secret").parse_webhook(purchase.headers, purchase.body)
 
     def test_it_is_refused_once_stale_and_accepted_at_the_edge(self, listener, purchase):
         t = stamp_of(purchase)
 
         assert parse(listener, purchase, clock=lambda: t + 300)
-        with pytest.raises(InvalidSignature):
+        with pytest.raises(InvalidSignatureError):
             parse(listener, purchase, clock=lambda: t + 301)
 
     def test_a_real_delivery_arrives_within_the_window_on_this_machines_clock(self, listener, purchase):

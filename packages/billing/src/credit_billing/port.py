@@ -40,7 +40,7 @@ from credit_billing.admission import Admission
 from credit_billing.credits import (
     Applied,
     Balance,
-    IdempotencyConflict,
+    IdempotencyConflictError,
     Number,
     Pricing,
 )
@@ -48,7 +48,7 @@ from credit_billing.settings import CREDITS_ENFORCEMENT, CREDITS_PER_USD
 from credit_billing.usage import Recorded, Usage
 
 __all__ = [
-    "Admission", "Applied", "Balance", "BillingPort", "CreditSummary", "IdempotencyConflict", "InProcessBilling", "Pricing", "Recorded",
+    "Admission", "Applied", "Balance", "BillingPort", "CreditSummary", "IdempotencyConflictError", "InProcessBilling", "Pricing", "Recorded",
     "Usage", "credits_for_cost",
 ]
 

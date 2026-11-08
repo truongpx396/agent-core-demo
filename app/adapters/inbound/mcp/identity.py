@@ -8,7 +8,7 @@ could ask for another tenant's rows and get them. The repo's rule for every othe
 applies it where a tool is reached without a `ctx`.
 
 An `IdentitySource` is a zero-argument callable returning the `SecurityCtx` a call acts under, or raising
-`IdentityMissing`. Tools take one when built (`build_server(identity)` in each server module), so the source
+`IdentityMissingError`. Tools take one when built (`build_server(identity)` in each server module), so the source
 is a choice made at construction, not a mode a tool can be talked out of:
 - `launcher_ctx` (stdio, `make mcp-serve`): the identity belongs to whoever STARTS the process (the client's
   `env` block, or `.env`): `MCP_TENANT` and `MCP_PRINCIPAL`. Over stdio the person who owns the machine starts
@@ -32,15 +32,15 @@ from app.core.security import SecurityCtx, valid_ctx
 IdentitySource = Callable[[], SecurityCtx]
 
 
-class IdentityMissing(Exception):
+class IdentityMissingError(Exception):
     """A call has no identity to act under: it must be refused, never run unscoped."""
 
 
-class LauncherIdentityMissing(IdentityMissing):
+class LauncherIdentityMissingError(IdentityMissingError):
     """The process was started without the identity it needs to act for anyone."""
 
 
-class TokenIdentityMissing(IdentityMissing):
+class TokenIdentityMissingError(IdentityMissingError):
     """The request carries no verified token, or one without a usable tenant and principal."""
 
 
@@ -49,7 +49,7 @@ def launcher_ctx(*, tenant: str | None = None) -> SecurityCtx:
 
     `tenant` is for a server whose data is not tenant-scoped (the operations server: its metrics and incident log are the
     deployment's, so it passes `DEFAULT_TENANT`); everything else takes it from `MCP_TENANT`. The principal is always
-    `MCP_PRINCIPAL`: it is who the audit line and the policy gate name. Raises `LauncherIdentityMissing`, never returns a
+    `MCP_PRINCIPAL`: it is who the audit line and the policy gate name. Raises `LauncherIdentityMissingError`, never returns a
     half-filled context.
     """
     ctx: SecurityCtx = {
@@ -59,7 +59,7 @@ def launcher_ctx(*, tenant: str | None = None) -> SecurityCtx:
     }
     if not valid_ctx(ctx):
         needed = "MCP_PRINCIPAL" if tenant is not None else "MCP_TENANT and MCP_PRINCIPAL"
-        raise LauncherIdentityMissing(
+        raise LauncherIdentityMissingError(
             f"{needed} must be set in the environment this server is launched with (the `env` block of the client's "
             "server entry, or .env for `make mcp-serve`): it is who the server acts for, and it is never a tool argument."
         )
@@ -89,7 +89,7 @@ def token_source(*, tenant_claim: str, principal_claim: str) -> IdentitySource:
     def source() -> SecurityCtx:
         token = get_access_token()
         if token is None:
-            raise TokenIdentityMissing("this request carries no verified access token")
+            raise TokenIdentityMissingError("this request carries no verified access token")
         claims = token.claims or {}
         ctx: SecurityCtx = {
             "tenant": _claim(claims, tenant_claim),
@@ -97,7 +97,7 @@ def token_source(*, tenant_claim: str, principal_claim: str) -> IdentitySource:
             "claims": {},
         }
         if not valid_ctx(ctx):
-            raise TokenIdentityMissing(f"the access token has no usable {tenant_claim!r} and {principal_claim!r} claims")
+            raise TokenIdentityMissingError(f"the access token has no usable {tenant_claim!r} and {principal_claim!r} claims")
         return ctx
 
     return source

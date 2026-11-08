@@ -11,7 +11,7 @@ variables (`credit_billing.settings`). A `.env` in the working directory is read
 - **An unreachable database fails fast.** The pool retries a refused connection until its open timeout, and
   psycopg's default is 30 s of warnings ending in a raw `PoolTimeout` traceback, the wrong failure for an
   operator command or an unwatched cron job. So the wait is `CONNECT_TIMEOUT_SECONDS` and the error is
-  `DatabaseUnavailable`, naming host, port and database (never user or password) and the variable to check.
+  `DatabaseUnavailableError`, naming host, port and database (never user or password) and the variable to check.
   Both CLIs turn it into one `error:` line and exit `EXIT_DATABASE_UNAVAILABLE`.
 - **The job bootstrap.** `scheduled_job()` is the CLI's `app/platform/job_runtime.py::scheduled_job`. A CLI lives
   seconds but the OTel exporter pushes every 15 s, so a quick job would export NOTHING, and an unattended
@@ -62,7 +62,7 @@ class RuntimeSettings(BaseSettings):
     otel_exporter_otlp_endpoint: str = "http://localhost:4318"
 
 
-class DatabaseUnavailable(RuntimeError):
+class DatabaseUnavailableError(RuntimeError):
     """No connection could be opened within `CONNECT_TIMEOUT_SECONDS`. The message names where, never who: it carries no user or password."""
 
 
@@ -77,7 +77,7 @@ def _where(url: str) -> str:
 
 @asynccontextmanager
 async def wired_pool(url: str | None = None) -> AsyncIterator[AsyncConnectionPool]:
-    """A pool for the length of the block, with the core wired to it. Raises `DatabaseUnavailable` if it cannot connect in time."""
+    """A pool for the length of the block, with the core wired to it. Raises `DatabaseUnavailableError` if it cannot connect in time."""
     target = url or RuntimeSettings().appdata_database_url
     # prepare_threshold=None: APPDATA_DATABASE_URL may point at a transaction pooler, which cannot carry a prepared statement from one server
     # connection to the next. The package imports nothing from the app, so this repeats app/platform/sql_store.py's reasoning, not its constant.
@@ -86,7 +86,7 @@ async def wired_pool(url: str | None = None) -> AsyncIterator[AsyncConnectionPoo
         await pool.open(wait=True, timeout=CONNECT_TIMEOUT_SECONDS)
     except PoolTimeout as exc:
         await pool.close()  # stop its connect-retry workers; otherwise they keep running behind the error
-        raise DatabaseUnavailable(
+        raise DatabaseUnavailableError(
             f"cannot open a connection to {_where(target)} within {CONNECT_TIMEOUT_SECONDS:g}s; "
             "check APPDATA_DATABASE_URL (host, port, database, credentials) and that the server is up"
         ) from exc

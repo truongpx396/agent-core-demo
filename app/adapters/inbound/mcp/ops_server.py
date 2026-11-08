@@ -23,9 +23,9 @@ from mcp.types import ToolAnnotations
 
 from app.adapters.inbound.mcp.audit import audited
 from app.adapters.inbound.mcp.identity import (
-    IdentityMissing,
+    IdentityMissingError,
     IdentitySource,
-    LauncherIdentityMissing,
+    LauncherIdentityMissingError,
     launcher_ctx,
     launcher_source,
 )
@@ -69,7 +69,7 @@ def build_server(identity: IdentitySource, *, refusal: str = NO_IDENTITY_REFUSAL
         nothing."""
         try:
             ctx = identity()
-        except IdentityMissing:
+        except IdentityMissingError:
             return refusal
         if not OPS_POLICY.permit("fetch_metrics", ctx):
             return "Refused: principal is required."
@@ -82,7 +82,7 @@ def build_server(identity: IdentitySource, *, refusal: str = NO_IDENTITY_REFUSAL
         filtered to 'open' or 'resolved'. Read-only — changes nothing."""
         try:
             ctx = identity()
-        except IdentityMissing:
+        except IdentityMissingError:
             return refusal
         if not OPS_POLICY.permit("list_recent_incidents", ctx):
             return "Refused: principal is required."
@@ -100,7 +100,7 @@ def main() -> None:
     configure_logging()
     try:
         launcher_ctx(tenant=DEFAULT_TENANT)
-    except LauncherIdentityMissing as exc:
+    except LauncherIdentityMissingError as exc:
         sys.exit(f"{SERVER_NAME}: {exc}")
     mcp.run(transport="stdio")
 

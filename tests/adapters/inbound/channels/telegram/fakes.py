@@ -6,8 +6,8 @@ documented behaviour, not Redis itself (testing.md: a fake proves statement shap
 """
 import asyncio
 
-from app.adapters.inbound.channels.door import DoorRefused
-from app.adapters.inbound.channels.oauth import SignInRefused
+from app.adapters.inbound.channels.door import DoorRefusedError
+from app.adapters.inbound.channels.oauth import SignInRefusedError
 
 
 class FakeRedis:
@@ -119,7 +119,7 @@ class FakeDoor:
     async def cancel_turn(self, thread_id, *, wait=False):
         self.cancels.append((thread_id, wait))
         if self.cancel_fails:
-            raise DoorRefused("the door went away")
+            raise DoorRefusedError("the door went away")
 
 
 class FakeChannel:
@@ -133,7 +133,7 @@ class FakeChannel:
     async def door_for(self, user_id):
         self.asked.append(user_id)
         if self.refusal is not None:
-            raise SignInRefused(self.refusal)
+            raise SignInRefusedError(self.refusal)
         return self.door, f"p-{user_id}"
 
 

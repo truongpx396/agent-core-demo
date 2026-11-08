@@ -19,7 +19,7 @@ from scripts.model_eval.candidates import Candidate
 from scripts.model_eval.lexical import Bm25
 from scripts.model_eval.report import RunOutput
 from scripts.model_eval.runners.base import (
-    PrerequisiteMissing,
+    PrerequisiteMissingError,
     RunSettings,
     latest_version,
     percentiles,
@@ -76,7 +76,7 @@ class ServiceRerank:
         try:
             self.score("probe", ["a", "b"])
         except Exception as exc:  # unreachable or not ready: this path is unavailable
-            raise PrerequisiteMissing(f"the ML service did not answer /rerank ({type(exc).__name__}: {exc}); is it up (`make up`)?") from exc
+            raise PrerequisiteMissingError(f"the ML service did not answer /rerank ({type(exc).__name__}: {exc}); is it up (`make up`)?") from exc
 
     def score(self, query: str, texts: Sequence[str]) -> list[float]:
         response = self._client.post("/rerank", json={"query": query, "texts": list(texts), "raw_scores": True})
@@ -111,7 +111,7 @@ class InProcessRerank:
             model_path = hf_hub_download(src.repo, src.file, revision=src.revision)
             tokenizer_path = hf_hub_download(src.repo, "tokenizer.json", revision=src.revision)
         except Exception as exc:  # not cached and no network, or a wrong repo/file
-            raise PrerequisiteMissing(f"cannot fetch {src.repo}@{src.revision[:10]}/{src.file} ({type(exc).__name__})") from exc
+            raise PrerequisiteMissingError(f"cannot fetch {src.repo}@{src.revision[:10]}/{src.file} ({type(exc).__name__})") from exc
         options = ort.SessionOptions()
         if threads:
             options.intra_op_num_threads = threads
@@ -142,7 +142,7 @@ def build_backend(candidate: Candidate, settings: RunSettings, via: str | None =
         return ServiceRerank(candidate)
     if path == "inprocess":
         return InProcessRerank(candidate, settings.threads)
-    raise PrerequisiteMissing(f"a reranker is evaluated through path 'service' or 'inprocess', not {path!r}")
+    raise PrerequisiteMissingError(f"a reranker is evaluated through path 'service' or 'inprocess', not {path!r}")
 
 
 @dataclass(frozen=True)

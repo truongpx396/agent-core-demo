@@ -8,7 +8,7 @@ import httpx
 import pytest
 
 from app.adapters.inbound.channels import oauth
-from app.adapters.inbound.channels.oauth import SignInRefused, Tokens
+from app.adapters.inbound.channels.oauth import SignInRefusedError, Tokens
 from tests.adapters.inbound.channels.fake_casdoor import (
     AUDIENCE,
     ISSUER,
@@ -101,7 +101,7 @@ class TestPasswordSignIn:
         if setup == "wrong_password":
             casdoor.add_person("ecorp", "telegram-7", "something else")
 
-        with pytest.raises(SignInRefused) as exc:
+        with pytest.raises(SignInRefusedError) as exc:
             await sign_in(casdoor)
 
         assert exc.value.reason == reason
@@ -110,14 +110,14 @@ class TestPasswordSignIn:
     async def test_an_authorization_server_that_does_not_answer_is_unavailable(self, casdoor):
         casdoor.down = True
 
-        with pytest.raises(SignInRefused) as exc:
+        with pytest.raises(SignInRefusedError) as exc:
             await sign_in(casdoor)
 
         assert exc.value.reason == "unavailable"
 
     async def test_an_answer_that_is_not_json_is_unavailable_not_a_crash(self):
         async with httpx.AsyncClient(transport=httpx.MockTransport(lambda request: httpx.Response(502, text="<html>bad gateway</html>"))) as http:
-            with pytest.raises(SignInRefused) as exc:
+            with pytest.raises(SignInRefusedError) as exc:
                 await oauth.password_sign_in(http, ISSUER, **SIGN_IN, username="u", password="p")
 
         assert exc.value.reason == "unavailable"
@@ -126,7 +126,7 @@ class TestPasswordSignIn:
         def handler(request):
             return httpx.Response(200, json={"status": "ok", "msg": "", "data": None})
         async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
-            with pytest.raises(SignInRefused) as exc:
+            with pytest.raises(SignInRefusedError) as exc:
                 await oauth.password_sign_in(http, ISSUER, **SIGN_IN, username="u", password="p")
 
         assert exc.value.reason == "credentials"
@@ -152,7 +152,7 @@ class TestRefresh:
         casdoor.people[("ecorp", "telegram-7")]["forbidden"] = True
 
         async with casdoor.client() as http:
-            with pytest.raises(SignInRefused) as exc:
+            with pytest.raises(SignInRefusedError) as exc:
                 await oauth.refresh_tokens(
                     http, ISSUER, client_id="api-ecorp", refresh_token=first.refresh_token or "", scope=SCOPE, resource=AUDIENCE
                 )

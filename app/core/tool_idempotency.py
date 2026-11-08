@@ -20,7 +20,7 @@ rare compound failure, not a precondition.
 
 A different gap that keying on `tool_call_id` can't close: `fn()`'s soft timeout (`arun_with_timeout`) firing
 AFTER its write committed remotely but before this module's closing `UPDATE`. The retry arrives under a NEW
-tool_call_id (a fresh LLM decision) that no id-keyed defense recognises. `MutatingToolTimedOut` handles it by
+tool_call_id (a fresh LLM decision) that no id-keyed defense recognises. `MutatingToolTimedOutError` handles it by
 steering the agent to verify, not by deduplicating.
 """
 import logging
@@ -39,7 +39,7 @@ def _thread_id_from_config(config: RunnableConfig | None) -> str | None:
     return (config or {}).get("configurable", {}).get("thread_id")
 
 
-class MutatingToolTimedOut(Exception):
+class MutatingToolTimedOutError(Exception):
     """Raised by `idempotent()` in place of the `TimeoutError` `fn()` itself raised, when `fn()` is a
     mutating/outward tool's own `arun_with_timeout(...)` call.
 
@@ -115,11 +115,11 @@ async def idempotent(
         result = await fn()
     except TimeoutError as exc:
         # Only fn()'s own soft timeout is re-raised as this distinguishable
-        # type (see MutatingToolTimedOut's own docstring) — any other
+        # type (see MutatingToolTimedOutError's own docstring) — any other
         # exception from fn() means the tool genuinely failed before doing
         # anything, so the plain, generic error message is already correct
         # for it.
-        raise MutatingToolTimedOut(tool_name) from exc
+        raise MutatingToolTimedOutError(tool_name) from exc
     try:
         await tool_call_ledger.get().store_result(tool_call_id, result)
     except Exception as exc:  # noqa: BLE001 - fn() already succeeded; a failure to CACHE that must not fail the call

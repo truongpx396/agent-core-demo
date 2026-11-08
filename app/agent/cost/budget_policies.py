@@ -17,7 +17,7 @@ import time
 
 from app.core.config import BUDGET_POLICY_REFRESH_SECONDS
 from app.ports.outbound import cost as ports
-from app.ports.outbound.cost import PERIODS, Override, PolicyTableMissing
+from app.ports.outbound.cost import PERIODS, Override, PolicyTableMissingError
 
 logger = logging.getLogger(__name__)
 
@@ -51,7 +51,7 @@ async def overrides_for(tenant: str, principal: str) -> list[Override]:
         return cached[1]
     try:
         overrides = await ports.budget_policies.get().for_person(tenant, principal)
-    except PolicyTableMissing:
+    except PolicyTableMissingError:
         if not _warned_missing_table:
             _warned_missing_table = True
             logger.warning(

@@ -133,7 +133,7 @@ def test_the_inprocess_embedding_backend_loads_a_real_model_and_embeds_to_the_ex
     try:
         backend = embedding.build_backend(candidate, RunSettings())
     except Exception as exc:  # the Hub being unreachable is a skip, anything else a failure
-        if type(exc).__name__ == "PrerequisiteMissing":
+        if type(exc).__name__ == "PrerequisiteMissingError":
             pytest.skip(str(exc))
         raise
     vectors = backend.embed_documents(["a short passage about refunds"])

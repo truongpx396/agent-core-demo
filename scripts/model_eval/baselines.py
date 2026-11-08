@@ -19,11 +19,11 @@ from scripts.model_eval.suites import ItemData
 SCHEMA_VERSION = 1
 
 
-class BaselineExists(Exception):
+class BaselineExistsError(Exception):
     pass
 
 
-class BaselineMismatch(Exception):
+class BaselineMismatchError(Exception):
     pass
 
 
@@ -57,7 +57,7 @@ def write_baseline(root: Path, record: dict, data: ItemData, *, force: bool = Fa
     ds = record["dataset"]
     path = path_for(root, record["kind"], record["candidate"], ds["name"], ds["version"])
     if path.exists() and not force:
-        raise BaselineExists(f"{path} already exists; a baseline is immutable (re-record with force, and say why in the commit)")
+        raise BaselineExistsError(f"{path} already exists; a baseline is immutable (re-record with force, and say why in the commit)")
     record = {**record, "schema_version": SCHEMA_VERSION, "provisional": ds.get("reviewed_share", 0.0) < 1.0, "per_query": _items_path(path).name}
     path.parent.mkdir(parents=True, exist_ok=True)
     items_text = json.dumps(data.to_json(), sort_keys=True) + "\n"
@@ -77,7 +77,7 @@ def merge_efficiency(path: Path, hardware_id: str, efficiency: dict) -> None:
 def read_baseline(path: Path) -> Baseline:
     record = json.loads(path.read_text(encoding="utf-8"))
     if record.get("schema_version") != SCHEMA_VERSION:
-        raise BaselineMismatch(f"{path}: schema_version {record.get('schema_version')!r} is not understood (this build reads {SCHEMA_VERSION})")
+        raise BaselineMismatchError(f"{path}: schema_version {record.get('schema_version')!r} is not understood (this build reads {SCHEMA_VERSION})")
     data = ItemData.from_json(json.loads((path.parent / record["per_query"]).read_text(encoding="utf-8")))
     return Baseline(record, data, path)
 
@@ -90,7 +90,7 @@ def find_baseline(root: Path, kind: str, candidate: str, dataset_name: str, data
 def check_comparable(baseline: Baseline, dataset_name: str, dataset_version: str) -> None:
     ds = baseline.record["dataset"]
     if (ds["name"], ds["version"]) != (dataset_name, dataset_version):
-        raise BaselineMismatch(
+        raise BaselineMismatchError(
             f"baseline {baseline.name} was recorded on {ds['name']} {ds['version']}, this run used {dataset_name} {dataset_version}; "
             "they are different evaluations and are not compared"
         )

@@ -5,7 +5,7 @@ caller's, run before this; `follow_redirects=False` is what keeps a validated UR
 """
 import httpx
 
-from app.ports.outbound.web import FetchedPage, PageFetchFailed
+from app.ports.outbound.web import FetchedPage, PageFetchFailedError
 
 _TIMEOUT_SECONDS = 10
 _USER_AGENT = "agent-core-demo-ingestor/1.0"
@@ -17,7 +17,7 @@ class HttpxPageFetcher:
             async with httpx.AsyncClient(follow_redirects=False, timeout=_TIMEOUT_SECONDS) as client:
                 response = await client.get(url, headers={"User-Agent": _USER_AGENT})
         except httpx.HTTPError as exc:
-            raise PageFetchFailed(str(exc)) from exc
+            raise PageFetchFailedError(str(exc)) from exc
         size = len(response.content)
         return FetchedPage(
             status_code=response.status_code,

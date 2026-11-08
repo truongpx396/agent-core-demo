@@ -159,12 +159,12 @@ class TestProcessJob:
         assert client.acked == [entry_id]
 
     async def test_an_extraction_failure_publishes_an_error_and_still_acks(self, monkeypatch):
-        from app.ingestion.extractors import ExtractionFailed
+        from app.ingestion.extractors import ExtractionFailedError
 
         monkeypatch.setattr(minio_object_store, "download_bytes", lambda key: b"garbage")
 
         def failing_extract(data):
-            raise ExtractionFailed("could not parse PDF: bad xref")
+            raise ExtractionFailedError("could not parse PDF: bad xref")
 
         monkeypatch.setitem(ingest_worker.EXTRACTORS_BY_SUFFIX, ".pdf", failing_extract)
 
@@ -183,13 +183,13 @@ class TestProcessJob:
         shouldn't happen given this worker always forwards a real one) —
         the SAME "report as an error, still ack" contract applies
         regardless of which stage in the pipeline actually failed."""
-        from app.ingestion.ingestor import IngestRefused
+        from app.ingestion.ingestor import IngestRefusedError
 
         monkeypatch.setattr(minio_object_store, "download_bytes", lambda key: b"pdf-bytes")
         monkeypatch.setitem(ingest_worker.EXTRACTORS_BY_SUFFIX, ".pdf", lambda data: "some text")
 
         def refusing_ingest(*a, **kw):
-            raise IngestRefused("a valid tenant+principal ctx is required to ingest content")
+            raise IngestRefusedError("a valid tenant+principal ctx is required to ingest content")
 
         monkeypatch.setattr(ingest_worker.ingestor, "ingest_text", refusing_ingest)
 

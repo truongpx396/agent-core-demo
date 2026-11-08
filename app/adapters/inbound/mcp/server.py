@@ -23,9 +23,9 @@ from mcp.types import ToolAnnotations
 
 from app.adapters.inbound.mcp.audit import audited
 from app.adapters.inbound.mcp.identity import (
-    IdentityMissing,
+    IdentityMissingError,
     IdentitySource,
-    LauncherIdentityMissing,
+    LauncherIdentityMissingError,
     launcher_ctx,
     launcher_source,
 )
@@ -70,7 +70,7 @@ def build_server(identity: IdentitySource, *, refusal: str = NO_IDENTITY_REFUSAL
         caller supplies."""
         try:
             ctx = identity()
-        except IdentityMissing:
+        except IdentityMissingError:
             return refusal
         if not DEFAULT_POLICY.permit("query_structured_data", ctx):
             return "Refused: tenant and principal are required."
@@ -98,7 +98,7 @@ def main() -> None:
     configure_logging()
     try:
         launcher_ctx()
-    except LauncherIdentityMissing as exc:
+    except LauncherIdentityMissingError as exc:
         sys.exit(f"{SERVER_NAME}: {exc}")
     mcp.run(transport="stdio")
 
