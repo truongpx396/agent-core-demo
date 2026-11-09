@@ -258,8 +258,10 @@ cannot be judged or safely changed later.
   request. Commit subjects use a conventional prefix (`fix:`, `feat:`, `test:`, `docs:`,
   `infra:`). The body states the failure mode, the root cause, and anything deliberately left
   undone.
-- **Required before a PR**: `make lint` (ruff: F, I, UP, B, BLE, S110), `make typecheck` (mypy
-  over `app/` and `scripts/`), and `make test` MUST pass; CI runs the same commands. Run
+- **Required before a PR**: `make lint` (ruff, with the rules `[tool.ruff.lint]` selects in
+  `pyproject.toml`), `make typecheck` (mypy, over the directories and at the strictness
+  `[tool.mypy]` sets there), and `make test` MUST pass; CI runs the same commands. A lint rule
+  or mypy flag MUST NOT be removed or loosened without a PR that states why. Run
   `make test-integration` (Docker) for changes to stores, queues, workers, or SQL.
 - **Type-ignore and noqa**: `# type: ignore[code]` and `# noqa: <code>` MUST carry a reason
   comment at the site.
@@ -296,4 +298,4 @@ states the intent and the conflicting document MUST be corrected.
 - **Runtime guidance**: day-to-day development guidance for agents and contributors lives in
   `CLAUDE.md` and `.claude/rules/`; those files MUST NOT contradict this constitution.
 
-**Version**: 1.4.4 | **Ratified**: 2026-10-01 | **Last Amended**: 2026-11-08
+**Version**: 1.4.5 | **Ratified**: 2026-10-01 | **Last Amended**: 2026-11-09
