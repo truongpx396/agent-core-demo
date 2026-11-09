@@ -89,7 +89,7 @@ def test_the_shipped_route_topics_set_is_served_by_the_real_container_and_matche
     """`POST /v1/decide` against the image as built: the label set baked into it, both real models, the real
     tokenisers.
     """
-    raw = json.loads((Path(__file__).resolve().parents[2] / "services" / "ml-service" / "labelsets" / "route-topics.json").read_text())
+    raw = json.loads((Path(__file__).resolve().parents[2] / "services" / "ml-service" / "labelsets" / "route-topics.json").read_text(encoding="utf-8"))
     sentences = [CODE_SENTENCE, "We received a subpoena for customer records, what do we do?", "qwerty qwerty qwerty"]
     answers: list[dict] = []
     for sentence in sentences:
@@ -151,7 +151,8 @@ def test_when_the_primary_cannot_load_the_fallback_answers_and_says_so(ml_servic
         f'[[model]]\nname = "{PRIMARY}"\nroles = ["embed", "classify"]\nrepo = "{REPOS[PRIMARY]}"\nfile = "onnx/this-file-does-not-exist.onnx"\n'
         f'revision = "{PINNED[PRIMARY]}"\npooling = "cls"\nmax_length = 512\npad_token = "[PAD]"\nlicence = "MIT"\n\n'
         f'[[model]]\nname = "{FALLBACK}"\nroles = ["embed", "classify"]\nrepo = "{REPOS[FALLBACK]}"\nfile = "onnx/model.onnx"\n'
-        f'revision = "{PINNED[FALLBACK]}"\npooling = "mean"\nmax_length = 256\npad_token = "[PAD]"\nlicence = "Apache-2.0"\n'
+        f'revision = "{PINNED[FALLBACK]}"\npooling = "mean"\nmax_length = 256\npad_token = "[PAD]"\nlicence = "Apache-2.0"\n',
+        encoding="utf-8",
     )
 
     with container(ml_service, registry) as url:

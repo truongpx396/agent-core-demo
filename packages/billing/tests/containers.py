@@ -39,9 +39,9 @@ def write_init_dir() -> Path:
     The repo's own helper never hit it because it mounts the checked-out `postgres-init/` directory, which is `0755`.
     """
     init = Path(tempfile.mkdtemp(prefix="credit-billing-init-"))
-    (init / "01-appdata.sql").write_text("CREATE DATABASE appdata OWNER langfuse;\n")
+    (init / "01-appdata.sql").write_text("CREATE DATABASE appdata OWNER langfuse;\n", encoding="utf-8")
     for name in schema.scripts():
-        (init / name).write_text(schema.read(name))
+        (init / name).write_text(schema.read(name), encoding="utf-8")
     init.chmod(0o755)
     for script in init.iterdir():
         script.chmod(0o644)

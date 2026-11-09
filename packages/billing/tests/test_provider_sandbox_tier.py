@@ -201,7 +201,7 @@ class TestTheGuardCoversTheWholeTier:
         assert tier.listener_cli_for(path.stem) is not None, f"{path.name}: name it after its provider (stripe/polar) or extend listener_cli_for"
 
     def test_the_guard_is_applied_to_every_module_without_the_module_asking_for_it(self):
-        source = (TIER / "conftest.py").read_text()
+        source = (TIER / "conftest.py").read_text(encoding="utf-8")
 
         assert '@pytest.fixture(autouse=True, scope="module")\ndef _not_beside_a_foreign_listener(request):\n    guard_module(request.module.__name__)' in source
 

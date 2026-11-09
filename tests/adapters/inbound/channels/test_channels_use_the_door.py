@@ -69,14 +69,14 @@ def test_there_are_channels_for_this_test_to_be_about():
 
 @pytest.mark.parametrize("channel", CHANNELS, ids=lambda p: p.relative_to(CHANNELS_DIR).as_posix())
 def test_a_channel_cannot_reach_the_graph_or_the_queue(channel):
-    assert offences(channel.read_text()) == [], (
+    assert offences(channel.read_text(encoding="utf-8")) == [], (
         f"{channel.relative_to(CHANNELS_DIR)} must send its turns to the chat API through the front door (app/adapters/inbound/channels/door.py), never to the queue or the graph"
     )
 
 
 @pytest.mark.parametrize("channel", ["cli/chat.py", "telegram/bot.py"])
 def test_the_two_channels_reach_the_agent_through_the_door(channel):
-    modules = {module for module, _ in imported((CHANNELS_DIR / channel).read_text())}
+    modules = {module for module, _ in imported((CHANNELS_DIR / channel).read_text(encoding="utf-8"))}
 
     assert "app.adapters.inbound.channels.door" in modules
 

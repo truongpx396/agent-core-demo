@@ -293,7 +293,7 @@ def test_nothing_under_app_can_import_the_reembed_script():
     never for anything the agent loop or the API can reach."""
     offenders = []
     for path in sorted((REPO / "app").rglob("*.py")):
-        for node in ast.walk(ast.parse(path.read_text())):
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
             names = []
             if isinstance(node, ast.ImportFrom):
                 names = [node.module or "", *[(node.module or "") + "." + a.name for a in node.names]]

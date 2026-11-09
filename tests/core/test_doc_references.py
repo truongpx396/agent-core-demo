@@ -43,7 +43,7 @@ def _names_defined_in(path: Path) -> set[str]:
 def _stale() -> list[str]:
     stale = []
     for doc in DOCS:
-        text = (REPO / doc).read_text()
+        text = (REPO / doc).read_text(encoding="utf-8")
         for match in REFERENCE.finditer(text):
             ref, name = match.group(1), match.group(2)
             full = f"{ref}::{name}" if name else ref
@@ -67,6 +67,6 @@ def test_an_intentional_exception_is_still_needed(doc, ref):
     """An entry nobody needs any more would hide a real stale reference to the same name."""
     path = ref.split("::")[0]
     assert (doc, ref) in INTENTIONAL
-    assert ref in (REPO / doc).read_text(), f"{doc} no longer mentions {ref}: drop it from INTENTIONAL"
+    assert ref in (REPO / doc).read_text(encoding="utf-8"), f"{doc} no longer mentions {ref}: drop it from INTENTIONAL"
     if "::" not in ref:
         assert not (REPO / path).exists(), f"{path} exists again: drop it from INTENTIONAL"

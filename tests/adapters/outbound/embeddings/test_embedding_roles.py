@@ -58,7 +58,7 @@ def client(monkeypatch):
 def test_nothing_under_app_or_scripts_refers_to_the_removed_single_role_functions():
     offenders = []
     for path, rel in _python_files():
-        for node in ast.walk(ast.parse(path.read_text())):
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
             names = set()
             if isinstance(node, ast.Name):
                 names.add(node.id)
@@ -77,7 +77,7 @@ def test_only_the_embeddings_module_and_the_harness_call_the_raw_embedding_clien
     for path, rel in _python_files():
         if rel in ALLOWED_DIRECT_CLIENT_USERS or rel.startswith(ALLOWED_DIRECT_CLIENT_DIRS):
             continue
-        for node in ast.walk(ast.parse(path.read_text())):
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
             if isinstance(node, ast.Attribute) and node.attr in {"aembed_query", "aembed_documents"}:
                 offenders.append(f"{rel}:{node.lineno}")
     assert offenders == [], f"call app.adapters.outbound.embeddings.embeddings.embed_query / embed_document(s) instead: {offenders}"

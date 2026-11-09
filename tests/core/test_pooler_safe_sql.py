@@ -90,7 +90,7 @@ def test_no_sql_in_the_pooled_processes_keeps_state_on_the_session():
     assert len(SCANNED) > 100, "the scan found (almost) nothing to read"
     offenders = {}
     for path in SCANNED:
-        found = session_state_in(path.read_text())
+        found = session_state_in(path.read_text(encoding="utf-8"))
         if found:
             offenders[str(path.relative_to(REPO))] = found
     assert not offenders, f"session-level state is carried to the next tenant by a transaction pooler: {offenders}"

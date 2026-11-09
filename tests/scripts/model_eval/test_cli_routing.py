@@ -36,7 +36,7 @@ def env(tmp_path, monkeypatch):
     # in CI and fail on a machine where someone had labelled the prompts.
     shutil.copytree(ds.DATASETS_ROOT / "route-domains", root / "route-domains", ignore=shutil.ignore_patterns("outcomes"))
     (tmp_path / "cand").mkdir()
-    (tmp_path / "cand" / "classifier.toml").write_text(TOML)
+    (tmp_path / "cand" / "classifier.toml").write_text(TOML, encoding="utf-8")
     monkeypatch.setattr(ds, "DATASETS_ROOT", root)
     monkeypatch.setattr(cli, "CANDIDATES_DIR", tmp_path / "cand")
     monkeypatch.setattr(cli, "BASELINES_DIR", tmp_path / "baselines")
@@ -87,7 +87,7 @@ def test_the_control_candidates_run_through_the_real_runner_and_the_derived_cont
 
     assert code == cli.OK, capsys.readouterr()
     (report_file,) = out.glob("*.json")
-    report = json.loads(report_file.read_text())
+    report = json.loads(report_file.read_text(encoding="utf-8"))
     assert report["kind"] == "classifier" and report["candidate"]["name"] == control
     assert set(report["quality"]) >= {"accuracy", "macro_f1", "ece", "apgr", "apgr_vs_length"}  # cpt50/cpt90 are absent when a router never reaches the fraction
     assert [c["name"] for c in report["controls"]] == ["identity", "random-router", "constant"]
@@ -104,7 +104,7 @@ def test_a_useless_router_scores_near_the_random_baseline_in_its_own_numbers(env
 
     cli.main(run_args("random-router", "--out", str(out)))
 
-    report = json.loads(next(out.glob("*.json")).read_text())
+    report = json.loads(next(out.glob("*.json")).read_text(encoding="utf-8"))
     assert report["quality"]["apgr"]["value"] == pytest.approx(0.5, abs=0.15)  # a random router recovers about what it escalates
     assert report["quality"]["accuracy"]["value"] < 0.75
 
@@ -119,7 +119,7 @@ def test_prompts_with_a_missing_score_are_left_out_and_the_report_says_how_many(
 
     cli.main(run_args("constant", "--out", str(out)))
 
-    report = json.loads(next(out.glob("*.json")).read_text())
+    report = json.loads(next(out.glob("*.json")).read_text(encoding="utf-8"))
     assert any("1 of" in w and "missing score" in w for w in report["warnings"])
     assert report["dataset"]["items"] == len(test_ids) - 1
 
@@ -147,7 +147,7 @@ def test_a_p95_over_fifty_milliseconds_adds_the_sc009_warning(env, tmp_path, mon
 
     cli.main(run_args("constant", "--out", str(out)))
 
-    report = json.loads(next(out.glob("*.json")).read_text())
+    report = json.loads(next(out.glob("*.json")).read_text(encoding="utf-8"))
     assert any("p95" in w and "50 ms" in w and "SC-009" in w for w in report["warnings"])
 
 
@@ -158,7 +158,7 @@ def test_a_fast_classifier_gets_no_latency_warning(env, tmp_path, monkeypatch):
 
     cli.main(run_args("constant", "--out", str(out)))
 
-    assert not any("SC-009" in w for w in json.loads(next(out.glob("*.json")).read_text())["warnings"])
+    assert not any("SC-009" in w for w in json.loads(next(out.glob("*.json")).read_text(encoding="utf-8"))["warnings"])
 
 
 # ---- route-label -------------------------------------------------------------------------------------------------------------------
@@ -189,7 +189,7 @@ def test_route_label_writes_outcomes_and_a_sidecar_and_a_rerun_does_nothing_more
 
     outcomes = routing.read_outcomes(routing.outcomes_dir(env.version) / "chat-strong.jsonl")
     assert len(outcomes) == 3 and all((o.local, o.strong, o.judge) == (0.4, 0.9, "the-judge") for o in outcomes.values())
-    meta = json.loads((routing.outcomes_dir(env.version) / "chat-strong.meta.json").read_text())
+    meta = json.loads((routing.outcomes_dir(env.version) / "chat-strong.meta.json").read_text(encoding="utf-8"))
     assert meta["judge"] == "the-judge" and meta["dataset"]["name"] == "route-domains" and meta["last_run"]["scored"] == 3
     before = len(gateway.calls)
     assert cli.main(label_args()) == cli.OK
@@ -244,7 +244,7 @@ def test_a_router_handed_to_the_runner_is_scored_timed_and_compared_like_any_oth
 
     assert cli.main(run_args("stub-router", "--out", str(out))) == cli.OK
 
-    report = json.loads(next(out.glob("*.json")).read_text())
+    report = json.loads(next(out.glob("*.json")).read_text(encoding="utf-8"))
     assert report["candidate"]["identity"] == "perfect-router" and report["candidate"]["revision"] == "r1"
     assert report["quality"]["accuracy"]["value"] > 0.9 and report["quality"]["apgr"]["value"] > 0.5
     assert report["status"] != "invalid" and all(c["ok"] for c in report["controls"])  # "provisional": the route prompts are unreviewed
@@ -267,7 +267,7 @@ def test_outcomes_that_cannot_separate_the_models_make_the_report_invalid_and_sa
 
     code = cli.main(run_args("constant", "--out", str(out)))
 
-    report = json.loads(next(out.glob("*.json")).read_text())
+    report = json.loads(next(out.glob("*.json")).read_text(encoding="utf-8"))
     assert code == cli.CONTROL_FAILED and report["status"] == "invalid"
     assert any(c["name"] in ("random-router", "constant") and not c["ok"] for c in report["controls"])
     why = [w for w in report["warnings"] if w.startswith("WHY:")]
@@ -280,4 +280,4 @@ def test_outcomes_that_do_separate_the_models_get_no_such_warning(env, tmp_path)
 
     assert cli.main(run_args("constant", "--out", str(out))) == cli.OK
 
-    assert not any(w.startswith("WHY:") for w in json.loads(next(out.glob("*.json")).read_text())["warnings"])
+    assert not any(w.startswith("WHY:") for w in json.loads(next(out.glob("*.json")).read_text(encoding="utf-8"))["warnings"])

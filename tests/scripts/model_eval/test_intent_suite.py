@@ -63,7 +63,7 @@ def cache(tmp_path):
     lock.write_text(json.dumps([{
         "id": ID, "kind": "classifier", "licence": "CC-BY-3.0", "licence_source": "test", "redistribute": False, "notes": "",
         "sources": [{"hub_repo": REPO, "revision": REVISION, "files": files}],
-    }]))
+    }]), encoding="utf-8")
     return root, lock
 
 

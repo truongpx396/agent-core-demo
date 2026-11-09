@@ -66,7 +66,7 @@ def test_the_python_app_and_packages_do_not_reach_into_the_service():
     offenders = []
     for root in (REPO / "app", REPO / "packages"):
         for path in root.rglob("*"):
-            if path.suffix in {".py", ".sql", ".toml", ".md"} and "services/authlimit" in path.read_text(errors="ignore"):
+            if path.suffix in {".py", ".sql", ".toml", ".md"} and "services/authlimit" in path.read_text(errors="ignore", encoding="utf-8"):
                 offenders.append(path.relative_to(REPO).as_posix())
 
     assert not offenders, f"{offenders}: the app talks to the service over HTTP only (PR 2 reads its JSON registries from tests, not from app code)"
@@ -77,5 +77,5 @@ def test_no_private_key_material_is_committed_for_the_service():
     for root in (SERVICE, REPO / "testdata"):
         for path in root.rglob("*"):
             if path.is_file() and path.suffix not in {".png", ".gif"}:
-                assert not pem.search(path.read_text(errors="ignore")), f"{path.relative_to(REPO)} contains a private key"
+                assert not pem.search(path.read_text(errors="ignore", encoding="utf-8")), f"{path.relative_to(REPO)} contains a private key"
     assert not list(SERVICE.rglob("*.pem")), "a .pem under the service directory would be one `git add` from a commit"

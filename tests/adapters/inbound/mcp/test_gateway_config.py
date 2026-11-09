@@ -94,7 +94,7 @@ def test_the_gateway_never_reads_the_launchers_identity():
     root = Path(__file__).resolve().parents[4] / "app" / "adapters" / "inbound" / "mcp"
 
     for module in ("gateway.py", "gateway_auth.py"):
-        code = re.sub(r'""".*?"""', "", (root / module).read_text(), flags=re.DOTALL)  # prose may name them; code may not
+        code = re.sub(r'""".*?"""', "", (root / module).read_text(encoding="utf-8"), flags=re.DOTALL)  # prose may name them; code may not
         code = "\n".join(line.split("#", 1)[0] for line in code.splitlines())
         for forbidden in ("mcp_tenant", "mcp_principal", "launcher_ctx", "launcher_source"):
             assert forbidden not in code, f"{module} must not use {forbidden}: the gateway's identity is the token's"

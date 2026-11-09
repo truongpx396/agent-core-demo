@@ -126,7 +126,7 @@ def scan_repo() -> set[tuple[str, str]]:
     found: set[tuple[str, str]] = set()
     for path in sorted((REPO / "app").rglob("*.py")):
         rel = path.relative_to(REPO).as_posix()
-        found |= violations_in(rel, path.read_text())
+        found |= violations_in(rel, path.read_text(encoding="utf-8"))
     return found
 
 
@@ -168,7 +168,7 @@ def importers_of(package: str, files: dict[str, str]) -> set[str]:
 
 
 def _app_files() -> dict[str, str]:
-    return {p.relative_to(REPO).as_posix(): p.read_text() for p in sorted((REPO / "app").rglob("*.py"))}
+    return {p.relative_to(REPO).as_posix(): p.read_text(encoding="utf-8") for p in sorted((REPO / "app").rglob("*.py"))}
 
 
 def _is_entrypoint(source: str) -> bool:
@@ -271,7 +271,7 @@ def framework_imports(source: str) -> set[str]:
 
 @pytest.mark.parametrize("rel", FRAMEWORK_FREE)
 def test_the_modules_that_decide_import_no_agent_framework(rel):
-    assert framework_imports((REPO / rel).read_text()) == set()
+    assert framework_imports((REPO / rel).read_text(encoding="utf-8")) == set()
 
 
 def test_the_framework_scanner_can_fail():
@@ -332,7 +332,7 @@ def _module_rule_violations() -> tuple[set[tuple[str, str]], set[tuple[str, str]
     for base in ("app", "scripts"):
         for path in sorted((REPO / base).rglob("*.py")):
             rel = path.relative_to(REPO).as_posix()
-            source = path.read_text()
+            source = path.read_text(encoding="utf-8")
             if _inside_a_module(rel):
                 crossing |= {(rel, target) for target in other_parts_reached(rel, source)}
             elif not rel.startswith("app/domains/"):

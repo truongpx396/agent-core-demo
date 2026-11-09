@@ -83,7 +83,7 @@ class TestCreate:
     def test_the_default_models_are_every_alias_the_prod_config_defines(self):
         """A key lists the aliases it may call, and one missing from the list is refused for the app. The tiers an operator attaches later
         (`chat-medium`, `chat-strong`) must not need a re-minted key, so the default follows the config that defines them."""
-        config = yaml.safe_load((REPO / "deploy/litellm/litellm-config.prod.yaml").read_text())
+        config = yaml.safe_load((REPO / "deploy/litellm/litellm-config.prod.yaml").read_text(encoding="utf-8"))
 
         assert set(litellm_key.DEFAULT_MODELS.split(",")) == {m["model_name"] for m in config["model_list"]}
 

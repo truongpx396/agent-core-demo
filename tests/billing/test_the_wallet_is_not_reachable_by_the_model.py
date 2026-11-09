@@ -66,8 +66,8 @@ def test_the_scanner_does_recognise_an_import_of_the_wallet(tmp_path):
         "from app.billing_integration.reconcile import Report",
         "from app import billing_integration",
     ):
-        sample.write_text(source + "\n")
+        sample.write_text(source + "\n", encoding="utf-8")
         assert _imports_billing(sample), source
     for source in ("from app.agent.cost import budget_holds", "from credit_billingx import y", "import app.billing", "from app import billing"):
-        sample.write_text(source + "\n")
+        sample.write_text(source + "\n", encoding="utf-8")
         assert not _imports_billing(sample), source  # `app.billing` no longer exists, so importing it is a bug elsewhere, not a wallet path

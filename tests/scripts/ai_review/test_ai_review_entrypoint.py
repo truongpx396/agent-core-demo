@@ -20,7 +20,7 @@ import pytest
 from scripts.ai_review import review
 
 REPO = Path(__file__).resolve().parents[3]
-WORKFLOW = (REPO / ".github" / "workflows" / "ai-review.yml").read_text()
+WORKFLOW = (REPO / ".github" / "workflows" / "ai-review.yml").read_text(encoding="utf-8")
 
 
 def test_the_module_the_workflow_runs_has_a_main_entry_point():

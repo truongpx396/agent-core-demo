@@ -108,8 +108,8 @@ def test_the_entrypoints_start_it_right_after_telemetry_and_a_short_lived_job_do
         ("app/adapters/inbound/workers/agent_worker.py", "agent-core-agent-worker"),
         ("app/adapters/inbound/workers/ingest_worker.py", "agent-core-ingest-worker"),
     ):
-        source = (repo / relative).read_text()
+        source = (repo / relative).read_text(encoding="utf-8")
         telemetry, start = f'configure_telemetry("{service}")', f'start_profiling("{service}"'
         assert telemetry in source and start in source, relative
         assert source.index(telemetry) < source.index(start), f"{relative}: start_profiling must follow configure_telemetry"
-    assert "start_profiling" not in (repo / "app/platform/job_runtime.py").read_text()
+    assert "start_profiling" not in (repo / "app/platform/job_runtime.py").read_text(encoding="utf-8")

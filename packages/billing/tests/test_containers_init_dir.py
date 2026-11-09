@@ -37,6 +37,6 @@ def test_every_script_can_be_read_by_another_user(init_dir):
 def test_it_holds_the_appdata_line_then_exactly_the_shipped_scripts_in_order(init_dir):
     # The entrypoint runs `*.sql` in filename order, so the database must be created before the scripts that `\connect` to it.
     assert sorted(path.name for path in init_dir.iterdir()) == ["01-appdata.sql", *schema.scripts()]
-    assert "CREATE DATABASE appdata" in (init_dir / "01-appdata.sql").read_text()
+    assert "CREATE DATABASE appdata" in (init_dir / "01-appdata.sql").read_text(encoding="utf-8")
     for name in schema.scripts():
-        assert (init_dir / name).read_text() == schema.read(name), f"{name} must be the shipped script, byte for byte"
+        assert (init_dir / name).read_text(encoding="utf-8") == schema.read(name), f"{name} must be the shipped script, byte for byte"

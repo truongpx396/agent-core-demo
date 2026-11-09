@@ -8,7 +8,7 @@ import yaml
 from scripts.checks import gateway_check
 
 REPO = Path(__file__).resolve().parents[3]
-DEV = yaml.safe_load((REPO / "deploy/litellm/litellm-config.yaml").read_text())
+DEV = yaml.safe_load((REPO / "deploy/litellm/litellm-config.yaml").read_text(encoding="utf-8"))
 
 
 def test_it_runs_the_image_the_dev_stack_runs_which_is_pinned_by_digest():

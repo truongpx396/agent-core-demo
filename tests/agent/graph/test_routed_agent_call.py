@@ -289,7 +289,7 @@ def test_only_the_agent_node_asks_for_a_different_model():
     users = sorted(
         str(path.relative_to(root))
         for path in root.rglob("*.py")
-        if any(isinstance(n, ast.keyword) and n.arg == "invoke_model" for n in ast.walk(ast.parse(path.read_text())))
+        if any(isinstance(n, ast.keyword) and n.arg == "invoke_model" for n in ast.walk(ast.parse(path.read_text(encoding="utf-8"))))
     )
 
     assert users == ["agent/graph/agent_node.py"]

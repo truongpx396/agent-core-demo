@@ -39,7 +39,7 @@ from tests.identity_support import (
     claims,
 )
 
-GOLDEN = json.loads((Path(__file__).resolve().parents[2] / "testdata" / "auth-vectors" / "identity.json").read_text())
+GOLDEN = json.loads((Path(__file__).resolve().parents[2] / "testdata" / "auth-vectors" / "identity.json").read_text(encoding="utf-8"))
 
 
 def _setup(*signers: Signer):

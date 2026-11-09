@@ -211,6 +211,6 @@ def test_the_sidecar_records_names_and_counts_and_no_text(tmp_path):
     route_label.write_meta(meta, local=LOCAL, strong=STRONG, judge=JUDGE, dataset={"name": "route-domains", "version": "v1"}, run=result,
                            finished_at="2026-10-19T00:00:00Z")
 
-    body = json.loads(meta.read_text())
+    body = json.loads(meta.read_text(encoding="utf-8"))
     assert body["judge"] == JUDGE and body["rubric_sha256"] == route_label.RUBRIC_SHA256 and body["last_run"]["scored"] == 3
-    assert "question number" not in meta.read_text()
+    assert "question number" not in meta.read_text(encoding="utf-8")

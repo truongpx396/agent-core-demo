@@ -91,7 +91,8 @@ def test_one_model_that_cannot_load_does_not_take_the_other_endpoints_down(tmp_p
     registry = tmp_path / "models.toml"
     registry.write_text(
         '[[model]]\nname = "bge-small-en-v1.5"\nroles = ["embed"]\nrepo = "BAAI/bge-small-en-v1.5"\nfile = "onnx/this-file-does-not-exist.onnx"\n'
-        'revision = "5c38ec7c405ec4b44b94cc5a9bb96e735b38267a"\npooling = "cls"\nmax_length = 512\npad_token = "[PAD]"\nlicence = "MIT"\n'
+        'revision = "5c38ec7c405ec4b44b94cc5a9bb96e735b38267a"\npooling = "cls"\nmax_length = 512\npad_token = "[PAD]"\nlicence = "MIT"\n',
+        encoding="utf-8",
     )
     container = (
         DockerContainer("graph-agent-core-ml-service:test")

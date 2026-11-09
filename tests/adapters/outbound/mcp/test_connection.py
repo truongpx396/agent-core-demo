@@ -128,7 +128,7 @@ class TestAServerThatDies:
         with pytest.raises(ConnectionError):
             await conn.call_tool("bump_then_die", {"path": str(marker)})
 
-        assert marker.read_text().splitlines() == ["ran"]  # once, not twice
+        assert marker.read_text(encoding="utf-8").splitlines() == ["ran"]  # once, not twice
         assert _events("t_in_flight")["lost"] == 1
 
     async def test_a_side_effect_called_after_an_idle_death_runs_exactly_once_on_the_new_process(self, tmp_path):
@@ -144,7 +144,7 @@ class TestAServerThatDies:
         result = await conn.call_tool("bump", {"path": str(marker)})
 
         assert result.content[0].text == "bumped"
-        assert marker.read_text().splitlines() == ["ran"]
+        assert marker.read_text(encoding="utf-8").splitlines() == ["ran"]
 
     async def test_after_losing_one_in_flight_the_next_call_reconnects_and_works(self, tmp_path):
         conn = connection_for(PARAMS, "t_recover")
@@ -218,7 +218,7 @@ class TestStartingAndStopping:
         proc = await asyncio.create_subprocess_exec(sys.executable, "-c", script, env=env, cwd=tmp_path)
         assert await asyncio.wait_for(proc.wait(), 90) == 0
 
-        assert await _gone(int(pidfile.read_text()))
+        assert await _gone(int(pidfile.read_text(encoding="utf-8")))
 
 
 class _Session:

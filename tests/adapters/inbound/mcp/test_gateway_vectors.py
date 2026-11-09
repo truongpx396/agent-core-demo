@@ -27,8 +27,8 @@ import pytest
 from app.adapters.inbound.mcp.gateway_auth import JwksCache, JwtVerifier
 
 VECTORS_DIR = Path(__file__).resolve().parents[4] / "testdata" / "auth-vectors"
-FILE = json.loads((VECTORS_DIR / "vectors.json").read_text())
-JWKS = json.loads((VECTORS_DIR / "jwks.json").read_text())
+FILE = json.loads((VECTORS_DIR / "vectors.json").read_text(encoding="utf-8"))
+JWKS = json.loads((VECTORS_DIR / "jwks.json").read_text(encoding="utf-8"))
 CONFIG = FILE["config"]
 NOW = FILE["now"]
 VECTORS = FILE["vectors"]
