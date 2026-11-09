@@ -10,6 +10,7 @@ import asyncio
 from typing import Any
 
 from fastapi import APIRouter, Request
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from ml_service.batching import MicroBatcher
@@ -59,7 +60,7 @@ router = APIRouter()
 
 
 @router.post("/rerank", response_model=None)
-async def rerank(req: RerankRequest, request: Request):
+async def rerank(req: RerankRequest, request: Request) -> JSONResponse | list[dict[str, Any]]:
     service: RerankService | None = request.app.state.registry.ready_value("rerank")
     if service is None:
         return unavailable(request, "rerank")

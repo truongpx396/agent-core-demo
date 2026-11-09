@@ -55,7 +55,7 @@ async def main() -> None:
                 )
             )
         await qdrant_store.upsert(points, collection=SKILLS_COLLECTION)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         raise SystemExit(
             f"Failed to index skills: {exc}\n"
             "Is the stack running? Try `make up` and `make pull-models` first."

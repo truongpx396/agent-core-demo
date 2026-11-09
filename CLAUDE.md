@@ -123,8 +123,10 @@ they delete volumes or kill running processes.
   uniqueness, tenant-scoped SQL, tests). Don't add one without it.
 - Tune a limit or flag through `app/core/config.py` `Settings` and add it to `.env.example`.
 - A new external system (a store, a service, a provider) is a port in `app/ports/outbound/`, an adapter, and one entry in `app/bootstrap.py::adapters()`; never an import of its client in `app/agent` or `app/domains`. A new entrypoint calls `wire()`. Both are tests, not conventions (`ARCHITECTURE.md`, "Adding something").
-- A broad `except Exception` needs `# noqa: BLE001 - <reason>`; every `# type: ignore[...]` and
-  `# noqa` carries a reason. Comments explain *why* (the failure that motivated the code), not
+- A broad `except Exception` that swallows needs `# noqa: BLE001 - <reason>` (one that re-raises needs
+  no `noqa`, only the reason as a plain comment); every `# type: ignore[...]` and `# noqa` carries a
+  reason. `ruff` (`RUF100`) and `mypy` (`warn_unused_ignores`) fail the build on one that no longer
+  suppresses anything. Comments explain *why* (the failure that motivated the code), not
   what; keep them short, point at the bug or pattern number, and leave the long reasoning to the
   pattern docs.
 - A bug fix lands with a regression test that fails without it, plus the matching

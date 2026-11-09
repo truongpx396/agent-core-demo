@@ -43,6 +43,7 @@ import json
 import logging
 from collections.abc import Mapping
 from dataclasses import dataclass
+from typing import Any
 
 from langchain_core.tools import StructuredTool
 from mcp import types
@@ -111,15 +112,15 @@ async def _call_remote_tool(params: StdioServerParameters, tool_name: str, kwarg
     return render_result(result, handling)
 
 
-async def _list_remote_tools(params: StdioServerParameters, handling: _Handling):
+async def _list_remote_tools(params: StdioServerParameters, handling: _Handling) -> list[types.Tool]:
     return await connection_for(params, handling.dependency).list_tools()
 
 
-def _wrap_remote_tool(params: StdioServerParameters, remote_tool, handling: _Handling) -> StructuredTool:
+def _wrap_remote_tool(params: StdioServerParameters, remote_tool: types.Tool, handling: _Handling) -> StructuredTool:
     name = remote_tool.name
     description = remote_tool.description or f"Remote MCP tool {name!r}."
 
-    async def async_call(**kwargs) -> str:
+    async def async_call(**kwargs: Any) -> str:
         return await _call_remote_tool(params, name, kwargs, handling)
 
     return StructuredTool.from_function(

@@ -14,6 +14,7 @@ import functools
 import logging
 import time
 from collections.abc import Awaitable, Callable
+from typing import Any
 
 from app.adapters.inbound.mcp.identity import IdentityMissing, IdentitySource
 
@@ -31,7 +32,7 @@ def _outcome(result: object) -> str:
     return "ok"
 
 
-def audited(server: str, identity: IdentitySource):
+def audited(server: str, identity: IdentitySource) -> Callable[[Callable[..., Awaitable[str]]], Callable[..., Awaitable[str]]]:
     """Decorate a published tool: time it and log `mcp_tool_call` however it ends, including by raising.
 
     `identity` is the same source the tool body asks, so the line names exactly who the call acted for (or `None` when it had no
@@ -40,7 +41,7 @@ def audited(server: str, identity: IdentitySource):
 
     def decorate(fn: Callable[..., Awaitable[str]]) -> Callable[..., Awaitable[str]]:
         @functools.wraps(fn)  # keeps the signature MCPServer builds the tool's input schema from
-        async def wrapper(*args, **kwargs):
+        async def wrapper(*args: Any, **kwargs: Any) -> str:
             started = time.perf_counter()
             outcome = "error"
             try:
@@ -48,6 +49,7 @@ def audited(server: str, identity: IdentitySource):
                 outcome = _outcome(result)
                 return result
             finally:
+                who: dict[str, str | None]
                 try:
                     ctx = identity()
                     who = {"tenant": ctx["tenant"], "principal": ctx["principal"]}

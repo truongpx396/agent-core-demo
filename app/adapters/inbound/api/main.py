@@ -33,6 +33,7 @@ announces the mode.
 """
 import asyncio
 import contextlib
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 from fastapi import (
@@ -65,7 +66,7 @@ wire()
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     verify_wired()
     # Opens the durable checkpointer on uvicorn's own event loop, once, at
     # startup, not lazily on first request — GET /chat/sessions/{thread_id}/

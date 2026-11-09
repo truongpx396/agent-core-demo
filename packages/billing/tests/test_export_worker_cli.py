@@ -15,7 +15,7 @@ from tests.conftest import SECRET
 def configured(monkeypatch):
     def set_(names, secrets=None):
         monkeypatch.setattr(worker, "BILLING_PROVIDERS", names)
-        monkeypatch.setattr(worker, "BILLING_WEBHOOK_SECRETS", secrets if secrets is not None else {n: "s" for n in names})
+        monkeypatch.setattr(worker, "BILLING_WEBHOOK_SECRETS", secrets if secrets is not None else dict.fromkeys(names, "s"))
 
     return set_
 

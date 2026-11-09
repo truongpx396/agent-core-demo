@@ -42,6 +42,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.runnables import RunnableConfig
+from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import Command
 
 from app.agent.graph.build import build_graph
@@ -147,9 +149,9 @@ class CaseResult:
     ungrounded_claims_count: int  # SUMMED across repetitions
 
 
-async def _run_case_once(graph, case: GoldenCase) -> _Attempt:
+async def _run_case_once(graph: CompiledStateGraph, case: GoldenCase) -> _Attempt:
     thread_id = f"eval-{case.id}-{uuid.uuid4()}"
-    config = {
+    config: RunnableConfig = {
         "configurable": {
             "thread_id": thread_id,
             "ctx": _EVAL_CTX,
@@ -231,7 +233,7 @@ async def _run_case_once(graph, case: GoldenCase) -> _Attempt:
     )
 
 
-async def run_case(graph, case: GoldenCase, repetitions: int = EVAL_REPETITIONS) -> CaseResult:
+async def run_case(graph: CompiledStateGraph, case: GoldenCase, repetitions: int = EVAL_REPETITIONS) -> CaseResult:
     """Runs `case` `repetitions` times and aggregates — see module
     docstring for why this is a rate, not a single pass/fail."""
     attempts = [await _run_case_once(graph, case) for _ in range(repetitions)]
@@ -324,15 +326,15 @@ def load_previous_run() -> dict[str, dict] | None:
     latest = RESULTS_DIR / "latest.json"
     if not latest.exists():
         return None
-    return {c["id"]: c for c in json.loads(latest.read_text())}
+    return {c["id"]: c for c in json.loads(latest.read_text(encoding="utf-8"))}
 
 
 def save_run(results: list[CaseResult]) -> Path:
     RESULTS_DIR.mkdir(exist_ok=True)
     ts = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     payload = json.dumps(_to_jsonable(results), indent=2)
-    (RESULTS_DIR / f"{ts}.json").write_text(payload)
-    (RESULTS_DIR / "latest.json").write_text(payload)
+    (RESULTS_DIR / f"{ts}.json").write_text(payload, encoding="utf-8")
+    (RESULTS_DIR / "latest.json").write_text(payload, encoding="utf-8")
     return RESULTS_DIR / f"{ts}.json"
 
 

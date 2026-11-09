@@ -51,8 +51,9 @@ class ReplySink:
         if not chunks:
             return
         rest = chunks
-        if self._message_id is not None:
-            if chunks[0] == self._shown or await self._api.edit_message(self._chat_id, self._message_id, chunks[0]):
-                rest = chunks[1:]
+        if self._message_id is not None and (
+            chunks[0] == self._shown or await self._api.edit_message(self._chat_id, self._message_id, chunks[0])
+        ):
+            rest = chunks[1:]
         for chunk in rest:
             await self._api.send_message(self._chat_id, chunk)

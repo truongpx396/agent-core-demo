@@ -61,12 +61,45 @@ src = [".", "packages/billing/src", "services/ml-service"]
 # S110: bandit's try/except/pass check, paired with BLE001 for the same
 # reason — a handful of genuinely-fine silent swallows (a best-effort
 # trace flush, a cosmetic typing indicator) are individually noqa'd.
-select = ["F", "I", "UP", "B", "BLE", "S110"]
+# PLE: pylint's error rules, among them invisible and bidirectional characters in source (a literal zero-width space sat in
+# scripts/ai_review/review.py). RUF100: a `noqa` that suppresses nothing, which would silently cover the rule if the code under it
+# later changed. ASYNC: a blocking call (file, subprocess, input) inside `async def`, which stalls every other task on the loop.
+# PLW1514: a text file opened without `encoding=` reads and writes in the machine's locale (cp1252 on Windows), not UTF-8; it is a
+# preview rule, and `explicit-preview-rules` turns on that one and no other. INP001: a directory of modules with no `__init__.py` is an
+# implicit namespace package; one sat inside the billing package (`credit_billing/cli`), and `setuptools.find_packages()` skips such a
+# directory, so a wheel built that way would have shipped without the six console-script modules.
+# The idiom families, each with few or no findings when they were turned on (they were fixed in the same change): SIM (simplifications:
+# combine nested `with`, one condition for a nested `if`, a file left to garbage collection), C4 (comprehensions), PIE, RET (return
+# style), G (lazy logging arguments, not f-strings), E7 (ambiguous names like `l`, lambda assignment, `;`), ISC (implicit string
+# concatenation in a collection), and RUF (unused unpacked values, a mutable class attribute without `ClassVar`, `[*a, b]` over
+# `a + [b]`, `round()` over `int(round())`; RUF100 above is one of them).
+select = [
+    "F", "I", "UP", "B", "BLE", "S110", "PLE", "ASYNC", "PLW1514", "INP001",
+    "SIM", "C4", "PIE", "RET", "G", "E7", "ISC", "RUF",
+]
+preview = true
+explicit-preview-rules = true
 ignore = [
     "B008",   # FastAPI's Depends()/File() in an argument default is the framework's own idiom
     "UP042",  # str+Enum -> StrEnum for ErrorCode/Topic/Department is a deliberate call for a
               # separate change, not something a lint-config pass should silently rewrite
+    "ASYNC109",  # a `timeout` parameter handed on to httpx/anyio is the function's API, not a missing `asyncio.timeout`
+    "RUF001", "RUF002", "RUF003",  # strings, docstrings and comments use typographic punctuation (→ — ’) on purpose
+    "SIM905",  # a word list kept as one `.split()` string reads better than the same words as a 200-column list literal
+    "SIM114",  # two long, different conditions merged by `or` are harder to read than a repeated one-line body
+    "SIM300",  # `assert EXPECTED == actual` and `assert CORE_TOOLS <= set(tools)` put the expected value first on purpose
 ]
+
+[tool.ruff.lint.per-file-ignores]
+# One-shot operator tools and tests are synchronous by nature: blocking there stalls nothing but themselves. A test fake with a
+# class-level list, and a fixture tuple unpacked for one of its parts, are ordinary in a test (RUF012, RUF059).
+"scripts/**" = ["ASYNC"]
+"tests/**" = ["ASYNC", "RUF012", "RUF059"]
+"packages/*/tests/**" = ["ASYNC", "RUF012", "RUF059"]
+# Standalone programs run by path (or loaded by name, like `sitecustomize`), not packages anything imports.
+"garak/**" = ["INP001"]
+"loadtest/**" = ["INP001"]
+"deploy/**" = ["INP001"]
 
 [tool.mypy]
 # No explicit python_version pin: mypy infers it from whatever interpreter
@@ -77,6 +110,16 @@ ignore = [
 # nothing to do with this app's own code. CI pins the actual interpreter
 # version directly instead (see .github/workflows/ci.yml).
 ignore_missing_imports = true
+# The body of a function with no annotations is skipped by default, so a wrong type inside an untyped decorator wrapper went
+# unseen (app/adapters/inbound/mcp/audit.py). A `type: ignore` that no longer ignores anything, or a `cast` to the type the
+# value already has, is a stale claim about the code: both fail the build.
+check_untyped_defs = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+# Every function says what it takes and returns (about 160 did not: the graph nodes' `config`, the workers' Redis `client`, the stream
+# generators). Where the real type is a third party's untyped object or a test's fake the annotation is an explicit `Any`.
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
 # Third-party stubs this app depends on (redis-py's Streams commands,
 # qdrant-client's Filter/Condition unions, RediSearch's create_index) are
 # themselves imprecise in ways this app's own code isn't — see the `cast`/

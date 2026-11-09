@@ -200,5 +200,6 @@ def write_meta(path: Path, *, local: str, strong: str, judge: str, dataset: dict
              "last_run": {"scored": run.scored, "skipped": run.skipped, "missing": run.missing, "stopped_early": run.stopped_early,
                           "failures": run.failures, "seconds": round(run.seconds, 1)}},
             indent=2, sort_keys=True,
-        ) + "\n"
+        ) + "\n",
+        encoding="utf-8",
     )

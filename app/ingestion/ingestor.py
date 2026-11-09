@@ -189,7 +189,8 @@ async def ingest_file(path: str, ctx: SecurityCtx | None, topic: str | None = No
         raise IngestRefused(
             f"unsupported file type {p.suffix!r} — only {sorted(_ALLOWED_FILE_SUFFIXES)} are supported"
         )
-    text = p.read_text(encoding="utf-8", errors="replace")
+    # Off the loop: an upload-sized read inline would stall every other coroutine in the process while it lasts.
+    text = await asyncio.to_thread(p.read_text, encoding="utf-8", errors="replace")
     return await ingest_text(text, title=p.stem, ctx=ctx, source=f"file:{p.name}", topic=topic)
 
 
@@ -199,20 +200,20 @@ class _TextExtractor(html.parser.HTMLParser):
     HTML-to-Markdown converter — just enough to strip markup before
     chunking/embedding, which is all ingestion needs."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__()
         self._skip_depth = 0
         self._chunks: list[str] = []
 
-    def handle_starttag(self, tag, attrs):
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         if tag in ("script", "style"):
             self._skip_depth += 1
 
-    def handle_endtag(self, tag):
+    def handle_endtag(self, tag: str) -> None:
         if tag in ("script", "style") and self._skip_depth:
             self._skip_depth -= 1
 
-    def handle_data(self, data):
+    def handle_data(self, data: str) -> None:
         if not self._skip_depth and data.strip():
             self._chunks.append(data.strip())
 

@@ -171,7 +171,7 @@ def test_a_run_killed_between_prompts_leaves_every_finished_prompt_on_disk(tmp_p
 
 
 def test_the_deadline_stops_new_calls_and_what_was_done_is_kept(tmp_path):
-    ticks = iter(range(0, 1000))  # the fake clock advances one second per reading
+    ticks = iter(range(1000))  # the fake clock advances one second per reading
     fakes = Fakes(full_table())
 
     result = run(fakes, tmp_path / "o.jsonl", deadline=14, clock=lambda: float(next(ticks)))

@@ -31,11 +31,12 @@ import asyncio
 import logging
 import sys
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
 
-from qdrant_client.models import PointStruct
+from qdrant_client import AsyncQdrantClient
+from qdrant_client.models import PointStruct, Record
 
 from app.adapters.outbound.embeddings import embedding_identity, embeddings
 from app.adapters.outbound.qdrant import qdrant_store
@@ -73,7 +74,7 @@ class Report:
             return [f"{self.collection}: already under the configured embedding identity ({self.target}); nothing to do"]
         out = [f"{self.collection}: {self.source} -> {self.target}: {self.points} points"]
         if self.dry_run:
-            return out + ["dry run: nothing written"]
+            return [*out, "dry run: nothing written"]
         out.append(f"copied {self.copied}, skipped {len(self.skipped)} without text, in {self.seconds:.1f}s")
         out.append(
             f"swapped: {self.collection}-live now points at {self.target}; the old collection {self.source} is NOT deleted "
@@ -84,7 +85,7 @@ class Report:
         return out
 
 
-async def _scroll_all(client, name: str, *, page: int, with_payload: bool, with_vectors: bool):
+async def _scroll_all(client: AsyncQdrantClient, name: str, *, page: int, with_payload: bool, with_vectors: bool) -> AsyncGenerator[Record, None]:
     offset = None
     while True:
         records, offset = await client.scroll(
@@ -96,7 +97,7 @@ async def _scroll_all(client, name: str, *, page: int, with_payload: bool, with_
             return
 
 
-async def _ids(client, name: str, page: int) -> set[str]:
+async def _ids(client: AsyncQdrantClient, name: str, page: int) -> set[str]:
     return {str(r.id) async for r in _scroll_all(client, name, page=page, with_payload=False, with_vectors=False)}
 
 
@@ -139,7 +140,7 @@ async def reembed(
             dense = await embed([str(r.payload["text"]) for r in batch])
         except ReembedError:
             raise
-        except Exception as exc:  # noqa: BLE001 - any failure of the embedding service is exit 3, whatever its client library raised
+        except Exception as exc:  # any failure of the embedding service is exit 3, whatever its client library raised
             raise ReembedError(EXIT_EMBED_DOWN, f"{logical}: the embedding service failed ({type(exc).__name__}); nothing was swapped") from exc
         points = []
         for record, vector in zip(batch, dense, strict=True):
@@ -195,12 +196,13 @@ async def reembed(
     return report
 
 
-async def _check_sample(client, source: str, target: str, sample: int, page: int) -> None:
+async def _check_sample(client: AsyncQdrantClient, source: str, target: str, sample: int, page: int) -> None:
     """A sample of the new collection's points must find themselves: it catches a vector written against the wrong point or a dimension
     that does not match the data. A different point with identical text is an accepted answer (duplicate passages embed identically)."""
     checked = 0
     async for record in _scroll_all(client, target, page=page, with_payload=True, with_vectors=True):
-        dense = (record.vector or {}).get(qdrant_store.DENSE_VECTOR_NAME)
+        vectors = record.vector  # a name -> vector dict for a collection with named vectors; a bare list would have no such name
+        dense = vectors.get(qdrant_store.DENSE_VECTOR_NAME) if isinstance(vectors, dict) else None
         if dense is None:
             raise ReembedError(EXIT_CHANGED, f"{target}: point {record.id} has no dense vector; nothing was swapped")
         hits = (await client.query_points(collection_name=target, query=dense, using=qdrant_store.DENSE_VECTOR_NAME, limit=1)).points

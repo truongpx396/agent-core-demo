@@ -113,7 +113,7 @@ router = APIRouter()
 
 
 @router.post("/v1/embeddings", response_model=None)
-async def create_embeddings(request: Request):
+async def create_embeddings(request: Request) -> JSONResponse:
     app = request.app
     settings: Settings = app.state.settings
     metrics = app.state.metrics

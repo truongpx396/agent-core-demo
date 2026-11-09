@@ -628,10 +628,9 @@ class TestHITLApprovalUnderConcurrency:
             for i, (thread_id, _) in enumerate(paused):
                 state = await graph.aget_state({"configurable": {"thread_id": thread_id}})
                 assert state.next, f"thread {i} should be paused at human_approval, but wasn't"
-            resumed = await asyncio.gather(
+            return await asyncio.gather(
                 *(resume(thread_id, principal) for thread_id, principal in paused)
             )
-            return resumed
 
         resumed = await run_with_checkpointer_cleanup(_run)
 

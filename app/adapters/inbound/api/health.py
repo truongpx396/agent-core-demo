@@ -67,7 +67,7 @@ async def _check_ml_service() -> None:
     resp.raise_for_status()
 
 
-async def _bounded(name: str, check: Callable[[], None | Awaitable[None]]) -> bool:
+async def _bounded(name: str, check: Callable[[], Awaitable[None] | None]) -> bool:
     try:
         # Checked BEFORE calling `check`, not after: a sync function runs its
         # entire body the instant it's called, so deferring to asyncio.to_thread
@@ -189,8 +189,8 @@ async def _appdata_schema_warnings() -> list[str]:
     names = ", ".join(name for name, _ in APPDATA_TABLES if name in missing)
     caution = " Read the README's note on 15 first: it drops the `notes` columns without carrying their data over." if "15-append-notes-as-rows.sql" in scripts else ""
     return [
-        f"appdata is missing {len(missing)} table(s) the app uses: {names}. Their features fail or run degraded "
-        f"(no metering, no budget limits, no duplicate-call guard). Apply, in this order: {', '.join('postgres-init/' + s for s in scripts)}.{caution}"
+        (f"appdata is missing {len(missing)} table(s) the app uses: {names}. Their features fail or run degraded "
+         f"(no metering, no budget limits, no duplicate-call guard). Apply, in this order: {', '.join('postgres-init/' + s for s in scripts)}.{caution}")
     ]
 
 

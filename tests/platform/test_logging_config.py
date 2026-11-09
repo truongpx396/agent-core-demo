@@ -111,7 +111,6 @@ class TestBindRequestId:
         assert request_id_var.get() is None
 
     def test_reset_happens_even_if_the_block_raises(self, captured_logger):
-        with pytest.raises(ValueError):
-            with bind_request_id("req-1"):
-                raise ValueError("boom")
+        with pytest.raises(ValueError), bind_request_id("req-1"):
+            raise ValueError("boom")
         assert request_id_var.get() is None

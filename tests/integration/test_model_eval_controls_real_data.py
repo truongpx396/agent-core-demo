@@ -132,7 +132,7 @@ def test_the_inprocess_embedding_backend_loads_a_real_model_and_embeds_to_the_ex
     candidate = parse_candidates(EMBED_TOML)[0]
     try:
         backend = embedding.build_backend(candidate, RunSettings())
-    except Exception as exc:  # noqa: BLE001 - the Hub being unreachable is a skip, anything else a failure
+    except Exception as exc:  # the Hub being unreachable is a skip, anything else a failure
         if type(exc).__name__ == "PrerequisiteMissing":
             pytest.skip(str(exc))
         raise

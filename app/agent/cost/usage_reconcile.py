@@ -272,8 +272,8 @@ def render(report: Report) -> str:
     """The report an operator reads. Every finding names the tenant, the day and the amounts."""
     w = report.window
     lines = [
-        f"Reconciliation {w.start:%Y-%m-%d %H:%M} to {w.end:%Y-%m-%d %H:%M} UTC; "
-        f"tolerance: the larger of ${report.tolerance.usd} and {report.tolerance.pct}%",
+        (f"Reconciliation {w.start:%Y-%m-%d %H:%M} to {w.end:%Y-%m-%d %H:%M} UTC; "
+         f"tolerance: the larger of ${report.tolerance.usd} and {report.tolerance.pct}%"),
         f"  {report.tenants} tenant(s), {report.events} usage event(s), "
         + ("gateway not read" if report.gateway_rows is None else f"{report.gateway_rows} gateway row(s)"),
     ]

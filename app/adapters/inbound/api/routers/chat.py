@@ -12,6 +12,7 @@ is enqueued or any Redis key is written; the worker does not repeat it.
 import hashlib
 import json
 import uuid
+from collections.abc import AsyncIterator
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
@@ -60,7 +61,7 @@ def _queued_sse_response(
     when the worker's first event arrives.
     """
 
-    async def generate():
+    async def generate() -> AsyncIterator[str]:
         async for event in turn_queue.get().read_results(
             request_id, first_event_deadline_seconds=first_event_deadline_seconds
         ):

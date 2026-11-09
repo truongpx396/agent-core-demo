@@ -47,6 +47,7 @@ import argparse
 import asyncio
 import base64
 import hashlib
+import itertools
 import json
 import os
 import re
@@ -259,7 +260,7 @@ class Door:
         if not self.args.compose:
             sys.exit("this stage needs --compose (the Makefile passes it)")
         argv = shlex.split(self.args.compose) + shlex.split(tail)
-        return subprocess.run(argv, capture_output=True, text=True, timeout=timeout, check=False, env={**os.environ, **(env or {})})  # noqa: S603 - the developer's own compose command, passed by the Makefile, never a shell string
+        return subprocess.run(argv, capture_output=True, text=True, timeout=timeout, check=False, env={**os.environ, **(env or {})})  # the developer's own compose command, passed by the Makefile, never a shell string
 
     async def wait_ready(self, seconds: int = 90) -> bool:
         """Until a valid request through the door works again (both replicas back and Caddy has them)."""
@@ -315,7 +316,7 @@ def verify_identity(identity: str, keys: dict[str, Any]) -> dict | None:
 def mint_identity(keys_dir: Path, tenant: str, sub: str) -> str | None:
     """A VALIDLY SIGNED internal identity for `tenant`, made with the service's own current private key (this process runs as the user who owns the
     key directory). It is the strongest forgery there is: a header the API would accept if it ever reached it. The door must still replace it."""
-    keyset = json.loads((keys_dir / "keyset.json").read_text())
+    keyset = json.loads((keys_dir / "keyset.json").read_text(encoding="utf-8"))
     now = int(time.time())
     usable = [k for k in keyset["keys"] if k["use_from"] <= now and (k["retire_at"] == 0 or k["retire_at"] > now)]
     if not usable:
@@ -432,7 +433,7 @@ async def stage_spoofing(d: Door, keys: dict[str, Any]) -> None:
     tricks = ["/static/../chat/stream/queued", "/static/%2e%2e/chat/stream/queued", "/static/..%2fchat/stream/queued", "/health/../chat/resume",
               "//chat/stream/queued", "/chat/./stream/queued", "/static/a%5c..%5cchat/resume", "/billing/webhooks/../../chat/resume"]
     for target in tricks:
-        status, headers, body = await d.raw(target, method="POST")
+        status, _headers, body = await d.raw(target, method="POST")
         reached = b'"headers"' in body and status == 200
         check(f"path trick {target!r} does not reach the upstream unauthenticated", not reached, f"{status} {body[:100]!r}")
 
@@ -557,16 +558,16 @@ async def stage_logs(d: Door, keys_dir: Path) -> None:
     check(f"none of the {len(set(SECRETS_SEEN))} tokens this run obtained appears in any log", not leaked, str(leaked))
     pem_bodies = []
     for pem in keys_dir.glob("*.pem"):
-        pem_bodies += [line for line in pem.read_text().splitlines() if len(line) > 20 and not line.startswith("-----")]
+        pem_bodies += [line for line in pem.read_text(encoding="utf-8").splitlines() if len(line) > 20 and not line.startswith("-----")]
     check("no private key material appears in any log", not any(b in text for b in pem_bodies) and "BEGIN PRIVATE KEY" not in text)
-    check("no JWT-shaped string is logged by authlimit", not re.search(r"eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.", "\n".join(l for l in text.splitlines() if "authlimit-" in l and "casdoor" not in l)))
-    errors = [l for l in text.splitlines() if "authlimit-" in l and '"level":"ERROR"' in l]
+    check("no JWT-shaped string is logged by authlimit", not re.search(r"eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.", "\n".join(line for line in text.splitlines() if "authlimit-" in line and "casdoor" not in line)))
+    errors = [line for line in text.splitlines() if "authlimit-" in line and '"level":"ERROR"' in line]
     check("authlimit logged no errors", not errors, "\n".join(errors[:3]))
     if d.upstream == "api":
-        app_lines = [l for l in text.splitlines() if l.startswith(("api-", "agent-worker-"))]  # compose prefixes a line with the service and replica
+        app_lines = [line for line in text.splitlines() if line.startswith(("api-", "agent-worker-"))]  # compose prefixes a line with the service and replica
         check("the API and the worker logged something to look through", len(app_lines) > 5, f"{len(app_lines)} lines")
         jwt_shaped = re.compile(r"eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.")
-        check("no JWT-shaped string (the internal identity or the external token) is logged by the API or the worker", not any(jwt_shaped.search(l) for l in app_lines))
+        check("no JWT-shaped string (the internal identity or the external token) is logged by the API or the worker", not any(jwt_shaped.search(line) for line in app_lines))
 
 
 def seed_second_tenant(d: Door) -> bool:
@@ -745,13 +746,13 @@ async def stage_replica(d: Door) -> None:
     started: list[float] = []
     task = asyncio.create_task(traffic(d, token, 14, 20, started))
     await asyncio.sleep(4)
-    killed = subprocess.run(["docker", "kill", ids[0]], capture_output=True, text=True, check=False)  # noqa: S603,S607 - a container id from our own compose project
+    killed = subprocess.run(["docker", "kill", ids[0]], capture_output=True, text=True, check=False)  # a container id from our own compose project
     check("one replica was killed", killed.returncode == 0, killed.stderr[-200:])
     results = await task
     bad = [(round(t, 1), s) for t, s in results if s != 200]
     check(f"traffic through the kill: {len(results)} requests, {len(bad)} failed", len(bad) <= 2, f"{bad[:8]}")
     info(f"failures (seconds since start, status): {bad}")
-    slow = max((b - a for (a, _), (b, _) in zip(results, results[1:], strict=False)), default=0.0)
+    slow = max((b - a for (a, _), (b, _) in itertools.pairwise(results)), default=0.0)
     info(f"the longest gap between two answers was {round(slow, 2)} s (a request that picked the dead replica waits for a dial timeout)")
     check("no request waited longer than 2 seconds on the dead replica", slow <= 2.5, f"{round(slow, 2)} s")
     d.compose("up -d --no-deps authlimit")
@@ -770,7 +771,7 @@ async def stage_rotate(d: Door, keys: dict[str, Any], keys_dir: Path) -> None:
     while time.time() - started < 50:
         if not rotated and time.time() - started > 3:
             rotated = True
-            run = subprocess.run(["docker", "run", "--rm", "--user", f"{os.getuid()}:{os.getgid()}", "-v", f"{keys_dir.parent}:/work", image, "keys", "rotate", "--dir", f"/work/{keys_dir.name}", "--overlap", "20s"],  # noqa: S603,S607 - our own image and key directory
+            run = subprocess.run(["docker", "run", "--rm", "--user", f"{os.getuid()}:{os.getgid()}", "-v", f"{keys_dir.parent}:/work", image, "keys", "rotate", "--dir", f"/work/{keys_dir.name}", "--overlap", "20s"],  # our own image and key directory
                                  capture_output=True, text=True, check=False)
             if not check("`authlimit keys rotate --overlap 20s` ran", run.returncode == 0, run.stderr[-300:]):
                 return

@@ -42,6 +42,7 @@ import logging
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
+from typing import Any
 
 from psycopg import errors as pg_errors
 
@@ -99,7 +100,7 @@ class CarryOver:
     dry_run: bool = False
 
 
-async def cutoff_for(conn) -> datetime:
+async def cutoff_for(conn: Any) -> datetime:
     """The instant before which a ledger row is history: the time of the first REAL event (an id that does not start with
     `ledger:`), or the database's `now()` when there is none yet. Taken on `conn` so a test can ask it of an empty table."""
     cur = await conn.execute(_CUTOFF, {"like": f"{PREFIX}%"})

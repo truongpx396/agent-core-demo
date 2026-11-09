@@ -101,4 +101,4 @@ def parse_candidates(text: str, *, expected_kind: str | None = None) -> list[Can
 
 
 def load_candidates(path: Path, *, expected_kind: str | None = None) -> list[Candidate]:
-    return parse_candidates(path.read_text(), expected_kind=expected_kind) if path.exists() else []
+    return parse_candidates(path.read_text(encoding="utf-8"), expected_kind=expected_kind) if path.exists() else []

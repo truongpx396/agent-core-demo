@@ -197,7 +197,7 @@ def test_a_name_that_would_break_the_lookup_id_or_the_email_is_refused_before_an
 class RecordingCasdoor(bootstrap.Casdoor):
     """The real `ensure_application`, with the two HTTP primitives replaced."""
 
-    def __init__(self, existing: dict | None = None) -> None:  # noqa: D107 - the base __init__ logs in over HTTP; this must not
+    def __init__(self, existing: dict | None = None) -> None:  # the base __init__ logs in over HTTP; this must not
         self.existing = existing
         self.writes: list[tuple[str, dict]] = []
 
@@ -264,7 +264,7 @@ def test_the_telegram_bots_login_return_is_registered_only_when_asked_and_is_the
 class UsersById(RecordingCasdoor):
     """The real `ensure_user`, looking a user up by the id it builds (`<organization>/<name>`)."""
 
-    def __init__(self, existing: set[str]) -> None:  # noqa: D107 - see RecordingCasdoor
+    def __init__(self, existing: set[str]) -> None:  # see RecordingCasdoor
         super().__init__()
         self.known = existing
 

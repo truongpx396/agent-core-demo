@@ -135,7 +135,7 @@ async def test_the_dimension_is_read_from_a_real_call_once_and_cached(client):
 def test_the_semantic_cache_embeds_with_the_query_role_on_both_sides():
     """It compares a new question with earlier questions, so both must be embedded the same way (FR-017): a document-role vector on
     the write side would be compared with query-role vectors on the read side and never match."""
-    tree = ast.parse(Path(semantic_cache.__file__).read_text())
+    tree = ast.parse(Path(semantic_cache.__file__).read_text(encoding="utf-8"))
     called = {n.func.id for n in ast.walk(tree) if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)}
     assert "embed_query" in called
     assert "embed_document" not in called and "embed_documents" not in called

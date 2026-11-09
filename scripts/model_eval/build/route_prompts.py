@@ -73,7 +73,7 @@ def write_dataset(splits: dict[str, list[dict]], *, generator: str, prompt: str,
                        "note": "prompts only; per-model outcomes are produced per operator into the ignored outcomes/ directory"},
         "splits": {name: {"file": f"{name}.jsonl", "sha256": ds.write_jsonl(target / f"{name}.jsonl", rows), "items": len(rows)} for name, rows in splits.items()},
     }
-    (target / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
+    (target / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return target
 
 

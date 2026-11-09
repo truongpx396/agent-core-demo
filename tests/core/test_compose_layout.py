@@ -20,7 +20,7 @@ PROD, OBS_PROD = COMPOSE / "docker-compose.prod.yml", COMPOSE / "docker-compose.
 
 
 def _load(path: Path) -> dict:
-    return yaml.safe_load(path.read_text())
+    return yaml.safe_load(path.read_text(encoding="utf-8"))
 
 
 def _services(*paths: Path) -> dict:

@@ -3,6 +3,7 @@ context, the history summary and the skill reminders as text around the
 turn's real question (`messages.with_turn_notes`, pattern 79).
 """
 import logging
+from collections.abc import Awaitable, Callable
 
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 from langchain_core.runnables import RunnableConfig
@@ -26,7 +27,7 @@ from app.agent.graph.state import State
 from app.core import gateway, metrics
 from app.core.config import CHAT_MODEL
 from app.core.untrusted import frame_untrusted
-from app.ports.outbound.llm import ContentBlock
+from app.ports.outbound.llm import ChatModel, ContentBlock
 
 logger = logging.getLogger(__name__)
 
@@ -82,7 +83,7 @@ def _refusal_update(state: State, block: ContentBlock) -> dict:
 
 # --- Node: agent ---
 def make_agent_node(
-    llm,
+    llm: ChatModel,
     model_alias: str = CHAT_MODEL,
     kind: str = "chat",
     citation_reminder: bool = True,
@@ -90,7 +91,7 @@ def make_agent_node(
     cannot_open_links: bool = False,
     *,
     system_prompt: str,
-):
+) -> Callable[..., Awaitable[dict]]:
     """Factory, not a plain function, because `agent` needs an LLM client; tests build it with a fake (e.g.
     GenericFakeChatModel) via `make_agent_node(fake_llm)(state)` to cover message assembly without a network
     call (test_agent_node.py).
@@ -142,7 +143,7 @@ def make_agent_node(
             (i for i in range(len(messages) - 1, -1, -1) if is_user_message(messages[i])), None
         )
 
-        def droppable(i: int, m) -> bool:
+        def droppable(i: int, m: BaseMessage) -> bool:
             return turn_start is not None and i < turn_start and is_retry_artifact(m)
 
         if any(droppable(i, m) for i, m in enumerate(messages)):
@@ -244,7 +245,7 @@ def make_agent_node(
                     call = await metering.metered_invoke(
                         llm, messages, config=config, kind=kind, model_alias=routed, invoke_model=routed
                     )
-                except Exception as exc:  # noqa: BLE001 - classified by routed_unreachable; anything that is not "never reached a model" is re-raised unchanged
+                except Exception as exc:  # classified by routed_unreachable; anything that is not "never reached a model" is re-raised unchanged
                     if not routed_unreachable(exc):
                         raise
                     metrics.agent_model_route_total.labels(outcome="routed_unreachable_fell_back").inc()
@@ -259,7 +260,7 @@ def make_agent_node(
                         kind=kind,
                         model_alias=model_alias,
                     )
-        except Exception as exc:  # noqa: BLE001 - only the gateway's content-guardrail refusal becomes the turn's answer; every other failure is re-raised unchanged for the retry policy and the stream to classify
+        except Exception as exc:  # only the gateway's content-guardrail refusal becomes the turn's answer; every other failure is re-raised unchanged for the retry policy and the stream to classify
             block = gateway.note_content_block(exc)
             if block is None:
                 raise

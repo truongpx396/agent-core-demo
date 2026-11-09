@@ -25,7 +25,7 @@ PROD = REPO / "deploy/litellm/litellm-config.prod.yaml"
 
 
 def _config(path: Path) -> dict:
-    return yaml.safe_load(path.read_text())
+    return yaml.safe_load(path.read_text(encoding="utf-8"))
 
 
 def _dev_entries() -> list[dict]:

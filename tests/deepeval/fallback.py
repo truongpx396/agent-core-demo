@@ -183,7 +183,7 @@ class FailoverChain:
         for position, index in enumerate(order):
             try:
                 return _content(self._links[index].model.generate(prompt, schema=schema))
-            except Exception as exc:  # noqa: BLE001 - classified right below: anything that is neither transient nor an unusable answer is re-raised untouched
+            except Exception as exc:  # classified right below: anything that is neither transient nor an unusable answer is re-raised untouched
                 if not (is_transient(exc) or is_unusable_output(exc)):
                     raise
                 following = self._links[order[position + 1]] if position + 1 < len(order) else None
@@ -197,7 +197,7 @@ class FailoverChain:
         for position, index in enumerate(order):
             try:
                 return _content(await self._links[index].model.a_generate(prompt, schema=schema))
-            except Exception as exc:  # noqa: BLE001 - classified right below: anything that is neither transient nor an unusable answer is re-raised untouched
+            except Exception as exc:  # classified right below: anything that is neither transient nor an unusable answer is re-raised untouched
                 if not (is_transient(exc) or is_unusable_output(exc)):
                     raise
                 following = self._links[order[position + 1]] if position + 1 < len(order) else None

@@ -123,7 +123,8 @@ class TestPasswordSignIn:
         assert exc.value.reason == "unavailable"
 
     async def test_a_reply_with_no_code_is_refused(self):
-        handler = lambda request: httpx.Response(200, json={"status": "ok", "msg": "", "data": None})  # noqa: E731
+        def handler(request):
+            return httpx.Response(200, json={"status": "ok", "msg": "", "data": None})
         async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
             with pytest.raises(SignInRefused) as exc:
                 await oauth.password_sign_in(http, ISSUER, **SIGN_IN, username="u", password="p")

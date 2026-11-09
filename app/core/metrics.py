@@ -18,8 +18,9 @@ final state dict, which is awkward to rebuild from generic callback events.
 """
 import hashlib
 import logging
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from typing import Any
+from uuid import UUID
 
 from langchain_core.callbacks import BaseCallbackHandler
 from opentelemetry import metrics as metrics_api
@@ -42,7 +43,7 @@ def _fingerprint(text: str) -> str:
 
 
 class _BoundCounter:
-    __slots__ = ("_instrument", "_attributes")
+    __slots__ = ("_attributes", "_instrument")
 
     def __init__(self, instrument: metrics_api.Counter, attributes: Mapping[str, str]):
         self._instrument = instrument
@@ -55,7 +56,7 @@ class _BoundCounter:
 class Counter:
     """prometheus_client.Counter-shaped wrapper around an OTel Counter."""
 
-    def __init__(self, name: str, description: str = "", labelnames=()):
+    def __init__(self, name: str, description: str = "", labelnames: Iterable[str] = ()) -> None:
         self.name = name  # read by tests/core/test_metrics.py to look up this
         # instrument's recorded data points via an InMemoryMetricReader —
         # OTel instruments don't expose their own name back once created.
@@ -70,7 +71,7 @@ class Counter:
 
 
 class _BoundHistogram:
-    __slots__ = ("_instrument", "_attributes")
+    __slots__ = ("_attributes", "_instrument")
 
     def __init__(self, instrument: metrics_api.Histogram, attributes: Mapping[str, str]):
         self._instrument = instrument
@@ -84,7 +85,7 @@ class Histogram:
     """prometheus_client.Histogram-shaped wrapper around an OTel Histogram.
     Bucket boundaries live in app/platform/telemetry.py's Views, not here."""
 
-    def __init__(self, name: str, description: str = "", unit: str = "", labelnames=()):
+    def __init__(self, name: str, description: str = "", unit: str = "", labelnames: Iterable[str] = ()) -> None:
         self._instrument = _meter.create_histogram(
             name, description=description, unit=unit
         )
@@ -98,7 +99,7 @@ class Histogram:
 
 
 class _BoundGauge:
-    __slots__ = ("_instrument", "_attributes")
+    __slots__ = ("_attributes", "_instrument")
 
     # `Any`: this OpenTelemetry release exposes the synchronous Gauge only under a private name (`_Gauge`), while
     # `Meter.create_gauge` that returns it is public; naming the private class here would break on the next release.
@@ -114,7 +115,7 @@ class Gauge:
     """prometheus_client.Gauge-shaped wrapper around an OTel synchronous Gauge: the LAST value set wins, which is what a
     "how old is the oldest unsent thing right now" reading needs and a Counter cannot say."""
 
-    def __init__(self, name: str, description: str = "", unit: str = "", labelnames=()):
+    def __init__(self, name: str, description: str = "", unit: str = "", labelnames: Iterable[str] = ()) -> None:
         self.name = name
         self._instrument = _meter.create_gauge(name, description=description, unit=unit)
         self._labelnames = tuple(labelnames)
@@ -847,7 +848,7 @@ class MetricsCallbackHandler(BaseCallbackHandler):
     infrastructure than this demo has. Logging is the honest scope here.
     """
 
-    def on_tool_start(self, serialized, input_str, *, run_id, **kwargs) -> None:
+    def on_tool_start(self, serialized: dict[str, Any] | None, input_str: str, *, run_id: UUID, **kwargs: Any) -> None:
         name = (serialized or {}).get("name", "unknown")
         agent_tool_calls_total.labels(tool=name).inc()
         logger.info(
@@ -859,7 +860,7 @@ class MetricsCallbackHandler(BaseCallbackHandler):
             },
         )
 
-    def on_tool_end(self, output, *, run_id, **kwargs) -> None:
+    def on_tool_end(self, output: Any, *, run_id: UUID, **kwargs: Any) -> None:
         result_text = getattr(output, "content", output)
         logger.info(
             "tool_succeeded",
@@ -869,7 +870,7 @@ class MetricsCallbackHandler(BaseCallbackHandler):
             },
         )
 
-    def on_tool_error(self, error, *, run_id, **kwargs) -> None:
+    def on_tool_error(self, error: BaseException, *, run_id: UUID, **kwargs: Any) -> None:
         agent_tool_errors_total.inc()
         logger.warning(
             "tool_failed",

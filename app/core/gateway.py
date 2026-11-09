@@ -44,10 +44,9 @@ names the rule and the matched phrase, so it never reaches the caller.
 """
 import hashlib
 import re
+from collections.abc import Mapping
 from typing import Any
 from urllib.parse import quote, unquote
-
-from langchain_core.runnables import RunnableConfig
 
 from app.core import metrics
 from app.core.errors import ErrorCode, ErrorEnvelope
@@ -108,7 +107,7 @@ def call_identity(ctx: SecurityCtx | None, session_id: str | None = None) -> dic
     return {"user": end_user_id(ctx["tenant"], ctx["principal"]), "extra_body": extra_body}
 
 
-def identity_from_config(config: RunnableConfig | None) -> dict:
+def identity_from_config(config: Mapping[str, Any] | None) -> dict:
     """`call_identity` for the ctx and conversation a LangGraph node finds in its own `config`.
     `config` is optional because tests and scripts call a node with just a state; LangGraph passes
     it in a real run."""

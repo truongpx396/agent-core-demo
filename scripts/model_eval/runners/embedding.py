@@ -13,7 +13,7 @@ import asyncio
 import time
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Any, Protocol
 
 import numpy as np
 
@@ -94,7 +94,7 @@ class GatewayEmbedding:
             from app.adapters.outbound.embeddings import embeddings as app_embeddings
             from app.core.config import EMBED_MODEL
             from app.ports.outbound import models as model_ports
-        except Exception as exc:  # noqa: BLE001 - importing the app needs its settings; any failure means the gateway path is unavailable
+        except Exception as exc:  # importing the app needs its settings; any failure means the gateway path is unavailable
             raise PrerequisiteMissing(f"cannot import the app's embedding client ({type(exc).__name__}: {exc})") from exc
         bootstrap.wire()
         self._client = app_embeddings.embeddings
@@ -102,7 +102,7 @@ class GatewayEmbedding:
         self._loop = asyncio.new_event_loop()  # one loop for the client's life: its connection pool is bound to the loop that made it
         try:
             self._loop.run_until_complete(self._client.aembed_query("probe"))
-        except Exception as exc:  # noqa: BLE001 - connection refused, auth, unknown alias ...: all mean the gateway cannot serve embeddings
+        except Exception as exc:  # connection refused, auth, unknown alias ...: all mean the gateway cannot serve embeddings
             raise PrerequisiteMissing(
                 f"the gateway did not answer an embedding request ({type(exc).__name__}); is the stack up (`make up`) and OPENAI_API_BASE correct?"
             ) from exc
@@ -126,7 +126,7 @@ class ServiceEmbedding:
     size_bytes: int | None = None
     rss_mb: float | None = None
 
-    def __init__(self, candidate: Candidate, base_url: str | None = None, client=None) -> None:
+    def __init__(self, candidate: Candidate, base_url: str | None = None, client: Any = None) -> None:
         import httpx
 
         from app.core.config import ML_SERVICE_URL
@@ -137,7 +137,7 @@ class ServiceEmbedding:
         self.identity = f"ml-service:{self._model}"
         try:
             self._post(["probe"])
-        except Exception as exc:  # noqa: BLE001 - unreachable, 404 (model not served) or 503 (not ready) all mean this path is unavailable
+        except Exception as exc:  # unreachable, 404 (model not served) or 503 (not ready) all mean this path is unavailable
             raise PrerequisiteMissing(f"the ML service did not serve embeddings for {self._model!r} ({type(exc).__name__}: {exc})") from exc
 
     def _post(self, texts: Sequence[str]) -> np.ndarray:
@@ -177,7 +177,7 @@ class InProcessEmbedding:
         try:
             model_path = hf_hub_download(src.repo, src.file, revision=src.revision)
             tokenizer_path = hf_hub_download(src.repo, "tokenizer.json", revision=src.revision)
-        except Exception as exc:  # noqa: BLE001 - offline and not cached, or a wrong repo/file: the model is not available to load
+        except Exception as exc:  # offline and not cached, or a wrong repo/file: the model is not available to load
             raise PrerequisiteMissing(f"cannot fetch {src.repo}@{src.revision[:10]}/{src.file} ({type(exc).__name__}); not cached and no network?") from exc
         options = ort.SessionOptions()
         if threads:

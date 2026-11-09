@@ -51,13 +51,13 @@ def run() -> int:
     survivors: list[tuple[str, str]] = []
     for name, rel, old, new, pkg in M:
         path = ROOT / rel
-        original = path.read_text()
+        original = path.read_text(encoding="utf-8")
         if original.count(old) != 1:
             print(f"STALE     {name}: the target text appears {original.count(old)} times in {rel}")
             survivors.append((name, "target text not found exactly once"))
             continue
         try:
-            path.write_text(original.replace(old, new, 1))
+            path.write_text(original.replace(old, new, 1), encoding="utf-8")
             built = subprocess.run(["go", "build", "./..."], cwd=ROOT, capture_output=True, text=True, check=False)
             if built.returncode != 0:
                 print(f"BROKEN    {name}: the mutant does not compile: {built.stderr.strip()[:120]}")
@@ -71,7 +71,7 @@ def run() -> int:
                 failed = sorted({line.split()[2] for line in result.stdout.splitlines() if line.startswith("--- FAIL")})[:3]
                 print(f"caught    {name}   [{', '.join(failed) or 'package failed'}]")
         finally:
-            path.write_text(original)  # always: a half-mutated tree is the one failure this script must not cause
+            path.write_text(original, encoding="utf-8")  # always: a half-mutated tree is the one failure this script must not cause
 
     print(f"\n{len(M) - len(survivors)} of {len(M)} mutants caught")
     return 1 if survivors else 0

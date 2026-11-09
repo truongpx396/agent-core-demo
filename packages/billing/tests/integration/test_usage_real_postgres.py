@@ -289,7 +289,7 @@ class TestAWalletFaultNeverLosesTheEvent:
         ((event_id, rated, cost, rate, markup, kind),) = await fetch(
             appdata_url, "SELECT event_id, credits, cost_usd, credits_per_usd, markup, kind FROM billing_usage_events WHERE tenant = %s", tenant
         )
-        repair = dict(usage_event_id=event_id, actor="system", reason=f"usage ({kind})", pricing=credits.Pricing(cost, rate, markup))
+        repair = {"usage_event_id": event_id, "actor": "system", "reason": f"usage ({kind})", "pricing": credits.Pricing(cost, rate, markup)}
         applied = await credits.debit(tenant, rated, idempotency_key=event_id, **repair)
         again = await credits.debit(tenant, rated, idempotency_key=event_id, **repair)  # the repair run twice: the SAME request
 

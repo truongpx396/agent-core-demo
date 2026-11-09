@@ -330,19 +330,17 @@ class TestTheTurnTraceIsNeverLeftWithoutAnOutput:
         for exc, output, level in cases:
             fake_trace = _FakeTrace()
             monkeypatch.setattr(stream_module, "_open_trace", lambda *a, _t=fake_trace, **k: (_t, []))
-            with pytest.raises(type(exc)):
-                with stream_module._turn_trace("n", "s", "in"):
-                    raise exc
+            with pytest.raises(type(exc)), stream_module._turn_trace("n", "s", "in"):
+                raise exc
             assert fake_trace.updates == [{"output": output, "level": level}], type(exc).__name__
 
     def test_a_trace_the_stream_already_finished_is_not_overwritten(self, monkeypatch):
         fake_trace = _FakeTrace()
         monkeypatch.setattr(stream_module, "_open_trace", lambda *a, **k: (fake_trace, []))
 
-        with pytest.raises(GeneratorExit):
-            with stream_module._turn_trace("n", "s", "in") as (trace, _callbacks):
-                trace.update(output="partial answer [abandoned: stream closed before the turn finished]", level="WARNING")
-                raise GeneratorExit
+        with pytest.raises(GeneratorExit), stream_module._turn_trace("n", "s", "in") as (trace, _callbacks):
+            trace.update(output="partial answer [abandoned: stream closed before the turn finished]", level="WARNING")
+            raise GeneratorExit
 
         assert len(fake_trace.updates) == 1
 
@@ -358,11 +356,10 @@ class TestTheTurnTraceIsNeverLeftWithoutAnOutput:
     def test_without_langfuse_updates_are_a_no_op_not_an_error(self, monkeypatch):
         monkeypatch.setattr(stream_module, "_open_trace", lambda *a, **k: (None, ["metrics-callback"]))
 
-        with pytest.raises(ValueError):
-            with stream_module._turn_trace("n", "s", "in") as (trace, callbacks):
-                assert callbacks == ["metrics-callback"]
-                trace.update(output="anything", level="WARNING")
-                raise ValueError("boom")
+        with pytest.raises(ValueError), stream_module._turn_trace("n", "s", "in") as (trace, callbacks):
+            assert callbacks == ["metrics-callback"]
+            trace.update(output="anything", level="WARNING")
+            raise ValueError("boom")
 
 
 class TestAStreamThatEndsWithWorkPendingButNoApprovalWaiting:
@@ -727,7 +724,7 @@ class TestCompactedEventSignalsHistoryTrimming:
         triggering_question = "question 4?"
         turns = [m for pair in zip(pre_questions, pre_answers, strict=True) for m in pair]
         ceiling = _estimate_tokens(turns)
-        floor = _estimate_tokens(turns[2:] + [HumanMessage(content=triggering_question)])
+        floor = _estimate_tokens([*turns[2:], HumanMessage(content=triggering_question)])
 
         summary_response = AIMessage(content="a summary of the earlier turns")
         final_response = AIMessage(content="A normal, freshly generated final answer.")

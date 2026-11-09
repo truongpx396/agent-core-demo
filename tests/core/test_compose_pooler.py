@@ -17,7 +17,7 @@ HEADROOM_FOR_DIRECT_CLIENTS = 30
 
 
 def _services(path: Path) -> dict:
-    return yaml.safe_load(path.read_text())["services"]
+    return yaml.safe_load(path.read_text(encoding="utf-8"))["services"]
 
 
 def _env(service: dict) -> dict:

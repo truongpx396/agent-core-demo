@@ -28,6 +28,7 @@ import asyncio
 import getpass
 import sys
 import uuid
+from collections.abc import AsyncGenerator
 from contextlib import aclosing
 
 from app.adapters.inbound.channels.cli.auth import (
@@ -58,7 +59,7 @@ def _format_call(name: str, args: dict) -> str:
     return f"{name}({args_str})"
 
 
-async def _render_stream(events) -> bool:
+async def _render_stream(events: AsyncGenerator[dict, None]) -> bool:
     """Render one turn's or resume's events (`stream_turn`/`stream_resume`).
 
     Returns True if the run paused awaiting tool-call approval (the caller
@@ -103,7 +104,7 @@ async def _async_turn(door: Door, text: str, thread_id: str, hitl: bool = False)
     try:
         needs_approval = await _render_stream(door.stream_turn(text, thread_id, require_approval=hitl))
         while needs_approval:
-            decision = input("Approve? [y/N] ").strip().lower() == "y"
+            decision = input("Approve? [y/N] ").strip().lower() == "y"  # noqa: ASYNC250 - nothing else runs while the CLI waits for the person
             needs_approval = await _render_stream(door.stream_resume(thread_id, decision))
     except (asyncio.CancelledError, KeyboardInterrupt, EOFError):
         await _stop_turn(door, thread_id)
@@ -139,7 +140,7 @@ async def async_main(hitl: bool = False) -> None:
         )
         while True:
             try:
-                text = input("you> ").strip()
+                text = input("you> ").strip()  # noqa: ASYNC250 - as above: the turn is over, nothing else is running
             except (EOFError, KeyboardInterrupt):
                 break
             if text.lower() in {"exit", "quit"}:

@@ -93,9 +93,16 @@ on:
   pull_request:
     branches: [main]
 
+# Every job below has a `timeout-minutes`. Without one a stalled job runs to GitHub's 6-hour cap: 28 of the 300 runs since
+# 2026-10-07 had a job past 45 minutes. test-integration did it 20 times (all cancelled, after 78 minutes to the cap; healthy: 10),
+# test and test-live once each (cancelled at the cap; healthy: 5 and 17). Each limit is at least 2.5x the longest healthy run of
+# its job (5 minutes at the least), so a stall fails in minutes and a slow-but-healthy run does not. deepeval is the exception:
+# usually 2-21 minutes, with a slow tail of 56-140 (three of those green), so its limit sits above its slowest green run.
+# Re-measure before tightening one.
 jobs:
   lint:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
@@ -109,6 +116,7 @@ jobs:
   # never starts (spec 008 A7).
   alertmanager-config:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: amtool check-config on the production config
@@ -121,6 +129,7 @@ jobs:
 
   typecheck:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
@@ -131,6 +140,7 @@ jobs:
 
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
@@ -146,6 +156,7 @@ jobs:
   # (The repo's own `test` job above also imports it, by path; this is the job that proves it does not need the rest.)
   billing-package:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
@@ -164,6 +175,7 @@ jobs:
   # value), which is the one behaviour of the image a build cannot show.
   authlimit:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
@@ -202,6 +214,7 @@ jobs:
     # no LLM, so this stays cheap; GH-hosted ubuntu-latest runners already
     # have Docker running, no extra setup step needed.
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
@@ -243,6 +256,7 @@ jobs:
     # `ollama_home` makes this possible at all: a stable HOST directory
     # bind-mounted into a fresh container each run).
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
@@ -356,6 +370,7 @@ jobs:
     # in place, from whatever was on disk before the cache restore ever
     # ran. A plain step-ordered `docker run` avoids that entirely.
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
@@ -527,6 +542,7 @@ jobs:
     # crashes above didn't already turn this job red in run 35230147154;
     # `shell: bash` there is the fix, verified against GitHub's own docs.
     runs-on: ubuntu-latest
+    timeout-minutes: 150
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
@@ -727,6 +743,7 @@ jobs:
 
   docker-build:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - run: docker build -t graph-agent-core:ci .
@@ -792,6 +809,7 @@ jobs:
     # pin-compatibility constraints (garak/requirements-garak.txt) before
     # bumping any of these.
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       contents: read
       security-events: write
@@ -900,6 +918,7 @@ jobs:
     # of whether the gate step failed, same "gate + always-report" shape as
     # the `trivy` job above.
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: read
       security-events: write
@@ -941,6 +960,7 @@ jobs:
     # failed check, so no extra `--hard-fail-on` flag is needed for the
     # gate; SARIF still gets uploaded on failure via `if: always()`.
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: read
       security-events: write
@@ -989,6 +1009,7 @@ jobs:
     # gate (confirmed both a PASSED run's exit 0 and that the flag isn't a
     # no-op) — no extra polling script or third-party Action needed.
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

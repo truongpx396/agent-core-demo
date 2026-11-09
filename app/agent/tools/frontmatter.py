@@ -105,12 +105,12 @@ def load_catalog(
         try:
             record = parse(file)
         except error as exc:
-            logger.warning(f"skipping invalid {kind} file", extra={"error": str(exc)})
+            logger.warning("skipping invalid %s file", kind, extra={"error": str(exc)})
             continue
         name: str = record.name  # type: ignore[attr-defined]  # every catalog record has a name
         if name in catalog:
             logger.warning(
-                f"duplicate {kind} name; keeping the first one found",
+                "duplicate %s name; keeping the first one found", kind,
                 extra={f"{kind}_name": name, "path": str(file)},
             )
             continue

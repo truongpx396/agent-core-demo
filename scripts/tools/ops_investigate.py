@@ -17,6 +17,7 @@ import sys
 import uuid
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from langchain_core.runnables import RunnableConfig
 
 from app.agent.graph.build import build_graph
 from app.core.config import DEFAULT_TENANT
@@ -36,7 +37,7 @@ _LOCAL_CTX: SecurityCtx = {
 
 async def investigate(question: str) -> str:
     graph = build_graph(manifest=OPS_MANIFEST, domain=OPS_DOMAIN_PLUGIN)
-    config = {
+    config: RunnableConfig = {
         "configurable": {
             "thread_id": f"ops-investigate:{uuid.uuid4().hex[:8]}",
             "ctx": _LOCAL_CTX,

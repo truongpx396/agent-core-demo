@@ -5,6 +5,8 @@ Statements only. The cache, the validation of a write (`period`, a negative limi
 (`app/agent/cost/budget_policies.py`, `budgets.check`). A table that does not exist is the one database error this adapter translates, into
 `PolicyTableMissing`: it means the migration has not been applied, and the application reads it as "no overrides" with one warning.
 """
+from decimal import Decimal
+
 from psycopg import errors as pg_errors
 
 from app.platform.sql_store import get_connection
@@ -16,7 +18,7 @@ from app.ports.outbound.cost import (
 )
 
 
-def _override(row) -> Override:
+def _override(row: tuple[str, str, Decimal | None]) -> Override:
     subject, period, limit = row
     return Override(subject, period, None if limit is None else float(limit))
 

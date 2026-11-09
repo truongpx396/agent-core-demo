@@ -94,7 +94,7 @@ def test_the_control_candidates_run_through_the_real_runner_and_the_derived_cont
     assert all(c["ok"] for c in report["controls"])  # the harness tells a perfect router from a useless one on THIS data
     assert [line.split(":")[0] for line in report["tradeoffs"] if "router" in line.split(":")[0]] == ["this router", "random router", "longest-first router"]
     assert report["dataset"]["name"] == "route-domains" and report["dataset"]["items"] == len(
-        [p for p in env.manifest.split_items("test")]
+        list(env.manifest.split_items("test"))
     )
 
 

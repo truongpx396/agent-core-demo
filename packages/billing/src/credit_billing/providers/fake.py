@@ -21,7 +21,7 @@ import json
 import time
 from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, NoReturn
 
 from credit_billing.providers.base import (
     BillingCustomer,
@@ -124,7 +124,7 @@ class FakeProvider:
         if not hmac.compare_digest(claimed, self._mac(stamp, body)) or abs(self._clock() - stamp) > TOLERANCE_SECONDS:
             raise InvalidSignature
 
-    async def create_checkout(self, *args, **kwargs):
+    async def create_checkout(self, *args: Any, **kwargs: Any) -> NoReturn:
         raise NotImplementedError("the fake provider declares no CHECKOUT capability")
 
     async def export_usage(self, customer: BillingCustomer, events: Sequence[UsageEvent]) -> ExportResult:
@@ -151,7 +151,7 @@ class FakeProvider:
         finally:
             self.spans.append((started, time.monotonic()))
 
-    async def read_balance(self, *args, **kwargs):
+    async def read_balance(self, *args: Any, **kwargs: Any) -> NoReturn:
         raise NotImplementedError("the fake provider declares no BALANCE_READ capability")
 
 

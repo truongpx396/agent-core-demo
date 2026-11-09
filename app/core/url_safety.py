@@ -22,6 +22,8 @@ task and a worker thread).
 import asyncio
 import ipaddress
 import socket
+from collections.abc import Sequence
+from typing import Any
 from urllib.parse import urlparse
 
 
@@ -45,7 +47,7 @@ def _hostname_or_refuse(url: str) -> str:
     return parsed.hostname
 
 
-def _check_resolved_addresses(addr_info) -> None:
+def _check_resolved_addresses(addr_info: Sequence[tuple[Any, Any, Any, Any, tuple]]) -> None:
     """The address half: refuse unless EVERY resolved record is globally
     routable. Shared by both entry points so they cannot disagree."""
     for _family, _type, _proto, _canonname, sockaddr in addr_info:

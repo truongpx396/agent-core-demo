@@ -58,7 +58,7 @@ import re
 import time
 from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, NoReturn
 
 import httpx
 
@@ -224,7 +224,7 @@ class StripeProvider:
     async def export_usage(self, customer: BillingCustomer, events: Sequence[UsageEvent]) -> ExportResult:
         raise NotImplementedError("the stripe adapter declares no USAGE_EXPORT capability (spec D16: prepaid packs)")
 
-    async def read_balance(self, *args, **kwargs):
+    async def read_balance(self, *args: Any, **kwargs: Any) -> NoReturn:
         raise NotImplementedError("the stripe adapter declares no BALANCE_READ capability")
 
 

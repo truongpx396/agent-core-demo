@@ -50,6 +50,7 @@ import httpx
 import jwt
 
 from app.core import metrics
+from app.core.config import Settings
 
 logger = logging.getLogger(__name__)
 
@@ -84,7 +85,7 @@ def _is_loopback(host: str) -> bool:
         return False
 
 
-def check_settings(s) -> None:
+def check_settings(s: Settings) -> None:
     """Raise `AuthConfigError` if the API cannot verify identities as configured. Header mode needs nothing."""
     if s.auth_mode != "identity":
         return

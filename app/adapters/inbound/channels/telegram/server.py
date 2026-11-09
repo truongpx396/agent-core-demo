@@ -88,7 +88,7 @@ def build_app(inbox: Inbox, linker: LinkFlow | None, *, webhook: bool) -> FastAP
                 return Response(status_code=400)
             try:
                 await inbox.push(update)
-            except Exception:  # noqa: BLE001 - Redis down: a 503 makes Telegram redeliver, which is the right outcome
+            except Exception:  # Redis down: a 503 makes Telegram redeliver, which is the right outcome
                 logger.warning("telegram_webhook_push_failed", exc_info=True)
                 metrics.channel_telegram_webhook_total.labels(outcome="unavailable").inc()
                 return Response(status_code=503)

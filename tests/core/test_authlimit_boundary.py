@@ -13,12 +13,12 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
 SERVICE = REPO / "services" / "authlimit"
-GO_FILES = [p for p in SERVICE.rglob("*.go")]
+GO_FILES = list(SERVICE.rglob("*.go"))
 NON_TEST_GO = [p for p in GO_FILES if not p.name.endswith("_test.go")]
 
 
 def _imports(path: Path) -> list[str]:
-    text = path.read_text()
+    text = path.read_text(encoding="utf-8")
     block = re.findall(r"import\s*\((.*?)\)", text, re.DOTALL)
     single = re.findall(r'^import\s+(?:\w+\s+)?"([^"]+)"', text, re.MULTILINE)
     return single + [m for b in block for m in re.findall(r'"([^"]+)"', b)]
@@ -41,7 +41,7 @@ def test_the_services_go_code_imports_only_itself_the_standard_library_and_third
 
 def _code_lines(path: Path) -> list[str]:
     """The lines of a Go file that are not comments (comments may name anything; code may not open it)."""
-    return [line for line in path.read_text().splitlines() if not line.lstrip().startswith("//")]
+    return [line for line in path.read_text(encoding="utf-8").splitlines() if not line.lstrip().startswith("//")]
 
 
 def test_the_services_runtime_code_opens_no_path_outside_its_own_module():

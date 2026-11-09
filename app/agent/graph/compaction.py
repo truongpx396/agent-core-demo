@@ -11,6 +11,7 @@ Depends only on `graph/state.py` (for `HISTORY_TOKEN_CEILING`/`HISTORY_TOKEN_FLO
 `graph/agent_node.py`.
 """
 import logging
+from collections.abc import Awaitable, Callable
 from typing import cast
 
 import tiktoken
@@ -33,6 +34,7 @@ from app.agent.graph.state import HISTORY_TOKEN_CEILING, HISTORY_TOKEN_FLOOR, St
 from app.agent.graph.utils import without_tools
 from app.core import gateway, metrics
 from app.core.config import CHAT_MODEL
+from app.ports.outbound.llm import ChatModel
 
 logger = logging.getLogger(__name__)
 
@@ -144,11 +146,11 @@ def _compaction_marker_message(turns_dropped: int, *, summarized: bool) -> Syste
 
 
 def make_compact_history_node(
-    llm,
+    llm: ChatModel,
     ceiling: int = HISTORY_TOKEN_CEILING,
     floor: int = HISTORY_TOKEN_FLOOR,
     model_alias: str = CHAT_MODEL,
-):
+) -> Callable[..., Awaitable[dict]]:
     """Factory, same rationale as make_agent_node/make_suggest_followups_node:
     needs an LLM client to turn discarded turns into a running summary
     (AR-015a) instead of just discarding them.

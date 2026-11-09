@@ -12,9 +12,13 @@ the SDK's exceptions LOOK like is the adapter's (`app/adapters/outbound/litellm/
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import Any, Protocol, TypeAlias
 
 from app.ports.slot import Slot
+
+# A LangChain chat model bound to the domain's tools: what `ChatModels.build` returns. `Any` on purpose (the concrete class is the
+# adapter's, and a test's fake need not subclass it); named so that a signature says what it takes.
+ChatModel: TypeAlias = Any
 
 
 @dataclass(frozen=True)
@@ -47,7 +51,7 @@ class LlmFailures(Protocol):
 
 
 class ChatModels(Protocol):
-    def build(self, tools: list, *, model: str, base_url: str, api_key: str) -> Any:
+    def build(self, tools: list, *, model: str, base_url: str, api_key: str) -> ChatModel:
         """A chat model for `model` at `base_url`, bound to `tools` (already shaped as the caller wants them bound). Streams token usage, so the
         per-turn token budget and the traces see real numbers."""
         ...
