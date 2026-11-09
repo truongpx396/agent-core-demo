@@ -4,7 +4,7 @@
 generated SQL, every query explicitly `WHERE tenant = %s`, reusing
 sql_store's pooled `appdata` connection.
 """
-from app.platform.sql_store import get_connection
+from app.platform.sql_store import fetch_dict, fetch_dicts, fetch_row, get_connection
 
 
 async def create_ticket(
@@ -47,7 +47,7 @@ async def create_ticket(
         cur = await conn.execute(
             "SELECT id FROM support_tickets WHERE tool_call_id = %s", [tool_call_id]
         )
-        (ticket_id,) = await cur.fetchone()
+        (ticket_id,) = await fetch_row(cur)
         return int(ticket_id)
 
 
@@ -78,9 +78,7 @@ async def get_ticket(tenant: str, ticket_id: int) -> dict | None:
     )
     async with get_connection() as conn:
         cur = await conn.execute(sql, [tenant, ticket_id])
-        columns = [desc.name for desc in cur.description]
-        row = await cur.fetchone()
-        return dict(zip(columns, row, strict=True)) if row else None
+        return await fetch_dict(cur)
 
 
 async def list_tickets_for_requester(tenant: str, requester: str, limit: int = 10) -> list[dict]:
@@ -94,9 +92,7 @@ async def list_tickets_for_requester(tenant: str, requester: str, limit: int = 1
     )
     async with get_connection() as conn:
         cur = await conn.execute(sql, [tenant, requester, limit])
-        columns = [desc.name for desc in cur.description]
-        rows = await cur.fetchall()
-        return [dict(zip(columns, row, strict=True)) for row in rows]
+        return await fetch_dicts(cur)
 
 
 async def escalate_ticket(tenant: str, ticket_id: int, reason: str) -> bool:

@@ -5,7 +5,7 @@ It is not the usage table (that one no-ops on a zero-token or rejected turn and 
 vanish from the switcher) and not the checkpointer's `checkpoints` table (no tenant or principal column to scope by, and a title parsed out of
 its blob format would be fragile). Statements only: whether a write may fail a turn is the application's call.
 """
-from app.platform.sql_store import get_connection
+from app.platform.sql_store import fetch_dicts, get_connection
 
 
 class PgSessionStore:
@@ -51,6 +51,4 @@ class PgSessionStore:
                 "WHERE tenant = %s AND principal = %s AND domain = %s ORDER BY last_active_at DESC",
                 (tenant, principal, domain),
             )
-            columns = [desc.name for desc in cur.description]
-            rows = await cur.fetchall()
-            return [dict(zip(columns, row, strict=True)) for row in rows]
+            return await fetch_dicts(cur)

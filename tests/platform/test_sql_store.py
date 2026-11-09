@@ -16,6 +16,8 @@ pattern for exercising async code from a plain `def test_...`.
 import asyncio
 from contextlib import asynccontextmanager
 
+import pytest
+
 from app.platform import sql_store
 
 
@@ -259,3 +261,43 @@ class TestConnectionPool:
 
         assert len(created) == 1
         assert all(r == "a-connection" for r in results)
+
+
+class _Cursor:
+    """What `fetch_dicts`/`fetch_dict`/`fetch_row` read: `description` (None when the statement had no result set), `fetchone`, `fetchall`."""
+
+    def __init__(self, rows, columns=("id", "name")):
+        self._rows = list(rows)
+        self.description = None if columns is None else [type("Col", (), {"name": c}) for c in columns]
+
+    async def fetchall(self):
+        return self._rows
+
+    async def fetchone(self):
+        return self._rows[0] if self._rows else None
+
+
+async def test_fetch_dicts_keys_every_row_by_column_name():
+    assert await sql_store.fetch_dicts(_Cursor([(1, "a"), (2, "b")])) == [{"id": 1, "name": "a"}, {"id": 2, "name": "b"}]
+    assert await sql_store.fetch_dicts(_Cursor([])) == []
+
+
+async def test_fetch_dict_is_the_first_row_or_none():
+    assert await sql_store.fetch_dict(_Cursor([(1, "a"), (2, "b")])) == {"id": 1, "name": "a"}
+    assert await sql_store.fetch_dict(_Cursor([])) is None
+
+
+async def test_fetch_row_returns_the_row():
+    assert await sql_store.fetch_row(_Cursor([(7,)], columns=("id",))) == (7,)
+
+
+async def test_a_statement_with_no_result_set_is_named_rather_than_a_typeerror():
+    """psycopg's `description` is None for an INSERT without RETURNING. Each call site used to iterate it and die with `'NoneType' object is not iterable`."""
+    for read in (sql_store.fetch_dicts, sql_store.fetch_dict):
+        with pytest.raises(RuntimeError, match="no result set"):
+            await read(_Cursor([], columns=None))
+
+
+async def test_a_query_that_must_return_a_row_and_returns_none_is_named_rather_than_a_typeerror():
+    with pytest.raises(RuntimeError, match="returned none"):
+        await sql_store.fetch_row(_Cursor([]))

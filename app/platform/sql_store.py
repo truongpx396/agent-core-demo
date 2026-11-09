@@ -15,6 +15,8 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
 
+from psycopg import AsyncConnection, AsyncCursor
+from psycopg.rows import TupleRow
 from psycopg_pool import AsyncConnectionPool
 
 from app.core.config import APPDATA_DATABASE_URL, APPDATA_POOL_MAX_SIZE
@@ -72,7 +74,7 @@ async def _get_pool() -> AsyncConnectionPool:
 
 
 @asynccontextmanager
-async def get_connection() -> AsyncIterator[Any]:  # psycopg types `cursor.description` as Optional; callers read it after a SELECT
+async def get_connection() -> AsyncIterator[AsyncConnection[TupleRow]]:
     """A pooled connection, checked out and returned (not closed) on exit. It commits on normal exit, which every
     single-statement writer here (`usage_events._insert`, the budget holds) depends on. It is its own
     `@asynccontextmanager` so the pool is only looked up (and lazily opened) from inside a real `async with`.
@@ -92,6 +94,36 @@ async def get_connection() -> AsyncIterator[Any]:  # psycopg types `cursor.descr
     pool = await _get_pool()
     async with pool.connection() as conn:
         yield conn
+
+
+# psycopg types `cursor.description` and `fetchone()` as Optional: a statement with no result set has no description, and a query can
+# return no row. Every caller below reads them straight after a SELECT or an `INSERT ... RETURNING` that does return rows, so the
+# None is a bug, not an empty result; it is raised here, once, where each call site used to fail with an anonymous TypeError.
+def _column_names(cur: AsyncCursor[TupleRow]) -> list[str]:
+    if cur.description is None:
+        raise RuntimeError("the statement returned no result set; only a SELECT or `INSERT ... RETURNING` has columns to read")
+    return [column.name for column in cur.description]
+
+
+async def fetch_dicts(cur: AsyncCursor[TupleRow]) -> list[dict[str, Any]]:
+    """Every row of a SELECT as a dict keyed by column name."""
+    columns = _column_names(cur)
+    return [dict(zip(columns, row, strict=True)) for row in await cur.fetchall()]
+
+
+async def fetch_dict(cur: AsyncCursor[TupleRow]) -> dict[str, Any] | None:
+    """The first row of a SELECT as a dict keyed by column name, or None when it returned no rows."""
+    columns = _column_names(cur)
+    row = await cur.fetchone()
+    return dict(zip(columns, row, strict=True)) if row else None
+
+
+async def fetch_row(cur: AsyncCursor[TupleRow]) -> TupleRow:
+    """The one row a statement that always returns one gives (an aggregate, `INSERT ... RETURNING`, `ON CONFLICT ... RETURNING`)."""
+    row = await cur.fetchone()
+    if row is None:
+        raise RuntimeError("the statement was expected to return one row and returned none")
+    return row
 
 
 async def close_pool() -> None:
@@ -142,6 +174,4 @@ async def query_employees(
 
     async with get_connection() as conn:
         cur = await conn.execute(sql, params)
-        columns = [desc.name for desc in cur.description]
-        rows = await cur.fetchall()
-        return [dict(zip(columns, row, strict=True)) for row in rows]
+        return await fetch_dicts(cur)

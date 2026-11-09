@@ -14,7 +14,7 @@ from decimal import Decimal
 from psycopg import errors as pg_errors
 
 from app.billing_integration import port as billing_port
-from app.platform.sql_store import get_connection
+from app.platform.sql_store import fetch_row, get_connection
 from app.ports.outbound.cost import (
     EventsByTenantDay,
     UsageEventRow,
@@ -94,14 +94,14 @@ class PgUsageEventStore:
         )
         async with get_connection() as conn:
             cur = await conn.execute(sql, params)
-            total_tokens, total_cost = await cur.fetchone()
+            total_tokens, total_cost = await fetch_row(cur)
         return UsageTotals(int(total_tokens), float(total_cost))
 
     async def delete_older_than(self, *, days: int, limit: int) -> int:
         async with get_connection() as conn:
             await conn.execute(_ALLOW_DELETE)
             cur = await conn.execute(_BATCH, {"days": days, "n": limit})
-            (gone,) = await cur.fetchone()
+            (gone,) = await fetch_row(cur)
         return int(gone)
 
     async def by_tenant_day(self, window: Window) -> EventsByTenantDay:
