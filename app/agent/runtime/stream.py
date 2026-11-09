@@ -44,7 +44,7 @@ from app.core.config import (
 from app.core.errors import (
     ErrorCode,
     ErrorEnvelope,
-    TurnCancelled,
+    TurnCancelledError,
     error_origin,
     internal_error_envelope,
 )
@@ -149,7 +149,7 @@ async def _iterate_with_timeout(aiter: AsyncIterator[Any], timeout_seconds: floa
 
     `cancel_check` (optional, `Callable[[], Awaitable[bool]]`) is polled
     once per iteration, before waiting on the next event; if it returns
-    True, raises `TurnCancelled`. Cancellation only takes effect at the
+    True, raises `TurnCancelledError`. Cancellation only takes effect at the
     next event boundary, not mid-flight on an already-running tool/model
     call. Wired by `app/adapters/inbound/workers/agent_worker.py` to a Redis cancel flag
     (`POST /chat/cancel` → `streams.py::is_cancelled`); other callers pass
@@ -162,7 +162,7 @@ async def _iterate_with_timeout(aiter: AsyncIterator[Any], timeout_seconds: floa
         if remaining <= 0:
             raise TimeoutError(f"Request exceeded {timeout_seconds}s timeout")
         if cancel_check is not None and await cancel_check():
-            raise TurnCancelled()
+            raise TurnCancelledError()
         try:
             yield await asyncio.wait_for(aiter.__anext__(), timeout=remaining)
         except StopAsyncIteration:
@@ -296,7 +296,7 @@ async def _run_graph_stream(graph: CompiledStateGraph, graph_input: dict | Comma
     - `{"type": "citations", "items": [...]}` / `{"type": "followups", "items": [...]}`: just before "done",
       when the answer cited something / suggest_followups (pattern 27) produced any.
     - `{"type": "done"}`: the turn finished.
-    - `{"type": "error", "content": "<message>"}`: also a user-initiated stop (TurnCancelled), a terminal
+    - `{"type": "error", "content": "<message>"}`: also a user-initiated stop (TurnCancelledError), a terminal
       envelope like any error (pattern 30).
 
     Handles Langfuse trace update/flush and turn metrics for both entry points. `cancel_check` (optional)
@@ -421,7 +421,7 @@ async def _run_graph_stream(graph: CompiledStateGraph, graph_input: dict | Comma
                 if output.get("messages"):
                     yield {"type": "compacted"}
 
-    except TurnCancelled:
+    except TurnCancelledError:
         # Checked before the generic except below — a deliberate stop gets
         # its own ErrorCode rather than ErrorCode.INTERNAL.
         trace.update(
@@ -436,7 +436,7 @@ async def _run_graph_stream(graph: CompiledStateGraph, graph_input: dict | Comma
         terminal_event = {"type": "error", "content": envelope.message, **envelope.to_dict()}
     except asyncio.CancelledError:
         # Real asyncio task cancellation (ASGI teardown on disconnect, an
-        # outer wait_for timing out, etc.) — distinct from TurnCancelled's
+        # outer wait_for timing out, etc.) — distinct from TurnCancelledError's
         # cooperative Redis-flag poll. CancelledError is a BaseException
         # (Python 3.8+) specifically so `except Exception` below can't
         # swallow it; without this branch a real cancellation skipped both

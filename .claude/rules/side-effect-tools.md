@@ -26,7 +26,7 @@ Constitution Principles I–IV apply. Use `app/domains/support/tools.py::create_
    arun_with_timeout(_impl, ...))`. Put the real work in `_<tool>_impl`.
 4. Take `tenant`/`principal` from `ctx`, never from an argument the model can set.
 5. Never catch the `TimeoutError` from `arun_with_timeout` and retry in the tool body.
-   `idempotent()` turns it into `MutatingToolTimedOut`; a retry there mints a new
+   `idempotent()` turns it into `MutatingToolTimedOutError`; a retry there mints a new
    `tool_call_id` that dedup cannot see. Don't add a generic retry around a write.
 6. A cron or other unattended job calls the `_impl`/store function directly; it never invokes the
    tool through the agent loop (the approval gate has no unattended bypass, by design).

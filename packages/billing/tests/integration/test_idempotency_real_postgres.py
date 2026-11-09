@@ -102,7 +102,7 @@ async def test_a_grant_key_reused_with_one_field_changed_is_refused_naming_that_
     first = await grant("acme")
     before = await wallet.snapshot()
 
-    with pytest.raises(credits.IdempotencyConflict) as raised:
+    with pytest.raises(credits.IdempotencyConflictError) as raised:
         await grant("acme", **GRANT_CHANGE[field])
 
     assert set(raised.value.differences) == {field}, "only the field that was changed"
@@ -117,7 +117,7 @@ async def test_a_debit_key_reused_with_one_field_changed_is_refused_naming_that_
     await debit("acme")
     before = await wallet.snapshot()
 
-    with pytest.raises(credits.IdempotencyConflict) as raised:
+    with pytest.raises(credits.IdempotencyConflictError) as raised:
         await debit("acme", **DEBIT_CHANGE[field])
 
     assert set(raised.value.differences) == {field}
@@ -150,11 +150,11 @@ async def test_a_clawback_and_an_adjustment_are_judged_like_a_debit_and_a_grant(
     async with credits.get_connection() as conn:
         again = await credits.clawback_in(conn, "acme", 5, idempotency_key="cb", actor="webhook:stripe", reason="payment_refunded")
         assert again.status == "duplicate"
-        with pytest.raises(credits.IdempotencyConflict) as clawback:
+        with pytest.raises(credits.IdempotencyConflictError) as clawback:
             await credits.clawback_in(conn, "acme", 6, idempotency_key="cb", actor="webhook:stripe", reason="payment_refunded")
-        with pytest.raises(credits.IdempotencyConflict) as negative:
+        with pytest.raises(credits.IdempotencyConflictError) as negative:
             await credits.adjust_in(conn, "acme", D("-9"), idempotency_key="adj-", actor="operator:a", reason="fix")
-        with pytest.raises(credits.IdempotencyConflict) as positive:
+        with pytest.raises(credits.IdempotencyConflictError) as positive:
             await credits.adjust_in(conn, "acme", D("5"), idempotency_key="adj+", actor="operator:a", reason="fix")
 
     assert [set(e.value.differences) for e in (clawback, negative, positive)] == [{"amount"}] * 3
@@ -165,7 +165,7 @@ async def test_the_kind_is_always_compared_even_when_nothing_else_is(wallet):
     await opened(wallet)
     await grant("acme", key="K", amount=D("5"), source="manual", expires_at=None, provider=None, external_ref=None, reason="r", actor="a")
 
-    with pytest.raises(credits.IdempotencyConflict) as raised:
+    with pytest.raises(credits.IdempotencyConflictError) as raised:
         await debit("acme", key="K", amount=D("5"), reason="r", actor="a", usage_event_id=None, pricing=None, compare=frozenset())
 
     assert set(raised.value.differences) == {"kind"} and raised.value.differences["kind"] == ("grant", "debit")
@@ -176,7 +176,7 @@ async def test_a_narrowed_comparison_ignores_what_it_leaves_out_and_still_catche
     narrowed = frozenset(credits.GRANT_FIELDS) - {"expires_at"}
 
     later = await grant("acme", compare=narrowed, expires_at=EXPIRES + timedelta(hours=1))
-    with pytest.raises(credits.IdempotencyConflict) as raised:
+    with pytest.raises(credits.IdempotencyConflictError) as raised:
         await grant("acme", compare=narrowed, amount=D("600"), expires_at=EXPIRES + timedelta(hours=1))
 
     assert later.status == "duplicate", "the expiry is not part of what this caller means"
@@ -320,7 +320,7 @@ async def test_a_database_made_from_the_old_script_is_upgraded_by_migrate_keepin
         fresh = await grant("acme", key="new-key", amount=D("7"), source="manual", expires_at=None, provider=None, external_ref=None)
         assert replay.status == "duplicate" and fresh.status == "applied"
         assert (await database.scalar("SELECT request->>'amount' FROM credit_transactions WHERE idempotency_key = 'new-key'")) == "7.000000"
-        with pytest.raises(credits.IdempotencyConflict):
+        with pytest.raises(credits.IdempotencyConflictError):
             await grant("acme", key="new-key", amount=D("8"), source="manual", expires_at=None, provider=None, external_ref=None)
     finally:
         await database.drop()
@@ -339,7 +339,7 @@ async def test_two_simultaneous_first_uses_of_one_key_with_different_requests_ha
         )
 
         winners = [o for o in outcomes if isinstance(o, credits.Applied) and o.status == "applied"]
-        losers = [o for o in outcomes if isinstance(o, credits.IdempotencyConflict)]
+        losers = [o for o in outcomes if isinstance(o, credits.IdempotencyConflictError)]
         assert len(winners) == 1 and len(losers) == 1, f"round {round_}: {outcomes}"
         assert await wallet.scalar("SELECT count(*) FROM credit_transactions WHERE tenant = 'acme' AND idempotency_key = %s", key) == 1
         stored = await wallet.scalar("SELECT request->>'amount' FROM credit_transactions WHERE tenant = 'acme' AND idempotency_key = %s", key)
@@ -357,7 +357,7 @@ async def test_the_same_key_in_two_tenants_never_conflicts_and_an_error_never_sh
     await grant("acme", key="K", amount=D("500"), reason="acme-private-ticket")
     await grant("globex", key="K", amount=D("777"), reason="globex-private-ticket")
 
-    with pytest.raises(credits.IdempotencyConflict) as raised:
+    with pytest.raises(credits.IdempotencyConflictError) as raised:
         await grant("acme", key="K", amount=D("600"), reason="acme-private-ticket")
 
     text = str(raised.value) + repr(raised.value.differences)
@@ -369,7 +369,7 @@ async def test_the_same_key_in_two_tenants_never_conflicts_and_an_error_never_sh
 async def test_the_wallet_stays_consistent_after_every_refusal_in_this_file(wallet):
     await grant("acme")
     for change in GRANT_CHANGE.values():
-        with pytest.raises(credits.IdempotencyConflict):
+        with pytest.raises(credits.IdempotencyConflictError):
             await grant("acme", **change)
 
     assert await credits.verify("acme") == []

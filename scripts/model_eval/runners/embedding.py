@@ -23,7 +23,7 @@ from scripts.model_eval import metrics as m
 from scripts.model_eval.candidates import Candidate
 from scripts.model_eval.report import RunOutput
 from scripts.model_eval.runners.base import (
-    PrerequisiteMissing,
+    PrerequisiteMissingError,
     RunSettings,
     latest_version,
     percentiles,
@@ -95,7 +95,7 @@ class GatewayEmbedding:
             from app.core.config import EMBED_MODEL
             from app.ports.outbound import models as model_ports
         except Exception as exc:  # importing the app needs its settings; any failure means the gateway path is unavailable
-            raise PrerequisiteMissing(f"cannot import the app's embedding client ({type(exc).__name__}: {exc})") from exc
+            raise PrerequisiteMissingError(f"cannot import the app's embedding client ({type(exc).__name__}: {exc})") from exc
         bootstrap.wire()
         self._client = app_embeddings.embeddings
         self._batch = getattr(app_embeddings, "EMBED_BATCH_SIZE", INGEST_BATCH)
@@ -103,7 +103,7 @@ class GatewayEmbedding:
         try:
             self._loop.run_until_complete(self._client.aembed_query("probe"))
         except Exception as exc:  # connection refused, auth, unknown alias ...: all mean the gateway cannot serve embeddings
-            raise PrerequisiteMissing(
+            raise PrerequisiteMissingError(
                 f"the gateway did not answer an embedding request ({type(exc).__name__}); is the stack up (`make up`) and OPENAI_API_BASE correct?"
             ) from exc
         resolved = self._loop.run_until_complete(model_ports.model_catalog.get().resolve(EMBED_MODEL))
@@ -138,7 +138,7 @@ class ServiceEmbedding:
         try:
             self._post(["probe"])
         except Exception as exc:  # unreachable, 404 (model not served) or 503 (not ready) all mean this path is unavailable
-            raise PrerequisiteMissing(f"the ML service did not serve embeddings for {self._model!r} ({type(exc).__name__}: {exc})") from exc
+            raise PrerequisiteMissingError(f"the ML service did not serve embeddings for {self._model!r} ({type(exc).__name__}: {exc})") from exc
 
     def _post(self, texts: Sequence[str]) -> np.ndarray:
         response = self._client.post("/v1/embeddings", json={"model": self._model, "input": list(texts), "encoding_format": "float"})
@@ -178,7 +178,7 @@ class InProcessEmbedding:
             model_path = hf_hub_download(src.repo, src.file, revision=src.revision)
             tokenizer_path = hf_hub_download(src.repo, "tokenizer.json", revision=src.revision)
         except Exception as exc:  # offline and not cached, or a wrong repo/file: the model is not available to load
-            raise PrerequisiteMissing(f"cannot fetch {src.repo}@{src.revision[:10]}/{src.file} ({type(exc).__name__}); not cached and no network?") from exc
+            raise PrerequisiteMissingError(f"cannot fetch {src.repo}@{src.revision[:10]}/{src.file} ({type(exc).__name__}); not cached and no network?") from exc
         options = ort.SessionOptions()
         if threads:
             options.intra_op_num_threads = threads
@@ -216,7 +216,7 @@ def build_backend(candidate: Candidate, settings: RunSettings, via: str | None =
         return ServiceEmbedding(candidate)
     if path == "inprocess":
         return InProcessEmbedding(candidate, settings.threads)
-    raise PrerequisiteMissing(f"unknown path {path!r}")
+    raise PrerequisiteMissingError(f"unknown path {path!r}")
 
 
 # ---------------------------------------------------------------------------------------------------------------------------------

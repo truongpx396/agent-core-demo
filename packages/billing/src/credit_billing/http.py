@@ -30,8 +30,8 @@ from fastapi.responses import JSONResponse
 from credit_billing import metrics, providers, webhooks
 from credit_billing.providers.base import (
     BillingProvider,
-    InvalidPayload,
-    InvalidSignature,
+    InvalidPayloadError,
+    InvalidSignatureError,
 )
 from credit_billing.settings import (
     BILLING_PROVIDERS,
@@ -66,22 +66,22 @@ def _count(provider: str, outcome: str) -> None:
     metrics.agent_billing_webhook_total.labels(provider=provider, outcome=outcome).inc()
 
 
-class _TooLarge(Exception):
+class _TooLargeError(Exception):
     pass
 
 
 async def _read_capped(request: Request, cap: int) -> bytes:
-    """The body, or `_TooLarge` as soon as it is known to exceed `cap`. A declared Content-Length over the cap is
+    """The body, or `_TooLargeError` as soon as it is known to exceed `cap`. A declared Content-Length over the cap is
     refused without reading a byte; an undeclared or understated one is cut off while streaming."""
     declared = request.headers.get("content-length")
     if declared and declared.isdigit() and int(declared) > cap:
-        raise _TooLarge
+        raise _TooLargeError
     chunks: list[bytes] = []
     size = 0
     async for chunk in request.stream():
         size += len(chunk)
         if size > cap:
-            raise _TooLarge
+            raise _TooLargeError
         chunks.append(chunk)
     return b"".join(chunks)
 
@@ -95,17 +95,17 @@ async def receive_webhook(provider: str, request: Request) -> JSONResponse:
 
     try:
         body = await _read_capped(request, BILLING_WEBHOOK_MAX_BODY_BYTES)
-    except _TooLarge:
+    except _TooLargeError:
         _count(provider, "too_large")
         return JSONResponse({"detail": "Payload Too Large"}, status_code=413)
 
     try:
         events = adapter.parse_webhook(dict(request.headers), body)
-    except InvalidSignature:
+    except InvalidSignatureError:
         _count(provider, "invalid_signature")
         logger.warning("billing_webhook_invalid_signature", extra={"provider": provider})
         return JSONResponse({"detail": "Bad Request"}, status_code=400)
-    except InvalidPayload:
+    except InvalidPayloadError:
         _count(provider, "invalid_payload")
         return JSONResponse({"detail": "Bad Request"}, status_code=400)
 

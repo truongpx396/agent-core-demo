@@ -28,7 +28,7 @@ def test_a_baseline_round_trips_with_its_per_item_values(tmp_path):
 
 def test_a_baseline_is_immutable_unless_forced(tmp_path):
     baselines.write_baseline(tmp_path, _record(), _data())
-    with pytest.raises(baselines.BaselineExists, match="immutable"):
+    with pytest.raises(baselines.BaselineExistsError, match="immutable"):
         baselines.write_baseline(tmp_path, _record(), _data())
     baselines.write_baseline(tmp_path, _record(), _data(), force=True)
 
@@ -41,9 +41,9 @@ def test_a_baseline_on_an_unreviewed_dataset_is_provisional(tmp_path):
 def test_a_baseline_from_another_dataset_version_is_refused_not_warned_about(tmp_path):
     baseline = baselines.read_baseline(baselines.write_baseline(tmp_path, _record(version="v1"), _data()))
     baselines.check_comparable(baseline, "retrieval-domains", "v1")
-    with pytest.raises(baselines.BaselineMismatch, match="different evaluations"):
+    with pytest.raises(baselines.BaselineMismatchError, match="different evaluations"):
         baselines.check_comparable(baseline, "retrieval-domains", "v2")
-    with pytest.raises(baselines.BaselineMismatch):
+    with pytest.raises(baselines.BaselineMismatchError):
         baselines.check_comparable(baseline, "other-set", "v1")
 
 
@@ -62,7 +62,7 @@ def test_a_record_from_a_newer_schema_is_refused_rather_than_misread(tmp_path):
     record = json.loads(path.read_text())
     record["schema_version"] = 99
     path.write_text(json.dumps(record))
-    with pytest.raises(baselines.BaselineMismatch, match="not understood"):
+    with pytest.raises(baselines.BaselineMismatchError, match="not understood"):
         baselines.read_baseline(path)
 
 

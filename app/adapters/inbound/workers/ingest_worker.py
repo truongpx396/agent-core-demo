@@ -58,7 +58,7 @@ from app.core.config import (
     WORKER_RECLAIM_INTERVAL_SECONDS,
 )
 from app.ingestion import ingestor
-from app.ingestion.extractors import EXTRACTORS_BY_SUFFIX, ExtractionFailed
+from app.ingestion.extractors import EXTRACTORS_BY_SUFFIX, ExtractionFailedError
 from app.platform.logging_config import bind_request_id, configure_logging
 from app.platform.profiling import start_profiling
 from app.platform.redis_client import StreamReadResponse, get_client
@@ -114,7 +114,7 @@ async def process_job(client: redis.Redis, entry_id: str, fields: dict) -> None:
             suffix = Path(filename).suffix.lower()
             extractor = EXTRACTORS_BY_SUFFIX.get(suffix)
             if extractor is None:
-                raise ExtractionFailed(
+                raise ExtractionFailedError(
                     f"unsupported file type {suffix!r} — only "
                     f"{sorted(EXTRACTORS_BY_SUFFIX)} are supported"
                 )

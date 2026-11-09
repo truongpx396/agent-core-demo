@@ -210,7 +210,7 @@ async def _apply(
                 # layers missed (the inbox claim and the payment's lot check), so this is defence in depth that must never fail on its own.
                 compare=frozenset(credits.GRANT_FIELDS) - {"expires_at"},
             )
-        except credits.IdempotencyConflict as exc:
+        except credits.IdempotencyConflictError as exc:
             # The same provider event now asks for something different from what it was granted (the catalogue changed between two
             # attempts). Retrying cannot fix it and a second grant would be wrong, so it is a quarantine for a person, not a `failed`.
             logger.warning(

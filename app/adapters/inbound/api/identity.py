@@ -4,7 +4,7 @@ HTTP; this adds:
 - one verifier per process, built on first use from the settings (keys address, cache seconds, grace) and
   closed at shutdown. Its HTTP client belongs to the loop that serves requests, so it is made there, not at
   import.
-- `AuthRefused`, raised by `get_ctx` and turned by `auth_refused_handler` into the envelope the front door
+- `AuthRefusedError`, raised by `get_ctx` and turned by `auth_refused_handler` into the envelope the front door
   answers with (`{code, message, details}`, tests/core/test_error_codes_authlimit.py): a 401 carries
   `WWW-Authenticate: Bearer realm="agent-core-api"`, a 503 `Retry-After: 30`. The message never says why (a
   caller learns it is not authenticated, not whether its identity was expired or forged; the counted outcome
@@ -62,7 +62,7 @@ async def close() -> None:
         await keys.aclose()
 
 
-class AuthRefused(Exception):
+class AuthRefusedError(Exception):
     """A request the API will not serve because it does not carry a valid identity (401), or because it cannot be checked right now (503)."""
 
     def __init__(self, code: ErrorCode) -> None:
@@ -70,13 +70,13 @@ class AuthRefused(Exception):
         self.code = code
 
 
-def refusal_for(refusal: Refusal) -> AuthRefused:
+def refusal_for(refusal: Refusal) -> AuthRefusedError:
     """The caller's fault is a 401; ours (the keys cannot be confirmed current) is a 503 the caller may retry."""
-    return AuthRefused(ErrorCode.AUTH_UNAVAILABLE if refusal.unavailable else ErrorCode.UNAUTHENTICATED)
+    return AuthRefusedError(ErrorCode.AUTH_UNAVAILABLE if refusal.unavailable else ErrorCode.UNAUTHENTICATED)
 
 
 async def auth_refused_handler(_request: Request, exc: Exception) -> JSONResponse:
-    assert isinstance(exc, AuthRefused)  # registered for this class only; the handler type is Exception because Starlette's is
+    assert isinstance(exc, AuthRefusedError)  # registered for this class only; the handler type is Exception because Starlette's is
     status, message = AUTH_ERRORS[exc.code]
     headers = {"WWW-Authenticate": f'Bearer realm="{REALM}"'} if status == 401 else {"Retry-After": str(RETRY_AFTER_SECONDS)}
     return JSONResponse(ErrorEnvelope(exc.code, message, {}).to_dict(), status_code=status, headers=headers)

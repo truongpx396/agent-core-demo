@@ -158,7 +158,7 @@ def test_check_exits_1_exactly_when_a_shipped_script_is_pending_or_changed(no_da
 
 def test_a_migration_that_did_not_complete_exits_4_with_one_error_line_and_no_traceback(no_database, monkeypatch, capsys):
     async def times_out(*, lock_timeout_seconds):
-        raise migrate.MigrationLockTimeout("20-credit-wallet.sql", lock_timeout_seconds)
+        raise migrate.MigrationLockTimeoutError("20-credit-wallet.sql", lock_timeout_seconds)
 
     monkeypatch.setattr(migrate, "migrate", times_out)
 
@@ -173,7 +173,7 @@ def test_a_migration_that_did_not_complete_exits_4_with_one_error_line_and_no_tr
 
 def test_a_failing_script_exits_4_naming_the_script_and_the_database_message(no_database, monkeypatch, capsys):
     async def fails(*, lock_timeout_seconds):
-        raise migrate.MigrationFailed("22-billing.sql", "permission denied for schema public")
+        raise migrate.MigrationFailedError("22-billing.sql", "permission denied for schema public")
 
     monkeypatch.setattr(migrate, "migrate", fails)
 

@@ -8,7 +8,7 @@ import pkgutil
 import app.domains
 import app.ports.outbound
 from app import bootstrap
-from app.ports.slot import PortNotBound, Slot, all_slots
+from app.ports.slot import PortNotBoundError, Slot, all_slots
 from tests.fakes.conformance import mismatches
 
 
@@ -22,7 +22,7 @@ def _import_every_port_module() -> None:
 
 
 def test_every_port_has_a_production_adapter_and_no_adapter_is_for_a_port_that_does_not_exist():
-    """Adding a port without its entry in `bootstrap.adapters()` (or the reverse) is a failure here, not a PortNotBound in production."""
+    """Adding a port without its entry in `bootstrap.adapters()` (or the reverse) is a failure here, not a PortNotBoundError in production."""
     _import_every_port_module()
 
     assert set(all_slots()) == set(bootstrap.adapters())
@@ -82,7 +82,7 @@ def test_verify_wired_names_what_is_missing():
     try:
         try:
             bootstrap.verify_wired()
-        except PortNotBound as exc:
+        except PortNotBoundError as exc:
             assert slot.name in str(exc)
         else:
             raise AssertionError("verify_wired accepted an unbound port")

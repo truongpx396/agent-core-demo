@@ -31,7 +31,7 @@ from app.agent.graph.build import GraphDeps
 from app.core import metrics
 from app.ports.outbound import cost as cost_ports
 from app.ports.outbound import models as model_ports
-from app.ports.outbound.cost import UsageTableMissing
+from app.ports.outbound.cost import UsageTableMissingError
 from tests.agent.fakes import make_agent_node
 from tests.agent.graph.test_graph_integration import _config
 from tests.conftest import TEST_CTX, metric_value
@@ -360,7 +360,7 @@ class TestAFailedWriteNeverFailsTheTurnAndIsNeverSilent:
         write_before = _count("usage_event_write")
 
         with (
-            cost_ports.usage_events.overriding(_FailingStore(UsageTableMissing())),
+            cost_ports.usage_events.overriding(_FailingStore(UsageTableMissingError())),
             caplog.at_level("WARNING", logger=usage_events.logger.name),
         ):
             for _ in range(3):

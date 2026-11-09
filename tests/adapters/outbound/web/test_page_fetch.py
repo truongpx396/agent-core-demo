@@ -3,7 +3,7 @@ import httpx
 import pytest
 
 from app.adapters.outbound.web import page_fetch
-from app.ports.outbound.web import PageFetchFailed
+from app.ports.outbound.web import PageFetchFailedError
 
 REAL_CLIENT = httpx.AsyncClient
 
@@ -49,7 +49,7 @@ async def test_a_request_that_does_not_complete_raises_the_ports_error(monkeypat
 
     _serve(monkeypatch, refuse)
 
-    with pytest.raises(PageFetchFailed, match="refused"):
+    with pytest.raises(PageFetchFailedError, match="refused"):
         await page_fetch.HttpxPageFetcher().fetch("https://example.com/a", max_bytes=10)
 
 

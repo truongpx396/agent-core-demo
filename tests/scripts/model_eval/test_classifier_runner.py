@@ -6,7 +6,7 @@ from scripts.model_eval import metrics
 from scripts.model_eval.candidates import Candidate, Source
 from scripts.model_eval.routing import Outcome, write_outcomes
 from scripts.model_eval.runners import classify
-from scripts.model_eval.runners.base import PrerequisiteMissing
+from scripts.model_eval.runners.base import PrerequisiteMissingError
 from scripts.model_eval.suites import ClassifierSuite, ItemData
 
 CANDIDATE = Candidate("some-router", "classifier", "service", "MIT", Source(model="classify"))
@@ -73,7 +73,7 @@ def test_higher_is_better_is_declared_for_every_metric_and_lower_for_the_three_t
 
 # ---- the backends -------------------------------------------------------------------------------------------------------------------
 def test_the_service_path_is_gone_with_the_trained_head_and_the_message_says_what_to_do_instead():
-    with pytest.raises(PrerequisiteMissing, match=r"no longer serves a trained routing head.*run\(backend=\.\.\.\)"):
+    with pytest.raises(PrerequisiteMissingError, match=r"no longer serves a trained routing head.*run\(backend=\.\.\.\)"):
         classify.build_backend(CANDIDATE, classify.RunSettings(), via="service")
     assert not hasattr(classify, "ServiceClassifier")
 
@@ -90,11 +90,11 @@ def test_two_files_are_ambiguous_unless_one_is_named(tmp_path):
     for name in ("a.jsonl", "b.jsonl"):
         write_outcomes(tmp_path / "outcomes" / name, [Outcome("a", 0.1, 0.9, "j")])
 
-    with pytest.raises(PrerequisiteMissing, match="pass --outcomes"):
+    with pytest.raises(PrerequisiteMissingError, match="pass --outcomes"):
         classify.find_outcomes(tmp_path, None)
     assert classify.find_outcomes(tmp_path, tmp_path / "outcomes" / "b.jsonl") == tmp_path / "outcomes" / "b.jsonl"
 
 
 def test_a_named_file_that_does_not_exist_is_a_missing_prerequisite(tmp_path):
-    with pytest.raises(PrerequisiteMissing, match="does not exist"):
+    with pytest.raises(PrerequisiteMissingError, match="does not exist"):
         classify.find_outcomes(tmp_path, tmp_path / "nope.jsonl")

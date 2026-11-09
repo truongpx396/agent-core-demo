@@ -12,7 +12,7 @@ import pytest
 
 from app.adapters.inbound.mcp.gateway_auth import (
     JwksCache,
-    JwksUnavailable,
+    JwksUnavailableError,
     JwtVerifier,
 )
 from app.core import metrics
@@ -162,7 +162,7 @@ async def test_a_response_that_is_not_a_key_set_is_unavailable_not_a_crash():
 
     keys = JwksCache(gs.JWKS_URL, ttl_seconds=TTL, client=NotJwks(), clock=Clock())  # a stand-in with only `.get`, which is all the cache calls
 
-    with pytest.raises(JwksUnavailable):
+    with pytest.raises(JwksUnavailableError):
         await keys.key_for("k1")
 
 

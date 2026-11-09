@@ -12,7 +12,7 @@ marked applied" atomically from one block. `get_connection()` delegates with `as
 yield conn`, so an exception in the caller's block reaches the provider's rollback
 (tests/billing/test_billing_core_boundary.py proves it, and that a clean exit doesn't look like one).
 
-**Unset means refused** (constitution I). A process reaching the core unwired gets `BillingNotConfigured`,
+**Unset means refused** (constitution I). A process reaching the core unwired gets `BillingNotConfiguredError`,
 never a connection to a database it wasn't told about. In the app the wiring is
 `app/billing_integration/__init__.py`, which every host module importing `credit_billing` also imports (a scan
 enforces it). A caller that swallows the error degrades through the same counted path as any wallet fault
@@ -35,7 +35,7 @@ from psycopg import AsyncConnection
 ConnectionProvider = Callable[[], AbstractAsyncContextManager[AsyncConnection]]
 
 
-class BillingNotConfigured(RuntimeError):
+class BillingNotConfiguredError(RuntimeError):
     """The billing core was used before anything told it where database connections come from."""
 
 
@@ -53,7 +53,7 @@ async def get_connection() -> AsyncIterator[AsyncConnection]:
     """A connection from the configured provider, in the provider's own transaction (see the module docstring)."""
     provider = _provider
     if provider is None:
-        raise BillingNotConfigured(
+        raise BillingNotConfiguredError(
             "the billing core has no database connection provider: import app.billing_integration (the agent app's wiring), "
             "or call credit_billing.db.configure(connection=...) before using it"
         )

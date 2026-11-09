@@ -11,7 +11,7 @@ from scripts.model_eval import datasets as ds
 from scripts.model_eval.routing import DEFAULT_MARGIN
 
 
-class PrerequisiteMissing(Exception):
+class PrerequisiteMissingError(Exception):
     """A model, dataset or service the run needs is not available. The CLI exits 3 and writes NO report (FR-011): a partial report
     presented as complete is worse than none."""
 
@@ -50,17 +50,17 @@ def seeded_rng(seed: int, text: str) -> np.random.Generator:
 def latest_version(root: Path, name: str) -> Path:
     versions = sorted(p for p in (root / name).glob("v*") if p.is_dir()) if (root / name).exists() else []
     if not versions:
-        raise PrerequisiteMissing(f"dataset {name!r} has no version under {root}; build it with `python -m scripts.model_eval build {name}`")
+        raise PrerequisiteMissingError(f"dataset {name!r} has no version under {root}; build it with `python -m scripts.model_eval build {name}`")
     return versions[-1]
 
 
 def public_entry(settings: RunSettings, entry_id: str) -> ds.PublicEntry:
     entry = next((e for e in ds.load_public_lock(settings.public_lock) if e.id == entry_id), None)
     if entry is None:
-        raise PrerequisiteMissing(f"{entry_id!r} is not in {settings.public_lock}")
+        raise PrerequisiteMissingError(f"{entry_id!r} is not in {settings.public_lock}")
     problems = ds.verify_public_cache(entry, settings.public_root)
     if problems:
-        raise PrerequisiteMissing("\n".join(problems))
+        raise PrerequisiteMissingError("\n".join(problems))
     return entry
 
 

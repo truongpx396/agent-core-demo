@@ -8,7 +8,7 @@ import asyncio
 import pytest
 
 from app.adapters.inbound.channels.door import SIGNIN_MESSAGES
-from app.adapters.inbound.channels.oauth import SignInRefused
+from app.adapters.inbound.channels.oauth import SignInRefusedError
 from app.adapters.inbound.channels.telegram import bot as telegram_channel
 from app.adapters.inbound.channels.telegram.approvals import (
     ApprovalStore,
@@ -120,7 +120,7 @@ class TestChannel:
 
         monkeypatch.setattr(channel.people, "person", lambda user_id: _Nobody())
 
-        with pytest.raises(SignInRefused) as exc:
+        with pytest.raises(SignInRefusedError) as exc:
             await channel.door_for(1)
 
         assert exc.value.reason == "credentials"

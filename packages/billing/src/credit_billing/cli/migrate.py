@@ -28,7 +28,7 @@ from datetime import UTC
 from credit_billing import migrate
 from credit_billing.cli._runtime import (
     EXIT_DATABASE_UNAVAILABLE,
-    DatabaseUnavailable,
+    DatabaseUnavailableError,
     scheduled_job,
     wired_pool,
 )
@@ -99,7 +99,7 @@ async def _run(args: argparse.Namespace) -> tuple[int, str]:
     try:
         async with wired_pool():
             return await execute(args)
-    except DatabaseUnavailable as exc:
+    except DatabaseUnavailableError as exc:
         return EXIT_DATABASE_UNAVAILABLE, f"error: {exc}"
     except migrate.MigrationError as exc:
         return EXIT_NOT_COMPLETE, f"error: {exc}"

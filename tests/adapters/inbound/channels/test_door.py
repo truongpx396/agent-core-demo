@@ -12,10 +12,10 @@ import pytest
 from app.adapters.inbound.channels.door import (
     SIGNIN_MESSAGES,
     Door,
-    DoorRefused,
+    DoorRefusedError,
     HeaderAuth,
 )
-from app.adapters.inbound.channels.oauth import SignInRefused
+from app.adapters.inbound.channels.oauth import SignInRefusedError
 from app.core import metrics
 from tests.conftest import metric_value as _count
 
@@ -148,7 +148,7 @@ class TestResumeAndCancel:
     async def test_a_cancel_the_door_refuses_is_reported_to_the_caller(self):
         door, http = make_door(lambda request: httpx.Response(404))
 
-        with pytest.raises(DoorRefused, match="not found"):
+        with pytest.raises(DoorRefusedError, match="not found"):
             await door.cancel_turn("t1")
         await http.aclose()
 
@@ -248,7 +248,7 @@ class TestTheDoorCannotBeReached:
     async def test_a_sign_in_that_is_refused_stops_the_request_before_it_is_made(self):
         calls = []
         door, http = make_door(
-            lambda request: calls.append(1) or httpx.Response(200), _Auth(fail=SignInRefused("forbidden")), channel="telegram"
+            lambda request: calls.append(1) or httpx.Response(200), _Auth(fail=SignInRefusedError("forbidden")), channel="telegram"
         )
 
         (event,) = await collect(door.stream_turn("hi", "t1"))

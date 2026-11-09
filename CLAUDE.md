@@ -80,7 +80,7 @@ they delete volumes or kill running processes.
 - `app/ports/`, `app/adapters/`, `app/bootstrap.py` — **ports and adapters** (`ARCHITECTURE.md`). `app/ports/outbound/` holds the
   Protocols the application needs (cost, models, llm, sessions, idempotency, checkpointing, retrieval, classification,
   screening, web, notify, sandbox, jobs, storage, domains; a domain's own repository port is `app/domains/<d>/ports.py`), each with a `Slot` the application reads at call
-  time (`ticket_store.get().get_ticket(...)`; unbound raises `PortNotBound`). `app/adapters/outbound/<technology>/`
+  time (`ticket_store.get().get_ticket(...)`; unbound raises `PortNotBoundError`). `app/adapters/outbound/<technology>/`
   implements them; a domain's `store.py` is the one adapter that stays in its domain.
   `app/bootstrap.py::adapters()` is the one table of port to adapter; every entrypoint calls `wire()` first. In `app/agent` and
   `app/domains` import no infrastructure client (psycopg, redis, qdrant_client, openai, httpx, ...) and no adapter:

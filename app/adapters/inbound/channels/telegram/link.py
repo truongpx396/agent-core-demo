@@ -31,7 +31,7 @@ import redis.asyncio as redis
 from cryptography.fernet import Fernet, InvalidToken
 
 from app.adapters.inbound.channels import oauth
-from app.adapters.inbound.channels.oauth import SignInRefused, Tokens
+from app.adapters.inbound.channels.oauth import SignInRefusedError, Tokens
 from app.adapters.inbound.channels.telegram.api import BotApi
 from app.core import metrics
 from app.core.config import settings
@@ -135,7 +135,7 @@ class LinkedAuth:
         self._lock = asyncio.Lock()  # two chats of one person must not refresh with the same token at once (see the module docstring)
 
     async def sign_in(self) -> str:
-        """The account's id (the token's `sub`). Raises `SignInRefused("not_linked")` when there is no link, or the authorization server refused it."""
+        """The account's id (the token's `sub`). Raises `SignInRefusedError("not_linked")` when there is no link, or the authorization server refused it."""
         async with self._lock:
             if self._tokens is None or not self._tokens.fresh():
                 self._tokens = await self._refresh()
@@ -144,7 +144,7 @@ class LinkedAuth:
     async def _refresh(self) -> Tokens:
         record = await self._store.load(self._user_id)
         if record is None:
-            raise SignInRefused("not_linked")
+            raise SignInRefusedError("not_linked")
         try:
             tokens = await oauth.refresh_tokens(
                 self._http,
@@ -154,11 +154,11 @@ class LinkedAuth:
                 scope=settings.web_auth_scope.strip(),
                 resource=settings.web_auth_audience.strip().rstrip("/"),
             )
-        except SignInRefused as exc:
+        except SignInRefusedError as exc:
             if exc.reason == "credentials":  # refused, not unreachable: revoked, expired, or the person was disabled
                 await self._store.delete(self._user_id)
                 metrics.channel_telegram_link_total.labels(step="refresh", outcome="revoked").inc()
-                raise SignInRefused("not_linked") from exc
+                raise SignInRefusedError("not_linked") from exc
             metrics.channel_telegram_link_total.labels(step="refresh", outcome="unavailable").inc()
             raise
         if tokens.refresh_token and tokens.refresh_token != record["refresh_token"]:
@@ -177,7 +177,7 @@ class LinkedAuth:
         self._tokens = None
         try:
             await self.sign_in()
-        except SignInRefused:
+        except SignInRefusedError:
             return False
         return True
 
@@ -238,7 +238,7 @@ class LinkFlow:
                 redirect_uri=redirect_uri(),
                 resource=settings.web_auth_audience.strip().rstrip("/"),
             )
-        except SignInRefused as exc:
+        except SignInRefusedError as exc:
             metrics.channel_telegram_link_total.labels(step="callback", outcome="unavailable" if exc.reason == "unavailable" else "refused").inc()
             return None
         claims = oauth.jwt_claims(tokens.access_token)

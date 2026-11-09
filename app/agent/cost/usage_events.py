@@ -30,7 +30,7 @@ from app.core import metrics
 from app.core.security import SecurityCtx, valid_ctx
 from app.ports.outbound import cost as ports
 from app.ports.outbound import models as model_ports
-from app.ports.outbound.cost import UsageEventRow, UsageTableMissing
+from app.ports.outbound.cost import UsageEventRow, UsageTableMissingError
 
 logger = logging.getLogger(__name__)
 
@@ -99,7 +99,7 @@ async def record_call(
     global _warned_missing_table
     try:
         await ports.usage_events.get().insert(row)
-    except UsageTableMissing:
+    except UsageTableMissingError:
         # The table (19) is not applied.
         _degraded("usage_event_table_missing")
         if not _warned_missing_table:

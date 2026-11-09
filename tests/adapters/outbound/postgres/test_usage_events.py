@@ -11,7 +11,7 @@ import pytest
 from psycopg import errors as pg_errors
 
 from app.adapters.outbound.postgres import usage_events as adapter
-from app.ports.outbound.cost import UsageTableMissing
+from app.ports.outbound.cost import UsageTableMissingError
 
 
 class _Cursor:
@@ -87,7 +87,7 @@ async def test_a_migration_that_was_not_applied_is_the_ports_error_not_psycopgs(
 
     monkeypatch.setattr(adapter, "_insert", boom)
 
-    with pytest.raises(UsageTableMissing):
+    with pytest.raises(UsageTableMissingError):
         await adapter.PgUsageEventStore().insert({"event_id": "e"})  # type: ignore[typeddict-item] - the row never reaches a statement
 
 

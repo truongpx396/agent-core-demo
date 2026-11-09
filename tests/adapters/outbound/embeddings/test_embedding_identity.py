@@ -4,7 +4,7 @@ import pytest
 from app.adapters.outbound.embeddings import embedding_identity as ident
 from app.adapters.outbound.embeddings.embedding_identity import (
     EmbeddingIdentity,
-    EmbeddingIdentityMismatch,
+    EmbeddingIdentityMismatchError,
 )
 from app.adapters.outbound.embeddings.embedding_identity import (
     current_identity as real_current_identity,  # captured before the autouse fixture replaces it
@@ -64,7 +64,7 @@ def test_describe_names_the_model_and_hash_for_a_log_line_and_marks_an_unresolve
 
 
 def test_the_mismatch_message_names_the_way_out():
-    err = EmbeddingIdentityMismatch("docs", "aaaaaaaa", "bbbbbbbb", write=False)
+    err = EmbeddingIdentityMismatchError("docs", "aaaaaaaa", "bbbbbbbb", write=False)
     text = str(err)
     assert "docs" in text and "aaaaaaaa" in text and "bbbbbbbb" in text and "make reembed COLLECTION_NAME=docs" in text
     assert err.code.value == "embedding_identity_mismatch"

@@ -111,7 +111,7 @@ class MigrationError(RuntimeError):
     """A migration did not complete. Nothing from the script it names was applied or recorded."""
 
 
-class MigrationLockTimeout(MigrationError):
+class MigrationLockTimeoutError(MigrationError):
     def __init__(self, script: str, seconds: float) -> None:
         self.script, self.seconds = script, seconds
         super().__init__(
@@ -120,7 +120,7 @@ class MigrationLockTimeout(MigrationError):
         )
 
 
-class MigrationFailed(MigrationError):
+class MigrationFailedError(MigrationError):
     def __init__(self, script: str, detail: str) -> None:
         self.script, self.detail = script, detail
         super().__init__(f"{script} did not complete: {detail}. Nothing from this script was applied.")
@@ -172,7 +172,7 @@ async def _apply(script: Script, milliseconds: int, seconds: float) -> bool:
     try:
         sql = statements(script.name)
     except ValueError as exc:  # a meta-command this tool cannot apply: caught before a connection is checked out
-        raise MigrationFailed(script.name, str(exc)) from exc
+        raise MigrationFailedError(script.name, str(exc)) from exc
     async with get_connection() as conn:
         try:
             await conn.execute(f"SET LOCAL lock_timeout = '{milliseconds}ms'")
@@ -190,16 +190,16 @@ async def _apply(script: Script, milliseconds: int, seconds: float) -> bool:
                 (script.name, script.checksum),
             )
         except pg_errors.LockNotAvailable as exc:
-            raise MigrationLockTimeout(script.name, seconds) from exc
+            raise MigrationLockTimeoutError(script.name, seconds) from exc
         except psycopg.Error as exc:
-            raise MigrationFailed(script.name, _detail(exc)) from exc
+            raise MigrationFailedError(script.name, _detail(exc)) from exc
     logger.info("billing_migrate_applied", extra={"script": script.name, "checksum": script.checksum})
     return True
 
 
 async def migrate(*, lock_timeout_seconds: float = DEFAULT_LOCK_TIMEOUT_SECONDS) -> Result:
     """Applies every pending or changed shipped script, in order, one transaction each. Safe to run any number of times and from any number
-    of processes at once. Raises MigrationLockTimeout or MigrationFailed; the scripts before the one that failed stay applied."""
+    of processes at once. Raises MigrationLockTimeoutError or MigrationFailedError; the scripts before the one that failed stay applied."""
     if not lock_timeout_seconds > 0:
         raise ValueError(f"lock_timeout_seconds must be above zero, got {lock_timeout_seconds}")
     milliseconds = max(1, round(lock_timeout_seconds * 1000))

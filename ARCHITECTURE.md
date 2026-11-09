@@ -102,7 +102,7 @@ Rules beyond the imports, each a test:
 ## The ports
 
 `Slot[T]` (`app/ports/slot.py`) is how the application reaches an adapter: `ticket_store.get().get_ticket(...)`. It is read at call time, binds once, and an unbound
-slot raises `PortNotBound` naming the port. There is no default adapter, so the application never decides which one is real.
+slot raises `PortNotBoundError` naming the port. There is no default adapter, so the application never decides which one is real.
 
 | Port module | Ports | Adapter | What stays in the application |
 |---|---|---|---|

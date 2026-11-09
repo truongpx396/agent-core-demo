@@ -54,8 +54,8 @@ def test_rating_is_the_same_function_on_both_sides_of_the_seam():
 
 
 def test_the_conflict_error_is_one_class_whichever_module_it_is_reached_through():
-    assert core_port.IdempotencyConflict is credits.IdempotencyConflict
-    assert issubclass(core_port.IdempotencyConflict, ValueError)
+    assert core_port.IdempotencyConflictError is credits.IdempotencyConflictError
+    assert issubclass(core_port.IdempotencyConflictError, ValueError)
 
 
 # --- 2. it adds nothing --------------------------------------------------------------------------------------------

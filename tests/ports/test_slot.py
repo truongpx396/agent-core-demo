@@ -1,7 +1,7 @@
 """`app/ports/slot.py`: the seam the application reaches its adapters through."""
 import pytest
 
-from app.ports.slot import PortNotBound, Slot, all_slots, unbound
+from app.ports.slot import PortNotBoundError, Slot, all_slots, unbound
 
 
 class _Port:
@@ -24,7 +24,7 @@ def slot():
 
 
 def test_an_unbound_slot_fails_closed_and_names_the_port(slot):
-    with pytest.raises(PortNotBound, match="test_only_port"):
+    with pytest.raises(PortNotBoundError, match="test_only_port"):
         slot.get()
     assert slot.bound is False
     assert "test_only_port" not in unbound() and slot not in all_slots()

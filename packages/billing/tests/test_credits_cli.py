@@ -233,7 +233,7 @@ class TestAbsoluteExpiryAndAConflict:
         assert [call[3]["expires_at"] for call in recorder.calls] == [datetime(2026, 11, 13, 7, 20, 11, tzinfo=UTC)] * 2
 
     async def test_a_conflict_is_invalid_input_one_line_per_field_and_says_nothing_changed(self, wallet):
-        wallet(credits.IdempotencyConflict("K1", "acme", {"amount": ("500.000000", "600.000000"), "reason": ("pilot", "other")}))
+        wallet(credits.IdempotencyConflictError("K1", "acme", {"amount": ("500.000000", "600.000000"), "reason": ("pilot", "other")}))
 
         code, text = await cli.execute(parse("grant", *self.BASE, "--key", "K1"))
 
@@ -247,7 +247,7 @@ class TestAbsoluteExpiryAndAConflict:
 
     async def test_an_expiry_conflict_says_how_to_repeat_the_first_request_exactly(self, wallet):
         first = "2026-11-13T07:20:11.123456+00:00"
-        wallet(credits.IdempotencyConflict("K2", "acme", {"expires_at": (first, "2026-11-13T07:31:40.654321+00:00")}))
+        wallet(credits.IdempotencyConflictError("K2", "acme", {"expires_at": (first, "2026-11-13T07:31:40.654321+00:00")}))
 
         code, text = await cli.execute(parse("grant", *self.BASE, "--source", "promo", "--expires-in-days", "30", "--key", "K2"))
 
@@ -255,14 +255,14 @@ class TestAbsoluteExpiryAndAConflict:
         assert text.splitlines()[-1] == f"to repeat the first request exactly, run it again with --key K2 --expires-at {first}"
 
     async def test_the_hint_is_only_given_when_the_expiry_is_what_differs(self, wallet):
-        wallet(credits.IdempotencyConflict("K3", "acme", {"amount": ("1.000000", "2.000000")}))
+        wallet(credits.IdempotencyConflictError("K3", "acme", {"amount": ("1.000000", "2.000000")}))
 
         _, text = await cli.execute(parse("grant", *self.BASE, "--key", "K3"))
 
         assert "--expires-at" not in text
 
     async def test_text_from_elsewhere_is_shown_escaped_never_interpreted(self, wallet):
-        wallet(credits.IdempotencyConflict("K4", "acme", {"reason": ("ok\x1b[31mred", "plain")}))
+        wallet(credits.IdempotencyConflictError("K4", "acme", {"reason": ("ok\x1b[31mred", "plain")}))
 
         _, text = await cli.execute(parse("grant", *self.BASE, "--key", "K4"))
 

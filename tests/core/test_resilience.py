@@ -22,7 +22,7 @@ from app.core.resilience import CircuitBreaker, CircuitOpenError, CircuitState
 from tests.conftest import metric_value as _count
 
 
-class _Boom(Exception):
+class _BoomError(Exception):
     pass
 
 
@@ -30,7 +30,7 @@ class _OtherError(Exception):
     pass
 
 
-def _calls(*, fail_times: int = 0, exc=_Boom, result: str = "ok"):
+def _calls(*, fail_times: int = 0, exc=_BoomError, result: str = "ok"):
     """A zero-arg async callable that raises `exc` for its first
     `fail_times` invocations, then returns `result` — plus the mutable
     counter it was called with, so a test can assert exactly how many times
@@ -51,7 +51,7 @@ class TestCallSuccessAndRetry:
         breaker = CircuitBreaker("dep-a")
         fn, state = _calls(fail_times=0)
 
-        result = await breaker.call(fn, retry_on=(_Boom,), attempts=3, base_delay=0.001)
+        result = await breaker.call(fn, retry_on=(_BoomError,), attempts=3, base_delay=0.001)
 
         assert result == "ok"
         assert state["count"] == 1
@@ -61,7 +61,7 @@ class TestCallSuccessAndRetry:
         fn, state = _calls(fail_times=1)
         before = _count(metrics.agent_tool_retry_total, dependency="dep-b")
 
-        result = await breaker.call(fn, retry_on=(_Boom,), attempts=3, base_delay=0.001)
+        result = await breaker.call(fn, retry_on=(_BoomError,), attempts=3, base_delay=0.001)
 
         assert result == "ok"
         assert state["count"] == 2  # one failure, one successful retry
@@ -71,8 +71,8 @@ class TestCallSuccessAndRetry:
         breaker = CircuitBreaker("dep-c")
         fn, state = _calls(fail_times=99)  # always fails
 
-        with pytest.raises(_Boom):
-            await breaker.call(fn, retry_on=(_Boom,), attempts=3, base_delay=0.001)
+        with pytest.raises(_BoomError):
+            await breaker.call(fn, retry_on=(_BoomError,), attempts=3, base_delay=0.001)
 
         assert state["count"] == 3  # every attempt used, no more
 
@@ -81,7 +81,7 @@ class TestCallSuccessAndRetry:
         fn, state = _calls(fail_times=99, exc=_OtherError)
 
         with pytest.raises(_OtherError):
-            await breaker.call(fn, retry_on=(_Boom,), attempts=3, base_delay=0.001)
+            await breaker.call(fn, retry_on=(_BoomError,), attempts=3, base_delay=0.001)
 
         assert state["count"] == 1  # never retried
 
@@ -93,15 +93,15 @@ class TestCallSuccessAndRetry:
 
         for _ in range(5):
             with pytest.raises(_OtherError):
-                await breaker.call(fn, retry_on=(_Boom,), attempts=1, base_delay=0.001)
+                await breaker.call(fn, retry_on=(_BoomError,), attempts=1, base_delay=0.001)
 
         # Still closed: a call that would succeed goes through untouched.
         ok_fn, _ = _calls(fail_times=0)
-        assert await breaker.call(ok_fn, retry_on=(_Boom,), attempts=1, base_delay=0.001) == "ok"
+        assert await breaker.call(ok_fn, retry_on=(_BoomError,), attempts=1, base_delay=0.001) == "ok"
 
     async def test_delay_grows_and_is_capped_with_jitter(self, monkeypatch):
         breaker = CircuitBreaker("dep-f")
-        fn, _ = _calls(fail_times=4, exc=_Boom)
+        fn, _ = _calls(fail_times=4, exc=_BoomError)
         recorded_delays = []
 
         async def fake_sleep(seconds):
@@ -110,7 +110,7 @@ class TestCallSuccessAndRetry:
         monkeypatch.setattr(asyncio, "sleep", fake_sleep)
         monkeypatch.setattr("random.uniform", lambda a, b: 0)  # isolate growth from jitter
 
-        await breaker.call(fn, retry_on=(_Boom,), attempts=5, base_delay=1.0, max_delay=3.0)
+        await breaker.call(fn, retry_on=(_BoomError,), attempts=5, base_delay=1.0, max_delay=3.0)
 
         # base_delay * 2**0, 2**1, 2**2, then capped at max_delay
         assert recorded_delays == [1.0, 2.0, 3.0, 3.0]
@@ -123,8 +123,8 @@ class TestCircuitBreakerOpening:
         before_opened = _count(metrics.agent_circuit_breaker_opened_total, dependency="dep-g")
 
         for _ in range(2):
-            with pytest.raises(_Boom):
-                await breaker.call(always_fails, retry_on=(_Boom,), attempts=1, base_delay=0.001)
+            with pytest.raises(_BoomError):
+                await breaker.call(always_fails, retry_on=(_BoomError,), attempts=1, base_delay=0.001)
 
         assert _count(metrics.agent_circuit_breaker_opened_total, dependency="dep-g") == before_opened + 1
 
@@ -132,7 +132,7 @@ class TestCircuitBreakerOpening:
         calls_before = state["count"]
         before_rejected = _count(metrics.agent_circuit_breaker_rejected_total, dependency="dep-g")
         with pytest.raises(CircuitOpenError):
-            await breaker.call(always_fails, retry_on=(_Boom,), attempts=1, base_delay=0.001)
+            await breaker.call(always_fails, retry_on=(_BoomError,), attempts=1, base_delay=0.001)
 
         assert state["count"] == calls_before  # fn was never invoked
         assert _count(metrics.agent_circuit_breaker_rejected_total, dependency="dep-g") == before_rejected + 1
@@ -145,55 +145,55 @@ class TestCircuitBreakerOpening:
         # consecutive exhausted failures, so it should never open.
         for _ in range(4):
             fn, _ = _calls(fail_times=1)
-            await breaker.call(fn, retry_on=(_Boom,), attempts=2, base_delay=0.001)
+            await breaker.call(fn, retry_on=(_BoomError,), attempts=2, base_delay=0.001)
 
-        result = await breaker.call(succeed, retry_on=(_Boom,), attempts=1, base_delay=0.001)
+        result = await breaker.call(succeed, retry_on=(_BoomError,), attempts=1, base_delay=0.001)
         assert result == "ok"
 
     async def test_cooldown_elapsing_admits_a_trial_that_fully_closes_on_success(self):
         breaker = CircuitBreaker("dep-i", failure_threshold=1, cooldown_seconds=0.05)
         always_fails, _ = _calls(fail_times=99)
 
-        with pytest.raises(_Boom):
-            await breaker.call(always_fails, retry_on=(_Boom,), attempts=1, base_delay=0.001)
+        with pytest.raises(_BoomError):
+            await breaker.call(always_fails, retry_on=(_BoomError,), attempts=1, base_delay=0.001)
 
         # Still within cooldown: fails fast.
         with pytest.raises(CircuitOpenError):
-            await breaker.call(always_fails, retry_on=(_Boom,), attempts=1, base_delay=0.001)
+            await breaker.call(always_fails, retry_on=(_BoomError,), attempts=1, base_delay=0.001)
 
         await asyncio.sleep(0.06)  # let the cooldown elapse
 
         succeed, state = _calls(fail_times=0)
-        result = await breaker.call(succeed, retry_on=(_Boom,), attempts=1, base_delay=0.001)
+        result = await breaker.call(succeed, retry_on=(_BoomError,), attempts=1, base_delay=0.001)
         assert result == "ok"
         assert state["count"] == 1
 
         # Fully closed again: takes a fresh failure_threshold (1) failure
         # to reopen, not a leftover count from before the trial succeeded.
         reopens, reopen_state = _calls(fail_times=99)
-        with pytest.raises(_Boom):
-            await breaker.call(reopens, retry_on=(_Boom,), attempts=1, base_delay=0.001)
+        with pytest.raises(_BoomError):
+            await breaker.call(reopens, retry_on=(_BoomError,), attempts=1, base_delay=0.001)
         assert reopen_state["count"] == 1
 
     async def test_cooldown_elapsing_with_a_failing_trial_reopens_it(self):
         breaker = CircuitBreaker("dep-j", failure_threshold=1, cooldown_seconds=0.05)
         always_fails, state = _calls(fail_times=99)
 
-        with pytest.raises(_Boom):
-            await breaker.call(always_fails, retry_on=(_Boom,), attempts=1, base_delay=0.001)
+        with pytest.raises(_BoomError):
+            await breaker.call(always_fails, retry_on=(_BoomError,), attempts=1, base_delay=0.001)
 
         await asyncio.sleep(0.06)
 
         # Trial call is admitted (fn IS invoked) but fails again.
         calls_before = state["count"]
-        with pytest.raises(_Boom):
-            await breaker.call(always_fails, retry_on=(_Boom,), attempts=1, base_delay=0.001)
+        with pytest.raises(_BoomError):
+            await breaker.call(always_fails, retry_on=(_BoomError,), attempts=1, base_delay=0.001)
         assert state["count"] == calls_before + 1
 
         # Re-opened: the next call fails fast again without invoking fn.
         calls_before = state["count"]
         with pytest.raises(CircuitOpenError):
-            await breaker.call(always_fails, retry_on=(_Boom,), attempts=1, base_delay=0.001)
+            await breaker.call(always_fails, retry_on=(_BoomError,), attempts=1, base_delay=0.001)
         assert state["count"] == calls_before
 
 
@@ -209,8 +209,8 @@ class TestCircuitStateTransitions:
         breaker = CircuitBreaker("dep-state-b", failure_threshold=1, cooldown_seconds=60)
         always_fails, _ = _calls(fail_times=99)
 
-        with pytest.raises(_Boom):
-            await breaker.call(always_fails, retry_on=(_Boom,), attempts=1, base_delay=0.001)
+        with pytest.raises(_BoomError):
+            await breaker.call(always_fails, retry_on=(_BoomError,), attempts=1, base_delay=0.001)
 
         assert breaker.state is CircuitState.OPEN
 
@@ -220,8 +220,8 @@ class TestCircuitStateTransitions:
         just its eventual CLOSED/OPEN outcome (already covered above)."""
         breaker = CircuitBreaker("dep-state-c", failure_threshold=1, cooldown_seconds=0.02)
         always_fails, _ = _calls(fail_times=99)
-        with pytest.raises(_Boom):
-            await breaker.call(always_fails, retry_on=(_Boom,), attempts=1, base_delay=0.001)
+        with pytest.raises(_BoomError):
+            await breaker.call(always_fails, retry_on=(_BoomError,), attempts=1, base_delay=0.001)
 
         await asyncio.sleep(0.03)
 
@@ -231,7 +231,7 @@ class TestCircuitStateTransitions:
             return await release_trial.wait()
 
         trial_task = asyncio.create_task(
-            breaker.call(slow_trial, retry_on=(_Boom,), attempts=1, base_delay=0.001)
+            breaker.call(slow_trial, retry_on=(_BoomError,), attempts=1, base_delay=0.001)
         )
         try:
             async def _wait_for_half_open():
@@ -260,8 +260,8 @@ class TestHalfOpenSingleFlight:
     async def test_a_second_caller_is_rejected_while_the_trial_is_in_flight(self):
         breaker = CircuitBreaker("dep-k", failure_threshold=1, cooldown_seconds=0.02)
         first_fails, _ = _calls(fail_times=99)
-        with pytest.raises(_Boom):
-            await breaker.call(first_fails, retry_on=(_Boom,), attempts=1, base_delay=0.001)
+        with pytest.raises(_BoomError):
+            await breaker.call(first_fails, retry_on=(_BoomError,), attempts=1, base_delay=0.001)
 
         await asyncio.sleep(0.03)  # cooldown elapses
 
@@ -274,7 +274,7 @@ class TestHalfOpenSingleFlight:
             return "ok"
 
         trial_task = asyncio.create_task(
-            breaker.call(slow_trial, retry_on=(_Boom,), attempts=1, base_delay=0.001)
+            breaker.call(slow_trial, retry_on=(_BoomError,), attempts=1, base_delay=0.001)
         )
         await trial_started.wait()  # the trial is now genuinely in flight
         assert breaker.state is CircuitState.HALF_OPEN
@@ -285,7 +285,7 @@ class TestHalfOpenSingleFlight:
         second_fn, second_state = _calls(fail_times=0)
         before_rejected = _count(metrics.agent_circuit_breaker_rejected_total, dependency="dep-k")
         with pytest.raises(CircuitOpenError):
-            await breaker.call(second_fn, retry_on=(_Boom,), attempts=1, base_delay=0.001)
+            await breaker.call(second_fn, retry_on=(_BoomError,), attempts=1, base_delay=0.001)
         assert second_state["count"] == 0
         assert _count(metrics.agent_circuit_breaker_rejected_total, dependency="dep-k") == before_rejected + 1
 
@@ -296,8 +296,8 @@ class TestHalfOpenSingleFlight:
     async def test_exactly_one_half_open_metric_per_cooldown_even_with_concurrent_arrivals(self):
         breaker = CircuitBreaker("dep-l", failure_threshold=1, cooldown_seconds=0.02)
         first_fails, _ = _calls(fail_times=99)
-        with pytest.raises(_Boom):
-            await breaker.call(first_fails, retry_on=(_Boom,), attempts=1, base_delay=0.001)
+        with pytest.raises(_BoomError):
+            await breaker.call(first_fails, retry_on=(_BoomError,), attempts=1, base_delay=0.001)
 
         await asyncio.sleep(0.03)
         before_half_open = _count(metrics.agent_circuit_breaker_half_open_total, dependency="dep-l")
@@ -310,7 +310,7 @@ class TestHalfOpenSingleFlight:
             return await release_trial.wait()
 
         trial_task = asyncio.create_task(
-            breaker.call(slow_trial, retry_on=(_Boom,), attempts=1, base_delay=0.001)
+            breaker.call(slow_trial, retry_on=(_BoomError,), attempts=1, base_delay=0.001)
         )
         await trial_started.wait()  # don't race the "losers" below against _before_call itself
 
@@ -319,7 +319,7 @@ class TestHalfOpenSingleFlight:
         losers, _ = _calls(fail_times=99)
         for _ in range(3):
             with pytest.raises(CircuitOpenError):
-                await breaker.call(losers, retry_on=(_Boom,), attempts=1, base_delay=0.001)
+                await breaker.call(losers, retry_on=(_BoomError,), attempts=1, base_delay=0.001)
 
         release_trial.set()
         await trial_task
@@ -337,7 +337,7 @@ class TestOpenWithoutATimestamp:
         breaker._opened_at = None
         fn, state = _calls()
 
-        result = await breaker.call(fn, retry_on=(_Boom,), attempts=1, base_delay=0.001)
+        result = await breaker.call(fn, retry_on=(_BoomError,), attempts=1, base_delay=0.001)
 
         assert result == "ok"
         assert state["count"] == 1

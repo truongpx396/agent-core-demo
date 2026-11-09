@@ -5,9 +5,9 @@ the whole library" convention (e.g. tests/adapters/outbound/mcp/test_mcp_client.
 - `render_url_to_markdown`'s tests patch `web_crawler._crawl` (the async function that talks to the crawl4ai
   server). They prove the SSRF guard runs BEFORE any crawl is attempted and truncation applies after.
 - `_crawl`'s tests patch `web_crawler.Crawl4aiDockerClient` with a fake async context manager. They prove the
-  CrawlFailed/success-flag handling this module adds on top of crawl4ai's result object, and that a
+  CrawlFailedError/success-flag handling this module adds on top of crawl4ai's result object, and that a
   server-unreachable or auth-rejected error (`Crawl4aiConnectionError`/`Crawl4aiRequestError`) also becomes a
-  `CrawlFailed`, without a real server. That result shape (`result.success`, `result.error_message`, a
+  `CrawlFailedError`, without a real server. That result shape (`result.success`, `result.error_message`, a
   str-compatible `result.markdown`) was verified against a real crawl before the module was written (see its
   docstring).
 
@@ -177,11 +177,11 @@ class TestCrawl:
 
         try:
             await web_crawler._crawl("https://nonexistent.invalid")
-        except web_crawler.CrawlFailed as exc:
+        except web_crawler.CrawlFailedError as exc:
             assert "ERR_NAME_NOT_RESOLVED" in str(exc)
             assert "more detail" not in str(exc)  # only the first line is surfaced
         else:
-            raise AssertionError("expected CrawlFailed")
+            raise AssertionError("expected CrawlFailedError")
 
     async def test_treats_a_missing_error_message_as_unknown_error(self, monkeypatch):
         monkeypatch.setattr(
@@ -192,10 +192,10 @@ class TestCrawl:
 
         try:
             await web_crawler._crawl("https://example.com")
-        except web_crawler.CrawlFailed as exc:
+        except web_crawler.CrawlFailedError as exc:
             assert "unknown error" in str(exc)
         else:
-            raise AssertionError("expected CrawlFailed")
+            raise AssertionError("expected CrawlFailedError")
 
     async def test_raises_crawl_failed_when_the_server_is_unreachable(self, monkeypatch):
         monkeypatch.setattr(
@@ -206,10 +206,10 @@ class TestCrawl:
 
         try:
             await web_crawler._crawl("https://example.com")
-        except web_crawler.CrawlFailed as exc:
+        except web_crawler.CrawlFailedError as exc:
             assert "could not reach the crawl4ai server" in str(exc)
         else:
-            raise AssertionError("expected CrawlFailed")
+            raise AssertionError("expected CrawlFailedError")
 
     async def test_raises_crawl_failed_when_the_server_rejects_the_request(self, monkeypatch):
         monkeypatch.setattr(
@@ -220,10 +220,10 @@ class TestCrawl:
 
         try:
             await web_crawler._crawl("https://example.com")
-        except web_crawler.CrawlFailed as exc:
+        except web_crawler.CrawlFailedError as exc:
             assert "could not reach the crawl4ai server" in str(exc)
         else:
-            raise AssertionError("expected CrawlFailed")
+            raise AssertionError("expected CrawlFailedError")
 
     async def test_retries_a_connection_failure_then_succeeds(self, monkeypatch):
         """A dropped connection to the crawl4ai container on the first
@@ -255,7 +255,7 @@ class TestCrawl:
             ),
         )
 
-        with pytest.raises(web_crawler.CrawlFailed):
+        with pytest.raises(web_crawler.CrawlFailedError):
             await web_crawler._crawl("https://example.com")
 
         assert _FlakyThenOkClient.calls["count"] == 1
@@ -270,12 +270,12 @@ class TestCrawl:
         )
 
         for _ in range(3):  # _CRAWL4AI_BREAKER's failure_threshold
-            with pytest.raises(web_crawler.CrawlFailed):
+            with pytest.raises(web_crawler.CrawlFailedError):
                 await web_crawler._crawl("https://example.com")
 
         calls_before_breaker_open = _FlakyThenOkClient.calls["count"]
 
-        with pytest.raises(web_crawler.CrawlFailed) as exc_info:
+        with pytest.raises(web_crawler.CrawlFailedError) as exc_info:
             await web_crawler._crawl("https://example.com")
 
         assert _FlakyThenOkClient.calls["count"] == calls_before_breaker_open  # never touched the network

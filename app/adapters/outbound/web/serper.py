@@ -15,9 +15,9 @@ Measured against the live API (2026-10-28), because the rest of this module rest
 
 Failure policy (constitution Principle V). A search is READ-ONLY: it changes only the account's credit
 balance.
-- No key: `SearchNotConfigured`, no request. Web search is optional and off by default like Langfuse, so this
+- No key: `SearchNotConfiguredError`, no request. Web search is optional and off by default like Langfuse, so this
   is an answer, not an error (the tool turns it into a normal reply; `agent_tool_errors_total` is untouched).
-- A refusal (4xx), a 5xx or an unreadable 200: `SearchFailed`, with a message written for the model and the
+- A refusal (4xx), a 5xx or an unreadable 200: `SearchFailedError`, with a message written for the model and the
   person. The provider's body NEVER reaches either (it is logged, scrubbed, truncated). Not retried: the
   request landed.
 - Only a connection that never opened (`ConnectError`, `ConnectTimeout`) is retried: three attempts under
@@ -37,7 +37,11 @@ from app.core import metrics
 from app.core.config import SERPER_API_KEY, WEB_SEARCH_MAX_RESULTS
 from app.core.resilience import CircuitBreaker, CircuitOpenError
 from app.core.scrubbing import scrub
-from app.ports.outbound.web import SearchFailed, SearchHit, SearchNotConfigured
+from app.ports.outbound.web import (
+    SearchFailedError,
+    SearchHit,
+    SearchNotConfiguredError,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -57,14 +61,14 @@ _MAX_SNIPPET_CHARS = 400
 _MAX_PROVIDER_MESSAGE_CHARS = 120  # logged only, never shown to the model
 
 
-def _fail(outcome: str, message: str, *, status: int | None = None, provider_message: str = "") -> SearchFailed:
+def _fail(outcome: str, message: str, *, status: int | None = None, provider_message: str = "") -> SearchFailedError:
     """Count the outcome, log its metadata, and hand back the exception to raise (so the call site reads `raise _fail(...)`)."""
     metrics.agent_web_search_total.labels(outcome=outcome).inc()
     logger.warning(
         "web_search_failed",
         extra={"outcome": outcome, "status": status, "provider_message": scrub(provider_message)[:_MAX_PROVIDER_MESSAGE_CHARS]},
     )
-    return SearchFailed(message)
+    return SearchFailedError(message)
 
 
 def _provider_message(resp: httpx.Response) -> str:
@@ -175,7 +179,7 @@ async def _search(client: httpx.AsyncClient, key: str, query: str) -> list[Searc
 async def search(query: str, *, client: httpx.AsyncClient | None = None) -> list[SearchHit]:
     """Up to `WEB_SEARCH_MAX_RESULTS` Google results for `query`, best first; an empty list means the search ran and found nothing.
 
-    Raises `SearchNotConfigured` with no key, and `SearchFailed` for everything else that stops a result (see the module docstring).
+    Raises `SearchNotConfiguredError` with no key, and `SearchFailedError` for everything else that stops a result (see the module docstring).
     `client` is for tests, which hand in one on `httpx.MockTransport`; production opens one per call, like the rest of the app's
     short-lived HTTP callers (a search is rare and human-approved, so a pool would only hold sockets open for nothing).
     """
@@ -184,7 +188,7 @@ async def search(query: str, *, client: httpx.AsyncClient | None = None) -> list
         raise _fail("blank_query", "A web search needs some words to search for.")
     if not SERPER_API_KEY:
         metrics.agent_web_search_total.labels(outcome="not_configured").inc()
-        raise SearchNotConfigured(
+        raise SearchNotConfiguredError(
             "Web search is not set up on this deployment (no search API key is configured), so it cannot be used. "
             "Do not retry; tell the person web search is not available here."
         )

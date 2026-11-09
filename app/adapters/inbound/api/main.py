@@ -114,7 +114,7 @@ app = FastAPI(title="Core AI Stack Demo", version="1.0.0", lifespan=lifespan)
 
 # A request with no valid identity (401), or one that cannot be checked right now (503), answered in the canonical envelope the front door
 # itself uses (app/adapters/inbound/api/identity.py).
-app.add_exception_handler(identity.AuthRefused, identity.auth_refused_handler)
+app.add_exception_handler(identity.AuthRefusedError, identity.auth_refused_handler)
 
 # The payment webhook's per-address limit, the only limit this process enforces itself. How fast a tenant or a person may start turns is the front
 # door's job (the authlimit service, spec 018). Plain Starlette middleware, not a per-route decorator, since this app's tests call every handler

@@ -17,7 +17,7 @@ from scripts.model_eval import hardware, public
 from scripts.model_eval.candidates import Candidate
 from scripts.model_eval.report import RunOutput
 from scripts.model_eval.runners.base import (
-    PrerequisiteMissing,
+    PrerequisiteMissingError,
     RunSettings,
     latest_version,
     percentiles,
@@ -85,7 +85,7 @@ class ServiceScreen:
         try:
             self.malicious_scores(["probe"])
         except Exception as exc:  # unreachable or not ready: this path is unavailable
-            raise PrerequisiteMissing(f"the ML service did not answer /prompt-guard ({type(exc).__name__}: {exc}); is it up (`make up`)?") from exc
+            raise PrerequisiteMissingError(f"the ML service did not answer /prompt-guard ({type(exc).__name__}: {exc}); is it up (`make up`)?") from exc
 
     def malicious_scores(self, texts: Sequence[str]) -> list[float]:
         response = self._client.post("/prompt-guard", json={"texts": list(texts)})
@@ -118,7 +118,7 @@ class InProcessScreen:
             model_path = hf_hub_download(src.repo, src.file, revision=src.revision)
             tokenizer_path = hf_hub_download(src.repo, "tokenizer.json", revision=src.revision)
         except Exception as exc:  # not cached and no network, or a wrong repo/file
-            raise PrerequisiteMissing(f"cannot fetch {src.repo}@{src.revision[:10]}/{src.file} ({type(exc).__name__})") from exc
+            raise PrerequisiteMissingError(f"cannot fetch {src.repo}@{src.revision[:10]}/{src.file} ({type(exc).__name__})") from exc
         options = ort.SessionOptions()
         if threads:
             options.intra_op_num_threads = threads
@@ -145,7 +145,7 @@ def build_backend(candidate: Candidate, settings: RunSettings, via: str | None =
         return ServiceScreen(candidate)
     if path == "inprocess":
         return InProcessScreen(candidate, settings.threads)
-    raise PrerequisiteMissing(f"a screen is evaluated through path 'service' or 'inprocess', not {path!r}")
+    raise PrerequisiteMissingError(f"a screen is evaluated through path 'service' or 'inprocess', not {path!r}")
 
 
 def pattern_layer_blocks(text: str) -> bool:

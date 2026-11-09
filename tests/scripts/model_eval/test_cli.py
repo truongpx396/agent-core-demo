@@ -8,7 +8,7 @@ import pytest
 from scripts.model_eval import __main__ as cli
 from scripts.model_eval import datasets as ds
 from scripts.model_eval.report import RunOutput
-from scripts.model_eval.runners.base import PrerequisiteMissing
+from scripts.model_eval.runners.base import PrerequisiteMissingError
 from scripts.model_eval.suites import EMBEDDING_SUITE, ItemData
 
 SHA = "5c38ec7c405ec4b44b94cc5a9bb96e735b38267a"
@@ -153,7 +153,7 @@ def test_an_unknown_candidate_lists_what_is_declared(env, capsys):
 
 
 def test_a_missing_prerequisite_exits_three_and_writes_no_report(env, capsys):
-    use(env, FakeRunner({"default": _data()}, error=PrerequisiteMissing("the gateway did not answer")))
+    use(env, FakeRunner({"default": _data()}, error=PrerequisiteMissingError("the gateway did not answer")))
 
     assert cli.main(argv("run", "bge-small", "--out", str(env.tmp / "reports"))) == cli.MISSING
     assert "no report written" in capsys.readouterr().err

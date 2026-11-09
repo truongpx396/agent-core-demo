@@ -28,7 +28,7 @@ async def test_the_real_bridge_yields_exactly_the_five_pinned_tools_all_outward_
         listing = next(t for t in tools if t.name == "sandbox_list")
         reply = await listing.ainvoke({"filter": {"metadata": {"k": "v"}, "states": ["RUNNING"]}})
 
-        # Unreachable backend: reported as a tool error (a string the session turns into SandboxCallFailed), not raised.
+        # Unreachable backend: reported as a tool error (a string the session turns into SandboxCallFailedError), not raised.
         assert reply.startswith("Remote tool error:")
         assert "not-a-real-key" not in reply  # the key is never echoed back to the model
 

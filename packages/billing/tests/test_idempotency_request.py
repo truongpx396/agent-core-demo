@@ -155,11 +155,11 @@ def test_a_value_of_none_differs_from_a_value():
 # --- the error ---------------------------------------------------------------------------------------------------------------------------
 
 def test_the_conflict_is_a_value_error_so_callers_that_turn_bad_input_into_an_error_keep_working():
-    assert issubclass(credits.IdempotencyConflict, ValueError)
+    assert issubclass(credits.IdempotencyConflictError, ValueError)
 
 
 def test_the_conflict_message_names_each_field_and_says_nothing_changed_and_what_to_do():
-    conflict = credits.IdempotencyConflict("K1", "acme", {"amount": ("500.000000", "600.000000"), "reason": ("a", None)})
+    conflict = credits.IdempotencyConflictError("K1", "acme", {"amount": ("500.000000", "600.000000"), "reason": ("a", None)})
 
     assert str(conflict) == (
         "idempotency key 'K1' was already used for a different request (amount: '500.000000' -> '600.000000'; reason: 'a' -> None); "
@@ -172,7 +172,7 @@ def test_the_conflict_message_names_each_field_and_says_nothing_changed_and_what
 def test_a_long_value_is_truncated_in_the_message_but_whole_in_the_attribute():
     long = "x" * 200
 
-    conflict = credits.IdempotencyConflict("K", "t", {"reason": (long, "short")})
+    conflict = credits.IdempotencyConflictError("K", "t", {"reason": (long, "short")})
 
     assert "'" + "x" * 80 + "'…" in str(conflict) and "x" * 81 not in str(conflict), "80 characters, then an ellipsis outside the quotes"
     assert conflict.differences["reason"][0] == long
@@ -239,7 +239,7 @@ async def test_a_replay_with_a_different_request_raises_naming_the_field_and_ins
     conn = WalletConnection()
     await begin(conn, GRANT)
 
-    with pytest.raises(credits.IdempotencyConflict) as raised:
+    with pytest.raises(credits.IdempotencyConflictError) as raised:
         await begin(conn, GRANT | {"amount": "600.000000"})
 
     assert raised.value.differences == {"amount": ("500.000000", "600.000000")}
@@ -259,7 +259,7 @@ async def test_with_no_fields_but_the_kind_any_other_difference_is_a_duplicate_a
     await begin(conn, GRANT)
 
     assert await begin(conn, GRANT | {"amount": "1.000000", "reason": "other"}, fields=["kind"]) == (None, "tx-1")
-    with pytest.raises(credits.IdempotencyConflict) as raised:
+    with pytest.raises(credits.IdempotencyConflictError) as raised:
         await begin(conn, GRANT | {"kind": "debit"}, fields=["kind"])
     assert set(raised.value.differences) == {"kind"}
 
@@ -283,7 +283,7 @@ async def test_a_conflict_is_logged_with_the_tenant_the_key_and_field_names_but_
     conn = WalletConnection()
     await begin(conn, GRANT | {"reason": "secret-ticket-4412"})
 
-    with caplog.at_level(logging.WARNING, logger=credits.logger.name), pytest.raises(credits.IdempotencyConflict):
+    with caplog.at_level(logging.WARNING, logger=credits.logger.name), pytest.raises(credits.IdempotencyConflictError):
         await begin(conn, GRANT | {"reason": "other"})
 
     record = next(r for r in caplog.records if r.getMessage() == "credit_idempotency_conflict")
@@ -335,7 +335,7 @@ async def test_a_grant_field_is_refused_on_a_debit_and_the_other_way_round():
 
 # --- what each write hands to _begin_transaction ---------------------------------------------------------------------------------------------
 
-class Stop(Exception):
+class StopError(Exception):
     pass
 
 
@@ -345,7 +345,7 @@ def seen(monkeypatch):
 
     async def begin_transaction(conn, tenant, kind, key, **kwargs):
         captured.update(kind=kind, key=key, **kwargs)
-        raise Stop
+        raise StopError
 
     monkeypatch.setattr(credits, "_begin_transaction", begin_transaction)
     return captured
@@ -354,7 +354,7 @@ def seen(monkeypatch):
 async def test_grant_in_records_the_request_it_was_asked_for_and_compares_everything_by_default(seen):
     expires = datetime.now(UTC) + timedelta(days=3)
 
-    with pytest.raises(Stop):
+    with pytest.raises(StopError):
         await credits.grant_in(
             CountingConnection(), "acme", "12.5", source="promo", idempotency_key="k", actor="operator:a", reason="why", expires_at=expires,
             provider="stripe", external_ref="pi_1",
@@ -366,7 +366,7 @@ async def test_grant_in_records_the_request_it_was_asked_for_and_compares_everyt
 
 
 async def test_grant_in_with_a_narrowed_set_passes_only_those_fields_to_compare(seen):
-    with pytest.raises(Stop):
+    with pytest.raises(StopError):
         await credits.grant_in(
             CountingConnection(), "acme", 5, source="purchase", idempotency_key="k", actor="a",
             compare=frozenset(credits.GRANT_FIELDS) - {"expires_at"},
@@ -378,7 +378,7 @@ async def test_grant_in_with_a_narrowed_set_passes_only_those_fields_to_compare(
 async def test_debit_in_records_the_pricing_and_the_usage_event_and_the_kind(seen):
     pricing = credits.Pricing(D("0.01"), D("1000"), D("1"))
 
-    with pytest.raises(Stop):
+    with pytest.raises(StopError):
         await credits.debit_in(
             CountingConnection(), "acme", 10, idempotency_key="evt", usage_event_id="evt", reason="model call (chat)", pricing=pricing
         )
@@ -388,17 +388,17 @@ async def test_debit_in_records_the_pricing_and_the_usage_event_and_the_kind(see
 
 
 async def test_clawback_in_is_a_debit_of_kind_clawback_and_forwards_compare(seen):
-    with pytest.raises(Stop):
+    with pytest.raises(StopError):
         await credits.clawback_in(CountingConnection(), "acme", 7, idempotency_key="k", actor="webhook:stripe", reason="payment_refunded", compare=frozenset())
 
     assert seen["kind"] == "clawback" and seen["request"]["kind"] == "clawback" and seen["fields"] == ["kind"]
 
 
 async def test_a_negative_adjustment_is_a_debit_of_kind_adjust_and_a_positive_one_a_grant_from_adjustment(seen):
-    with pytest.raises(Stop):
+    with pytest.raises(StopError):
         await credits.adjust_in(CountingConnection(), "acme", -3, idempotency_key="k", actor="a", reason="why")
     negative = dict(seen)
-    with pytest.raises(Stop):
+    with pytest.raises(StopError):
         await credits.adjust_in(CountingConnection(), "acme", 3, idempotency_key="k", actor="a", reason="why")
 
     assert negative["kind"] == "adjust" and negative["request"]["amount"] == "3.000000"
@@ -411,7 +411,7 @@ async def test_an_expiry_records_the_lot_it_expires(seen):
             await super().execute(sql, params)
             return Cursor((D("5"),))
 
-    with pytest.raises(Stop):
+    with pytest.raises(StopError):
         await credits._expire_lot_in(LotConnection(), "acme", "lot-1")
 
     assert seen["request"] == {"kind": "expire", "lot_id": "lot-1"} and seen["fields"] == ["kind", "lot_id"]

@@ -24,7 +24,7 @@ pre-flight SSRF guard, which never reaches a browser and is covered hermetically
 tests/adapters/outbound/crawl4ai/test_web_crawler.py) needs a target that resolves in DNS yet fails to load, which no stable
 internet host can provide long-term. That path was verified once against a real `.invalid` TLD (guaranteed
 non-resolving) during development (see GRAPH_PATTERNS.md pattern 50 on the resulting
-`net::ERR_NAME_NOT_RESOLVED` and first-line-only `CrawlFailed` message) and is covered deterministically by
+`net::ERR_NAME_NOT_RESOLVED` and first-line-only `CrawlFailedError` message) and is covered deterministically by
 tests/adapters/outbound/crawl4ai/test_web_crawler.py::TestCrawl. This is the "verified once live, tested hermetically
 thereafter" posture of tests/adapters/inbound/mcp/test_mcp_server.py's docstring for FastMCP's in-process call_tool.
 """

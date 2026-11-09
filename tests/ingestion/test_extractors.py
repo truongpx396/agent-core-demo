@@ -15,7 +15,7 @@ import pytest
 from docx import Document
 
 from app.ingestion.extractors import (
-    ExtractionFailed,
+    ExtractionFailedError,
     extract_docx_text,
     extract_pdf_text,
 )
@@ -67,11 +67,11 @@ class TestExtractPdfText:
         assert text.strip() == "Page one text"
 
     def test_garbage_bytes_raise_extraction_failed_not_a_raw_pypdf_exception(self):
-        with pytest.raises(ExtractionFailed):
+        with pytest.raises(ExtractionFailedError):
             extract_pdf_text(b"this is not a pdf at all")
 
     def test_empty_bytes_raise_extraction_failed(self):
-        with pytest.raises(ExtractionFailed):
+        with pytest.raises(ExtractionFailedError):
             extract_pdf_text(b"")
 
 
@@ -85,12 +85,12 @@ class TestExtractDocxText:
         assert extract_docx_text(data) == "First\n\nSecond"
 
     def test_garbage_bytes_raise_extraction_failed(self):
-        with pytest.raises(ExtractionFailed):
+        with pytest.raises(ExtractionFailedError):
             extract_docx_text(b"this is not a docx at all")
 
     def test_a_real_pdf_is_not_a_valid_docx_either(self):
         """Cross-format sanity check: a real PDF's bytes fed to the DOCX
         extractor (e.g. a caller dispatching on a wrong/spoofed
         extension) must fail cleanly, not silently produce garbage text."""
-        with pytest.raises(ExtractionFailed):
+        with pytest.raises(ExtractionFailedError):
             extract_docx_text(_minimal_pdf_bytes("not a docx"))

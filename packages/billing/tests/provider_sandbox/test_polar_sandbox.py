@@ -33,7 +33,7 @@ from credit_billing.providers.base import (
     CheckoutError,
     CreditProduct,
     EventKind,
-    InvalidSignature,
+    InvalidSignatureError,
 )
 from credit_billing.providers.polar import ATTEMPT_KEY, PolarProvider
 from tests.provider_sandbox.conftest import POLAR_SANDBOX_API
@@ -204,15 +204,15 @@ class TestARealSignedDelivery:
         assert other.headers["webhook-id"] != purchase.headers["webhook-id"]
 
     def test_one_extra_byte_is_refused(self, listener, purchase):
-        with pytest.raises(InvalidSignature):
+        with pytest.raises(InvalidSignatureError):
             PolarProvider(listener.secret, access_token="x", environment="sandbox").parse_webhook(purchase.headers, purchase.body + b" ")
 
     def test_another_secret_is_refused(self, purchase):
-        with pytest.raises(InvalidSignature):
+        with pytest.raises(InvalidSignatureError):
             PolarProvider("not-the-cli-session-secret", access_token="x", environment="sandbox").parse_webhook(purchase.headers, purchase.body)
 
     def test_another_event_id_is_refused(self, listener, purchase):
-        with pytest.raises(InvalidSignature):
+        with pytest.raises(InvalidSignatureError):
             PolarProvider(listener.secret, access_token="x", environment="sandbox").parse_webhook(
                 {**purchase.headers, "webhook-id": "msg_someone_elses"}, purchase.body
             )
@@ -220,7 +220,7 @@ class TestARealSignedDelivery:
     def test_the_signature_under_another_version_label_is_refused(self, listener, purchase):
         relabelled = {**purchase.headers, "webhook-signature": purchase.headers["webhook-signature"].replace("v1,", "v2,")}
 
-        with pytest.raises(InvalidSignature):
+        with pytest.raises(InvalidSignatureError):
             PolarProvider(listener.secret, access_token="x", environment="sandbox").parse_webhook(relabelled, purchase.body)
 
     def test_the_window_is_five_minutes_in_both_directions(self, listener, purchase):
@@ -229,7 +229,7 @@ class TestARealSignedDelivery:
         for edge in (t + 300, t - 300):
             assert parse(listener, purchase, clock=lambda edge=edge: edge)
         for beyond in (t + 301, t - 301):
-            with pytest.raises(InvalidSignature):
+            with pytest.raises(InvalidSignatureError):
                 parse(listener, purchase, clock=lambda beyond=beyond: beyond)
 
     def test_a_real_delivery_arrives_within_the_window_on_this_machines_clock(self, purchase):

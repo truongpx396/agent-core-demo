@@ -30,8 +30,8 @@ from credit_billing.providers.base import (
     EventKind,
     ExportFailure,
     ExportResult,
-    InvalidPayload,
-    InvalidSignature,
+    InvalidPayloadError,
+    InvalidSignatureError,
     UsageEvent,
 )
 
@@ -90,9 +90,9 @@ class FakeProvider:
         try:
             data = json.loads(body)
         except ValueError as exc:
-            raise InvalidPayload("body is not JSON") from exc
+            raise InvalidPayloadError("body is not JSON") from exc
         if not isinstance(data, dict) or not isinstance(data.get("id"), str) or not data["id"]:
-            raise InvalidPayload("body has no event id")
+            raise InvalidPayloadError("body has no event id")
         raw_type = str(data.get("type") or "")
         return [
             BillingEvent(
@@ -112,17 +112,17 @@ class FakeProvider:
     def _verify(self, headers: Mapping[str, str], body: bytes) -> None:
         header = headers.get(SIGNATURE_HEADER)
         if not header:
-            raise InvalidSignature
+            raise InvalidSignatureError
         parts = dict(part.split("=", 1) for part in header.split(",") if "=" in part)
         try:
             stamp = int(parts["t"])
             claimed = parts["v1"]
         except (KeyError, ValueError):
-            raise InvalidSignature from None
+            raise InvalidSignatureError from None
         # Constant-time compare, and the MAC is checked BEFORE the window, so a wrong signature and a stale
         # one are indistinguishable from outside.
         if not hmac.compare_digest(claimed, self._mac(stamp, body)) or abs(self._clock() - stamp) > TOLERANCE_SECONDS:
-            raise InvalidSignature
+            raise InvalidSignatureError
 
     async def create_checkout(self, *args: Any, **kwargs: Any) -> NoReturn:
         raise NotImplementedError("the fake provider declares no CHECKOUT capability")

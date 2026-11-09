@@ -1,4 +1,4 @@
-"""Every process that runs the application binds the ports first (`app/bootstrap.py::wire`), or its first call to a port raises `PortNotBound`.
+"""Every process that runs the application binds the ports first (`app/bootstrap.py::wire`), or its first call to a port raises `PortNotBoundError`.
 
 An entrypoint is a module that is run (`if __name__ == "__main__"`) or that builds the ASGI app. One that imports the application (the agent, a
 domain, a port, an adapter, the queue, a channel, MCP) must call `wire()` itself, or run inside `scheduled_job`, which does. The scan is over the AST, so

@@ -71,8 +71,8 @@ from credit_billing.providers.base import (
     CreditProduct,
     EventKind,
     ExportResult,
-    InvalidPayload,
-    InvalidSignature,
+    InvalidPayloadError,
+    InvalidSignatureError,
     UsageEvent,
 )
 
@@ -134,10 +134,10 @@ class PolarProvider:
         try:
             data = json.loads(body)
         except ValueError as exc:
-            raise InvalidPayload("body is not JSON") from exc
+            raise InvalidPayloadError("body is not JSON") from exc
         obj = data.get("data") if isinstance(data, dict) else None
         if not isinstance(data, dict) or not _text(data.get("type")) or not isinstance(obj, dict) or len(event_id) > MAX_EVENT_ID_CHARS:
-            raise InvalidPayload("body is not a Polar event")
+            raise InvalidPayloadError("body is not a Polar event")
         raw_type = data["type"]
         kind, customer, product, payment, amount, currency = _normalize(raw_type, obj)
         return [
@@ -158,13 +158,13 @@ class PolarProvider:
     def _verify(self, headers: Mapping[str, str], body: bytes) -> None:
         webhook_id, stamp_text, signatures = headers.get("webhook-id"), headers.get("webhook-timestamp"), headers.get("webhook-signature")
         if not webhook_id or not stamp_text or not signatures:
-            raise InvalidSignature
+            raise InvalidSignatureError
         try:
             stamp = float(stamp_text)
         except ValueError:
-            raise InvalidSignature from None
+            raise InvalidSignatureError from None
         if not math.isfinite(stamp):
-            raise InvalidSignature
+            raise InvalidSignatureError
         candidates: list[bytes] = []
         for part in signatures.split():
             version, sep, value = part.partition(",")
@@ -175,7 +175,7 @@ class PolarProvider:
             except (binascii.Error, ValueError):
                 continue
         if not candidates:
-            raise InvalidSignature
+            raise InvalidSignatureError
         content = f"{webhook_id}.{math.floor(stamp)}.".encode() + body
         # Constant-time against EVERY candidate under EVERY derived key, accumulated without short-circuiting, and the MAC is checked
         # BEFORE the window, so a wrong signature and a stale one are indistinguishable from outside.
@@ -186,7 +186,7 @@ class PolarProvider:
                 matched |= hmac.compare_digest(expected, candidate)
         now = self._clock()
         if not matched or stamp < now - self._tolerance or stamp > now + self._tolerance:
-            raise InvalidSignature
+            raise InvalidSignatureError
 
     # --- checkout, outbound -----------------------------------------------------------------------------
 

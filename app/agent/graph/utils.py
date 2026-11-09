@@ -20,7 +20,7 @@ from langgraph.errors import GraphBubbleUp
 
 from app.core.config import CHAT_MODEL, OPENAI_API_BASE, OPENAI_API_KEY, settings
 from app.core.errors import is_store_error
-from app.core.tool_idempotency import MutatingToolTimedOut
+from app.core.tool_idempotency import MutatingToolTimedOutError
 from app.core.tool_schema import strict_tool_schema
 from app.ports.outbound.llm import ChatModel, chat_models
 
@@ -132,7 +132,7 @@ def friendly_tool_error(error: Exception) -> str:
     """Turned into a ToolMessage by ToolNode's handle_tool_errors instead of
     propagating and killing the run — the agent sees this on its next turn.
 
-    `MutatingToolTimedOut` (app/core/tool_idempotency.py) gets its own
+    `MutatingToolTimedOutError` (app/core/tool_idempotency.py) gets its own
     message: a plain "try a different approach" is actively dangerous
     advice for a mutating/outward tool's soft timeout, since the
     underlying write may well have already committed — "try again" here
@@ -146,7 +146,7 @@ def friendly_tool_error(error: Exception) -> str:
     call itself, which is why this dispatches on the exception's TYPE
     rather than on a tool name/capability lookup.
     """
-    if isinstance(error, MutatingToolTimedOut):
+    if isinstance(error, MutatingToolTimedOutError):
         return (
             f"{error.tool_name} timed out, but its effect may already have been "
             "applied on the far side of that timeout before this failure was "

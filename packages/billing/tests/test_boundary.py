@@ -210,7 +210,7 @@ class _Provider:
 async def test_an_unconfigured_package_refuses_instead_of_guessing(monkeypatch):
     monkeypatch.setattr(billing_db, "_provider", None)
 
-    with pytest.raises(billing_db.BillingNotConfigured):
+    with pytest.raises(billing_db.BillingNotConfiguredError):
         async with billing_db.get_connection():
             pytest.fail("a connection was handed out with no provider configured")
 

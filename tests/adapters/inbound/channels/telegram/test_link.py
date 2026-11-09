@@ -9,7 +9,7 @@ import pytest
 from cryptography.fernet import Fernet
 
 from app.adapters.inbound.channels import oauth
-from app.adapters.inbound.channels.oauth import SignInRefused, Tokens
+from app.adapters.inbound.channels.oauth import SignInRefusedError, Tokens
 from app.adapters.inbound.channels.telegram import link as telegram_link
 from app.adapters.inbound.channels.telegram.link import (
     LinkedAuth,
@@ -181,7 +181,7 @@ class TestTheReturnFromTheLoginPage:
     async def test_a_code_the_authorization_server_would_not_exchange_binds_nothing(self, monkeypatch, reason):
         flow, _, _ = make_flow()
         state = await self.begin(flow)
-        patch_exchange(monkeypatch, SignInRefused(reason))
+        patch_exchange(monkeypatch, SignInRefusedError(reason))
 
         assert await flow.callback("c", state) is None
 
@@ -269,7 +269,7 @@ class TestSigningInAsALinkedAccount:
     async def test_without_a_link_the_person_is_told_to_log_in(self):
         auth, _ = self.auth()
 
-        with pytest.raises(SignInRefused) as refused:
+        with pytest.raises(SignInRefusedError) as refused:
             await auth.sign_in()
 
         assert refused.value.reason == "not_linked"
@@ -317,10 +317,10 @@ class TestSigningInAsALinkedAccount:
         """A person disabled at the authorization server has their refresh token revoked at once (specs/020, measured), so this is how they are cut off."""
         auth, store = self.auth()
         await store.save(42, refresh_token="r-1", sub="u", account="a")
-        self.patch_refresh(monkeypatch, SignInRefused("credentials"))
+        self.patch_refresh(monkeypatch, SignInRefusedError("credentials"))
         before = _count(metrics.channel_telegram_link_total, step="refresh", outcome="revoked")
 
-        with pytest.raises(SignInRefused) as refused:
+        with pytest.raises(SignInRefusedError) as refused:
             await auth.sign_in()
 
         assert refused.value.reason == "not_linked"
@@ -330,9 +330,9 @@ class TestSigningInAsALinkedAccount:
     async def test_an_authorization_server_that_did_not_answer_keeps_the_link(self, monkeypatch):
         auth, store = self.auth()
         await store.save(42, refresh_token="r-1", sub="u", account="a")
-        self.patch_refresh(monkeypatch, SignInRefused("unavailable"))
+        self.patch_refresh(monkeypatch, SignInRefusedError("unavailable"))
 
-        with pytest.raises(SignInRefused) as refused:
+        with pytest.raises(SignInRefusedError) as refused:
             await auth.sign_in()
 
         assert refused.value.reason == "unavailable"

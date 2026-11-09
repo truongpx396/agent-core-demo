@@ -73,7 +73,7 @@ class EmbeddingIdentity:
         }
 
 
-class EmbeddingIdentityMismatch(Exception):
+class EmbeddingIdentityMismatchError(Exception):
     """A collection holds vectors from a different embedding identity than this process is configured to use.
 
     Reads degrade like a retrieval outage (the three callers that already absorb a retrieval failure are unchanged); writes fail visibly.

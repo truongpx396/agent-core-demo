@@ -31,11 +31,11 @@ from app.adapters.inbound.channels.door import (
     SIGNIN_MESSAGES,
     Auth,
     Door,
-    DoorRefused,
+    DoorRefusedError,
     HeaderAuth,
     make_http_client,
 )
-from app.adapters.inbound.channels.oauth import SignInRefused
+from app.adapters.inbound.channels.oauth import SignInRefusedError
 from app.adapters.inbound.channels.telegram import link, people, server
 from app.adapters.inbound.channels.telegram.api import NO_KEYBOARD, BotApi
 from app.adapters.inbound.channels.telegram.approvals import (
@@ -138,7 +138,7 @@ class Channel:
         self._linked: dict[int, LinkedAuth] = {}
 
     async def door_for(self, user_id: int) -> tuple[Door, str]:
-        """(a door that acts as this Telegram user, that person's id). Raises `SignInRefused` when they cannot be signed in."""
+        """(a door that acts as this Telegram user, that person's id). Raises `SignInRefusedError` when they cannot be signed in."""
         auth: Auth
         if self.links is not None:
             linked = self._linked.setdefault(user_id, LinkedAuth(self.http, self.links, user_id))
@@ -152,7 +152,7 @@ class Channel:
             principal = await person.sign_in()
             auth = person
         if not principal:
-            raise SignInRefused("credentials")  # a token with no subject names nobody
+            raise SignInRefusedError("credentials")  # a token with no subject names nobody
         return Door(auth, channel="telegram", domain=AGENT_DOMAIN, http=self.http), principal
 
 
@@ -211,7 +211,7 @@ class Bot:
     async def _sign_in(self, chat_id: int, user_id: int) -> tuple[Door, str] | None:
         try:
             return await self.channel.door_for(user_id)
-        except SignInRefused as exc:
+        except SignInRefusedError as exc:
             await self.api.send_message(chat_id, _refusal_reply(exc.reason, user_id))
             return None
 
@@ -248,7 +248,7 @@ class Bot:
     async def _after_stale_pause(self, door: Door, thread_id: str, text: str, replay_key: str | None, sink: ReplySink, refused: Outcome) -> Outcome:
         try:
             await door.cancel_turn(thread_id, wait=True)
-        except DoorRefused:
+        except DoorRefusedError:
             logger.warning("telegram_stale_pause_not_cleared", extra={"thread_id": thread_id})
             return refused
         metrics.channel_telegram_approval_total.labels(outcome="expired").inc()
@@ -399,7 +399,7 @@ class Bot:
         pending = await self.approvals.for_thread(thread_id) if self.approvals is not None else None
         try:
             await door.cancel_turn(thread_id)
-        except DoorRefused:
+        except DoorRefusedError:
             await self.api.send_message(chat_id, "I could not reach the agent to cancel that. Try again shortly.")
             return
         if pending is not None and self.approvals is not None:

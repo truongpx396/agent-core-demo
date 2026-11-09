@@ -36,7 +36,7 @@ from app.core.security import Policy, SecurityCtx, valid_ctx
 from app.core.tool_idempotency import idempotent
 from app.core.tool_runtime import NO_CTX_REFUSAL, arun_with_timeout, ctx_from_config
 from app.core.untrusted import frame_untrusted
-from app.ports.outbound.web import SearchHit, SearchNotConfigured, web_search
+from app.ports.outbound.web import SearchHit, SearchNotConfiguredError, web_search
 
 ACTION = "web_search"
 _MAX_QUERY_CHARS = 300
@@ -79,7 +79,7 @@ def format_hits(hits: list[SearchHit]) -> str:
 async def _web_search_impl(query: str) -> str:
     try:
         hits = await web_search.get().search(query)
-    except SearchNotConfigured as exc:
+    except SearchNotConfiguredError as exc:
         # An answer, not a failure: this deployment never opted in. Returned (not raised) so it does not count as a tool error.
         return str(exc)
     if not hits:

@@ -18,7 +18,7 @@ from scripts.model_eval import datasets as ds
 from scripts.model_eval.controls import derived_controls
 from scripts.model_eval.runners import classify, topics
 from scripts.model_eval.runners.base import (
-    PrerequisiteMissing,
+    PrerequisiteMissingError,
     RunSettings,
 )
 from scripts.model_eval.stats import measure
@@ -104,42 +104,42 @@ def test_the_trade_offs_name_the_label_set_the_cutoff_per_topic_results_and_the_
 
 # ---- what it refuses ----------------------------------------------------------------------------------------------------------------
 def test_a_label_set_with_no_cutoff_for_the_candidates_model_cannot_be_scored():
-    with pytest.raises(PrerequisiteMissing, match=r"no calibration for 'bge-small-en-v1.5'.*labelset-calibrate"):
+    with pytest.raises(PrerequisiteMissingError, match=r"no calibration for 'bge-small-en-v1.5'.*labelset-calibrate"):
         topics.run(CANDIDATE, settings(), backend=FakeTopics(min_similarity=None))
 
 
 @pytest.mark.parametrize("name", ["constant", "random-router", "baseline-as-candidate"])
 def test_the_routing_controls_are_not_label_set_candidates(name):
     control = cli.resolve_candidate("classifier", name)
-    with pytest.raises(PrerequisiteMissing, match="control for routing outcomes"):
+    with pytest.raises(PrerequisiteMissingError, match="control for routing outcomes"):
         topics.build_backend(control, LABELSET, settings())
 
 
 def test_a_label_set_is_scored_in_process_only(monkeypatch):
-    with pytest.raises(PrerequisiteMissing, match="evaluated in-process"):
+    with pytest.raises(PrerequisiteMissingError, match="evaluated in-process"):
         topics.build_backend(CANDIDATE, LABELSET, settings(), via="service")
 
 
 def test_a_dataset_and_a_label_set_that_disagree_on_the_labels_are_refused(monkeypatch):
     other = type("Other", (), {"labels": {"x": ["a"], "y": ["b"]}})()
     monkeypatch.setattr(topics, "load_labelset", lambda name: other)
-    with pytest.raises(PrerequisiteMissing, match="disagree on the labels"):
+    with pytest.raises(PrerequisiteMissingError, match="disagree on the labels"):
         topics.run(CANDIDATE, settings(), backend=FakeTopics())
 
 
 def test_a_dataset_that_is_not_a_topics_dataset_is_refused():
-    with pytest.raises(PrerequisiteMissing, match="not 'topics'"):
+    with pytest.raises(PrerequisiteMissingError, match="not 'topics'"):
         topics.run(CANDIDATE, RunSettings(dataset="route-domains", runs=1), backend=FakeTopics())
 
 
 def test_a_missing_label_set_is_a_missing_prerequisite_not_a_crash(tmp_path):
-    with pytest.raises(PrerequisiteMissing, match="no label set named 'nope'"):
+    with pytest.raises(PrerequisiteMissingError, match="no label set named 'nope'"):
         topics.load_labelset("nope", tmp_path)
 
 
 def test_a_label_set_the_service_would_refuse_is_refused_here_too(tmp_path):
     (tmp_path / "bad.json").write_text("{}")
-    with pytest.raises(PrerequisiteMissing, match="refused by the service's own parser"):
+    with pytest.raises(PrerequisiteMissingError, match="refused by the service's own parser"):
         topics.load_labelset("bad", tmp_path)
 
 
@@ -208,7 +208,7 @@ def test_a_keep_share_outside_zero_and_one_is_refused(keep):
 
 
 def test_a_split_with_no_in_scope_sentence_cannot_be_calibrated():
-    with pytest.raises(PrerequisiteMissing, match="no in-scope sentence"):
+    with pytest.raises(PrerequisiteMissingError, match="no in-scope sentence"):
         topics.calibrate(Scripted([], [0.1]), rows(0, 1), "none")
 
 

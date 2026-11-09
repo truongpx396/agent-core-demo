@@ -14,7 +14,7 @@ import pytest
 from app.adapters.outbound.postgres import usage_events as pg_usage_events
 from app.agent.cost import budget_holds, budgets, spend
 from app.ports.outbound import cost as cost_ports
-from tests.conftest import TEST_CTX, _NoPostgresInTests
+from tests.conftest import TEST_CTX, _NoPostgresInTestsError
 
 
 class _Cursor:
@@ -177,5 +177,5 @@ async def test_the_suites_own_guard_covers_this_read():
     """`mock_appdata_postgres` (tests/conftest.py) must stop THIS module reaching a real database: the read runs before
     every turn, so a turn test that is not guarded pays a real connection attempt for it and its result depends on what is
     running on the machine. No monkeypatching here, on purpose: this is the guard as every other test sees it."""
-    with pytest.raises(_NoPostgresInTests):
+    with pytest.raises(_NoPostgresInTestsError):
         await spend.usage_summary("acme")

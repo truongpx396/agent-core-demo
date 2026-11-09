@@ -124,9 +124,9 @@ async def test_a_deployment_with_no_key_gets_a_normal_answer_not_a_tool_error():
 
 
 async def test_a_real_failure_is_raised_so_the_graph_reports_it_as_a_tool_error(search_returns):
-    search_returns(serper.SearchFailed("The web search provider refused this deployment's API key."))
+    search_returns(serper.SearchFailedError("The web search provider refused this deployment's API key."))
 
-    with pytest.raises(serper.SearchFailed):
+    with pytest.raises(serper.SearchFailedError):
         await _call(_tool())
 
 

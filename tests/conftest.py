@@ -65,14 +65,14 @@ _METRIC_READER = InMemoryMetricReader()
 metrics_api.set_meter_provider(MeterProvider(metric_readers=[_METRIC_READER]))
 
 
-class _NoPostgresInTests(Exception):
+class _NoPostgresInTestsError(Exception):
     """Raised by `mock_appdata_postgres` instead of letting `get_connection()`
     attempt a real (and, without a live Postgres, slow-to-time-out) TCP
     connection — see this module's docstring."""
 
 
 def _no_postgres_in_tests():
-    raise _NoPostgresInTests(
+    raise _NoPostgresInTestsError(
         "appdata Postgres is not available in this test session — every "
         "caller of get_connection() must already degrade gracefully on a "
         "connection failure by design; see tests/conftest.py's docstring."

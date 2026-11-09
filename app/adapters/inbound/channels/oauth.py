@@ -26,7 +26,7 @@ _FORBIDDEN = "forbidden"
 _MISSING = ("doesn't exist", "does not exist")
 
 
-class SignInRefused(Exception):
+class SignInRefusedError(Exception):
     """Why a sign-in did not produce a token. `reason` is one of: forbidden (the person is disabled: never re-create or re-enable them),
     unknown_person, credentials (a wrong password, or a refresh token that was refused), unavailable (the authorization server did not answer)."""
 
@@ -80,7 +80,7 @@ def authorize_url(issuer: str, *, client_id: str, redirect_uri: str, scope: str,
 def _tokens(body: dict) -> Tokens:
     access = body.get("access_token")
     if not isinstance(access, str) or not access:
-        raise SignInRefused("credentials")
+        raise SignInRefusedError("credentials")
     lifetime = body.get("expires_in")
     expires_at = time.time() + float(lifetime) if isinstance(lifetime, (int, float)) else float(jwt_claims(access).get("exp", 0))
     refresh = body.get("refresh_token")
@@ -92,9 +92,9 @@ async def _token_request(http: httpx.AsyncClient, issuer: str, form: dict[str, s
         reply = await http.post(f"{issuer.rstrip('/')}/api/login/oauth/access_token", data=form)
         body = reply.json()
     except (httpx.HTTPError, ValueError) as exc:
-        raise SignInRefused("unavailable") from exc
+        raise SignInRefusedError("unavailable") from exc
     if not isinstance(body, dict) or "error" in body:
-        raise SignInRefused("credentials")
+        raise SignInRefusedError("credentials")
     return _tokens(body)
 
 
@@ -158,17 +158,17 @@ async def password_sign_in(
         )
         body = reply.json()
     except (httpx.HTTPError, ValueError) as exc:
-        raise SignInRefused("unavailable") from exc
+        raise SignInRefusedError("unavailable") from exc
     if not isinstance(body, dict):
-        raise SignInRefused("unavailable")
+        raise SignInRefusedError("unavailable")
     if body.get("status") != "ok":
         message = str(body.get("msg") or "").lower()
         if _FORBIDDEN in message:
-            raise SignInRefused("forbidden")
+            raise SignInRefusedError("forbidden")
         if any(phrase in message for phrase in _MISSING):
-            raise SignInRefused("unknown_person")
-        raise SignInRefused("credentials")
+            raise SignInRefusedError("unknown_person")
+        raise SignInRefusedError("credentials")
     code = body.get("data")
     if not isinstance(code, str) or not code:
-        raise SignInRefused("credentials")
+        raise SignInRefusedError("credentials")
     return await exchange_code(http, issuer, client_id=client_id, code=code, verifier=verifier, redirect_uri=redirect_uri, resource=resource)

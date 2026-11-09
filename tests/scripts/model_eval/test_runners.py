@@ -8,7 +8,11 @@ import pytest
 
 from scripts.model_eval.candidates import Candidate, Prepare, Source
 from scripts.model_eval.runners import embedding, rerank, screen
-from scripts.model_eval.runners.base import PrerequisiteMissing, percentiles, seeded_rng
+from scripts.model_eval.runners.base import (
+    PrerequisiteMissingError,
+    percentiles,
+    seeded_rng,
+)
 from scripts.model_eval.runners.embedding import Query
 
 
@@ -123,7 +127,7 @@ def test_an_unreachable_gateway_is_a_missing_prerequisite_not_a_crash(monkeypatc
             raise ConnectionError("refused")
 
     monkeypatch.setattr(app_embeddings, "embeddings", Down())
-    with pytest.raises(PrerequisiteMissing, match="gateway did not answer"):
+    with pytest.raises(PrerequisiteMissingError, match="gateway did not answer"):
         embedding.GatewayEmbedding(_candidate())
 
 
@@ -151,7 +155,7 @@ def test_a_service_that_does_not_serve_the_model_is_a_missing_prerequisite():
     def handler(request):
         return httpx.Response(404, json={"error": {"code": "model_not_found", "message": "no"}})
 
-    with pytest.raises(PrerequisiteMissing, match="did not serve embeddings"):
+    with pytest.raises(PrerequisiteMissingError, match="did not serve embeddings"):
         embedding.ServiceEmbedding(_candidate(path="service"), client=_service_client(handler))
 
 

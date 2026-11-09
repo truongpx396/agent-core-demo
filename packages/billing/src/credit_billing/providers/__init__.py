@@ -17,7 +17,7 @@ FACTORIES: dict[str, Callable[[str], BillingProvider]] = {
 }
 
 
-class UnknownProvider(ValueError):
+class UnknownProviderError(ValueError):
     """A configured provider name no adapter is registered under."""
 
 
@@ -25,7 +25,7 @@ def build(name: str, secret: str) -> BillingProvider:
     try:
         factory = FACTORIES[name]
     except KeyError:
-        raise UnknownProvider(f"no billing adapter is registered as {name!r}; registered: {sorted(FACTORIES)}") from None
+        raise UnknownProviderError(f"no billing adapter is registered as {name!r}; registered: {sorted(FACTORIES)}") from None
     return factory(secret)
 
 
@@ -37,7 +37,7 @@ def build_configured(names: tuple[str, ...], secrets: Mapping[str, str]) -> dict
     for name in names:
         secret = secrets.get(name, "")
         if not secret:
-            raise UnknownProvider(f"billing provider {name!r} is enabled but BILLING_WEBHOOK_SECRETS has no secret for it")
+            raise UnknownProviderError(f"billing provider {name!r} is enabled but BILLING_WEBHOOK_SECRETS has no secret for it")
         built[name] = build(name, secret)
     return built
 

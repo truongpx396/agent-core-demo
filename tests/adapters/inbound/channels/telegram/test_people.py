@@ -9,7 +9,7 @@ import asyncio
 import pytest
 
 from app.adapters.inbound.channels import oauth
-from app.adapters.inbound.channels.oauth import SignInRefused
+from app.adapters.inbound.channels.oauth import SignInRefusedError
 from app.adapters.inbound.channels.telegram import people as telegram_people
 from app.adapters.inbound.channels.telegram.people import (
     PersonAuth,
@@ -167,7 +167,7 @@ class TestWhoMayCreateAPerson:
         credentials are an administrator's of the whole organization)."""
         people = TelegramPeople(casdoor.client())
 
-        with pytest.raises(SignInRefused) as exc:
+        with pytest.raises(SignInRefusedError) as exc:
             await people.sign_in(7)
 
         assert exc.value.reason == "unknown_person"
@@ -210,7 +210,7 @@ class TestWhoMayCreateAPerson:
         failed = _count(metrics.channel_person_provisioned_total, outcome="failed")
         people = TelegramPeople(casdoor.client())
 
-        with pytest.raises(SignInRefused) as exc:
+        with pytest.raises(SignInRefusedError) as exc:
             await people.sign_in(7)
 
         assert exc.value.reason == "credentials"
@@ -225,7 +225,7 @@ class TestDisabledIsFinal:
         operator_adds(casdoor, 7, forbidden=True)
         people = TelegramPeople(casdoor.client())
 
-        with pytest.raises(SignInRefused) as exc:
+        with pytest.raises(SignInRefusedError) as exc:
             await people.sign_in(7)
 
         assert exc.value.reason == "forbidden"
@@ -246,7 +246,7 @@ class TestAWrongPasswordIsNotRetried:
         casdoor.add_person(TENANT, "telegram-7", "a password the bot does not derive")
         people = TelegramPeople(casdoor.client())
 
-        with pytest.raises(SignInRefused) as exc:
+        with pytest.raises(SignInRefusedError) as exc:
             await people.sign_in(7)
 
         assert exc.value.reason == "credentials"
@@ -262,7 +262,7 @@ class TestEveryOutcomeIsCounted:
 
         await people.sign_in(1)
         for user_id in (2, 3):
-            with pytest.raises(SignInRefused):
+            with pytest.raises(SignInRefusedError):
                 await people.sign_in(user_id)
 
         for outcome in counts:

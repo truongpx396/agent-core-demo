@@ -21,7 +21,7 @@ from scripts.model_eval.controls import CONTROL_CANDIDATES, derived_controls
 from scripts.model_eval.report import RunOutput, build_report, render_markdown, validate
 from scripts.model_eval.runners import classify, embedding, rerank, screen, topics
 from scripts.model_eval.runners.base import (
-    PrerequisiteMissing,
+    PrerequisiteMissingError,
     RunSettings,
     latest_version,
 )
@@ -217,7 +217,7 @@ def cmd_verify(args: argparse.Namespace) -> int:
             for control in derived_controls(record["kind"], suite, baseline.data):
                 if not control.ok:
                     problems.append(f"{path.name}: control {control.name} expected {control.expect}, observed {control.observed}")
-        except (OSError, KeyError, ValueError, baselines.BaselineMismatch) as exc:
+        except (OSError, KeyError, ValueError, baselines.BaselineMismatchError) as exc:
             problems.append(f"{path.name}: {type(exc).__name__}: {exc}")
     if problems:
         sys.stdout.write("verification FAILED:\n  " + "\n  ".join(problems) + "\n")
@@ -252,7 +252,7 @@ def cmd_route_label(args: argparse.Namespace) -> int:
         try:
             chat(alias, [{"role": "user", "content": "Reply with the single word: ready"}], 120.0)
         except Exception as exc:  # whatever is wrong, say which alias and stop before spending time
-            raise PrerequisiteMissing(f"the gateway did not answer for alias {alias!r} ({type(exc).__name__}); is the stack up (`make up`) and OPENAI_API_BASE correct?") from exc
+            raise PrerequisiteMissingError(f"the gateway did not answer for alias {alias!r} ({type(exc).__name__}); is the stack up (`make up`) and OPENAI_API_BASE correct?") from exc
     out = routing.outcomes_dir(version_dir) / f"{args.strong_id or args.strong}.jsonl"
     result = route_label.label_prompts(
         prompts, local=args.local, strong=args.strong, judge=args.judge, chat=chat, out_path=out, call_timeout=args.call_timeout, deadline=args.deadline
@@ -352,13 +352,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     except routing.OutcomesError as exc:
         sys.stderr.write(f"refused: {exc}\n")
         return USAGE
-    except baselines.BaselineExists as exc:
+    except baselines.BaselineExistsError as exc:
         sys.stderr.write(f"{exc}\n")
         return USAGE
-    except PrerequisiteMissing as exc:
+    except PrerequisiteMissingError as exc:
         sys.stderr.write(f"prerequisite missing (no report written): {exc}\n")
         return MISSING
-    except (ds.DatasetError, baselines.BaselineMismatch) as exc:
+    except (ds.DatasetError, baselines.BaselineMismatchError) as exc:
         sys.stderr.write(f"verification failed: {exc}\n")
         return VERIFY_FAILED
     except Exception as exc:  # noqa: BLE001 - last line of defence: say what broke, exit 1, never a bare traceback for an operator

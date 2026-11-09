@@ -93,7 +93,7 @@ class TestGetOrCreateSandboxId:
 
         raw = _raw(sandbox_list=fake_sandbox_list, sandbox_create=fake_sandbox_create)
 
-        with pytest.raises(sandbox_session.SandboxCallFailed):
+        with pytest.raises(sandbox_session.SandboxCallFailedError):
             await sandbox_session.get_or_create_sandbox_id(raw, "thread-4", tenant="ecorp")
 
     async def test_raises_when_create_succeeds_but_omits_a_sandbox_id(self):
@@ -105,7 +105,7 @@ class TestGetOrCreateSandboxId:
 
         raw = _raw(sandbox_list=fake_sandbox_list, sandbox_create=fake_sandbox_create)
 
-        with pytest.raises(sandbox_session.SandboxCallFailed):
+        with pytest.raises(sandbox_session.SandboxCallFailedError):
             await sandbox_session.get_or_create_sandbox_id(raw, "thread-5", tenant="ecorp")
 
 
@@ -182,7 +182,7 @@ class TestRunCommandInSandboxImpl:
             command_run=lambda **kw: "Remote tool error: Error executing tool command_run: sandbox gone",
         )
 
-        with pytest.raises(sandbox_session.SandboxCallFailed):
+        with pytest.raises(sandbox_session.SandboxCallFailedError):
             await sandbox_session.run_command_in_sandbox_impl("ls", "t", raw, tenant="ecorp")
 
 
@@ -280,7 +280,7 @@ class TestRunPythonInSandboxImpl:
             file_write=lambda **kw: "Remote tool error: Error executing tool file_write: disk full",
         )
 
-        with pytest.raises(sandbox_session.SandboxCallFailed):
+        with pytest.raises(sandbox_session.SandboxCallFailedError):
             await sandbox_session.run_python_in_sandbox_impl("print(1)", "t", raw, tenant="ecorp")
 
     async def test_strips_a_markdown_code_fence_the_model_wrapped_the_script_in(self):
@@ -437,13 +437,13 @@ class TestCallRawTool:
     async def test_raises_on_unparseable_response(self):
         raw = _raw(sandbox_list=lambda filter: "not json at all")
 
-        with pytest.raises(sandbox_session.SandboxCallFailed):
+        with pytest.raises(sandbox_session.SandboxCallFailedError):
             await sandbox_session._call_raw_tool(raw, "sandbox_list", filter={})
 
     async def test_raises_on_a_json_array_instead_of_an_object(self):
         raw = _raw(sandbox_list=lambda filter: json.dumps([1, 2, 3]))
 
-        with pytest.raises(sandbox_session.SandboxCallFailed):
+        with pytest.raises(sandbox_session.SandboxCallFailedError):
             await sandbox_session._call_raw_tool(raw, "sandbox_list", filter={})
 
 

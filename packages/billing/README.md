@@ -57,7 +57,7 @@ from credit_billing import db
 db.configure(connection=my_pool.connection)    # an async context manager yielding a psycopg AsyncConnection
 ```
 
-The provider **owns the transaction**: one `async with` is one transaction, committed on a clean exit and rolled back when the block raises (psycopg_pool's `pool.connection` does exactly this). Without it the package **refuses** (`BillingNotConfigured`) instead of guessing.
+The provider **owns the transaction**: one `async with` is one transaction, committed on a clean exit and rolled back when the block raises (psycopg_pool's `pool.connection` does exactly this). Without it the package **refuses** (`BillingNotConfiguredError`) instead of guessing.
 
 **Schema.** The package ships four idempotent scripts (`20-` the wallet, `22-` the customer link, product catalog and webhook inbox, `24-` the usage-event store, `25-` the export outbox) and a tool that applies them to the database you passed above:
 
@@ -72,7 +72,7 @@ Safe to run again (a second run applies nothing), safe to run twice at once (eac
 ```python
 from credit_billing import db, migrate
 db.configure(connection=pool.connection)
-await migrate.migrate()            # a Result(applied=[...], skipped=[...]); MigrationLockTimeout / MigrationFailed on trouble
+await migrate.migrate()            # a Result(applied=[...], skipped=[...]); MigrationLockTimeoutError / MigrationFailedError on trouble
 ```
 
 The scripts are *repeatable*: they are idempotent and are edited in place, so a changed checksum means "apply again". They open with psql's `\connect appdata`, a meta-command no driver can run, so `schema.executable(name)` returns the text without that one line (and refuses any other psql meta-command). `22-billing.sql` references tables from `20-credit-wallet.sql`: the numeric order is a dependency.
@@ -134,7 +134,7 @@ CI installs this package alone into a clean environment and runs the first comma
 
 ## What it is not (yet)
 
-Not a service: there is no HTTP API beyond the webhook route and no service authentication. Not a billing platform: no invoices, tax, subscriptions management or holds; **holds and outbound notifications are the next wallet features, then the service shell and turnkey setup** (the open work, in order, with where each item's reasoning lives, is [`docs/ROADMAP.md`](docs/ROADMAP.md)). The usage-event store is in-process (it takes your connection and your transaction) and is the shape a service would take over, not yet a service of its own. Usage-based billing to a provider is built but off (prepaid packs only). A reused idempotency key with a different request is refused (`IdempotencyConflict`), not answered "already applied". One limit: a row written before the `request` column existed has no stored request and keeps the old behaviour for ever.
+Not a service: there is no HTTP API beyond the webhook route and no service authentication. Not a billing platform: no invoices, tax, subscriptions management or holds; **holds and outbound notifications are the next wallet features, then the service shell and turnkey setup** (the open work, in order, with where each item's reasoning lives, is [`docs/ROADMAP.md`](docs/ROADMAP.md)). The usage-event store is in-process (it takes your connection and your transaction) and is the shape a service would take over, not yet a service of its own. Usage-based billing to a provider is built but off (prepaid packs only). A reused idempotency key with a different request is refused (`IdempotencyConflictError`), not answered "already applied". One limit: a row written before the `request` column existed has no stored request and keeps the old behaviour for ever.
 
 ## Where to read more
 

@@ -129,7 +129,7 @@ async def test_a_blank_query_is_refused_before_any_request_because_the_provider_
         calls.append(request)
         return _ok([_item()])
 
-    with pytest.raises(serper.SearchFailed):
+    with pytest.raises(serper.SearchFailedError):
         await serper.search("   \n\t ", client=_client(handler))
 
     assert calls == [], "a blank query must cost nothing"
@@ -145,11 +145,11 @@ async def test_with_no_key_nothing_is_sent_and_the_error_is_the_not_configured_o
         calls.append(request)
         return _ok([_item()])
 
-    with pytest.raises(serper.SearchNotConfigured) as caught:
+    with pytest.raises(serper.SearchNotConfiguredError) as caught:
         await serper.search("q", client=_client(handler))
 
     assert calls == []
-    assert isinstance(caught.value, serper.SearchFailed), "callers that catch SearchFailed must still see it"
+    assert isinstance(caught.value, serper.SearchFailedError), "callers that catch SearchFailedError must still see it"
     assert "not set up" in str(caught.value)
     assert _outcome("not_configured") == before + 1
 
@@ -162,7 +162,7 @@ async def test_each_failure_class_is_counted_under_its_own_outcome_and_tells_the
     before = _outcome(outcome)
     body = {"message": "SECRET-PROVIDER-TEXT should not reach the model", "statusCode": status}
 
-    with pytest.raises(serper.SearchFailed) as caught:
+    with pytest.raises(serper.SearchFailedError) as caught:
         await serper.search("q", client=_client(lambda request: httpx.Response(status, json=body)))
 
     message = str(caught.value)
@@ -175,7 +175,7 @@ async def test_the_providers_own_error_text_goes_to_the_log_for_the_operator_and
     """Out-of-credits is expected to be a 4xx, but that was never measured. The log line is how an operator learns the real text."""
     body = {"message": "Not enough credits", "statusCode": 400}
 
-    with caplog.at_level(logging.WARNING, logger="app.adapters.outbound.web.serper"), pytest.raises(serper.SearchFailed) as caught:
+    with caplog.at_level(logging.WARNING, logger="app.adapters.outbound.web.serper"), pytest.raises(serper.SearchFailedError) as caught:
         await serper.search("a private customer question", client=_client(lambda request: httpx.Response(400, json=body)))
 
     (record,) = [r for r in caplog.records if r.name == "app.adapters.outbound.web.serper"]
@@ -190,7 +190,7 @@ async def test_an_echo_of_the_key_in_the_providers_error_is_scrubbed_before_it_i
     monkeypatch.setattr(config, "SERPER_API_KEY", KEY)
     body = {"message": f"bad key {KEY}", "statusCode": 403}
 
-    with caplog.at_level(logging.WARNING, logger="app.adapters.outbound.web.serper"), pytest.raises(serper.SearchFailed):
+    with caplog.at_level(logging.WARNING, logger="app.adapters.outbound.web.serper"), pytest.raises(serper.SearchFailedError):
         await serper.search("q", client=_client(lambda request: httpx.Response(403, json=body)))
 
     (record,) = [r for r in caplog.records if r.name == "app.adapters.outbound.web.serper"]
@@ -210,7 +210,7 @@ async def test_an_echo_of_the_key_in_the_providers_error_is_scrubbed_before_it_i
 async def test_a_200_that_is_not_the_documented_shape_is_a_bad_response_not_a_crash(response):
     before = _outcome("bad_response")
 
-    with pytest.raises(serper.SearchFailed):
+    with pytest.raises(serper.SearchFailedError):
         await serper.search("q", client=_client(lambda request: response))
 
     assert _outcome("bad_response") == before + 1
@@ -233,7 +233,7 @@ async def test_a_connection_that_never_opens_is_retried_then_reported_unavailabl
         raise httpx.ConnectError("no route to host")
 
     before = _outcome("unavailable")
-    with pytest.raises(serper.SearchFailed):
+    with pytest.raises(serper.SearchFailedError):
         await serper.search("q", client=_client(handler))
 
     assert len(attempts) == 3, "a connection that never opened provably did not land, so it is the one thing retried"
@@ -262,7 +262,7 @@ async def test_a_failure_after_the_request_was_sent_is_never_retried_because_it_
         attempts.append(1)
         raise failure
 
-    with pytest.raises(serper.SearchFailed):
+    with pytest.raises(serper.SearchFailedError):
         await serper.search("q", client=_client(handler))
 
     assert len(attempts) == 1, "Principle IV: retry only what provably never landed"
@@ -276,12 +276,12 @@ async def test_repeated_connection_failures_open_the_breaker_and_the_next_call_m
         raise httpx.ConnectError("down")
 
     for _ in range(3):  # failure_threshold calls, each exhausting its own retries
-        with pytest.raises(serper.SearchFailed):
+        with pytest.raises(serper.SearchFailedError):
             await serper.search("q", client=_client(handler))
     spent = len(attempts)
     before = _outcome("circuit_open")
 
-    with pytest.raises(serper.SearchFailed) as caught:
+    with pytest.raises(serper.SearchFailedError) as caught:
         await serper.search("q", client=_client(handler))
 
     assert len(attempts) == spent, "an open breaker fails fast without touching the network"

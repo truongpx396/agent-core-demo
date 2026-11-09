@@ -43,7 +43,7 @@ from decimal import Decimal, InvalidOperation
 from credit_billing import credits, db
 from credit_billing.cli._runtime import (
     EXIT_DATABASE_UNAVAILABLE,
-    DatabaseUnavailable,
+    DatabaseUnavailableError,
     scheduled_job,
     wired_pool,
 )
@@ -154,7 +154,7 @@ def _outcome(verb: str, applied: credits.Applied, args: argparse.Namespace, key:
     return 0, f"{verb.capitalize()} applied: {_n(applied.amount)} credits, tenant {args.tenant!r}, transaction {applied.transaction_id}{note}.\nIdempotency key: {key}"
 
 
-def _conflict_message(conflict: credits.IdempotencyConflict) -> str:
+def _conflict_message(conflict: credits.IdempotencyConflictError) -> str:
     """One line per field that differs, then what to do. Values are shown through `printable`: a reason or a reference may have come from
     somewhere other than this terminal, and text is data, never something to interpret."""
     lines = [f"error: idempotency key {printable(conflict.key)!r} was already used for a different request:"]
@@ -179,7 +179,7 @@ async def _change(args: argparse.Namespace) -> tuple[int, str]:
             applied = await credits.adjust(
                 args.tenant, args.amount, idempotency_key=key, actor=actor, reason=args.reason, expires_at=expires_at
             )
-    except credits.IdempotencyConflict as exc:
+    except credits.IdempotencyConflictError as exc:
         return 2, _conflict_message(exc)
     except ValueError as exc:
         return 2, f"error: {exc}"
@@ -260,7 +260,7 @@ async def _run(args: argparse.Namespace) -> tuple[int, str]:
     try:
         async with wired_pool():
             return await execute(args)
-    except DatabaseUnavailable as exc:
+    except DatabaseUnavailableError as exc:
         return EXIT_DATABASE_UNAVAILABLE, f"error: {exc}"
 
 

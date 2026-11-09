@@ -20,7 +20,7 @@ class BillingProvider(Protocol):
 
     def parse_webhook(self, headers: Mapping[str, str], body: bytes) -> list[BillingEvent]:
         """Verify the signature FIRST (and any replay window the provider defines), then normalize.
-        Raises InvalidSignature on any failure. Pure: no I/O, no database."""
+        Raises InvalidSignatureError on any failure. Pure: no I/O, no database."""
 
     async def create_checkout(self, customer: BillingCustomer, product: CreditProduct, *,
                               idempotency_key: str, success_url: str, cancel_url: str) -> CheckoutSession:
@@ -60,7 +60,7 @@ authenticity is the signature alone, and it is built defensively:
 
 1. Unknown `{provider}` → 404, counted. A provider that is configured but has no secret set → refuses to start (fail closed), like the Alertmanager receiver.
 2. Body size capped (default 256 KiB) **before** it is read; rate-limited by source.
-3. `parse_webhook` verifies the signature; `InvalidSignature` → 400, counted `invalid_signature`, **nothing stored as applied**.
+3. `parse_webhook` verifies the signature; `InvalidSignatureError` → 400, counted `invalid_signature`, **nothing stored as applied**.
 4. Insert into the inbox `ON CONFLICT (provider, event_id) DO NOTHING`; a duplicate returns 200 immediately (the provider must stop retrying).
 5. Resolve the tenant from `billing_customers` by `(provider, customer_ref)`. No link → `quarantined`, alerted, 200 (retrying cannot fix it).
 6. Apply in **one transaction** with the status change (`received → applied`), using `idempotency_key = "{provider}:{event_id}"` for a grant and `clawback:{provider}:{payment_ref}` for a refund. A crash before commit leaves nothing applied for the retry.
@@ -73,14 +73,14 @@ shares the proxy's address, so in practice it is one global ceiling (disclosed).
 
 One suite, `tests/billing/contract.py`, parameterised over every registered adapter (the in-repo `fake` first, real ones later). An adapter that does not pass it cannot be registered.
 
-- A valid signed payload yields the expected normalized events; a payload altered by one byte raises `InvalidSignature`.
+- A valid signed payload yields the expected normalized events; a payload altered by one byte raises `InvalidSignatureError`.
 - A replayed payload (same `event_id`) is applied once through the real inbox and wallet.
 - Parsing never raises for an unknown event type (it yields `IGNORED`).
 - If `USAGE_EXPORT`: re-sending the same `event_id` is reported as `duplicate` or succeeds, never as a second charge.
 - If `CHECKOUT`: the same `idempotency_key` twice returns the same session, not two.
 - No adapter reads the tenant from a payload field; the contract test supplies a payload naming a *different* tenant and asserts the grant goes to the linked one.
 - The stored form of an event is a closed set of normalized fields; a payload full of buyer details (email, name, address, card) leaves none of them in the inbox.
-- An authentic body in an unreadable shape is `InvalidPayload`, never `InvalidSignature` and never a crash.
+- An authentic body in an unreadable shape is `InvalidPayloadError`, never `InvalidSignatureError` and never a crash.
 
 **How it is enforced (PR 4).** The suite is `tests/billing/contract.py`, run by `tests/billing/test_provider_contract.py` (pure) and by the integration tier (the same harnesses through the real
 inbox and wallet). An adapter is registered in `src/credit_billing/providers/__init__.py` together with its `Harness`; `test_every_registered_adapter_has_a_harness` fails otherwise.

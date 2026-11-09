@@ -157,7 +157,7 @@ async def test_the_tags_name_the_tenant_and_the_conversation_by_hash_not_by_raw_
 async def test_a_blank_tenant_or_conversation_id_is_refused_rather_than_sharing_one_bucket(tenant, thread_id):
     service = _StandInSandboxService()
 
-    with pytest.raises(sandbox_session.SandboxCallFailed):
+    with pytest.raises(sandbox_session.SandboxCallFailedError):
         await _sandbox_for(service, tenant=tenant, thread_id=thread_id)
 
     assert service.sandboxes == []

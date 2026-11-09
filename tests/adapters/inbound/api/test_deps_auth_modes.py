@@ -35,7 +35,7 @@ UNAVAILABLE = ErrorCode.AUTH_UNAVAILABLE
 
 def _who_is_calling_app() -> FastAPI:
     app = FastAPI()
-    app.add_exception_handler(identity.AuthRefused, identity.auth_refused_handler)
+    app.add_exception_handler(identity.AuthRefusedError, identity.auth_refused_handler)
 
     @app.get("/who")
     async def who(ctx: SecurityCtx = Depends(deps.get_ctx)) -> SecurityCtx:
@@ -208,7 +208,7 @@ def test_the_pages_that_need_no_caller_stay_open_in_identity_mode(front_door):
 
 
 def test_the_real_app_answers_a_refusal_in_the_envelope_because_the_handler_is_registered():
-    assert api.app.exception_handlers[identity.AuthRefused] is identity.auth_refused_handler
+    assert api.app.exception_handlers[identity.AuthRefusedError] is identity.auth_refused_handler
 
 
 # The documented routes that do NOT build a ctx. The first three are public pages; the last is a job's event stream, which the front door

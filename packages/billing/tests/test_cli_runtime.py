@@ -176,7 +176,7 @@ def test_the_database_url_and_collector_defaults_are_the_agent_apps(monkeypatch)
 async def test_an_unreachable_database_raises_one_clear_error_that_never_carries_the_credentials(closed_port_url, fast_failure, monkeypatch):
     monkeypatch.setattr(db, "_provider", None)
 
-    with pytest.raises(_runtime.DatabaseUnavailable) as raised:
+    with pytest.raises(_runtime.DatabaseUnavailableError) as raised:
         async with _runtime.wired_pool(closed_port_url):
             raise AssertionError("the block must not run: there is no database")
 
@@ -190,7 +190,7 @@ async def test_the_error_is_raised_in_about_the_configured_wait_not_psycopgs_thi
     import time
 
     started = time.monotonic()
-    with pytest.raises(_runtime.DatabaseUnavailable):
+    with pytest.raises(_runtime.DatabaseUnavailableError):
         async with _runtime.wired_pool(closed_port_url):
             pass
 
@@ -249,7 +249,7 @@ async def test_a_pool_that_never_connected_is_still_closed_and_the_core_stays_un
     monkeypatch.setattr(_runtime, "AsyncConnectionPool", NeverConnects)
     monkeypatch.setattr(db, "_provider", None)
 
-    with pytest.raises(_runtime.DatabaseUnavailable):
+    with pytest.raises(_runtime.DatabaseUnavailableError):
         async with _runtime.wired_pool("postgresql://u:p@h/appdata"):
             pass
 

@@ -71,8 +71,8 @@ from credit_billing.providers.base import (
     CreditProduct,
     EventKind,
     ExportResult,
-    InvalidPayload,
-    InvalidSignature,
+    InvalidPayloadError,
+    InvalidSignatureError,
     UsageEvent,
 )
 
@@ -127,10 +127,10 @@ class StripeProvider:
         try:
             data = json.loads(body)
         except ValueError as exc:
-            raise InvalidPayload("body is not JSON") from exc
+            raise InvalidPayloadError("body is not JSON") from exc
         obj = (data.get("data") or {}).get("object") if isinstance(data, dict) else None
         if not isinstance(data, dict) or not _text(data.get("id")) or not _text(data.get("type")) or not isinstance(obj, dict):
-            raise InvalidPayload("body is not a Stripe event")
+            raise InvalidPayloadError("body is not a Stripe event")
         raw_type = data["type"]
         kind, customer, product, payment, amount, currency = _normalize(raw_type, obj)
         return [
@@ -151,7 +151,7 @@ class StripeProvider:
     def _verify(self, headers: Mapping[str, str], body: bytes) -> None:
         header = headers.get(SIGNATURE_HEADER)
         if not header:
-            raise InvalidSignature
+            raise InvalidSignatureError
         stamp: int | None = None
         candidates: list[str] = []
         for part in header.split(","):
@@ -162,11 +162,11 @@ class StripeProvider:
                 try:
                     stamp = int(value)
                 except ValueError:
-                    raise InvalidSignature from None
+                    raise InvalidSignatureError from None
             elif key == "v1":  # every other scheme (Stripe's fake `v0` on test events) is ignored: no downgrade
                 candidates.append(value)
         if stamp is None or not candidates:
-            raise InvalidSignature
+            raise InvalidSignatureError
         expected = self._mac(stamp, body)
         # Constant-time against EVERY v1 (a rolled secret sends one per active secret), accumulated without short-circuiting, and the
         # MAC is checked BEFORE the window, so a wrong signature and a stale one are indistinguishable from outside.
@@ -174,7 +174,7 @@ class StripeProvider:
         for candidate in candidates:
             matched |= hmac.compare_digest(candidate.encode(), expected.encode())
         if not matched or self._clock() - stamp > self._tolerance:
-            raise InvalidSignature
+            raise InvalidSignatureError
 
     def _mac(self, stamp: int, body: bytes) -> str:
         return hmac.new(self._secret, f"{stamp}.".encode() + body, hashlib.sha256).hexdigest()

@@ -26,19 +26,19 @@ class SearchHit:
     date: str | None
 
 
-class SearchFailed(Exception):
+class SearchFailedError(Exception):
     """A search that did not produce results. The message is written for the model and the person, so it names no provider detail."""
 
 
-class SearchNotConfigured(SearchFailed):
+class SearchNotConfiguredError(SearchFailedError):
     """No search API key. Expected on a deployment that never opted in, so the tool answers it instead of raising."""
 
 
-class CrawlFailed(Exception):
+class CrawlFailedError(Exception):
     """A page that could not be rendered. The message is written for the model and the person."""
 
 
-class PageFetchFailed(Exception):
+class PageFetchFailedError(Exception):
     """The request did not complete (a network error or a timeout). A 4xx or 5xx answer is a `FetchedPage`, not this."""
 
 
@@ -56,20 +56,20 @@ class WebSearch(Protocol):
     async def search(self, query: str) -> list[SearchHit]:
         """Up to the configured number of results for `query`, best first; an empty list means the search ran and found nothing.
 
-        Raises `SearchNotConfigured` with no key, and `SearchFailed` for everything else that stops a result."""
+        Raises `SearchNotConfiguredError` with no key, and `SearchFailedError` for everything else that stops a result."""
         ...
 
 
 class PageRenderer(Protocol):
     async def render(self, url: str) -> str:
-        """The page at `url` as bounded markdown. Raises `CrawlFailed` for a URL the SSRF guard refuses or a page that cannot be rendered."""
+        """The page at `url` as bounded markdown. Raises `CrawlFailedError` for a URL the SSRF guard refuses or a page that cannot be rendered."""
         ...
 
 
 class PageFetcher(Protocol):
     async def fetch(self, url: str, *, max_bytes: int) -> FetchedPage:
         """GETs `url` once, following no redirect (a validated URL redirecting to an unvalidated one would reopen the hole the caller's SSRF guard closes), within
-        a short timeout. The caller runs that guard first. Raises `PageFetchFailed` when the request does not complete."""
+        a short timeout. The caller runs that guard first. Raises `PageFetchFailedError` when the request does not complete."""
         ...
 
 

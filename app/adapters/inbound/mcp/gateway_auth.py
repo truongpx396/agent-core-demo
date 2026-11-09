@@ -46,7 +46,7 @@ logger = logging.getLogger(__name__)
 JWKS_FETCH_TIMEOUT_SECONDS = 5.0
 
 
-class JwksUnavailable(Exception):
+class JwksUnavailableError(Exception):
     """The signing keys cannot be confirmed current: they could not be fetched, and the ones held are older than the TTL."""
 
 
@@ -77,7 +77,7 @@ class JwksCache:
         return self._fetched_at is not None and now - self._fetched_at < self._ttl
 
     async def key_for(self, kid: str) -> jwt.PyJWK | None:
-        """The key with this `kid`, or None if the authorization server has no such key. Raises `JwksUnavailable`."""
+        """The key with this `kid`, or None if the authorization server has no such key. Raises `JwksUnavailableError`."""
         now = self._clock()
         if self._fresh(now) and kid in self._keys:
             return self._keys[kid]
@@ -88,7 +88,7 @@ class JwksCache:
             if self._last_attempt is None or now - self._last_attempt >= self._min_refresh:
                 await self._refresh(now)
             if not self._fresh(self._clock()):
-                raise JwksUnavailable("the signing keys are older than the TTL and could not be refreshed")
+                raise JwksUnavailableError("the signing keys are older than the TTL and could not be refreshed")
             return self._keys.get(kid)
 
     async def aclose(self) -> None:
@@ -100,7 +100,7 @@ class JwksCache:
         """True if the keys are current, trying a refresh (within the same rate limit) when they are not."""
         try:
             await self.key_for("")  # an unknown kid: it only asks whether a current key set can be had
-        except JwksUnavailable:
+        except JwksUnavailableError:
             return False
         return True
 
@@ -169,8 +169,8 @@ class JwtVerifier:
                 leeway=self._leeway,
                 options={"require": ["exp", "iss", "aud", "sub"]},
             )
-        except JwksUnavailable:
-            return self._reject("jwks_unavailable", "JwksUnavailable")
+        except JwksUnavailableError:
+            return self._reject("jwks_unavailable", "JwksUnavailableError")
         except jwt.PyJWTError as exc:
             return self._reject("invalid_token", type(exc).__name__)
         except Exception as exc:  # noqa: BLE001 - a verifier that raises turns a bad token into a 500; refuse it instead

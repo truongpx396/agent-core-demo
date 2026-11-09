@@ -43,7 +43,7 @@ def test_a_provider_that_does_not_bill_on_usage_is_not_served(configured, monkey
 def test_an_enabled_provider_with_no_secret_stops_the_worker_rather_than_exporting_nothing(configured):
     configured(("fake",), secrets={})
 
-    with pytest.raises(providers.UnknownProvider, match="no secret"):
+    with pytest.raises(providers.UnknownProviderError, match="no secret"):
         worker.serving()
 
 

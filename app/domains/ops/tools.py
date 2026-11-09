@@ -299,7 +299,7 @@ class RunCommandInSandboxArgs(BaseModel):
 async def _raw_sandbox_tools_or_raise() -> dict:
     raw = await sandbox_session.load_raw_sandbox_tools()
     if not raw:
-        raise sandbox_session.SandboxCallFailed(
+        raise sandbox_session.SandboxCallFailedError(
             "OpenSandbox is not reachable right now (opensandbox-mcp/opensandbox-server may still be "
             "starting, or the sandbox profile isn't running) — try again in a moment."
         )

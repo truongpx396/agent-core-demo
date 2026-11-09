@@ -207,7 +207,7 @@ class TestStartup:
         monkeypatch.setattr(billing_router, "BILLING_PROVIDERS", ("paypal",))
         monkeypatch.setattr(billing_router, "BILLING_WEBHOOK_SECRETS", {"paypal": "whsec"})
 
-        with pytest.raises(providers.UnknownProvider, match="no billing adapter"):
+        with pytest.raises(providers.UnknownProviderError, match="no billing adapter"):
             billing_router.validate_configuration()
 
     def test_an_enabled_provider_with_no_secret_stops_the_process(self, monkeypatch):
@@ -215,7 +215,7 @@ class TestStartup:
         monkeypatch.setattr(billing_router, "BILLING_PROVIDERS", ("fake",))
         monkeypatch.setattr(billing_router, "BILLING_WEBHOOK_SECRETS", {})
 
-        with pytest.raises(providers.UnknownProvider, match="no secret"):
+        with pytest.raises(providers.UnknownProviderError, match="no secret"):
             billing_router.validate_configuration()
 
     def test_a_provider_with_a_blank_secret_stops_the_process(self, monkeypatch):
@@ -223,7 +223,7 @@ class TestStartup:
         monkeypatch.setattr(billing_router, "BILLING_PROVIDERS", ("fake",))
         monkeypatch.setattr(billing_router, "BILLING_WEBHOOK_SECRETS", {"fake": ""})
 
-        with pytest.raises(providers.UnknownProvider):
+        with pytest.raises(providers.UnknownProviderError):
             billing_router.validate_configuration()
 
     def test_a_deployment_that_enables_nothing_serves_no_provider(self, monkeypatch):

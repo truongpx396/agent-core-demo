@@ -11,7 +11,7 @@ called from graph nodes, tools and CLIs, and the repo already has this idiom for
 idiom with a type, a name in the error and a way to list every seam. The graph's own clients keep their constructor
 injection (`GraphDeps`); a slot is for what a plain function has to reach.
 
-An unbound slot FAILS CLOSED with `PortNotBound`, naming the port. There is no default adapter: a default would put the
+An unbound slot FAILS CLOSED with `PortNotBoundError`, naming the port. There is no default adapter: a default would put the
 application back in the business of knowing which adapter is the real one. Production entrypoints call
 `app.bootstrap.wire()` first and `verify_wired()` makes a missing one a startup error instead of the first request's;
 `tests/conftest.py` wires the same adapters (whose I/O the suite already guards) so existing tests run unchanged, and a test of
@@ -28,7 +28,7 @@ T = TypeVar("T")
 _ALL: list[Slot] = []
 
 
-class PortNotBound(RuntimeError):
+class PortNotBoundError(RuntimeError):
     """A port was used before any adapter was bound to it: the process did not call `app.bootstrap.wire()`."""
 
 
@@ -55,7 +55,7 @@ class Slot(Generic[T]):
 
     def get(self) -> T:
         if self._adapter is None:
-            raise PortNotBound(
+            raise PortNotBoundError(
                 f"port {self.name!r} has no adapter bound: the process entrypoint must call app.bootstrap.wire() before it runs"
             )
         return self._adapter

@@ -247,7 +247,7 @@ async def test_a_timeout_that_is_not_above_zero_is_refused_before_any_connection
 async def test_a_lock_that_cannot_be_had_becomes_a_timeout_error_that_says_running_again_is_safe(database):
     fake = database(ledger=None, fail_on={"advisory_lock": pg_errors.LockNotAvailable("canceling statement due to lock timeout")})
 
-    with pytest.raises(migrate.MigrationLockTimeout) as raised:
+    with pytest.raises(migrate.MigrationLockTimeoutError) as raised:
         await migrate.migrate(lock_timeout_seconds=3)
 
     message = str(raised.value)
@@ -260,7 +260,7 @@ async def test_a_lock_that_cannot_be_had_becomes_a_timeout_error_that_says_runni
 async def test_a_lock_timeout_on_the_scripts_own_ddl_is_the_same_error(database):
     fake = database(ledger=None, fail_on={"script": pg_errors.LockNotAvailable("canceling statement due to lock timeout")})
 
-    with pytest.raises(migrate.MigrationLockTimeout):
+    with pytest.raises(migrate.MigrationLockTimeoutError):
         await migrate.migrate()
 
     assert fake.transactions[0][-1] == "ROLLBACK" and fake.ledger is None
@@ -281,7 +281,7 @@ async def test_a_failing_script_rolls_back_whole_records_nothing_and_leaves_earl
 
     FakeConnection.execute = second_script_fails
     try:
-        with pytest.raises(migrate.MigrationFailed) as raised:
+        with pytest.raises(migrate.MigrationFailedError) as raised:
             await migrate.migrate()
     finally:
         FakeConnection.execute = original
@@ -296,7 +296,7 @@ async def test_a_connection_level_failure_never_names_the_user_or_the_password(d
     leak = psycopg.OperationalError('connection to server at "db", port 5432 failed: FATAL: password authentication failed for user "billing_user"')
     database(ledger=None, fail_on={"script": leak})
 
-    with pytest.raises(migrate.MigrationFailed) as raised:
+    with pytest.raises(migrate.MigrationFailedError) as raised:
         await migrate.migrate()
 
     assert "billing_user" not in str(raised.value) and "password" not in str(raised.value)
@@ -307,7 +307,7 @@ async def test_a_script_with_a_meta_command_the_tool_cannot_apply_fails_before_a
     fake = database(ledger=None)
     monkeypatch.setattr(migrate.schema, "read", lambda name: "\\connect appdata\n\\set x 1\nSELECT 1;\n")
 
-    with pytest.raises(migrate.MigrationFailed, match=r"line 2.*meta-command"):
+    with pytest.raises(migrate.MigrationFailedError, match=r"line 2.*meta-command"):
         await migrate.migrate()
 
     assert fake.connections == 0
@@ -317,7 +317,7 @@ async def test_an_error_raised_inside_the_block_reaches_the_provider_so_it_rolls
     """The whole point of raising from INSIDE the `async with`: the provider's rollback only runs for an exception thrown into it."""
     fake = database(ledger=None, fail_on={"record": psycopg.errors.UniqueViolation("duplicate key")})
 
-    with pytest.raises(migrate.MigrationFailed):
+    with pytest.raises(migrate.MigrationFailedError):
         await migrate.migrate()
 
     assert fake.transactions[0][-1] == "ROLLBACK" and fake.ledger is None

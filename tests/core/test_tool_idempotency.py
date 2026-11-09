@@ -212,7 +212,7 @@ class TestIdempotent:
         the crash-replay race the other tests above cover — a retry from
         here arrives under a brand new tool_call_id, which no dedup keyed
         on tool_call_id can ever recognize. idempotent() re-raises it as
-        MutatingToolTimedOut so graph/utils.py::friendly_tool_error can
+        MutatingToolTimedOutError so graph/utils.py::friendly_tool_error can
         steer the agent instead of silently swallowing the ambiguity."""
         store = _FakeDedupStore()
         monkeypatch.setattr(pg_tool_idempotency, "get_connection", _fake_get_connection(store))
@@ -220,7 +220,7 @@ class TestIdempotent:
         async def fn():
             raise TimeoutError("Postgres was slow")
 
-        with pytest.raises(tool_idempotency.MutatingToolTimedOut) as exc_info:
+        with pytest.raises(tool_idempotency.MutatingToolTimedOutError) as exc_info:
             await tool_idempotency.idempotent(
                 tool_call_id="call-1", ctx=TEST_CTX, config=_cfg(), tool_name="create_ticket", fn=fn
             )
@@ -233,7 +233,7 @@ class TestIdempotent:
         assert store.rows["call-1"]["result"] is None
 
     async def test_a_non_timeout_exception_from_fn_propagates_unchanged(self, monkeypatch):
-        """Only TimeoutError gets the special MutatingToolTimedOut
+        """Only TimeoutError gets the special MutatingToolTimedOutError
         treatment — a tool that genuinely failed for some other reason
         (e.g. a validation error) didn't ambiguously commit anything, so
         the plain exception (and friendly_tool_error's generic message)

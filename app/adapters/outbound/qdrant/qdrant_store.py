@@ -24,7 +24,7 @@ A logical collection `docs` is the PHYSICAL collection `docs-1a2b3c4d` (the firs
 embedding identity its vectors were made under, app/adapters/outbound/embeddings/embedding_identity.py) reached through the ALIAS
 `docs-live`. Every read and write uses the alias and compares the suffix with the identity this process is
 configured for:
-- a mismatch is refused (`EmbeddingIdentityMismatch`): reads degrade like a retrieval outage, writes fail
+- a mismatch is refused (`EmbeddingIdentityMismatchError`): reads degrade like a retrieval outage, writes fail
   visibly. Mixing two embedding spaces returns confident nonsense that vector size can't catch;
 - switching models builds `docs-<new hash>` beside the old one, verifies it, then repoints the alias in ONE
   atomic request, so the live collection never holds both and a failure before the repoint leaves the old one
@@ -68,7 +68,7 @@ from qdrant_client.models import (
 
 from app.adapters.outbound.embeddings.embedding_identity import (
     HASH_LENGTH,
-    EmbeddingIdentityMismatch,
+    EmbeddingIdentityMismatchError,
     current_identity,
 )
 from app.core import metrics
@@ -180,7 +180,7 @@ async def _resolve_target(logical: str) -> tuple[str | None, bool]:
 async def check_identity(collection: str | None = None, *, write: bool) -> str:
     """The alias to use for `collection`, after proving its vectors match the embedding identity this process is configured for.
 
-    Raises `EmbeddingIdentityMismatch` otherwise. A legacy (adopted) collection is trusted, not proven, and counted as such. Counted
+    Raises `EmbeddingIdentityMismatchError` otherwise. A legacy (adopted) collection is trusted, not proven, and counted as such. Counted
     per refresh (verified / adopted / unverified) and per refused call (mismatch), so the alert on a mismatch keeps firing for as long
     as requests keep being refused.
     """
@@ -198,7 +198,7 @@ async def check_identity(collection: str | None = None, *, write: bool) -> str:
     expected = identity.hash8()
     if expected != found:
         metrics.agent_embedding_identity_total.labels(outcome="mismatch", collection=logical).inc()
-        raise EmbeddingIdentityMismatch(logical, expected, found, write=write)
+        raise EmbeddingIdentityMismatchError(logical, expected, found, write=write)
     if refreshed:
         metrics.agent_embedding_identity_total.labels(outcome="verified" if identity.verified else "unverified", collection=logical).inc()
     return alias

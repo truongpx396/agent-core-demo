@@ -59,7 +59,7 @@ Every `mutating`/`outward` tool MUST be safe to run twice for the same logical a
   (`uuid5` / content-addressed) instead of `uuid4()`.
 - An "append" MUST be an inserted row keyed by `tool_call_id`, never a concatenation onto a
   shared TEXT column. Aggregate text at read time (`STRING_AGG`).
-- A tool's own soft timeout MUST surface as `MutatingToolTimedOut` and steer the agent to
+- A tool's own soft timeout MUST surface as `MutatingToolTimedOutError` and steer the agent to
   verify via a read-only tool. A timed-out write MUST NOT be retried blindly: the retry
   arrives under a new `tool_call_id` that no id-keyed defense can recognize.
 - Automatic retries MUST be limited to exceptions the caller proves mean "the call never
@@ -296,4 +296,4 @@ states the intent and the conflicting document MUST be corrected.
 - **Runtime guidance**: day-to-day development guidance for agents and contributors lives in
   `CLAUDE.md` and `.claude/rules/`; those files MUST NOT contradict this constitution.
 
-**Version**: 1.4.3 | **Ratified**: 2026-10-01 | **Last Amended**: 2026-11-06
+**Version**: 1.4.4 | **Ratified**: 2026-10-01 | **Last Amended**: 2026-11-08
