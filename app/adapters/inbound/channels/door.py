@@ -162,7 +162,7 @@ class Door:
         async for event in self._stream("/chat/stream/queued", body):
             yield event
 
-    async def stream_resume(self, thread_id: str, approved: bool) -> AsyncGenerator[dict[str, Any], None]:
+    async def stream_resume(self, thread_id: str, *, approved: bool) -> AsyncGenerator[dict[str, Any], None]:
         async for event in self._stream("/chat/resume", {"thread_id": thread_id, "approved": approved}):
             yield event
 

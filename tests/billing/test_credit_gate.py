@@ -281,7 +281,7 @@ class TestEntryPointsRefuseBeforeAnyModelWork:
         assert self.reserved == []
 
     async def test_a_resume_is_refused_with_the_credit_code(self):
-        events = [event async for event in stream_module.astream_events_resume("t1", True, TEST_CTX)]
+        events = [event async for event in stream_module.astream_events_resume("t1", approved=True, ctx=TEST_CTX)]
 
         assert len(events) == 1 and events[0]["code"] == errors.ErrorCode.INSUFFICIENT_CREDITS.value
         assert self.reserved == []

@@ -123,7 +123,7 @@ class TestResumeAndCancel:
             return httpx.Response(200, content=sse({"type": "done"}))
 
         door, http = make_door(handler)
-        await collect(door.stream_resume("t1", True))
+        await collect(door.stream_resume("t1", approved=True))
         await http.aclose()
 
         assert (seen["path"], seen["body"]) == ("/chat/resume", {"thread_id": "t1", "approved": True})

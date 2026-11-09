@@ -69,7 +69,7 @@ def retry_output(state: State) -> dict[str, Any]:
 # run_subagent), but check_output HAS already judged this content here, so
 # trust is reason-dependent (OutputCheck.trust_on_exhaust) rather than
 # always-trusted the way no_answer_fallback's orphaned content is. ---
-def make_retry_exhausted_node(emit_message: bool = True) -> Callable[[State], dict[str, Any]]:
+def make_retry_exhausted_node(*, emit_message: bool = True) -> Callable[[State], dict[str, Any]]:
     def retry_exhausted(state: State) -> dict[str, Any]:
         last = state["messages"][-1] if state.get("messages") else None
         content = getattr(last, "content", "") or ""
@@ -111,8 +111,8 @@ def make_retry_exhausted_node(emit_message: bool = True) -> Callable[[State], di
 # filling in prose here would make that check wrongly see real text and
 # report the run as completed. ---
 def make_no_answer_fallback_node(
-    emit_message: bool = True,
     *,
+    emit_message: bool = True,
     system_prompt: str,
     enforce_citations: bool = True,
     skill_required_tools: tuple[str, ...] = (),

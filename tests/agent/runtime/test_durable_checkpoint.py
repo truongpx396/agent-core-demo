@@ -294,7 +294,7 @@ class TestAsyncEntryPoints:
             # aget_state must be used, not the sync version.
             events = []
             async for event in stream_module.astream_events_resume(
-                thread_id, True, TEST_CTX
+                thread_id, approved=True, ctx=TEST_CTX
             ):
                 events.append(event)
             return events

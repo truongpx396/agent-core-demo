@@ -354,6 +354,7 @@ async def hybrid_search(
     topic: str | None = None,
     k: int | None = None,
     scope: AccessScope | None = None,
+    *,
     rerank_results: bool = True,
     doc_ids: list[str] | None = None,
     collection: str | None = None,

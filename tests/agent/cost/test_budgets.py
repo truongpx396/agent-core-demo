@@ -386,6 +386,6 @@ class TestAsRuntimeWiresIt:
         ledger["spend"] = {("principal", "day"): 5.0}
         monkeypatch.setattr(runtime_module, "MAX_COST_USD_PER_PRINCIPAL_PER_DAY", 5.0)
 
-        events = [event async for event in stream_module.astream_events_resume("t1", True, TEST_CTX)]
+        events = [event async for event in stream_module.astream_events_resume("t1", approved=True, ctx=TEST_CTX)]
 
         assert events[0]["code"] == errors.ErrorCode.PERSONAL_BUDGET_EXCEEDED.value

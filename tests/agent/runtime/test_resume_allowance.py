@@ -74,7 +74,7 @@ class TestResume:
         _graph_fails(monkeypatch)
         rejected = metric_value(metrics.agent_requests_total, outcome="rejected")
 
-        events = await _collect(stream_module.astream_events_resume("t1", True, TEST_CTX))
+        events = await _collect(stream_module.astream_events_resume("t1", approved=True, ctx=TEST_CTX))
 
         assert len(events) == 1
         assert events[0]["type"] == "error"
@@ -87,7 +87,7 @@ class TestResume:
         budget["over"] = True
         _graph_fails(monkeypatch)
 
-        events = await _collect(stream_module.astream_events_resume("t1", False, TEST_CTX))
+        events = await _collect(stream_module.astream_events_resume("t1", approved=False, ctx=TEST_CTX))
 
         assert events[0]["code"] == errors.ErrorCode.TENANT_BUDGET_EXCEEDED.value
 
@@ -95,7 +95,7 @@ class TestResume:
         _graph_fails(monkeypatch)
 
         with pytest.raises(_GraphTouchedError):
-            await _collect(stream_module.astream_events_resume("t1", True, TEST_CTX))
+            await _collect(stream_module.astream_events_resume("t1", approved=True, ctx=TEST_CTX))
         await _drain_release_tasks()
 
         assert budget["checks"] == 1
@@ -107,7 +107,7 @@ class TestResume:
         _graph_fails(monkeypatch)
 
         with pytest.raises(_GraphTouchedError):
-            await _collect(stream_module.astream_events_resume("t1", False, TEST_CTX, admitted=True))
+            await _collect(stream_module.astream_events_resume("t1", approved=False, ctx=TEST_CTX, admitted=True))
         await _drain_release_tasks()
 
         assert budget["checks"] == 0
@@ -136,7 +136,7 @@ class TestResume:
         monkeypatch.setattr(stream_module, "_open_trace", lambda *a: (None, []))
         monkeypatch.setattr(stream_module, "_run_graph_stream", stream)
 
-        agen = stream_module.astream_events_resume("t1", True, TEST_CTX)
+        agen = stream_module.astream_events_resume("t1", approved=True, ctx=TEST_CTX)
         assert (await agen.__anext__())["content"] == "a"
         await agen.aclose()
         await _drain_release_tasks()

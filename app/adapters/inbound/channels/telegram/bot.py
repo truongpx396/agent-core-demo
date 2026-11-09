@@ -349,14 +349,14 @@ class Bot:
             await self.api.answer_callback(callback_id, "Already being handled.")
             return
         await self.api.answer_callback(callback_id, "Approved — running it…" if approve else "Rejected.")
-        await self._decide(pending, approve)
+        await self._decide(pending, approve=approve)
 
     async def _close_message(self, message: dict[str, Any], note: str) -> None:
         chat_id, message_id = (message.get("chat") or {}).get("id"), message.get("message_id")
         if isinstance(chat_id, int) and isinstance(message_id, int):
             await self.api.edit_message(chat_id, message_id, f"{message.get('text') or ''}\n\n{note}".strip())
 
-    async def _decide(self, pending: Pending, approve: bool) -> None:
+    async def _decide(self, pending: Pending, *, approve: bool) -> None:
         assert self.approvals is not None
         mark = "✅ Approved" if approve else "❌ Rejected"
         if pending.message_id is not None:
@@ -370,7 +370,7 @@ class Bot:
             await self._undo(pending, "This approval was asked of an earlier sign-in of yours, so nothing was decided. Ask again to get a new one.")
             return
         sink = self._sink(pending.chat_id)
-        outcome = await self._collect(door.stream_resume(pending.thread_id, approve), sink, door, pending.thread_id)
+        outcome = await self._collect(door.stream_resume(pending.thread_id, approved=approve), sink, door, pending.thread_id)
         if outcome.error and outcome.code is None and outcome.events == 1:
             # The door refused the decision itself (rate limit, unreachable, sign-in): it never reached the agent, so it can be made again.
             metrics.channel_telegram_approval_total.labels(outcome="resume_failed").inc()

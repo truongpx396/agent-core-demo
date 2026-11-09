@@ -64,7 +64,9 @@ def should_continue(
 
 
 def check_output(state, system_prompt=ECORP_SYSTEM_PROMPT, enforce_citations=True, skill_required_tools=()):
-    return _routing.check_output(state, system_prompt, enforce_citations, skill_required_tools)
+    return _routing.check_output(
+        state, system_prompt, enforce_citations=enforce_citations, skill_required_tools=skill_required_tools
+    )
 
 
 def invalid_tool_call(state, valid_tool_names=ECORP_TOOL_NAMES):
@@ -89,7 +91,7 @@ def make_write_semantic_cache_node(cache_set, tool_capabilities=ECORP_TOOL_CAPAB
 
 def make_no_answer_fallback_node(emit_message=True, *, system_prompt=ECORP_SYSTEM_PROMPT, enforce_citations=True):
     return _retry.make_no_answer_fallback_node(
-        emit_message, system_prompt=system_prompt, enforce_citations=enforce_citations
+        emit_message=emit_message, system_prompt=system_prompt, enforce_citations=enforce_citations
     )
 
 

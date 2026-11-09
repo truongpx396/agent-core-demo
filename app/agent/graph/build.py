@@ -200,10 +200,10 @@ def build_graph(
     max_iterations: int | None = None,
     max_tokens_per_turn: int | None = None,
     max_cost_usd_per_turn: float | None = None,
+    *,
     emit_no_answer_message: bool = True,
     history_token_ceiling: int | None = None,
     history_token_floor: int | None = None,
-    *,
     profile: GraphProfile = FULL_PROFILE,
 ) -> CompiledStateGraph:
     """Compile the graph.
@@ -309,11 +309,11 @@ def build_graph(
     add("tool_batch_guard", domain_tool_batch_guard)
     add("check_output", domain_check_output)
     add("retry_output", retry_output)
-    add("retry_exhausted", make_retry_exhausted_node(emit_no_answer_message))
+    add("retry_exhausted", make_retry_exhausted_node(emit_message=emit_no_answer_message))
     add(
         "no_answer",
         make_no_answer_fallback_node(
-            emit_no_answer_message,
+            emit_message=emit_no_answer_message,
             system_prompt=manifest.system_prompt,
             enforce_citations=profile.enforce_citations,
             skill_required_tools=skill_required_tools,
@@ -437,6 +437,7 @@ def build_subagent_graph(
     max_iterations: int | None = None,
     max_tokens_per_turn: int | None = None,
     max_cost_usd_per_turn: float | None = None,
+    *,
     emit_no_answer_message: bool = True,
 ) -> CompiledStateGraph:
     """`build_graph` with `SUBAGENT_PROFILE`, for a NESTED subagent run
@@ -450,6 +451,6 @@ def build_subagent_graph(
         max_iterations,
         max_tokens_per_turn,
         max_cost_usd_per_turn,
-        emit_no_answer_message,
+        emit_no_answer_message=emit_no_answer_message,
         profile=SUBAGENT_PROFILE,
     )
