@@ -13,7 +13,7 @@ import asyncio
 import time
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import Any, Protocol, cast
 
 import numpy as np
 
@@ -232,7 +232,7 @@ class Query:
 
 
 def _unit(v: np.ndarray) -> np.ndarray:
-    return v / np.maximum(np.linalg.norm(v, axis=1, keepdims=True), 1e-12)
+    return cast("np.ndarray", v / np.maximum(np.linalg.norm(v, axis=1, keepdims=True), 1e-12))
 
 
 def evaluate(

@@ -13,7 +13,7 @@ import hashlib
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from scripts.model_eval.suites import ItemData
 
@@ -36,10 +36,10 @@ class Baseline:
 
     @property
     def name(self) -> str:
-        return self.record["candidate"]
+        return str(self.record["candidate"])
 
     def efficiency_for(self, hardware_id: str) -> dict[str, Any] | None:
-        return self.record.get("efficiency", {}).get(hardware_id)
+        return cast("dict[str, Any] | None", self.record.get("efficiency", {}).get(hardware_id))
 
 
 def stem(candidate: str, dataset_name: str, dataset_version: str) -> str:

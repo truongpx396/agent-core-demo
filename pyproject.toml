@@ -116,19 +116,14 @@ ignore = [
 # nothing to do with this app's own code. CI pins the actual interpreter
 # version directly instead (see .github/workflows/ci.yml).
 ignore_missing_imports = true
-# The body of a function with no annotations is skipped by default, so a wrong type inside an untyped decorator wrapper went
-# unseen (app/adapters/inbound/mcp/audit.py). A `type: ignore` that no longer ignores anything, or a `cast` to the type the
-# value already has, is a stale claim about the code: both fail the build.
-check_untyped_defs = true
-warn_unused_ignores = true
-warn_redundant_casts = true
-# Every function says what it takes and returns (about 160 did not: the graph nodes' `config`, the workers' Redis `client`, the stream
-# generators). Where the real type is a third party's untyped object or a test's fake the annotation is an explicit `Any`.
-disallow_untyped_defs = true
-disallow_incomplete_defs = true
-# A bare `dict`, `list`, `Callable`, `Task` or `Mapping` is `dict[Any, Any]` without saying so; 397 were left in annotations. Each now names its
-# type arguments, and where the real type is a free-form JSON payload or a framework's untyped object the argument is an explicit `Any`.
-disallow_any_generics = true
+# Everything mypy's `--strict` turns on, which this repo reached one flag at a time (#251, #253, ...) and now satisfies whole:
+# `disallow_untyped_defs`/`disallow_incomplete_defs` (every function says what it takes and returns; an explicit `Any` where the real type is a
+# third party's untyped object or a test's fake), `check_untyped_defs`, `disallow_any_generics` (no bare `dict`/`list`/`Callable`: an explicit
+# `Any` for a free-form JSON payload), `warn_return_any` (a function declared to return `str` does not hand back an `Any`), `warn_unused_ignores`
+# and `warn_redundant_casts` (a `type: ignore` or a `cast` that no longer does anything is a stale claim about the code), `no_implicit_reexport`
+# (a name another module imports from this one is re-exported with `X as X`), `strict_equality`, `disallow_untyped_calls` and the rest. mypy is
+# pinned in requirements-dev.txt and the CI job, so a release cannot add a check unseen.
+strict = true
 # Third-party stubs this app depends on (redis-py's Streams commands,
 # qdrant-client's Filter/Condition unions, RediSearch's create_index) are
 # themselves imprecise in ways this app's own code isn't — see the `cast`/

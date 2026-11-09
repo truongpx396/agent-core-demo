@@ -57,9 +57,10 @@ def jwt_claims(token: str) -> dict[str, Any]:
     what verifies the token, and a request made with a forged one is refused there."""
     try:
         payload = token.split(".")[1]
-        return json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
+        claims = json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
     except (IndexError, ValueError):
         return {}
+    return claims if isinstance(claims, dict) else {}
 
 
 def authorize_url(issuer: str, *, client_id: str, redirect_uri: str, scope: str, resource: str, state: str, challenge: str) -> str:

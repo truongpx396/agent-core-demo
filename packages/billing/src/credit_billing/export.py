@@ -102,7 +102,7 @@ class Verdict:
 def backoff_seconds(failures: int, base: int, cap: int) -> int:
     """The wait after the `failures`-th failed attempt: base, 2*base, 4*base, ... never above `cap`. The exponent is
     bounded before it is used, so a large attempt count cannot build an enormous integer on the way to being capped."""
-    return min(base * (2 ** min(max(failures, 1) - 1, 30)), cap)
+    return int(min(base * (2 ** min(max(failures, 1) - 1, 30)), cap))
 
 
 def verdicts(

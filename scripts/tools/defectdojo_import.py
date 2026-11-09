@@ -29,7 +29,7 @@ import argparse
 import os
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import httpx
 
@@ -69,7 +69,7 @@ def import_scan(
             timeout=60.0,
         )
     response.raise_for_status()
-    return response.json()
+    return cast("dict[str, Any]", response.json())
 
 
 def _summarize(result: dict[str, Any]) -> str:

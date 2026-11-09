@@ -37,7 +37,7 @@ import sys
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import httpx
 import yaml
@@ -210,7 +210,7 @@ def chat(client: httpx.Client, base: str, model: str, options: dict[str, Any], m
         payload["tools"] = tools
     reply = client.post(f"{base}/api/chat", json=payload, timeout=600)
     reply.raise_for_status()
-    return reply.json()
+    return cast("dict[str, Any]", reply.json())
 
 
 def ask(client: httpx.Client, base: str, model: str, options: dict[str, Any], system: str, tools: list[dict[str, Any]], text: str) -> tuple[dict[str, Any], int]:

@@ -42,6 +42,7 @@ import logging
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
+from typing import cast
 
 from psycopg import AsyncConnection
 from psycopg import errors as pg_errors
@@ -106,7 +107,7 @@ async def cutoff_for(conn: AsyncConnection[TupleRow]) -> datetime:
     `ledger:`), or the database's `now()` when there is none yet. Taken on `conn` so a test can ask it of an empty table."""
     cur = await conn.execute(_CUTOFF, {"like": f"{PREFIX}%"})
     (cutoff,) = await fetch_row(cur)
-    return cutoff
+    return cast("datetime", cutoff)
 
 
 async def run(

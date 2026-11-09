@@ -59,7 +59,7 @@ import sys
 import time
 import urllib.parse
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import httpx
 import jwt
@@ -96,7 +96,7 @@ def info(text: str) -> None:
 
 def jwt_part(token: str, index: int) -> dict[str, Any]:
     part = token.split(".")[index]
-    return json.loads(base64.urlsafe_b64decode(part + "=" * (-len(part) % 4)))
+    return cast("dict[str, Any]", json.loads(base64.urlsafe_b64decode(part + "=" * (-len(part) % 4))))
 
 
 class Door:
@@ -186,7 +186,7 @@ class Door:
         for key in ("access_token", "refresh_token"):
             if reply.get(key):
                 SECRETS_SEEN.append(reply[key])
-        return reply.get("access_token")
+        return cast("str | None", reply.get("access_token"))
 
     # -- requests --------------------------------------------------------------------------------------------------------------------
 

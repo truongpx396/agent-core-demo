@@ -39,6 +39,7 @@ import uuid
 from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
+from typing import cast
 
 from credit_billing import credits, db
 from credit_billing.cli._runtime import (
@@ -130,7 +131,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def _expiry(args: argparse.Namespace) -> datetime | None:
     if args.expires_at is not None:
-        return args.expires_at
+        return cast("datetime | None", args.expires_at)
     days = args.expires_in_days
     if days is None:
         return None

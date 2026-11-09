@@ -34,7 +34,7 @@ int|None, "logs": {"stdout": [{"text"}], "stderr": [{"text"}]}}`; file_read `{"p
 import hashlib
 import json
 import logging
-from typing import Any
+from typing import Any, cast
 
 from langchain_core.tools import BaseTool
 
@@ -155,7 +155,7 @@ async def _find_existing_sandbox_id(raw: dict[str, BaseTool], tags: dict[str, st
     for info in result.get("sandbox_infos") or []:
         found = info.get("metadata") or {}
         if all(found.get(key) == value for key, value in tags.items()):
-            return info.get("id")
+            return cast("str | None", info.get("id"))
     return None
 
 
@@ -179,7 +179,7 @@ async def get_or_create_sandbox_id(raw: dict[str, BaseTool], thread_id: str, *, 
     sandbox_id = created.get("sandbox_id")
     if not sandbox_id:
         raise SandboxCallFailedError(f"sandbox_create did not return a sandbox_id: {created}")
-    return sandbox_id
+    return str(sandbox_id)
 
 
 def _bounded(text: str) -> str:

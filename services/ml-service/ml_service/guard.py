@@ -7,7 +7,7 @@ conversion, although the compute already runs through ONNX Runtime either way. T
 arrays and returns `logits` directly (verified via `InferenceSession.get_inputs()/get_outputs()` against the real model).
 """
 import asyncio
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 from fastapi import APIRouter, Request
@@ -31,7 +31,7 @@ class PromptGuardRequest(BaseModel):
 
 def softmax(logits: np.ndarray) -> np.ndarray:
     exp = np.exp(logits - logits.max(axis=-1, keepdims=True))
-    return exp / exp.sum(axis=-1, keepdims=True)
+    return cast("np.ndarray", exp / exp.sum(axis=-1, keepdims=True))
 
 
 class GuardService:

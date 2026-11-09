@@ -49,7 +49,7 @@ TENANT, PRINCIPAL, THREAD = "acme-check", "alice-check@example.com", "thread-gat
 
 def pinned_image() -> str:
     """The image `make up` runs, exactly as the dev compose file pins it."""
-    return yaml.safe_load(DEV_COMPOSE.read_text(encoding="utf-8"))["services"]["litellm"]["image"]
+    return str(yaml.safe_load(DEV_COMPOSE.read_text(encoding="utf-8"))["services"]["litellm"]["image"])
 
 
 def build_config(dev: dict[str, Any], host: str, port: int) -> dict[str, Any]:

@@ -10,12 +10,14 @@ Every tool in this app, the built-ins in `app/agent/tools/builtin.py` and each d
 import asyncio
 import concurrent.futures
 from collections.abc import Awaitable, Callable
-from typing import Any
+from typing import Any, TypeVar, cast
 
 from langchain_core.runnables import RunnableConfig
 
 from app.core.scrubbing import scrub
 from app.core.security import DEFAULT_POLICY, SecurityCtx, valid_ctx
+
+T = TypeVar("T")
 
 # Safety budget: bounds how long one tool call can block the graph (a hung
 # Qdrant call, or a pathological expression like `2**99999999999`, could
@@ -27,7 +29,7 @@ _TOOL_EXECUTOR = concurrent.futures.ThreadPoolExecutor(
 )
 
 
-async def arun_with_timeout(func: Callable[..., Awaitable[Any]], *args: Any, _timeout_seconds: float | None = None, **kwargs: Any) -> Any:
+async def arun_with_timeout(func: Callable[..., Awaitable[T]], *args: Any, _timeout_seconds: float | None = None, **kwargs: Any) -> T:
     """Await `func(*args, **kwargs)` and stop waiting after `_timeout_seconds` (default TOOL_TIMEOUT_SECONDS).
     The raised TimeoutError is caught by ToolNode's `handle_tool_errors=friendly_tool_error`
     (app/agent/graph/core.py) and surfaced to the agent like any tool exception.
@@ -55,11 +57,11 @@ async def arun_with_timeout(func: Callable[..., Awaitable[Any]], *args: Any, _ti
         result = await asyncio.wait_for(func(*args, **kwargs), timeout=timeout)
     except TimeoutError as exc:
         raise TimeoutError(f"Tool call exceeded the {timeout}s timeout.") from exc
-    return scrub(result) if isinstance(result, str) else result
+    return cast(T, scrub(result)) if isinstance(result, str) else result
 
 
 
-def run_with_timeout(func: Callable[..., Any], *args: Any, _timeout_seconds: float | None = None, **kwargs: Any) -> Any:
+def run_with_timeout(func: Callable[..., T], *args: Any, _timeout_seconds: float | None = None, **kwargs: Any) -> T:
     """The sync survivor of `arun_with_timeout`'s predecessor: still runs
     `func` in a worker thread via `concurrent.futures`, not `asyncio.wait_for`
     — its one caller, `app/adapters/outbound/mcp/sandbox_tools.py::load_sandbox_tools`, runs
@@ -79,7 +81,7 @@ def run_with_timeout(func: Callable[..., Any], *args: Any, _timeout_seconds: flo
         result = future.result(timeout=timeout)
     except concurrent.futures.TimeoutError as exc:
         raise TimeoutError(f"Tool call exceeded the {timeout}s timeout.") from exc
-    return scrub(result) if isinstance(result, str) else result
+    return cast(T, scrub(result)) if isinstance(result, str) else result
 
 
 

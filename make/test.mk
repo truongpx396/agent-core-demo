@@ -30,7 +30,7 @@ test-provider-sandbox:  ## A payment provider's real SANDBOX (specs/010 T029): C
 lint:  ## ruff over the repo (config in pyproject.toml)
 	ruff check .
 
-typecheck:  ## mypy over app/ and scripts/ (config in pyproject.toml)
+typecheck:  ## mypy, strict, over app/, scripts/, the billing package and ml-service (config in pyproject.toml)
 	mypy
 
 # --- Load tests ---

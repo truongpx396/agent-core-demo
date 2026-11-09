@@ -103,7 +103,7 @@ async def load_sandbox_tools() -> tuple[list[BaseTool], dict[str, str]]:
     dispatching to a worker thread and blocking that loop.
     """
     async def _attempt() -> tuple[list[BaseTool], dict[str, str]]:
-        return await arun_with_timeout(
+        tools, pins = await arun_with_timeout(
             mcp_client.load_remote_tools,
             command=sys.executable,
             args=[*_BRIDGE_ARGS, "--domain", OPENSANDBOX_MCP_DOMAIN],
@@ -121,6 +121,7 @@ async def load_sandbox_tools() -> tuple[list[BaseTool], dict[str, str]]:
             # own capability annotations (see module docstring).
             _timeout_seconds=_SANDBOX_LIST_TIMEOUT_SECONDS,
         )
+        return list(tools), pins  # `list[StructuredTool]` to the port's `list[BaseTool]`: a list is invariant, a copy is not
 
     try:
         return await _OPENSANDBOX_BREAKER.call(

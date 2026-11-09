@@ -12,7 +12,7 @@ touching Postgres. All tools are `async def`, matching that module's
 async-first design.
 """
 from enum import Enum
-from typing import Annotated, Any, ClassVar
+from typing import Annotated, Any, ClassVar, cast
 
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import InjectedToolCallId, tool
@@ -313,7 +313,7 @@ web_search = make_web_search_tool(SUPPORT_POLICY, then_read_with="fetch_external
 
 
 def _thread_id_from_config(config: RunnableConfig | None) -> str:
-    return (config or {}).get("configurable", {}).get("thread_id", "unknown")
+    return cast("str", (config or {}).get("configurable", {}).get("thread_id", "unknown"))
 
 
 # Three narrow tools over OpenSandbox's raw MCP catalog

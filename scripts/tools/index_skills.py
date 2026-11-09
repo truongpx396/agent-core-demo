@@ -21,7 +21,7 @@ from app.adapters.outbound.embeddings.embeddings import (
 from app.adapters.outbound.qdrant import qdrant_store
 from app.agent.tools import skill_catalog as skills_module
 from app.bootstrap import wire
-from app.core.config import SKILLS_COLLECTION
+from app.core.config import DOMAINS_DIR, SKILLS_COLLECTION
 
 
 async def main() -> None:
@@ -31,7 +31,7 @@ async def main() -> None:
         catalog = skills_module.get_skills()
         if not catalog:
             raise SystemExit(
-                f"No skills found under {skills_module.DOMAINS_DIR!r} — nothing to index."
+                f"No skills found under {DOMAINS_DIR!r} — nothing to index."
             )
 
         # dim comes from a real embed call, same as scripts/tools/seed.py — never hardcoded.

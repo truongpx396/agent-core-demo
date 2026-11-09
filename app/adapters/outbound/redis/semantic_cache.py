@@ -122,7 +122,8 @@ async def _ensure_index(client: redis.Redis) -> _Namespace:
     ]
     try:
         await client.ft(ns.index).create_index(
-            schema, definition=IndexDefinition(prefix=[ns.prefix], index_type=IndexType.JSON)
+            schema,
+            definition=IndexDefinition(prefix=[ns.prefix], index_type=IndexType.JSON),  # type: ignore[no-untyped-call]  # redis-py ships IndexDefinition unannotated
         )
     except redis.ResponseError as exc:
         if "already exists" not in str(exc).lower():

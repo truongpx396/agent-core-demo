@@ -13,6 +13,7 @@ import sys
 
 from app import bootstrap
 from app.adapters.outbound.web import serper
+from app.ports.outbound.web import SearchFailedError, SearchNotConfiguredError
 
 QUERY = "serper.dev google search api"
 
@@ -21,10 +22,10 @@ async def main() -> int:
     bootstrap.wire()
     try:
         hits = await serper.search(QUERY)
-    except serper.SearchNotConfiguredError:
+    except SearchNotConfiguredError:
         print("SERPER_API_KEY is not set (in .env or the environment): nothing was sent.")
         return 2
-    except serper.SearchFailedError as exc:
+    except SearchFailedError as exc:
         # The message is the one the model would be given: it names no provider detail. The provider's own text is in the log line above it.
         print(f"FAILED: {exc}")
         return 1

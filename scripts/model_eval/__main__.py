@@ -13,7 +13,7 @@ from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from types import ModuleType
-from typing import Any
+from typing import Any, cast
 
 from scripts.model_eval import baselines, hardware, route_label, routing
 from scripts.model_eval import datasets as ds
@@ -343,7 +343,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     try:
-        return args.func(args)
+        return cast("int", args.func(args))
     except UsageError as exc:
         sys.stderr.write(f"usage error: {exc}\n")
         return USAGE
