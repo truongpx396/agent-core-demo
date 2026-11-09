@@ -146,9 +146,9 @@ jobs:
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.13"
-      # pyarrow and prometheus-client are not in the lock file (they are dev/aux-image dependencies, specs/014), so the hermetic suite
-      # that imports them needs them named here (keep the pins equal to requirements-dev.txt and services/ml-service).
-      - run: pip install -r requirements-lock.txt pytest-xdist==3.8.0 pyarrow==26.0.0 prometheus-client==0.26.0
+      # pytest, pytest-asyncio, pyarrow and prometheus-client are not in the lock file (test tools and dev/aux-image dependencies, specs/014),
+      # so the hermetic suite needs them named here (keep the pins equal to requirements-dev.txt and services/ml-service).
+      - run: pip install -r requirements-lock.txt pytest==8.4.2 pytest-asyncio==1.4.0 pytest-xdist==3.8.0 pyarrow==26.0.0 prometheus-client==0.26.0
       - run: pytest -n auto -q
 
   # The billing package, installed ALONE into a clean environment (spec 011 D20, FR-016): not the lock file, not the agent app. If its
@@ -222,6 +222,8 @@ jobs:
           python-version: "3.13"
       - run: >
           pip install -r requirements-lock.txt
+          pytest==8.4.2
+          pytest-asyncio==1.4.0
           pytest-xdist==3.8.0
           "testcontainers[postgres,redis,ollama]==4.9.0"
       # The billing package is installed the way the Docker image installs it (spec 011), BEFORE anything runs the app. pytest's `pythonpath`
@@ -264,6 +266,8 @@ jobs:
           python-version: "3.13"
       - run: >
           pip install -r requirements-lock.txt
+          pytest==8.4.2
+          pytest-asyncio==1.4.0
           pytest-xdist==3.8.0
           "testcontainers[postgres,redis,ollama]==4.9.0"
           pytest-playwright==0.7.1
@@ -577,7 +581,7 @@ jobs:
       # succeed against this exact combination in an isolated venv built
       # from this same lockfile.
       - run: pip install --no-deps deepeval==4.2.0
-      - run: pip install nest_asyncio posthog pyfiglet pytest-asyncio pytest-repeat pytest-rerunfailures pytest-xdist questionary "tabulate<0.10.0"
+      - run: pip install nest_asyncio posthog pyfiglet pytest==8.4.2 pytest-asyncio==1.4.0 pytest-repeat pytest-rerunfailures pytest-xdist questionary "tabulate<0.10.0"
       # `deepeval_judge`'s GeminiModel (tests/deepeval/conftest.py) needs
       # google-genai — same "--no-deps, add the one real transitive dep by
       # hand" shape as deepeval==4.2.0 above, and the SAME conflict class:

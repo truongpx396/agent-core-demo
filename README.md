@@ -711,6 +711,8 @@ drops it; config in [`observability/`](observability/); prod runs the backends o
 
 ## ✅ Testing
 
+The quickstart's `requirements.txt` is the app alone. `make test`, `make lint` and `make typecheck` need the test and lint tools too: `pip install -r requirements-dev.txt` (it includes `requirements.txt`). The app image installs neither pytest nor those tools.
+
 | Tier | Command | Needs | In CI | Proves |
 |---|---|---|---|---|
 | 🧪 Unit | `make test` | nothing (fake LLM, mocked stores) | gate | Graph, routing, tools, isolation, idempotency logic |
