@@ -29,6 +29,7 @@ import argparse
 import os
 import sys
 from pathlib import Path
+from typing import Any
 
 import httpx
 
@@ -46,7 +47,7 @@ def import_scan(
     product_type_name: str,
     product_name: str,
     engagement_name: str,
-) -> dict:
+) -> dict[str, Any]:
     """POSTs one report to `/api/v2/import-scan/` with
     `auto_create_context=True` so a first run needs no manual Product/
     Engagement setup. Returns the parsed JSON response (includes a
@@ -71,7 +72,7 @@ def import_scan(
     return response.json()
 
 
-def _summarize(result: dict) -> str:
+def _summarize(result: dict[str, Any]) -> str:
     after = result.get("statistics", {}).get("after", {})
     order = ["critical", "high", "medium", "low", "info"]
     counts = [f"{sev}={after.get(sev, {}).get('total', 0)}" for sev in order if sev in after]

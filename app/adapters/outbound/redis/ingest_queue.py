@@ -10,7 +10,7 @@ import json
 import logging
 import time
 from collections.abc import AsyncGenerator
-from typing import cast
+from typing import Any, cast
 
 import redis.asyncio as redis
 
@@ -55,7 +55,7 @@ async def read_results(
     *,
     block_ms: int = 5000,
     first_event_deadline_seconds: float | None = None,
-) -> AsyncGenerator[dict, None]:
+) -> AsyncGenerator[dict[str, Any], None]:
     """Producer side: yield each event published for `job_id`, in order,
     until a terminal event (`type` is `done` or `error`) is seen, then
     return — same shape as app/adapters/outbound/redis/queue.py::read_results,
@@ -117,7 +117,7 @@ class RedisIngestQueue:
             get_client(), job_id=job_id, object_key=object_key, filename=filename, content_type=content_type, ctx=ctx, topic=topic
         )
 
-    async def read_results(self, job_id: str, *, first_event_deadline_seconds: float | None = None) -> AsyncGenerator[dict, None]:
+    async def read_results(self, job_id: str, *, first_event_deadline_seconds: float | None = None) -> AsyncGenerator[dict[str, Any], None]:
         async for event in read_results(get_client(), job_id, first_event_deadline_seconds=first_event_deadline_seconds):
             yield event
 

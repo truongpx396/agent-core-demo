@@ -13,6 +13,7 @@ import hashlib
 import json
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from scripts.model_eval.suites import ItemData
 
@@ -29,7 +30,7 @@ class BaselineMismatchError(Exception):
 
 @dataclass
 class Baseline:
-    record: dict
+    record: dict[str, Any]
     data: ItemData
     path: Path
 
@@ -37,7 +38,7 @@ class Baseline:
     def name(self) -> str:
         return self.record["candidate"]
 
-    def efficiency_for(self, hardware_id: str) -> dict | None:
+    def efficiency_for(self, hardware_id: str) -> dict[str, Any] | None:
         return self.record.get("efficiency", {}).get(hardware_id)
 
 
@@ -53,7 +54,7 @@ def _items_path(record_path: Path) -> Path:
     return record_path.with_suffix(".items.json")
 
 
-def write_baseline(root: Path, record: dict, data: ItemData, *, force: bool = False) -> Path:
+def write_baseline(root: Path, record: dict[str, Any], data: ItemData, *, force: bool = False) -> Path:
     ds = record["dataset"]
     path = path_for(root, record["kind"], record["candidate"], ds["name"], ds["version"])
     if path.exists() and not force:
@@ -67,7 +68,7 @@ def write_baseline(root: Path, record: dict, data: ItemData, *, force: bool = Fa
     return path
 
 
-def merge_efficiency(path: Path, hardware_id: str, efficiency: dict) -> None:
+def merge_efficiency(path: Path, hardware_id: str, efficiency: dict[str, Any]) -> None:
     """A second machine adds its latency numbers under its own hardware id without touching the quality figures or the first machine's."""
     record = json.loads(path.read_text(encoding="utf-8"))
     record.setdefault("efficiency", {})[hardware_id] = efficiency

@@ -9,6 +9,7 @@ overrides and system prompts, because a screen that blocks those hurts real user
 import hashlib
 import json
 from pathlib import Path
+from typing import Any
 
 from scripts.model_eval import datasets as ds
 
@@ -26,7 +27,7 @@ def read_tsv(path: Path) -> list[tuple[str, str]]:
     return rows
 
 
-def build_items(sources: Path = SOURCES) -> list[dict]:
+def build_items(sources: Path = SOURCES) -> list[dict[str, Any]]:
     items = []
     for n, (technique, text) in enumerate(read_tsv(sources / "attacks.tsv"), start=1):
         items.append({"id": f"atk-{n:03d}", "text": text, "label": "attack", "technique": technique, "domain": "any", "reviewed": False})
@@ -35,9 +36,9 @@ def build_items(sources: Path = SOURCES) -> list[dict]:
     return items
 
 
-def split(items: list[dict]) -> dict[str, list[dict]]:
+def split(items: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
     """By id hash, so a re-run never moves an item; a test item that is a near-duplicate of a dev one is dropped rather than moved."""
-    out: dict[str, list[dict]] = {"dev": [], "test": []}
+    out: dict[str, list[dict[str, Any]]] = {"dev": [], "test": []}
     for it in items:
         out["dev" if int(hashlib.sha256(it["id"].encode()).hexdigest()[:8], 16) % 100 < DEV_SHARE_PERCENT else "test"].append(it)
     leaks = {j for _i, j, _s in ds.near_duplicates([i["text"] for i in out["dev"]], [i["text"] for i in out["test"]])}
@@ -48,7 +49,7 @@ def split(items: list[dict]) -> dict[str, list[dict]]:
     return out
 
 
-def write_dataset(splits: dict[str, list[dict]], *, version: str = "v1", root: Path = OUT) -> Path:
+def write_dataset(splits: dict[str, list[dict[str, Any]]], *, version: str = "v1", root: Path = OUT) -> Path:
     target = root / version
     target.mkdir(parents=True, exist_ok=True)
     manifest = {

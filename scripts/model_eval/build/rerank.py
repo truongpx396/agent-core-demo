@@ -8,6 +8,7 @@ dev and test stay disjoint.
 import hashlib
 import json
 from pathlib import Path
+from typing import Any
 
 from scripts.model_eval import datasets as ds
 from scripts.model_eval.lexical import Bm25
@@ -16,7 +17,7 @@ LIST_SIZE = 20  # app/core/config.py HYBRID_PREFETCH_LIMIT: candidates reaching 
 OUT = ds.DATASETS_ROOT / "rerank-domains"
 
 
-def build_lists(corpus: list[dict], items: list[dict], k: int = LIST_SIZE) -> list[dict]:
+def build_lists(corpus: list[dict[str, Any]], items: list[dict[str, Any]], k: int = LIST_SIZE) -> list[dict[str, Any]]:
     if len(corpus) < k:
         raise ValueError(f"the corpus has {len(corpus)} chunks, fewer than the list size {k}")
     texts = {c["id"]: c["text"] for c in corpus}
@@ -37,7 +38,7 @@ def build_lists(corpus: list[dict], items: list[dict], k: int = LIST_SIZE) -> li
     return out
 
 
-def write_dataset(source: ds.Manifest, lists: dict[str, list[dict]], *, k: int, root: Path = OUT) -> Path:
+def write_dataset(source: ds.Manifest, lists: dict[str, list[dict[str, Any]]], *, k: int, root: Path = OUT) -> Path:
     target = root / source.version
     target.mkdir(parents=True, exist_ok=True)
     manifest = {

@@ -70,7 +70,7 @@ class _Handling:
     cap_output: bool
 
 
-def tool_fingerprint(name: str, description: str | None, input_schema: Mapping) -> str:
+def tool_fingerprint(name: str, description: str | None, input_schema: Mapping[str, Any]) -> str:
     """A stable hash of what the model is shown about one tool: its name, description and input schema. Annotations are not
     in it: they are never shown to the model and never trusted (see the module docstring). The key stays `inputSchema`, MCP's name
     for it on the wire, whatever the SDK calls the attribute: the pinned hashes are over this exact form."""
@@ -107,7 +107,7 @@ def render_result(result: types.CallToolResult, handling: _Handling) -> str:
     return f"{REMOTE_ERROR_PREFIX} {text}" if result.is_error else text
 
 
-async def _call_remote_tool(params: StdioServerParameters, tool_name: str, kwargs: dict, handling: _Handling) -> str:
+async def _call_remote_tool(params: StdioServerParameters, tool_name: str, kwargs: dict[str, Any], handling: _Handling) -> str:
     result = await connection_for(params, handling.dependency).call_tool(tool_name, kwargs)
     return render_result(result, handling)
 
@@ -133,7 +133,7 @@ def _wrap_remote_tool(params: StdioServerParameters, remote_tool: types.Tool, ha
     )
 
 
-def _apply_pins(remote_tools: list, pinned: Mapping[str, str], dependency: str) -> list:
+def _apply_pins(remote_tools: list[types.Tool], pinned: Mapping[str, str], dependency: str) -> list[types.Tool]:
     """Keep only the tools whose name AND fingerprint are the pinned ones; count and log the rest that matter."""
     kept = []
     offered: set[str] = set()

@@ -3,6 +3,7 @@
 """
 import logging
 from collections.abc import Awaitable, Callable
+from typing import Any
 
 from langchain_core.messages import HumanMessage
 from langchain_core.runnables import RunnableConfig
@@ -24,7 +25,7 @@ _FOLLOWUP_PROMPT = (
 
 
 # --- Node: follow-up suggestions (GRAPH_PATTERNS.md pattern 27) ---
-def make_suggest_followups_node(llm: ChatModel, model_alias: str = CHAT_MODEL) -> Callable[..., Awaitable[dict]]:
+def make_suggest_followups_node(llm: ChatModel, model_alias: str = CHAT_MODEL) -> Callable[..., Awaitable[dict[str, Any]]]:
     """Factory, same rationale as make_agent_node: needs an LLM client.
 
     Only reached once a turn is confirmed final (route_after_check's
@@ -34,7 +35,7 @@ def make_suggest_followups_node(llm: ChatModel, model_alias: str = CHAT_MODEL) -
     """
     llm = without_tools(llm)
 
-    async def suggest_followups(state: State, config: RunnableConfig | None = None) -> dict:
+    async def suggest_followups(state: State, config: RunnableConfig | None = None) -> dict[str, Any]:
         """Suggests follow-ups only for a GROUNDED answer (`used_citations`
         non-empty) — no citations means nothing to build from, which
         naturally suppresses this for a refusal, general-knowledge aside,

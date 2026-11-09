@@ -22,6 +22,7 @@ LiteLLM was down EVERY recorded turn paid a fresh 5 s timeout for an answer that
 import logging
 import time
 from collections.abc import Mapping
+from typing import Any
 
 import httpx
 
@@ -80,7 +81,7 @@ async def resolve_model(alias: str) -> str | None:
         return None
 
 
-async def model_info() -> list[Mapping]:
+async def model_info() -> list[Mapping[str, Any]]:
     """The gateway's `/model/info` entries. Raises on a transport or HTTP error: the caller (`pricing.get_price`) keeps serving the last good
     prices and counts the failure."""
     async with httpx.AsyncClient(timeout=5) as client:
@@ -96,7 +97,7 @@ class LiteLLMModelCatalog:
     """The adapter: the module's functions behind the `ModelCatalog` port. Each call looks the function up at CALL time, so a test that
     patches `model_catalog.resolve_model` or `model_catalog.model_info` is seen."""
 
-    async def model_info(self) -> list[Mapping]:
+    async def model_info(self) -> list[Mapping[str, Any]]:
         return await model_info()
 
     async def resolve(self, alias: str) -> str | None:

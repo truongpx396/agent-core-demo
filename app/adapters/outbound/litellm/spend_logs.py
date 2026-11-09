@@ -12,6 +12,7 @@ admin view: the caller hands this adapter an `httpx.AsyncClient` that already ca
 from collections.abc import Mapping
 from datetime import UTC, date, datetime
 from decimal import Decimal
+from typing import Any
 
 import httpx
 
@@ -24,7 +25,7 @@ GATEWAY_PATH = "/spend/logs/v2"
 _GATEWAY_TOTAL_CAP = 10_000  # `SPEND_LOGS_PAGINATION_COUNT_CAP` in LiteLLM: a `total` at or above it is a floor, not a count
 
 
-def _row_day_and_spend(row: Mapping) -> tuple[str, date, Decimal, str]:
+def _row_day_and_spend(row: Mapping[str, Any]) -> tuple[str, date, Decimal, str]:
     try:
         start = datetime.fromisoformat(str(row["startTime"]).replace("Z", "+00:00"))
         if start.tzinfo is None:

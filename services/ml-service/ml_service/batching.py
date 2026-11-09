@@ -12,7 +12,7 @@ both text models would need a Python backend.
 import asyncio
 import time
 from collections.abc import Callable
-from typing import Generic, TypeVar
+from typing import Any, Generic, TypeVar
 
 Item = TypeVar("Item")
 Result = TypeVar("Result")
@@ -33,7 +33,7 @@ class MicroBatcher(Generic[Item, Result]):
         self._max_batch_size = max_batch_size
         self._max_wait_s = max_wait_ms / 1000
         self._queue: asyncio.Queue[tuple[Item, asyncio.Future[Result]]] = asyncio.Queue()
-        self._task: asyncio.Task | None = None
+        self._task: asyncio.Task[Any] | None = None
 
     def start(self) -> None:
         self._task = asyncio.create_task(self._loop())

@@ -51,7 +51,7 @@ class EmbedService:
         encoded = self.model.text.embed(texts)
         return [Embedded(encoded.vectors[i], encoded.token_counts[i], encoded.truncated_items[i]) for i in range(len(texts))]
 
-    def info(self) -> dict:
+    def info(self) -> dict[str, Any]:
         return self.model.info()
 
     async def start(self) -> None:
@@ -154,7 +154,7 @@ async def create_embeddings(request: Request) -> JSONResponse:
 
 
 @router.get("/v1/models")
-async def list_models(request: Request) -> dict:
+async def list_models(request: Request) -> dict[str, Any]:
     registry = request.app.state.registry
     snapshot = registry.snapshot()
     data = []

@@ -29,7 +29,7 @@ from app.ports.outbound.llm import ChatModel
 @dataclass(frozen=True)
 class MeteredCall:
     response: Any
-    usage: Mapping
+    usage: Mapping[str, Any]
     cost_usd: float
     priced: pricing.PricedCall
 

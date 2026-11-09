@@ -41,7 +41,7 @@ import contextvars
 import hashlib
 import logging
 from collections.abc import Awaitable, Callable
-from typing import TypeVar
+from typing import Any, TypeVar
 
 from mcp import ClientSession, MCPError, types
 from mcp.client.stdio import StdioServerParameters, stdio_client
@@ -70,7 +70,7 @@ class _Link:
 
     def __init__(self) -> None:
         self.session: ClientSession | None = None
-        self.task: asyncio.Task | None = None
+        self.task: asyncio.Task[Any] | None = None
         self.stop = asyncio.Event()
         self.ready = asyncio.Event()
         self.error: BaseException | None = None
@@ -220,7 +220,7 @@ class McpConnection:
             return result
         raise ConnectionError(f"the MCP connection to {self._dependency} was lost") from last
 
-    async def call_tool(self, name: str, arguments: dict) -> types.CallToolResult:
+    async def call_tool(self, name: str, arguments: dict[str, Any]) -> types.CallToolResult:
         """Call a tool. Never replayed once it may have reached the server (see the module docstring)."""
         return await self._request(lambda session: session.call_tool(name, arguments), replay_in_flight=False)
 

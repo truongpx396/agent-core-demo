@@ -7,7 +7,7 @@ Incidents are the ops team's own record (not per-tenant data), written exactly-o
 """
 from __future__ import annotations
 
-from typing import Protocol
+from typing import Any, Protocol
 
 from app.ports.slot import Slot
 
@@ -15,7 +15,7 @@ from app.ports.slot import Slot
 class IncidentStore(Protocol):
     async def log_incident(self, opened_by: str, summary: str, detail: str | None, tool_call_id: str | None = None) -> int: ...
 
-    async def list_recent_incidents(self, limit: int = 10, status: str | None = None) -> list[dict]: ...
+    async def list_recent_incidents(self, limit: int = 10, status: str | None = None) -> list[dict[str, Any]]: ...
 
     async def resolve_incident(self, incident_id: int, resolution: str) -> bool:
         """True if the incident exists and was open."""

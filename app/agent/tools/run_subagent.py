@@ -21,6 +21,7 @@ from typing import Any
 
 from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.runnables import RunnableConfig
+from langchain_core.tools import BaseTool
 
 from app.agent.cost import pricing
 from app.agent.graph.build import GraphDeps, build_subagent_graph
@@ -185,9 +186,9 @@ class _SubagentDomainPlugin:
     read_only filter.
     """
 
-    _tools: list
+    _tools: list[Any]
 
-    def tools(self) -> list:
+    def tools(self) -> list[BaseTool]:
         return list(self._tools)
 
     def tool_capabilities(self) -> dict[str, str]:
@@ -217,7 +218,7 @@ async def run_subagent_impl(
     config: RunnableConfig,
     *,
     domain: str,
-    registry: dict[str, tuple],
+    registry: dict[str, tuple[Any, ...]],
     tools_by_name: Mapping[str, Any],
     llm: Any = None,
     use_cache: bool = False,

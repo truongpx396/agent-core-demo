@@ -52,7 +52,7 @@ def pinned_image() -> str:
     return yaml.safe_load(DEV_COMPOSE.read_text(encoding="utf-8"))["services"]["litellm"]["image"]
 
 
-def build_config(dev: dict, host: str, port: int) -> dict:
+def build_config(dev: dict[str, Any], host: str, port: int) -> dict[str, Any]:
     """The dev config with every model backend pointed at the stub, the Langfuse callbacks (a server of their own) dropped, and one
     OpenAI-compatible alias added. Nothing else is touched: it is the shipped file the gateway reads."""
     config = copy.deepcopy(dev)
@@ -70,14 +70,14 @@ def build_config(dev: dict, host: str, port: int) -> dict:
     return config
 
 
-def leaks(seen: dict, needles: list[str]) -> list[str]:
+def leaks(seen: dict[str, Any], needles: list[str]) -> list[str]:
     """Which of `needles` appear anywhere in what the backend received (body or headers)."""
     wire = json.dumps({"body": seen["body"], "headers": seen["headers"]})
     return [needle for needle in needles if needle in wire]
 
 
 class _Stub(BaseHTTPRequestHandler):
-    seen: ClassVar[list[dict]] = []
+    seen: ClassVar[list[dict[str, Any]]] = []
 
     def do_POST(self) -> None:  # http.server's name
         body = json.loads(self.rfile.read(int(self.headers.get("content-length", 0))) or b"{}")

@@ -7,6 +7,7 @@ returned to the model are the use cases' (`usecases.py`).
 """
 import asyncio
 from datetime import datetime
+from typing import Any
 
 from app.adapters.outbound.embeddings.embeddings import embed_document, embed_sparse
 from app.adapters.outbound.qdrant import qdrant_store
@@ -68,5 +69,5 @@ async def add_memory(point_id: str, content: str, tenant: str, owner: str, creat
     await qdrant_store.upsert([point])
 
 
-async def query_employees(tenant: str, department: str | None, name_contains: str | None, limit: int) -> list[dict]:
+async def query_employees(tenant: str, department: str | None, name_contains: str | None, limit: int) -> list[dict[str, Any]]:
     return await sql_store.query_employees(tenant=tenant, department=department, name_contains=name_contains, limit=limit)

@@ -26,7 +26,7 @@ from pydantic import SecretStr
 
 
 class OpenAiChatModels:
-    def build(self, tools: list, *, model: str, base_url: str, api_key: str) -> Any:
+    def build(self, tools: list[Any], *, model: str, base_url: str, api_key: str) -> Any:
         return ChatOpenAI(
             model=model,
             base_url=base_url,

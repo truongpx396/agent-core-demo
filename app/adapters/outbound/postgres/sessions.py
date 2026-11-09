@@ -5,6 +5,8 @@ It is not the usage table (that one no-ops on a zero-token or rejected turn and 
 vanish from the switcher) and not the checkpointer's `checkpoints` table (no tenant or principal column to scope by, and a title parsed out of
 its blob format would be fragile). Statements only: whether a write may fail a turn is the application's call.
 """
+from typing import Any
+
 from app.platform.sql_store import fetch_dicts, get_connection
 
 
@@ -44,7 +46,7 @@ class PgSessionStore:
             )
             return await cur.fetchone() is not None
 
-    async def list(self, tenant: str, principal: str, domain: str) -> list[dict]:
+    async def list(self, tenant: str, principal: str, domain: str) -> list[dict[str, Any]]:
         async with get_connection() as conn:
             cur = await conn.execute(
                 "SELECT thread_id, title, created_at, last_active_at FROM chat_sessions "

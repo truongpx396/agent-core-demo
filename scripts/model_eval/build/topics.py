@@ -10,6 +10,7 @@ module checks and a test pins: a sentence that is also an example would be score
 """
 import json
 from pathlib import Path
+from typing import Any
 
 from scripts.model_eval import datasets as ds
 
@@ -35,11 +36,11 @@ def labelset_examples(path: Path = LABELSET) -> dict[str, list[str]]:
     return json.loads(path.read_text(encoding="utf-8"))["labels"]
 
 
-def build_splits(rows: list[tuple[str, str, str]], labels: list[str]) -> dict[str, list[dict]]:
+def build_splits(rows: list[tuple[str, str, str]], labels: list[str]) -> dict[str, list[dict[str, Any]]]:
     unknown = {label for label, _split, _text in rows} - set(labels) - {NONE}
     if unknown:
         raise ValueError(f"labels the label set does not have: {sorted(unknown)}")
-    splits: dict[str, list[dict]] = {"dev": [], "test": []}
+    splits: dict[str, list[dict[str, Any]]] = {"dev": [], "test": []}
     for number, (label, split, text) in enumerate(rows, start=1):
         splits[split].append({"id": f"top-{number:03d}", "text": text, "label": label, "reviewed": False})
     for name, items in splits.items():
@@ -49,7 +50,7 @@ def build_splits(rows: list[tuple[str, str, str]], labels: list[str]) -> dict[st
     return splits
 
 
-def leaks_into_the_label_set(splits: dict[str, list[dict]], examples: dict[str, list[str]]) -> list[str]:
+def leaks_into_the_label_set(splits: dict[str, list[dict[str, Any]]], examples: dict[str, list[str]]) -> list[str]:
     """Dataset sentences that are (near-)duplicates of an example in the label set."""
     texts = [t for ts in examples.values() for t in ts]
     out = []
@@ -59,7 +60,7 @@ def leaks_into_the_label_set(splits: dict[str, list[dict]], examples: dict[str, 
     return out
 
 
-def write_dataset(splits: dict[str, list[dict]], labels: list[str], *, version: str = "v1", root: Path = OUT) -> Path:
+def write_dataset(splits: dict[str, list[dict[str, Any]]], labels: list[str], *, version: str = "v1", root: Path = OUT) -> Path:
     target = root / version
     target.mkdir(parents=True, exist_ok=True)
     manifest = {

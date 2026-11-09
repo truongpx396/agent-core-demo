@@ -13,6 +13,7 @@ from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from types import ModuleType
+from typing import Any
 
 from scripts.model_eval import baselines, hardware, route_label, routing
 from scripts.model_eval import datasets as ds
@@ -94,7 +95,7 @@ def _execute(args: argparse.Namespace) -> tuple[Candidate, RunOutput]:
     return candidate, output
 
 
-def _write_report(report: dict, out_dir: Path) -> Path:
+def _write_report(report: dict[str, Any], out_dir: Path) -> Path:
     out_dir.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S")
     stem = f"{report['kind']}-{report['candidate']['name']}-{report['dataset']['name']}-{stamp}"
@@ -237,7 +238,7 @@ def cmd_fetch(args: argparse.Namespace) -> int:
     return OK
 
 
-def _route_prompts(manifest: ds.Manifest) -> list[dict]:
+def _route_prompts(manifest: ds.Manifest) -> list[dict[str, Any]]:
     """Every prompt of the committed route set, both splits: the labeller scores them all (dev to tune a router on, test to report it)."""
     return [{"id": r["id"], "text": r["text"]} for split in sorted(manifest.raw["splits"]) for r in manifest.split_items(split)]
 

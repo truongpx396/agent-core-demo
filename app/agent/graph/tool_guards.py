@@ -13,9 +13,9 @@ self-correcting retry, instead of running or surfacing it. `batch_problem` check
 All three answer every pending call with a `ToolMessage` (`reject_tool_calls`) and loop back to `agent`, each
 with its own counter in `app/core/metrics.py`.
 """
-from typing import Literal, cast
+from typing import Any, Literal, cast
 
-from langchain_core.messages import AIMessage
+from langchain_core.messages import AIMessage, BaseMessage, ToolCall
 
 from app.agent.graph.loop_guards import use_skill_called_without_search
 from app.agent.graph.messages import reject_tool_calls
@@ -25,7 +25,7 @@ from app.core import metrics
 BatchProblem = Literal["too_many_tool_calls", "invalid_tool_call", "use_skill_without_search"]
 
 
-def invalid_tool_call_names(tool_calls: list, valid_tool_names: frozenset[str]) -> list[str]:
+def invalid_tool_call_names(tool_calls: list[ToolCall], valid_tool_names: frozenset[str]) -> list[str]:
     """Names in this batch that aren't a registered tool at all — stricter than
     `tool_capability`'s "outward" default (which still assumes a real, just undeclared, tool).
     `valid_tool_names` is the calling domain's own tool set, bound by `build_graph`: there is no
@@ -34,7 +34,7 @@ def invalid_tool_call_names(tool_calls: list, valid_tool_names: frozenset[str]) 
 
 
 def batch_problem(
-    tool_calls: list, messages: list, valid_tool_names: frozenset[str]
+    tool_calls: list[ToolCall], messages: list[BaseMessage], valid_tool_names: frozenset[str]
 ) -> BatchProblem | None:
     """The first problem with this batch, in the priority order above, or None."""
     if len(tool_calls) > MAX_TOOL_CALLS_PER_TURN:
@@ -47,7 +47,7 @@ def batch_problem(
 
 
 def _rejection_reason(
-    problem: BatchProblem, tool_calls: list, valid_tool_names: frozenset[str]
+    problem: BatchProblem, tool_calls: list[ToolCall], valid_tool_names: frozenset[str]
 ) -> str:
     if problem == "too_many_tool_calls":
         return (
@@ -76,7 +76,7 @@ _COUNTERS = {
 }
 
 
-def tool_batch_guard(state: State, valid_tool_names: frozenset[str]) -> dict:
+def tool_batch_guard(state: State, valid_tool_names: frozenset[str]) -> dict[str, Any]:
     """Reject the pending batch without running it. `valid_tool_names` is bound per domain by
     `build_graph` (`functools.partial`), the same set `should_continue` routed with."""
     last_ai = cast(AIMessage, state["messages"][-1])

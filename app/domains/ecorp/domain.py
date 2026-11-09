@@ -9,6 +9,8 @@ every other domain uses, and is absent when no bundled AGENT.md declares this do
 """
 from dataclasses import dataclass
 
+from langchain_core.tools import BaseTool
+
 from app.agent.tools.builtin import (
     SHARED_TOOL_CAPABILITIES,
     ask_clarification,
@@ -138,7 +140,7 @@ _RUN_SUBAGENT = make_domain_subagent_tool(
 
 @dataclass
 class _EcorpDomainPlugin:
-    def tools(self) -> list:
+    def tools(self) -> list[BaseTool]:
         return skill_tools_first(_ACTION_TOOLS, _REUSED_TOOLS, _RUN_SUBAGENT)
 
     def tool_capabilities(self) -> dict[str, str]:

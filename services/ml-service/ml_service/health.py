@@ -4,18 +4,20 @@
 including which model is down and when it will be retried, is `/health/models`; the app's readiness check reads it and reports a
 degraded model as a warning, never as an unready API.
 """
+from typing import Any
+
 from fastapi import APIRouter, Request, Response
 
 router = APIRouter()
 
 
 @router.get("/health")
-async def health() -> dict:
+async def health() -> dict[str, Any]:
     return {"status": "ok"}
 
 
 @router.get("/health/models")
-async def health_models(request: Request) -> dict:
+async def health_models(request: Request) -> dict[str, Any]:
     registry = request.app.state.registry
     return {
         "status": "degraded" if registry.degraded else "ok",

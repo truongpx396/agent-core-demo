@@ -17,6 +17,7 @@ What makes a button safe to put in a chat (constitution Principle II is non-nego
 import json
 import secrets
 from dataclasses import asdict, dataclass
+from typing import Any
 
 import redis.asyncio as redis
 
@@ -50,7 +51,7 @@ def parse_callback(data: object) -> tuple[str, bool] | None:
     return parts[1], parts[2] == "y"
 
 
-def keyboard(token: str) -> dict:
+def keyboard(token: str) -> dict[str, Any]:
     return {"inline_keyboard": [[{"text": "✅ Approve", "callback_data": callback_data(token, True)}, {"text": "❌ Reject", "callback_data": callback_data(token, False)}]]}
 
 
@@ -59,7 +60,7 @@ def _shorten(value: object) -> str:
     return text if len(text) <= _ARG_CHARS else text[: _ARG_CHARS - 1] + "…"
 
 
-def render(tool_calls: list[dict]) -> str:
+def render(tool_calls: list[dict[str, Any]]) -> str:
     """What the person is asked to decide: every pending call, its name and its arguments, clipped."""
     lines = ["⚠️ This needs your approval before it runs:", ""]
     for call in tool_calls:

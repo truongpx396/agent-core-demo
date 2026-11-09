@@ -6,6 +6,7 @@ every query explicitly `tenant = %s`, reusing app/platform/sql_store.py's own
 pooled `appdata` connection.
 """
 from datetime import datetime
+from typing import Any
 
 from app.platform.sql_store import fetch_dict, fetch_dicts, fetch_row, get_connection
 
@@ -52,7 +53,7 @@ async def set_lead_status(tenant: str, contact: str, status: str) -> bool:
         return cur.rowcount > 0
 
 
-async def get_lead(tenant: str, contact: str) -> dict | None:
+async def get_lead(tenant: str, contact: str) -> dict[str, Any] | None:
     """`notes` is computed here, not stored: `STRING_AGG` flattens every
     `crm_lead_notes` row for this lead into the same single newest-last
     string shape the old appended-TEXT-column `notes` used to be (see
@@ -111,7 +112,7 @@ async def add_followup(
         return int(followup_id)
 
 
-async def list_pending_followups(tenant: str, contact: str | None = None) -> list[dict]:
+async def list_pending_followups(tenant: str, contact: str | None = None) -> list[dict[str, Any]]:
     """Pending follow-ups, most-imminent first, joined with lead name —
     like `due_followups` but not bounded to "due by now": shows a rep the
     whole upcoming queue, optionally narrowed to one contact."""
@@ -121,7 +122,7 @@ async def list_pending_followups(tenant: str, contact: str | None = None) -> lis
         JOIN crm_leads l ON l.id = f.lead_id
         WHERE f.tenant = %s AND f.status = 'pending'
     """
-    params: list = [tenant]
+    params: list[Any] = [tenant]
     if contact is not None:
         sql += " AND l.contact = %s"
         params.append(contact)
@@ -166,7 +167,7 @@ async def mark_lead_lost(
     return True
 
 
-async def due_followups(tenant: str, as_of: datetime) -> list[dict]:
+async def due_followups(tenant: str, as_of: datetime) -> list[dict[str, Any]]:
     """Pending follow-ups due by `as_of`, joined with lead name/contact —
     what scripts/jobs/followup_sweep.py sweeps. Scoped to `tenant` even though
     the only caller already runs per-tenant, so a future multi-tenant
@@ -218,7 +219,7 @@ async def append_lead_note(
     return True
 
 
-async def lead_history(tenant: str, contact: str) -> dict | None:
+async def lead_history(tenant: str, contact: str) -> dict[str, Any] | None:
     """A lead's full record plus its follow-ups (pending and done) —
     what package_lead_brief assembles a handoff brief from."""
     lead = await get_lead(tenant, contact)

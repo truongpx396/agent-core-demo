@@ -7,7 +7,7 @@ appended onto a column. The Postgres adapter is `app/domains/support/store.py`.
 """
 from __future__ import annotations
 
-from typing import Protocol
+from typing import Any, Protocol
 
 from app.ports.slot import Slot
 
@@ -19,9 +19,9 @@ class TicketStore(Protocol):
         """Inserts a new `open` ticket and returns its id (fresh, never caller-targeted). With a `tool_call_id`, a replay returns the ticket the first call made."""
         ...
 
-    async def get_ticket(self, tenant: str, ticket_id: int) -> dict | None: ...
+    async def get_ticket(self, tenant: str, ticket_id: int) -> dict[str, Any] | None: ...
 
-    async def list_tickets_for_requester(self, tenant: str, requester: str, limit: int = 10) -> list[dict]: ...
+    async def list_tickets_for_requester(self, tenant: str, requester: str, limit: int = 10) -> list[dict[str, Any]]: ...
 
     async def escalate_ticket(self, tenant: str, ticket_id: int, reason: str) -> bool:
         """True if the ticket exists in this tenant and was escalated."""

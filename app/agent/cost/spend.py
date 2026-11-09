@@ -34,11 +34,12 @@ serves the turn and counts `agent_cost_governance_degraded_total{path="ledger_re
 is a cap that is off.
 """
 from datetime import datetime
+from typing import Any
 
 from app.ports.outbound import cost as ports
 
 
-async def usage_summary(tenant: str, principal: str | None = None, since: datetime | None = None) -> dict:
+async def usage_summary(tenant: str, principal: str | None = None, since: datetime | None = None) -> dict[str, Any]:
     """Total tokens and cost for `tenant`, optionally narrowed to one `principal` and/or to usage on/after `since`.
 
     `since` is what the budgets use for a ROLLING 24h window (`now - 24h`, not a calendar day, so a tenant's

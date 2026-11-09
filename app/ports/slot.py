@@ -21,11 +21,11 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from contextlib import contextmanager
-from typing import Generic, TypeVar
+from typing import Any, Generic, TypeVar
 
 T = TypeVar("T")
 
-_ALL: list[Slot] = []
+_ALL: list[Slot[Any]] = []
 
 
 class PortNotBoundError(RuntimeError):
@@ -75,7 +75,7 @@ class Slot(Generic[T]):
             self._adapter = previous
 
 
-def all_slots() -> list[Slot]:
+def all_slots() -> list[Slot[Any]]:
     """Every slot created so far (a port module creates its slots when imported)."""
     return list(_ALL)
 

@@ -37,6 +37,7 @@ import sys
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import httpx
 import yaml
@@ -90,7 +91,7 @@ class Probe:
     # The values a good call carries, for the keys that matter (others are not compared): a string case-insensitively, None for "not
     # narrowed" (null or left out). A call can satisfy the schema and still answer a different question: CI's qwen2.5:3b typed the job title
     # "Support Lead" into `name_contains`, a valid call that matched nobody, and the aggregate count of OK replies never showed it.
-    args: dict | None = None
+    args: dict[str, Any] | None = None
 
 
 PROBES: tuple[Probe, ...] = (
@@ -137,11 +138,11 @@ def alias_settings(alias: str, config: Path = CONFIG) -> tuple[str, str, dict[st
     return model, base, {k: params[k] for k in FORWARDED if k in params}
 
 
-def _nullable(spec: dict) -> bool:
+def _nullable(spec: dict[str, Any]) -> bool:
     return any(branch.get("type") == "null" for branch in spec.get("anyOf", []))
 
 
-def valid_args(schema: dict, args: object) -> bool:
+def valid_args(schema: dict[str, Any], args: object) -> bool:
     """Does `args` satisfy the tool's parameter schema as far as the app depends on it: an object, every required key present
     (a nullable one may be left out: `ToolArgs` fills it with None, so the call runs), no key the schema does not declare, and
     any enum respected."""
@@ -159,7 +160,7 @@ def valid_args(schema: dict, args: object) -> bool:
     return True
 
 
-def args_match(expected: dict, args: object) -> bool:
+def args_match(expected: dict[str, Any], args: object) -> bool:
     """Are these the arguments the question asks for? Only the keys the probe names are compared: a string case-insensitively, None
     meaning "not narrowed" (null, an empty string, or left out)."""
     if not isinstance(args, dict):
@@ -174,7 +175,7 @@ def args_match(expected: dict, args: object) -> bool:
     return True
 
 
-def classify(probe: Probe, message: dict, eval_count: int, schemas: dict[str, dict]) -> str:
+def classify(probe: Probe, message: dict[str, Any], eval_count: int, schemas: dict[str, dict[str, Any]]) -> str:
     """The class of one reply, from Ollama's `message` and `eval_count` (output tokens generated)."""
     calls = message.get("tool_calls") or []
     text = (message.get("content") or "").strip()
@@ -192,7 +193,7 @@ def classify(probe: Probe, message: dict, eval_count: int, schemas: dict[str, di
     return OK if probe.expected is None else PROSE
 
 
-def app_tools_and_prompt(strict: bool | None = None) -> tuple[list[dict], str]:
+def app_tools_and_prompt(strict: bool | None = None) -> tuple[list[dict[str, Any]], str]:
     """The tool schemas and system prompt the Ecorp graph sends, built the way `build_graph` builds them. `strict=None` follows
     TOOL_CALLS_STRICT, so by default the probe sends the form the app sends (pattern 74)."""
     manifest, domain = resolve_domain(DEFAULT_DOMAIN)
@@ -203,8 +204,8 @@ def app_tools_and_prompt(strict: bool | None = None) -> tuple[list[dict], str]:
     return [strict_tool_schema(t) if use_strict else convert_to_openai_tool(t) for t in tools], manifest.system_prompt
 
 
-def chat(client: httpx.Client, base: str, model: str, options: dict, messages: list[dict], tools: list[dict] | None = None) -> dict:
-    payload: dict = {"model": model, "stream": False, "messages": messages, "options": {**options, "temperature": 0}}
+def chat(client: httpx.Client, base: str, model: str, options: dict[str, Any], messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    payload: dict[str, Any] = {"model": model, "stream": False, "messages": messages, "options": {**options, "temperature": 0}}
     if tools:
         payload["tools"] = tools
     reply = client.post(f"{base}/api/chat", json=payload, timeout=600)
@@ -212,12 +213,12 @@ def chat(client: httpx.Client, base: str, model: str, options: dict, messages: l
     return reply.json()
 
 
-def ask(client: httpx.Client, base: str, model: str, options: dict, system: str, tools: list[dict], text: str) -> tuple[dict, int]:
+def ask(client: httpx.Client, base: str, model: str, options: dict[str, Any], system: str, tools: list[dict[str, Any]], text: str) -> tuple[dict[str, Any], int]:
     body = chat(client, base, model, options, [{"role": "system", "content": system}, {"role": "user", "content": text}], tools)
     return body["message"], body.get("eval_count", 0)
 
 
-def probe(client: httpx.Client, base: str, model: str, options: dict, strict: bool | None = None) -> list[tuple[Probe, str]]:
+def probe(client: httpx.Client, base: str, model: str, options: dict[str, Any], strict: bool | None = None) -> list[tuple[Probe, str]]:
     tools, system = app_tools_and_prompt(strict)
     # A reply is judged against the schema the app ENFORCES, not the one it sent: `valid_args` lets a nullable argument be left
     # out, which is what the tools accept (`ToolArgs`) and what a model that ignores "required" does.
@@ -229,7 +230,7 @@ def probe(client: httpx.Client, base: str, model: str, options: dict, strict: bo
     return results
 
 
-def probe_loops(client: httpx.Client, base: str, model: str, options: dict) -> list[tuple[str, bool, float]]:
+def probe_loops(client: httpx.Client, base: str, model: str, options: dict[str, Any]) -> list[tuple[str, bool, float]]:
     """`(prompt, looped, repeated share)` for each open-ended prompt, asked with no tools and no system prompt."""
     out = []
     for text in OPEN_ENDED:
@@ -239,7 +240,7 @@ def probe_loops(client: httpx.Client, base: str, model: str, options: dict) -> l
     return out
 
 
-def summarize(results: list[tuple[Probe, str]]) -> tuple[int, int, Counter]:
+def summarize(results: list[tuple[Probe, str]]) -> tuple[int, int, Counter[str]]:
     """`(tool-needing prompts answered OK, tool-needing prompts, count of every class)`."""
     needed = [cls for p, cls in results if p.expected]
     return sum(1 for cls in needed if cls == OK), len(needed), Counter(cls for _, cls in results)

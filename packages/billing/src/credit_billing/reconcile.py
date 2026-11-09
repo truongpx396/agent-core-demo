@@ -32,6 +32,7 @@ import logging
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
+from typing import Any
 
 from credit_billing import metrics
 from credit_billing.db import get_connection
@@ -107,7 +108,7 @@ class Report:
     def outcome(self) -> str:
         return "drift" if self.findings else "ok"
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "window": {"start": self.window.start.isoformat(), "end": self.window.end.isoformat()},
             "outcome": self.outcome,

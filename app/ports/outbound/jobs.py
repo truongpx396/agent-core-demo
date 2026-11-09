@@ -11,7 +11,7 @@ plain data and lives here: stream and key names, TTLs, which events end a stream
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
-from typing import Protocol
+from typing import Any, Protocol
 
 from app.core.config import REQUEST_TIMEOUT_SECONDS
 from app.core.security import SecurityCtx
@@ -91,7 +91,7 @@ class TurnQueue(Protocol):
         """Flags the turn streaming on `thread_id` to stop at its next check. Short-lived."""
         ...
 
-    def read_results(self, request_id: str, *, first_event_deadline_seconds: float | None = None) -> AsyncIterator[dict]:
+    def read_results(self, request_id: str, *, first_event_deadline_seconds: float | None = None) -> AsyncIterator[dict[str, Any]]:
         """Yields each event of `request_id`'s turn, in order, until a terminal one. `first_event_deadline_seconds` bounds only the wait for the FIRST
         event: if nobody ever publishes, it yields one `error` event and ends instead of hanging."""
         ...
@@ -108,7 +108,7 @@ class IngestQueue(Protocol):
         """Enqueues one ingest job. `object_key` points at the uploaded file in the object store; the job never carries the bytes."""
         ...
 
-    def read_results(self, job_id: str, *, first_event_deadline_seconds: float | None = None) -> AsyncIterator[dict]:
+    def read_results(self, job_id: str, *, first_event_deadline_seconds: float | None = None) -> AsyncIterator[dict[str, Any]]:
         """Yields each event of `job_id`, in order, until `done` or `error`; same first-event deadline as `TurnQueue.read_results`."""
         ...
 

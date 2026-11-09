@@ -13,6 +13,7 @@ import resource
 import subprocess
 import sys
 from importlib import metadata
+from typing import Any
 
 
 def _cpu_brand() -> str:
@@ -36,7 +37,7 @@ def _version(package: str) -> str:
         return "not installed"
 
 
-def profile(threads: int | None = None) -> dict:
+def profile(threads: int | None = None) -> dict[str, Any]:
     """{id, cpu, cores, threads, onnxruntime, os}. `threads` is the ONNX intra-op thread count the run used (default: all cores)."""
     cores = os.cpu_count() or 1
     body = {

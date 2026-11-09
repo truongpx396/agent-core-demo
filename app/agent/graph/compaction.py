@@ -12,7 +12,7 @@ Depends only on `graph/state.py` (for `HISTORY_TOKEN_CEILING`/`HISTORY_TOKEN_FLO
 """
 import logging
 from collections.abc import Awaitable, Callable
-from typing import cast
+from typing import Any, cast
 
 import tiktoken
 from langchain_core.messages import (
@@ -150,7 +150,7 @@ def make_compact_history_node(
     ceiling: int = HISTORY_TOKEN_CEILING,
     floor: int = HISTORY_TOKEN_FLOOR,
     model_alias: str = CHAT_MODEL,
-) -> Callable[..., Awaitable[dict]]:
+) -> Callable[..., Awaitable[dict[str, Any]]]:
     """Factory, same rationale as make_agent_node/make_suggest_followups_node:
     needs an LLM client to turn discarded turns into a running summary
     (AR-015a) instead of just discarding them.
@@ -170,7 +170,7 @@ def make_compact_history_node(
     """
     llm = without_tools(llm)
 
-    async def compact_history(state: State, config: RunnableConfig | None = None) -> dict:
+    async def compact_history(state: State, config: RunnableConfig | None = None) -> dict[str, Any]:
         """Whatever `_messages_to_trim` would discard gets folded into the
         running `history_summary` instead of dropped — the trim itself is
         unchanged; only what happens to the discarded CONTENT is new.

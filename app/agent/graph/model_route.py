@@ -31,6 +31,7 @@ import logging
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
+from typing import Any
 
 from langchain_core.runnables import RunnableConfig
 
@@ -126,8 +127,8 @@ async def _decide(state: State) -> _Result:
     return _Result(outcome, decision, labelled)
 
 
-def make_route_model_node() -> Callable[..., Awaitable[dict]]:
-    async def route_model(state: State, config: RunnableConfig | None = None) -> dict:
+def make_route_model_node() -> Callable[..., Awaitable[dict[str, Any]]]:
+    async def route_model(state: State, config: RunnableConfig | None = None) -> dict[str, Any]:
         if ROUTER_MODE == "off":
             metrics.agent_model_route_total.labels(outcome="disabled").inc()  # a switched-off router adds nothing to a turn, so no latency and no log either
             return {"model_route": "local"}

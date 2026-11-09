@@ -21,6 +21,7 @@ flapping proxy doesn't flip the hash.
 import hashlib
 import json
 from dataclasses import dataclass
+from typing import Any
 
 from app.adapters.outbound.embeddings import embeddings
 from app.core.config import (
@@ -60,7 +61,7 @@ class EmbeddingIdentity:
         }
         return hashlib.sha256(json.dumps(body, sort_keys=True, separators=(",", ":")).encode()).hexdigest()[:HASH_LENGTH]
 
-    def describe(self) -> dict:
+    def describe(self) -> dict[str, Any]:
         """For logs and the readiness warning: no secret in any field, and never the text of a document."""
         return {
             "alias": self.alias,

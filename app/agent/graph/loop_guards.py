@@ -8,8 +8,9 @@ Directly unit-tested by `tests/agent/graph/test_routing.py`.
 """
 import json
 from collections.abc import Mapping
+from typing import Any
 
-from langchain_core.messages import AIMessage
+from langchain_core.messages import AIMessage, BaseMessage, ToolCall
 
 from app.agent.graph.messages import current_turn_messages
 
@@ -23,7 +24,7 @@ def tool_capability(name: str, tool_capabilities: Mapping[str, str]) -> str:
     return tool_capabilities.get(name, "outward")
 
 
-def _tool_call_fingerprint(tool_calls: list) -> str:
+def _tool_call_fingerprint(tool_calls: list[ToolCall]) -> str:
     """A stable fingerprint for one batch of tool calls — same tool
     name(s) + same args, independent of call order, so a model repeating
     the identical action (not just a coincidentally similar one) is what
@@ -35,7 +36,7 @@ def _tool_call_fingerprint(tool_calls: list) -> str:
     return json.dumps(normalized)
 
 
-def _current_turn_tool_call_batches(messages: list) -> list:
+def _current_turn_tool_call_batches(messages: list[BaseMessage]) -> list[Any]:
     """Tool-call batches from AIMessages within the CURRENT turn only, most
     recent first — never spanning a prior turn. A per-turn loop-progress
     check (GRAPH_PATTERNS.md pattern 34): calling search_docs last turn
@@ -48,7 +49,7 @@ def _current_turn_tool_call_batches(messages: list) -> list:
     ]
 
 
-def consecutive_repeat_count(messages: list) -> int:
+def consecutive_repeat_count(messages: list[BaseMessage]) -> int:
     """How many of the most recent consecutive tool-call batches (within
     this turn) share the current one's fingerprint — a pure function of
     `state["messages"]`, no extra State field needed to track it, since
@@ -65,7 +66,7 @@ def consecutive_repeat_count(messages: list) -> int:
     return count
 
 
-def mandatory_gate_reason(tool_calls: list, tool_capabilities: Mapping[str, str]) -> str | None:
+def mandatory_gate_reason(tool_calls: list[ToolCall], tool_capabilities: Mapping[str, str]) -> str | None:
     """None if every call in this batch is read_only; otherwise the more
     severe capability present ("outward" — including any undeclared tool —
     over "mutating"), used only to label the metric in should_continue.
@@ -78,7 +79,7 @@ def mandatory_gate_reason(tool_calls: list, tool_capabilities: Mapping[str, str]
     return None
 
 
-def use_skill_called_without_search(tool_calls: list, messages: list) -> bool:
+def use_skill_called_without_search(tool_calls: list[ToolCall], messages: list[BaseMessage]) -> bool:
     """True if this batch calls `use_skill` but `skill_search` was never
     called earlier in THIS turn — SYSTEM_PROMPT requires searching first so
     the model uses a skill's real name instead of guessing one.

@@ -102,7 +102,7 @@ async def load_raw_sandbox_tools() -> dict[str, BaseTool]:
     return _raw_sandbox_tools_cache
 
 
-async def _call_raw_tool(raw: dict[str, BaseTool], name: str, **kwargs: Any) -> dict:
+async def _call_raw_tool(raw: dict[str, BaseTool], name: str, **kwargs: Any) -> dict[str, Any]:
     """Calls one of OpenSandbox's raw MCP tools by name, parses the result
     into a dict. Uses `.ainvoke` (the standard Runnable interface, not the
     StructuredTool-specific `.func`/`.coroutine`), since
@@ -191,7 +191,7 @@ def _bounded(text: str) -> str:
     return bound_output(scrub(text), MCP_TOOL_OUTPUT_MAX_CHARS, dependency=SANDBOX_DEPENDENCY)
 
 
-def _format_execution(execution: dict) -> str:
+def _format_execution(execution: dict[str, Any]) -> str:
     """Execution -> plain-text summary (exit code + stdout + stderr,
     stderr only when non-empty), not raw JSON — keeps the result as simple
     for the model as any other tool's. Each stream is bounded on its own, so

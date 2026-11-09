@@ -5,7 +5,7 @@ included, calls it once at import. The menu, the read-only tool resolution and t
 """
 from collections.abc import Mapping
 from enum import Enum
-from typing import Annotated
+from typing import Annotated, Any
 
 from langchain_core.messages import ToolMessage
 from langchain_core.runnables import RunnableConfig
@@ -18,7 +18,7 @@ from app.agent.tools.run_subagent import build_subagent_registry
 
 
 def make_domain_subagent_tool(
-    domain: str, all_tools: list, tool_capabilities: Mapping[str, str]
+    domain: str, all_tools: list[BaseTool], tool_capabilities: Mapping[str, str]
 ) -> BaseTool | None:
     """Builds a `run_subagent` tool scoped to `domain` — same closed-enum
     menu, `RunSubagentArgs` shape, and mandatory read_only-only resolution
@@ -81,7 +81,7 @@ def make_domain_subagent_tool(
         task: str,
         config: RunnableConfig,
         tool_call_id: Annotated[str, InjectedToolCallId],
-    ) -> Command:
+    ) -> Command[Any]:
         """Delegate a self-contained task to a specialized subagent running in
         its own isolated context — it does NOT see this conversation's
         history, only the `task` description you give it, so describe

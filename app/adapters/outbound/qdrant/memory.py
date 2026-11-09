@@ -12,7 +12,7 @@ graph.
 """
 import logging
 from datetime import UTC, datetime, timedelta
-from typing import cast
+from typing import Any, cast
 
 from qdrant_client.models import (
     DatetimeRange,
@@ -66,7 +66,7 @@ async def delete_memories(
         )
 
     principal = target_principal or ctx["principal"]
-    must: list = [
+    must: list[Any] = [
         FieldCondition(key="tenant", match=MatchValue(value=ctx["tenant"])),
         FieldCondition(key="kind", match=MatchValue(value="memory")),
         FieldCondition(key="owner", match=MatchValue(value=principal)),

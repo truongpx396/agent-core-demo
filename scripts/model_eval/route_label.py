@@ -28,6 +28,7 @@ import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from scripts.model_eval.routing import (
     Outcome,
@@ -106,7 +107,7 @@ def _check_resume(existing: dict[str, Outcome], prompt_ids: set[str], judge: str
 
 
 def label_prompts(
-    prompts: Sequence[dict],
+    prompts: Sequence[dict[str, Any]],
     *,
     local: str,
     strong: str,
@@ -192,7 +193,7 @@ def gateway_chat() -> Chat:
     return chat
 
 
-def write_meta(path: Path, *, local: str, strong: str, judge: str, dataset: dict, run: LabelRun, finished_at: str) -> None:
+def write_meta(path: Path, *, local: str, strong: str, judge: str, dataset: dict[str, Any], run: LabelRun, finished_at: str) -> None:
     """A sidecar next to the outcomes (counts and names only): which models and judge the scores are a fact about."""
     path.write_text(
         json.dumps(

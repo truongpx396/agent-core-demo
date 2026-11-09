@@ -162,7 +162,7 @@ def app_threshold() -> float:
     return ML_INJECTION_THRESHOLD
 
 
-def evaluate(backend: ScreenBackend, items: Sequence[dict], *, runs: int = 3) -> tuple[ItemData, dict, list[str]]:
+def evaluate(backend: ScreenBackend, items: Sequence[dict[str, Any]], *, runs: int = 3) -> tuple[ItemData, dict[str, Any], list[str]]:
     """`items`: {id, text, label (1 attack / 0 benign), domain (1 = counted in the in-domain false-positive rate)}."""
     texts = [i["text"] for i in items]
     t0 = time.perf_counter()

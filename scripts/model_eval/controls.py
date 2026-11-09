@@ -10,6 +10,7 @@ real dataset's size). The CONTROL CANDIDATES (random vectors, always-benign ...)
 data. A report whose controls fail is `status: invalid`, exit code 5, and must not be used.
 """
 from dataclasses import dataclass
+from typing import Any
 
 import numpy as np
 
@@ -54,7 +55,7 @@ class ControlResult:
     observed: str
     ok: bool
 
-    def as_dict(self) -> dict:
+    def as_dict(self) -> dict[str, Any]:
         return {"name": self.name, "expect": self.expect, "observed": self.observed, "ok": self.ok}
 
 

@@ -21,7 +21,7 @@ import logging
 import re
 import uuid
 from dataclasses import dataclass
-from typing import cast
+from typing import Any, cast
 
 import numpy as np
 import redis.asyncio as redis
@@ -131,7 +131,7 @@ async def _ensure_index(client: redis.Redis) -> _Namespace:
     return ns
 
 
-async def get(ctx: SecurityCtx | None, query: str) -> tuple[str, list[dict]] | None:
+async def get(ctx: SecurityCtx | None, query: str) -> tuple[str, list[dict[str, Any]]] | None:
     """Look up a near-identical past query, scoped to ctx's tenant AND
     principal (never just tenant — a cached answer can carry citations to
     that principal's own memories, so this is at least as narrow as
@@ -168,7 +168,7 @@ async def get(ctx: SecurityCtx | None, query: str) -> tuple[str, list[dict]] | N
         return None
 
 
-async def set(ctx: SecurityCtx | None, query: str, answer: str, citations: list[dict]) -> None:
+async def set(ctx: SecurityCtx | None, query: str, answer: str, citations: list[dict[str, Any]]) -> None:
     """Best-effort write-through after a turn completes (app/agent/graph/core.py's
     write_semantic_cache node, only on the miss path — see its docstring
     for why a hit never re-writes). Swallows every failure: a cache write
@@ -189,7 +189,7 @@ async def set(ctx: SecurityCtx | None, query: str, answer: str, citations: list[
                 "query": query,
                 "answer": answer,
                 "citations": json.dumps(citations),
-                "embedding": cast(list, vector),
+                "embedding": cast(list[Any], vector),
             },
         )
         await client.expire(key, SEMANTIC_CACHE_TTL_SECONDS)
@@ -201,8 +201,8 @@ async def set(ctx: SecurityCtx | None, query: str, answer: str, citations: list[
 class RedisAnswerCache:
     """The `AnswerCache` adapter (`app/ports/outbound/retrieval.py`): this module's `get` and `set` behind the port, looked up at CALL time."""
 
-    async def get(self, ctx: SecurityCtx | None, query: str) -> tuple[str, list[dict]] | None:
+    async def get(self, ctx: SecurityCtx | None, query: str) -> tuple[str, list[dict[str, Any]]] | None:
         return await get(ctx, query)
 
-    async def set(self, ctx: SecurityCtx | None, query: str, answer: str, citations: list[dict]) -> None:
+    async def set(self, ctx: SecurityCtx | None, query: str, answer: str, citations: list[dict[str, Any]]) -> None:
         await set(ctx, query, answer, citations)

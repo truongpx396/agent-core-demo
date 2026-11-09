@@ -45,6 +45,7 @@ read through a 60-second cache, so a change takes up to a minute.
 import argparse
 import os
 import sys
+from typing import Any
 
 import httpx
 
@@ -107,7 +108,7 @@ def _build_parser() -> argparse.ArgumentParser:
 def _create(args: argparse.Namespace) -> int:
     if args.max_budget <= 0:
         raise SystemExit("error: --max-budget must be above 0 (a key with no budget is exactly what this replaces)")
-    payload: dict = {
+    payload: dict[str, Any] = {
         "key_alias": args.alias,
         "models": [m.strip() for m in args.models.split(",") if m.strip()],
         "max_budget": args.max_budget,
@@ -156,7 +157,7 @@ def _end_user(args: argparse.Namespace) -> int:
     return 0
 
 
-def _read_person_budget(client: httpx.Client) -> tuple[dict | None, httpx.Response]:
+def _read_person_budget(client: httpx.Client) -> tuple[dict[str, Any] | None, httpx.Response]:
     """The default per-person budget row (None when there is none) and the raw answer, so a caller can report a refusal."""
     response = client.post("/budget/info", json={"budgets": [PERSON_BUDGET_ID]})
     rows = response.json() if response.status_code == 200 else []

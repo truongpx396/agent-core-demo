@@ -8,6 +8,7 @@ Everything a person sees is best-effort: a failed send, edit or answer is logged
 cannot stop the loop that serves the others. Starting up is the opposite: `set_webhook`, `delete_webhook` and `get_updates` raise.
 """
 import logging
+from typing import Any
 
 import httpx
 
@@ -16,7 +17,7 @@ logger = logging.getLogger(__name__)
 API_BASE = "https://api.telegram.org"
 MESSAGE_CHAR_LIMIT = 4000  # under Telegram's 4096, with headroom
 CALLBACK_ANSWER_LIMIT = 200
-NO_KEYBOARD: dict[str, list] = {"inline_keyboard": []}
+NO_KEYBOARD: dict[str, list[Any]] = {"inline_keyboard": []}
 
 
 def split_text(text: str, limit: int = MESSAGE_CHAR_LIMIT) -> list[str]:
@@ -32,7 +33,7 @@ class BotApi:
     def _url(self, method: str) -> str:
         return f"{API_BASE}/bot{self._token}/{method}"
 
-    async def _best_effort(self, method: str, payload: dict, **log: object) -> dict | None:
+    async def _best_effort(self, method: str, payload: dict[str, Any], **log: object) -> dict[str, Any] | None:
         """The `result` of a call that succeeded, or None. The token is in the URL, so an exception is logged by class and never by text."""
         try:
             reply = await self._http.post(self._url(method), json=payload)
@@ -44,9 +45,9 @@ class BotApi:
         result = body.get("result") if isinstance(body, dict) else None
         return result if isinstance(result, dict) else {}
 
-    async def send_message(self, chat_id: int, text: str, *, reply_markup: dict | None = None) -> int | None:
+    async def send_message(self, chat_id: int, text: str, *, reply_markup: dict[str, Any] | None = None) -> int | None:
         """One message of at most the limit; returns its id (None when it did not go, or Telegram did not say)."""
-        payload: dict = {"chat_id": chat_id, "text": text[:MESSAGE_CHAR_LIMIT]}
+        payload: dict[str, Any] = {"chat_id": chat_id, "text": text[:MESSAGE_CHAR_LIMIT]}
         if reply_markup is not None:
             payload["reply_markup"] = reply_markup
         result = await self._best_effort("sendMessage", payload, chat_id=chat_id)
@@ -64,13 +65,13 @@ class BotApi:
                 first = message_id
         return first
 
-    async def edit_message(self, chat_id: int, message_id: int, text: str, *, reply_markup: dict | None = None) -> bool:
+    async def edit_message(self, chat_id: int, message_id: int, text: str, *, reply_markup: dict[str, Any] | None = None) -> bool:
         """Replace a message's text. The keyboard is always stated: pass `NO_KEYBOARD` to take it away, rather than rely on what an omitted one does."""
         payload = {"chat_id": chat_id, "message_id": message_id, "text": text[:MESSAGE_CHAR_LIMIT], "reply_markup": reply_markup or NO_KEYBOARD}
         return await self._best_effort("editMessageText", payload, chat_id=chat_id) is not None
 
     async def answer_callback(self, callback_id: str, text: str = "", *, alert: bool = False) -> None:
-        payload: dict = {"callback_query_id": callback_id}
+        payload: dict[str, Any] = {"callback_query_id": callback_id}
         if text:
             payload["text"] = text[:CALLBACK_ANSWER_LIMIT]
             payload["show_alert"] = alert
@@ -79,7 +80,7 @@ class BotApi:
     async def typing(self, chat_id: int) -> None:
         await self._best_effort("sendChatAction", {"chat_id": chat_id, "action": "typing"}, chat_id=chat_id)  # cosmetic
 
-    async def get_updates(self, offset: int, timeout: int) -> list[dict]:
+    async def get_updates(self, offset: int, timeout: int) -> list[dict[str, Any]]:
         reply = await self._http.post(
             self._url("getUpdates"), json={"offset": offset, "timeout": timeout, "allowed_updates": ["message", "callback_query"]}
         )

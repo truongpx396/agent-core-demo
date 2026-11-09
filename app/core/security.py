@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Literal, Protocol, TypedDict, TypeGuard
+from typing import Any, Literal, Protocol, TypedDict, TypeGuard
 
 from app.core.config import MEMORY_RETENTION_DAYS
 
@@ -30,7 +30,7 @@ class SecurityCtx(TypedDict):
 
     tenant: str
     principal: str
-    claims: dict  # opaque; no code in this app reads a key out of it (yet)
+    claims: dict[str, Any]  # opaque; no code in this app reads a key out of it (yet)
 
 
 @dataclass(frozen=True)

@@ -94,7 +94,7 @@ def info(text: str) -> None:
     print(f"      {text}")
 
 
-def jwt_part(token: str, index: int) -> dict:
+def jwt_part(token: str, index: int) -> dict[str, Any]:
     part = token.split(".")[index]
     return json.loads(base64.urlsafe_b64decode(part + "=" * (-len(part) % 4)))
 
@@ -110,7 +110,7 @@ class Door:
         self.admin = httpx.AsyncClient(base_url=self.auth, verify=tls, timeout=20.0)
         self.users: list[tuple[str, str]] = []
         self.passwords: dict[tuple[str, str], str] = {}
-        self.apps: dict[str, dict] = {}
+        self.apps: dict[str, dict[str, Any]] = {}
 
     # -- Casdoor ---------------------------------------------------------------------------------------------------------------------
 
@@ -147,7 +147,7 @@ class Door:
         self.passwords[(organization, name)] = password
         return organization, name
 
-    async def application(self, name: str) -> dict:
+    async def application(self, name: str) -> dict[str, Any]:
         if name not in self.apps:
             data = (await self.admin.get("/api/get-application", params={"id": f"admin/{name}"})).json().get("data")
             if not data:
@@ -253,7 +253,7 @@ class Door:
 
     # -- the compose command (destructive stages) -----------------------------------------------------------------------------------
 
-    def compose(self, tail: str, env: dict[str, str] | None = None, timeout: int = 180) -> subprocess.CompletedProcess:
+    def compose(self, tail: str, env: dict[str, str] | None = None, timeout: int = 180) -> subprocess.CompletedProcess[str]:
         """Run the stack's compose command with `tail` appended. No shell: --compose is split into an argument list, and the variables a
         stage wants to change for ONE restart go in `env` (the Makefile sets the standing ones, AUTHLIMIT_UID and the key directory, on this
         process, which its children inherit)."""
@@ -282,7 +282,7 @@ class Door:
 # helpers on what the stub upstream reports
 
 
-def echoed(response: httpx.Response) -> dict | None:
+def echoed(response: httpx.Response) -> dict[str, Any] | None:
     """The stub's JSON (it lists the headers it received), or None when the answer is not from the stub (a refusal, an envelope)."""
     if response.headers.get("content-type", "").startswith("application/json"):
         body = response.json()
@@ -291,7 +291,7 @@ def echoed(response: httpx.Response) -> dict | None:
     return None
 
 
-def header_of(echo: dict, name: str) -> list[str]:
+def header_of(echo: dict[str, Any], name: str) -> list[str]:
     return [v for k, vs in echo["headers"].items() if k.lower() == name.lower() for v in vs]
 
 
@@ -303,7 +303,7 @@ def public_keys(keys_dir: Path) -> dict[str, Any]:
     return out
 
 
-def verify_identity(identity: str, keys: dict[str, Any]) -> dict | None:
+def verify_identity(identity: str, keys: dict[str, Any]) -> dict[str, Any] | None:
     try:
         kid = jwt.get_unverified_header(identity).get("kid")
         if not isinstance(kid, str):

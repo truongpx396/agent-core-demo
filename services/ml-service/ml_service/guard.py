@@ -37,11 +37,11 @@ def softmax(logits: np.ndarray) -> np.ndarray:
 class GuardService:
     def __init__(self, text: OnnxText, *, max_batch_size: int, max_wait_ms: float) -> None:
         self._text = text
-        self._batcher: MicroBatcher[str, dict] = MicroBatcher(
+        self._batcher: MicroBatcher[str, dict[str, Any]] = MicroBatcher(
             self._score_texts, max_batch_size=max_batch_size, max_wait_ms=max_wait_ms
         )
 
-    def _score_texts(self, texts: list[str]) -> list[dict]:
+    def _score_texts(self, texts: list[str]) -> list[dict[str, Any]]:
         probs = softmax(self._text.logits(texts))
         return [{"label": GUARD_LABELS[int(p.argmax())], "malicious_score": float(p[1])} for p in probs]
 
@@ -51,7 +51,7 @@ class GuardService:
     async def stop(self) -> None:
         self._batcher.stop()
 
-    async def score(self, texts: list[str]) -> list[dict]:
+    async def score(self, texts: list[str]) -> list[dict[str, Any]]:
         return list(await asyncio.gather(*(self._batcher.submit(t) for t in texts)))
 
 

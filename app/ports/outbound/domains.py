@@ -21,7 +21,7 @@ concrete domains are in `app/domains/<name>/domain.py`; Ecorp is one of them, wi
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Any, Protocol
 
 from app.core.security import Policy
 from app.ports.slot import Slot
@@ -31,7 +31,7 @@ class DomainPlugin(Protocol):
     """The CODE half of a domain. See this module's docstring for why
     `policy()` exists but is never called by `build_graph()` itself."""
 
-    def tools(self) -> list:
+    def tools(self) -> list[Any]:
         """This domain's full tool universe (LangChain `@tool`-decorated
         callables) — `AgentManifest.allowed_tools` picks the subset a
         given deployment actually exposes."""

@@ -16,6 +16,7 @@ from collections.abc import Awaitable, Callable
 from typing import Any, TypeAlias, TypeVar, cast
 
 from langchain_core.runnables import RunnableBinding
+from langchain_core.tools import BaseTool
 from langgraph.errors import GraphBubbleUp
 
 from app.core.config import CHAT_MODEL, OPENAI_API_BASE, OPENAI_API_KEY, settings
@@ -28,7 +29,7 @@ logger = logging.getLogger(__name__)
 
 F = TypeVar("F", bound=Callable[..., Any])
 # A graph node: `(state)` or `(state, config)` returning the state update, sync or async (`instrumented` handles both).
-NodeFn: TypeAlias = Callable[..., "dict | Awaitable[dict]"]
+NodeFn: TypeAlias = Callable[..., "dict[str, Any] | Awaitable[dict[str, Any]]"]
 
 
 def instrumented(node_name: str) -> Callable[[F], F]:
@@ -192,7 +193,7 @@ def without_tools(llm: ChatModel) -> ChatModel:
 
 
 def make_llm(
-    tools: list,
+    tools: list[BaseTool],
     *,
     model: str = CHAT_MODEL,
     base_url: str = OPENAI_API_BASE,

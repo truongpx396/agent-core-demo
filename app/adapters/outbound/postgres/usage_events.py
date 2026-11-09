@@ -10,6 +10,7 @@ call needs the transaction's connection, so it cannot happen anywhere but beside
 """
 from datetime import datetime
 from decimal import Decimal
+from typing import Any
 
 from psycopg import errors as pg_errors
 
@@ -80,7 +81,7 @@ class PgUsageEventStore:
 
     async def totals(self, tenant: str, principal: str | None = None, since: datetime | None = None) -> UsageTotals:
         where = ["tenant = %s"]
-        params: list = [tenant]
+        params: list[Any] = [tenant]
         if principal:
             where.append("principal = %s")
             params.append(principal)

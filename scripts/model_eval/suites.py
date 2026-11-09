@@ -6,6 +6,7 @@ baseline on the SAME resample. So the baseline stores its per-item data (not jus
 at a threshold are recomputed from the resampled scores and labels.
 """
 from dataclasses import dataclass, field
+from typing import Any
 
 import numpy as np
 
@@ -29,11 +30,11 @@ class ItemData:
     def __len__(self) -> int:
         return len(self.ids)
 
-    def to_json(self) -> dict:
+    def to_json(self) -> dict[str, Any]:
         return {"ids": self.ids, "arrays": {k: np.asarray(v).tolist() for k, v in self.arrays.items()}}
 
     @classmethod
-    def from_json(cls, raw: dict) -> "ItemData":
+    def from_json(cls, raw: dict[str, Any]) -> "ItemData":
         return cls(list(raw["ids"]), {k: np.asarray(v, dtype=float) for k, v in raw["arrays"].items()})
 
     def select(self, ids: list[str]) -> "ItemData":

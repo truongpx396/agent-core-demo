@@ -9,7 +9,7 @@ domain reads as not found. Methods raise when the store cannot be reached; the a
 """
 from __future__ import annotations
 
-from typing import Protocol
+from typing import Any, Protocol
 
 from app.ports.slot import Slot
 
@@ -27,7 +27,7 @@ class SessionStore(Protocol):
         """Whether the thread exists and belongs to exactly this tenant, person and domain. Does not create it."""
         ...
 
-    async def list(self, tenant: str, principal: str, domain: str) -> list[dict]:
+    async def list(self, tenant: str, principal: str, domain: str) -> list[dict[str, Any]]:
         """The person's threads in the domain, most recently active first: `thread_id`, `title`, `created_at`, `last_active_at`."""
         ...
 

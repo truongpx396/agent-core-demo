@@ -16,6 +16,7 @@ import json
 import logging
 from collections import deque
 from collections.abc import Awaitable, Callable
+from typing import Any
 
 import redis.asyncio as redis
 
@@ -27,10 +28,10 @@ MAX_ATTEMPTS = 3
 MAX_WAITING = 500  # updates held in memory; past it the dispatcher stops reading and Redis holds the rest
 MAX_PER_CHAT = 50  # one chat flooding itself cannot grow the process; the overflow is dropped and counted
 
-Handler = Callable[[dict], Awaitable[None]]
+Handler = Callable[[dict[str, Any]], Awaitable[None]]
 
 
-def chat_of(update: dict) -> int | None:
+def chat_of(update: dict[str, Any]) -> int | None:
     """The chat an update belongs to (a message's chat, or the chat a pressed button sits in)."""
     for part in (update.get("message"), (update.get("callback_query") or {}).get("message")):
         chat = (part or {}).get("chat")
@@ -39,7 +40,7 @@ def chat_of(update: dict) -> int | None:
     return None
 
 
-def is_cancel(update: dict) -> bool:
+def is_cancel(update: dict[str, Any]) -> bool:
     """`/cancel` or `/cancel@botname`, as a message's first word."""
     text = (update.get("message") or {}).get("text")
     if not isinstance(text, str) or not text.strip():
@@ -55,13 +56,13 @@ class Inbox:
         self._processing = f"telegram:inbox:{domain}:processing"
 
     @staticmethod
-    def _pack(update: dict, attempts: int = 0) -> str:
+    def _pack(update: dict[str, Any], attempts: int = 0) -> str:
         return json.dumps({"u": update, "n": attempts}, separators=(",", ":"))
 
-    async def push(self, update: dict) -> None:
+    async def push(self, update: dict[str, Any]) -> None:
         await self._redis.lpush(self._inbox, self._pack(update))
 
-    async def take(self, timeout: int) -> tuple[str, dict] | None:
+    async def take(self, timeout: int) -> tuple[str, dict[str, Any]] | None:
         """(raw entry, update) of the oldest waiting update, moved to the processing list; None after `timeout` seconds of nothing."""
         while True:
             taken = await self._redis.blmove(self._inbox, self._processing, timeout, "RIGHT", "LEFT")
@@ -114,8 +115,8 @@ class Dispatcher:
         self._inbox = inbox
         self._handler = handler
         self._slots = asyncio.Semaphore(max_concurrent)
-        self._chats: dict[int | None, deque[tuple[str, dict]]] = {}
-        self._tasks: set[asyncio.Task] = set()
+        self._chats: dict[int | None, deque[tuple[str, dict[str, Any]]]] = {}
+        self._tasks: set[asyncio.Task[Any]] = set()
         self._waiting = 0
         self._stopping = False
 
@@ -148,7 +149,7 @@ class Dispatcher:
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
 
-    def _route(self, raw: str, update: dict) -> None:
+    def _route(self, raw: str, update: dict[str, Any]) -> None:
         if is_cancel(update):
             self._spawn(self._handle(raw, update))  # never queued behind the turn it is meant to stop
             return
@@ -178,7 +179,7 @@ class Dispatcher:
             if not queue:
                 del self._chats[chat]
 
-    async def _handle(self, raw: str, update: dict) -> None:
+    async def _handle(self, raw: str, update: dict[str, Any]) -> None:
         try:
             await self._handler(update)
         except Exception:  # one update's failure is counted and dropped; retrying a poison update would only repeat it

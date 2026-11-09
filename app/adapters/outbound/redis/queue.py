@@ -16,7 +16,7 @@ import json
 import logging
 import time
 from collections.abc import AsyncGenerator
-from typing import cast
+from typing import Any, cast
 
 import redis.asyncio as redis
 
@@ -204,7 +204,7 @@ async def read_results(
     *,
     block_ms: int = 5000,
     first_event_deadline_seconds: float | None = None,
-) -> AsyncGenerator[dict, None]:
+) -> AsyncGenerator[dict[str, Any], None]:
     """Producer side: yield each event published for `request_id`, in order, blocking up to `block_ms` per read,
     until a terminal event (`type` is `done`, `error` or `approval_required`). `approval_required` is terminal
     because it is the last event `_run_graph_stream` yields for a paused turn and the worker stops forwarding
@@ -300,7 +300,7 @@ class RedisTurnQueue:
     async def set_cancel_flag(self, thread_id: str) -> None:
         await set_cancel_flag(get_client(), thread_id)
 
-    async def read_results(self, request_id: str, *, first_event_deadline_seconds: float | None = None) -> AsyncGenerator[dict, None]:
+    async def read_results(self, request_id: str, *, first_event_deadline_seconds: float | None = None) -> AsyncGenerator[dict[str, Any], None]:
         async for event in read_results(get_client(), request_id, first_event_deadline_seconds=first_event_deadline_seconds):
             yield event
 

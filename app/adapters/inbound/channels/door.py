@@ -15,7 +15,7 @@ import json
 import logging
 import ssl
 from collections.abc import AsyncGenerator
-from typing import Protocol
+from typing import Any, Protocol
 
 import httpx
 
@@ -104,11 +104,11 @@ class Door:
         self._http = http
         self._base = (base_url or settings.channel_api_url).rstrip("/")
 
-    def _error(self, reason: str, content: str) -> dict:
+    def _error(self, reason: str, content: str) -> dict[str, Any]:
         metrics.channel_door_refusal_total.labels(channel=self._channel, reason=reason).inc()
         return {"type": "error", "content": content}
 
-    async def _stream(self, path: str, body: dict, *, read_body: bool = True) -> AsyncGenerator[dict, None]:
+    async def _stream(self, path: str, body: dict[str, Any], *, read_body: bool = True) -> AsyncGenerator[dict[str, Any], None]:
         for attempt in (0, 1):
             try:
                 headers = {**await self._auth.headers(), "X-Domain": self._domain, "Accept": "text/event-stream"}
@@ -149,10 +149,10 @@ class Door:
         require_approval: bool = False,
         unattended: bool = False,
         replay_key: str | None = None,
-    ) -> AsyncGenerator[dict, None]:
+    ) -> AsyncGenerator[dict[str, Any], None]:
         """One new turn. `unattended` and `require_approval` can only make it stricter; `replay_key` makes a repeat of this request the same
         attempt (the API streams the FIRST attempt's events and starts none)."""
-        body: dict = {"message": text, "thread_id": thread_id}
+        body: dict[str, Any] = {"message": text, "thread_id": thread_id}
         if require_approval:
             body["require_approval"] = True
         if unattended:
@@ -162,7 +162,7 @@ class Door:
         async for event in self._stream("/chat/stream/queued", body):
             yield event
 
-    async def stream_resume(self, thread_id: str, approved: bool) -> AsyncGenerator[dict, None]:
+    async def stream_resume(self, thread_id: str, approved: bool) -> AsyncGenerator[dict[str, Any], None]:
         async for event in self._stream("/chat/resume", {"thread_id": thread_id, "approved": approved}):
             yield event
 
