@@ -603,6 +603,7 @@ async def astream_events_turn(
     text: str,
     thread_id: str,
     ctx: SecurityCtx,
+    *,
     require_approval: bool = False,
     images: list[str] | None = None,
     cancel_check: CancelCheck | None = None,
@@ -613,7 +614,7 @@ async def astream_events_turn(
     `ctx` is required (see stream_turn's docstring). `require_approval`
     mirrors app/agent/graph/core.py's opt-in HITL gate (should_continue): a tool call
     pauses instead of executing, and the caller resumes via
-    astream_events_resume(thread_id, approved, ctx) — see
+    astream_events_resume(thread_id, approved=..., ctx=...) — see
     app/adapters/inbound/channels/cli/chat.py's `--hitl` mode, which does it through the queue
     (a `resume` job) rather than by calling this module. `images` (pattern 44) is
     optional. `cancel_check` forwards to `_run_graph_stream`; only
@@ -740,6 +741,7 @@ async def astream_events_turn_unattended(
     text: str,
     thread_id: str,
     ctx: SecurityCtx,
+    *,
     require_approval: bool = False,
     images: list[str] | None = None,
 ) -> AsyncGenerator[dict[str, Any], None]:
@@ -836,13 +838,13 @@ async def _decline_every_pause(first_run: AsyncGenerator[dict[str, Any], None], 
         # admitted=True: this decline is a step of the request that already passed the
         # allowance at its start. Re-checking here could refuse it and leave the
         # conversation paused — the stranded-pause bug this loop exists to prevent.
-        async with aclosing(_drain(astream_events_resume(thread_id, False, ctx, admitted=True))) as events:
+        async with aclosing(_drain(astream_events_resume(thread_id, approved=False, ctx=ctx, admitted=True))) as events:
             async for event in events:
                 yield event
 
 
 async def astream_events_resume(
-    thread_id: str, approved: bool, ctx: SecurityCtx, cancel_check: CancelCheck | None = None, *, admitted: bool = False
+    thread_id: str, *, approved: bool, ctx: SecurityCtx, cancel_check: CancelCheck | None = None, admitted: bool = False
 ) -> AsyncGenerator[dict[str, Any], None]:
     """Resume a turn paused by astream_events_turn(require_approval=True): the streaming counterpart of
     `graph.invoke(Command(resume=approved), config)`. `thread_id` must match the paused turn.

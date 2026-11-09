@@ -137,6 +137,7 @@ def should_continue(
 def check_output(
     state: State,
     system_prompt: str,
+    *,
     enforce_citations: bool = True,
     skill_required_tools: tuple[str, ...] = (),
 ) -> dict[str, Any]:

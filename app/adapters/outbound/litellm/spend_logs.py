@@ -69,9 +69,9 @@ async def fetch_gateway_spend(client: httpx.AsyncClient, window: Window, *, max_
             sums[(end_user, day)] = sums.get((end_user, day), ZERO) + amount
         if len(data) < GATEWAY_PAGE_SIZE:
             if total is not None and total < _GATEWAY_TOTAL_CAP and total != len(seen):
-                return GatewaySpend(sums, len(seen), False, f"it reported {total} rows and {len(seen)} were read: the log changed while it was being read")
-            return GatewaySpend(sums, len(seen), True)
-    return GatewaySpend(sums, len(seen), False, f"more than {max_pages * GATEWAY_PAGE_SIZE} rows (USAGE_RECONCILE_GATEWAY_MAX_PAGES)")
+                return GatewaySpend(sums, len(seen), complete=False, reason=f"it reported {total} rows and {len(seen)} were read: the log changed while it was being read")
+            return GatewaySpend(sums, len(seen), complete=True)
+    return GatewaySpend(sums, len(seen), complete=False, reason=f"more than {max_pages * GATEWAY_PAGE_SIZE} rows (USAGE_RECONCILE_GATEWAY_MAX_PAGES)")
 
 
 

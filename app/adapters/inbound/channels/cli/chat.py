@@ -100,13 +100,13 @@ async def _stop_turn(door: Door, thread_id: str) -> None:
         print(f"\n{_DIM}  [could not ask the worker to stop the turn: {type(exc).__name__}]{_RESET}")
 
 
-async def _async_turn(door: Door, text: str, thread_id: str, hitl: bool = False) -> None:
+async def _async_turn(door: Door, text: str, thread_id: str, *, hitl: bool = False) -> None:
     print("bot> ", end="", flush=True)
     try:
         needs_approval = await _render_stream(door.stream_turn(text, thread_id, require_approval=hitl))
         while needs_approval:
             decision = input("Approve? [y/N] ").strip().lower() == "y"  # noqa: ASYNC250 - nothing else runs while the CLI waits for the person
-            needs_approval = await _render_stream(door.stream_resume(thread_id, decision))
+            needs_approval = await _render_stream(door.stream_resume(thread_id, approved=decision))
     except (asyncio.CancelledError, KeyboardInterrupt, EOFError):
         await _stop_turn(door, thread_id)
         raise
@@ -116,7 +116,7 @@ def _tenant() -> str:
     return settings.channel_cli_tenant.strip() or DEFAULT_TENANT
 
 
-async def async_main(hitl: bool = False) -> None:
+async def async_main(*, hitl: bool = False) -> None:
     """Streaming CLI: token-level latency + visible tool indicators.
 
     `hitl=True` asks for an approval before every tool call (`require_approval`).

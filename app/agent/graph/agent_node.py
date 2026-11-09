@@ -87,10 +87,10 @@ def make_agent_node(
     llm: ChatModel,
     model_alias: str = CHAT_MODEL,
     kind: str = "chat",
+    *,
     citation_reminder: bool = True,
     skill_required_tools: tuple[str, ...] = (),
     cannot_open_links: bool = False,
-    *,
     system_prompt: str,
 ) -> Callable[..., Awaitable[dict[str, Any]]]:
     """Factory, not a plain function, because `agent` needs an LLM client; tests build it with a fake (e.g.

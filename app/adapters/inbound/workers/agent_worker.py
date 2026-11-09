@@ -272,7 +272,7 @@ async def _process_resume(client: redis.Redis, request_id: str, payload: dict[st
     await _publish_events(
         client,
         request_id,
-        astream_events_resume(thread_id, payload["approved"], payload["ctx"], cancel_check=cancel_check),
+        astream_events_resume(thread_id, approved=payload["approved"], ctx=payload["ctx"], cancel_check=cancel_check),
         release_lock,
     )
 

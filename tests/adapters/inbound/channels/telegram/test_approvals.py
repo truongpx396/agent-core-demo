@@ -17,8 +17,8 @@ from tests.adapters.inbound.channels.telegram.fakes import FakeRedis
 
 class TestTheButtons:
     def test_a_token_and_a_decision_survive_the_round_trip(self):
-        assert parse_callback(callback_data("tok-1_A", True)) == ("tok-1_A", True)
-        assert parse_callback(callback_data("tok-1_A", False)) == ("tok-1_A", False)
+        assert parse_callback(callback_data("tok-1_A", approve=True)) == ("tok-1_A", True)
+        assert parse_callback(callback_data("tok-1_A", approve=False)) == ("tok-1_A", False)
 
     @pytest.mark.parametrize("data", [None, 5, "", "ap", "ap::y", "ap:t:z", "xx:t:y", "ap:t:y:extra"])
     def test_anything_this_bot_did_not_make_is_not_a_decision(self, data):
@@ -27,7 +27,7 @@ class TestTheButtons:
     def test_the_data_fits_telegrams_64_byte_limit_with_a_real_token(self):
         import secrets
 
-        assert len(callback_data(secrets.token_urlsafe(16), True).encode()) <= 64
+        assert len(callback_data(secrets.token_urlsafe(16), approve=True).encode()) <= 64
 
     def test_the_keyboard_has_one_approve_and_one_reject_for_the_same_token(self):
         buttons = keyboard("tok")["inline_keyboard"][0]

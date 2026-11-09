@@ -117,7 +117,7 @@ async def test_a_resume_and_a_cancel_reach_the_routes_for_the_owner(world):
     door = world.door("p-1")
     await collect(door.stream_turn("hi", "t1"))
 
-    await collect(door.stream_resume("t1", True))
+    await collect(door.stream_resume("t1", approved=True))
     await door.cancel_turn("t1")
     await world.http.aclose()
 

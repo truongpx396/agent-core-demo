@@ -335,7 +335,7 @@ class TestAstreamEventsResumeCancellation:
         events = [
             event
             async for event in stream_module.astream_events_resume(
-                thread_id, True, TEST_CTX, cancel_check=always_cancelled
+                thread_id, approved=True, ctx=TEST_CTX, cancel_check=always_cancelled
             )
         ]
 
@@ -358,7 +358,7 @@ class TestAstreamEventsResumeCancellation:
         events = [
             event
             async for event in stream_module.astream_events_resume(
-                thread_id, True, TEST_CTX, cancel_check=never_cancelled
+                thread_id, approved=True, ctx=TEST_CTX, cancel_check=never_cancelled
             )
         ]
 
@@ -367,11 +367,11 @@ class TestAstreamEventsResumeCancellation:
 
     async def test_no_cancel_check_resumes_exactly_as_before(self, monkeypatch):
         """Regression guard: `astream_events_turn_unattended`, chat.py and the
-        API all call `astream_events_resume(thread_id, approved, ctx)` with
+        API all call `astream_events_resume(thread_id, approved=..., ctx=...)` with
         no `cancel_check` — their behavior must not change."""
         _graph, thread_id, _cfg, writes = await self._paused_on_add_note(monkeypatch)
 
-        events = [event async for event in stream_module.astream_events_resume(thread_id, True, TEST_CTX)]
+        events = [event async for event in stream_module.astream_events_resume(thread_id, approved=True, ctx=TEST_CTX)]
 
         assert events[-1]["type"] == "done"
         assert len(writes) == 1

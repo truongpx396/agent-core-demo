@@ -452,7 +452,7 @@ class TestProcessRequestResume:
     async def test_dispatches_to_astream_events_resume_with_the_right_args(self, monkeypatch):
         captured = {}
 
-        async def fake_resume(thread_id, approved, ctx, cancel_check=None):
+        async def fake_resume(thread_id, *, approved, ctx, cancel_check=None):
             captured.update(thread_id=thread_id, approved=approved, ctx=ctx)
             yield {"type": "done"}
 
@@ -475,7 +475,7 @@ class TestProcessRequestResume:
 
         captured = {}
 
-        async def fake_resume(thread_id, approved, ctx, cancel_check=None):
+        async def fake_resume(thread_id, *, approved, ctx, cancel_check=None):
             captured["cancel_check"] = cancel_check
             yield {"type": "done"}
 
@@ -500,7 +500,7 @@ class TestProcessRequestResume:
 
         seen_cancelled = []
 
-        async def fake_resume(thread_id, approved, ctx, cancel_check=None):
+        async def fake_resume(thread_id, *, approved, ctx, cancel_check=None):
             seen_cancelled.append(await cancel_check())
             yield {"type": "done"}
 
@@ -514,7 +514,7 @@ class TestProcessRequestResume:
         assert seen_cancelled == [False]
 
     async def test_a_resume_failure_publishes_an_error_and_still_acks(self, monkeypatch):
-        async def failing_resume(thread_id, approved, ctx, cancel_check=None):
+        async def failing_resume(thread_id, *, approved, ctx, cancel_check=None):
             raise RuntimeError("checkpoint gone")
             yield  # pragma: no cover
 
@@ -849,7 +849,7 @@ class TestSameThreadJobsAreSerialized:
             await release_handler.wait()
             yield {"type": "done"}
 
-        async def fake_resume(thread_id, approved, ctx):
+        async def fake_resume(thread_id, *, approved, ctx):
             yield {"type": "done"}
 
         monkeypatch.setattr(agent_worker, "astream_events_turn", fake_turn)

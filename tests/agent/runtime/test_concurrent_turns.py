@@ -617,7 +617,7 @@ class TestHITLApprovalUnderConcurrency:
         async def resume(thread_id: str, principal: str) -> list:
             events = []
             async for event in stream_module.astream_events_resume(
-                thread_id, True, _ctx(tenant, principal)
+                thread_id, approved=True, ctx=_ctx(tenant, principal)
             ):
                 events.append(event)
             return events

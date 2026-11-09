@@ -111,7 +111,7 @@ class FakeDoor:
         for event in (self.scripts.pop(0) if self.scripts else [{"type": "done"}]):
             yield event
 
-    async def stream_resume(self, thread_id, approved):
+    async def stream_resume(self, thread_id, *, approved):
         self.resumes.append((thread_id, approved))
         for event in (self.resume_scripts.pop(0) if self.resume_scripts else [{"type": "done"}]):
             yield event

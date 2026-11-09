@@ -26,7 +26,7 @@ ML_INJECTION_THRESHOLD = 0.5
 
 
 class ModerationResult:
-    def __init__(self, allowed: bool, reason: str | None = None):
+    def __init__(self, *, allowed: bool, reason: str | None = None):
         self.allowed = allowed
         self.reason = reason
 
@@ -83,28 +83,28 @@ async def screen(text: str) -> ModerationResult:
             if pattern.search(text):
                 metrics.agent_moderation_total.labels(outcome="blocked_injection").inc()
                 return ModerationResult(
-                    False, "possible prompt-injection or jailbreak attempt detected"
+                    allowed=False, reason="possible prompt-injection or jailbreak attempt detected"
                 )
         for pattern in _DENYLIST_PATTERNS:
             if pattern.search(text):
                 metrics.agent_moderation_total.labels(outcome="blocked_denylist").inc()
-                return ModerationResult(False, "disallowed content")
+                return ModerationResult(allowed=False, reason="disallowed content")
     except Exception:  # noqa: BLE001
         metrics.agent_moderation_total.labels(outcome="error").inc()
-        return ModerationResult(True)
+        return ModerationResult(allowed=True)
 
     try:
         malicious_score = await _ml_malicious_score(text)
     except Exception:  # noqa: BLE001 - ml-service unreachable must not block the turn; the pattern layer above already ran clean
         metrics.agent_moderation_ml_degraded_total.inc()
         metrics.agent_moderation_total.labels(outcome="allowed").inc()
-        return ModerationResult(True)
+        return ModerationResult(allowed=True)
 
     if malicious_score >= ML_INJECTION_THRESHOLD:
         metrics.agent_moderation_total.labels(outcome="blocked_ml_injection").inc()
         return ModerationResult(
-            False, "possible prompt-injection or jailbreak attempt detected"
+            allowed=False, reason="possible prompt-injection or jailbreak attempt detected"
         )
 
     metrics.agent_moderation_total.labels(outcome="allowed").inc()
-    return ModerationResult(True)
+    return ModerationResult(allowed=True)

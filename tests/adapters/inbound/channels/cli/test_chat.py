@@ -46,7 +46,7 @@ class _Door:
                 raise event
             yield event
 
-    async def stream_resume(self, thread_id, approved):
+    async def stream_resume(self, thread_id, *, approved):
         self.resumes.append({"thread_id": thread_id, "approved": approved})
         for event in self._rounds.pop(0):
             yield event

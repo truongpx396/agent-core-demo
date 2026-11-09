@@ -37,7 +37,7 @@ class Pending:
     message_id: int | None = None
 
 
-def callback_data(token: str, approve: bool) -> str:
+def callback_data(token: str, *, approve: bool) -> str:
     return f"{CALLBACK_PREFIX}:{token}:{'y' if approve else 'n'}"
 
 
@@ -52,7 +52,7 @@ def parse_callback(data: object) -> tuple[str, bool] | None:
 
 
 def keyboard(token: str) -> dict[str, Any]:
-    return {"inline_keyboard": [[{"text": "✅ Approve", "callback_data": callback_data(token, True)}, {"text": "❌ Reject", "callback_data": callback_data(token, False)}]]}
+    return {"inline_keyboard": [[{"text": "✅ Approve", "callback_data": callback_data(token, approve=True)}, {"text": "❌ Reject", "callback_data": callback_data(token, approve=False)}]]}
 
 
 def _shorten(value: object) -> str:

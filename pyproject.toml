@@ -76,9 +76,12 @@ src = [".", "packages/billing/src", "services/ml-service"]
 # N818: an exception class's name ends in `Error` (PEP 8), so `except SearchFailedError` reads as what it catches and a grep for `Error`
 # finds every one. 40 classes did not (`IngestRefused`, `PortNotBound`, `_Reject`, ...); only this one pep8-naming rule is on, the others
 # would rename functions and arguments that other code and the docs call by name.
+# FBT: a boolean argument is keyword-only, so a call reads `stream_resume(thread, approved=True)`, not `stream_resume(thread, True)`, and two
+# flags cannot be swapped unseen. Not enforced in `scripts/` or the tests: a smoke script's `check("sign-in", False)` and a test's fake are the
+# whole idiom there (about 30 and 80 sites), and neither is an API anything else calls.
 select = [
     "F", "I", "UP", "B", "BLE", "S110", "PLE", "ASYNC", "PLW1514", "INP001",
-    "SIM", "C4", "PIE", "RET", "G", "E7", "ISC", "RUF", "N818",
+    "SIM", "C4", "PIE", "RET", "G", "E7", "ISC", "RUF", "N818", "FBT",
 ]
 preview = true
 explicit-preview-rules = true
@@ -96,9 +99,9 @@ ignore = [
 [tool.ruff.lint.per-file-ignores]
 # One-shot operator tools and tests are synchronous by nature: blocking there stalls nothing but themselves. A test fake with a
 # class-level list, and a fixture tuple unpacked for one of its parts, are ordinary in a test (RUF012, RUF059).
-"scripts/**" = ["ASYNC"]
-"tests/**" = ["ASYNC", "RUF012", "RUF059"]
-"packages/*/tests/**" = ["ASYNC", "RUF012", "RUF059"]
+"scripts/**" = ["ASYNC", "FBT"]
+"tests/**" = ["ASYNC", "RUF012", "RUF059", "FBT"]
+"packages/*/tests/**" = ["ASYNC", "RUF012", "RUF059", "FBT"]
 # Standalone programs run by path (or loaded by name, like `sitecustomize`), not packages anything imports.
 "garak/**" = ["INP001"]
 "loadtest/**" = ["INP001"]
