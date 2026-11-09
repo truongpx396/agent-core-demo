@@ -222,7 +222,7 @@ def ollama_generator(model: str = "qwen2.5:7b", base: str = "http://localhost:11
                   "options": {"temperature": 0.3, "seed": seed, "num_predict": 300}},
         )
         response.raise_for_status()
-        return response.json()["message"]["content"]
+        return str(response.json()["message"]["content"])
 
     return generate
 

@@ -33,7 +33,7 @@ import os
 import re
 import secrets
 import sys
-from typing import Any
+from typing import Any, cast
 
 import httpx
 
@@ -78,7 +78,7 @@ class Casdoor:
         reply = self.http.get(path, params=params).json()
         if reply.get("status") == "error":
             raise CasdoorError(f"GET {path}: {reply.get('msg')}")
-        return reply.get("data")
+        return cast("dict[str, Any]", reply.get("data"))
 
     def write(self, path: str, body: dict[str, Any], **params: str) -> None:
         reply = self.http.post(path, json=body, params=params).json()

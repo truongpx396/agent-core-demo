@@ -22,7 +22,7 @@ LiteLLM was down EVERY recorded turn paid a fresh 5 s timeout for an answer that
 import logging
 import time
 from collections.abc import Mapping
-from typing import Any
+from typing import Any, cast
 
 import httpx
 
@@ -65,7 +65,7 @@ async def resolve_model(alias: str) -> str | None:
         for entry in response.json().get("data", []):
             if entry.get("model_name") == alias:
                 resolved = entry.get("litellm_params", {}).get("model")
-                if resolved:
+                if isinstance(resolved, str) and resolved:
                     _cache[alias] = resolved
                     _failed_at.pop(alias, None)
                     return resolved
@@ -90,7 +90,7 @@ async def model_info() -> list[Mapping[str, Any]]:
             headers={"Authorization": f"Bearer {OPENAI_API_KEY}"},
         )
     response.raise_for_status()
-    return response.json().get("data", [])
+    return cast("list[Mapping[str, Any]]", response.json().get("data", []))
 
 
 class LiteLLMModelCatalog:

@@ -12,7 +12,7 @@ reviews and sends it, same "no send button" boundary as
 add_note/remember and support/tools.py's escalate_to_human.
 """
 from datetime import UTC, datetime, timedelta
-from typing import Annotated, Any
+from typing import Annotated, Any, cast
 
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import InjectedToolCallId, tool
@@ -404,7 +404,7 @@ web_search = make_web_search_tool(SALES_POLICY, then_read_with="enrich_lead_from
 
 
 def _thread_id_from_config(config: RunnableConfig | None) -> str:
-    return (config or {}).get("configurable", {}).get("thread_id", "unknown")
+    return cast("str", (config or {}).get("configurable", {}).get("thread_id", "unknown"))
 
 
 # Three narrow tools over OpenSandbox's raw MCP catalog

@@ -19,7 +19,7 @@ import secrets
 import ssl
 import sys
 import urllib.parse
-from typing import Any
+from typing import Any, cast
 
 import httpx
 import httpx2  # the SDK's own HTTP client library (mcp 2.x depends on it): the client handed to it must be one of these
@@ -39,7 +39,7 @@ def check(label: str, ok: bool, detail: str = "") -> None:
 
 def _json_part(token: str, index: int) -> dict[str, Any]:
     part = token.split(".")[index]
-    return json.loads(base64.urlsafe_b64decode(part + "=" * (-len(part) % 4)))
+    return cast("dict[str, Any]", json.loads(base64.urlsafe_b64decode(part + "=" * (-len(part) % 4))))
 
 
 class Stack:

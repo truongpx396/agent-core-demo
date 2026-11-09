@@ -10,7 +10,7 @@ module checks and a test pins: a sentence that is also an example would be score
 """
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from scripts.model_eval import datasets as ds
 
@@ -33,7 +33,7 @@ def read_rows(path: Path = SOURCES) -> list[tuple[str, str, str]]:
 
 
 def labelset_examples(path: Path = LABELSET) -> dict[str, list[str]]:
-    return json.loads(path.read_text(encoding="utf-8"))["labels"]
+    return cast("dict[str, list[str]]", json.loads(path.read_text(encoding="utf-8"))["labels"])
 
 
 def build_splits(rows: list[tuple[str, str, str]], labels: list[str]) -> dict[str, list[dict[str, Any]]]:

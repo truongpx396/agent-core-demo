@@ -16,7 +16,7 @@ All tools are `async def`, matching app/agent/tools/builtin.py's async-first
 design (store queries, HTTP clients, and the sandbox MCP session all await
 real I/O).
 """
-from typing import Annotated, Any
+from typing import Annotated, Any, cast
 
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import InjectedToolCallId, tool
@@ -266,7 +266,7 @@ web_search = make_web_search_tool(OPS_POLICY, then_read_with="check_vendor_statu
 
 
 def _thread_id_from_config(config: RunnableConfig | None) -> str:
-    return (config or {}).get("configurable", {}).get("thread_id", "unknown")
+    return cast("str", (config or {}).get("configurable", {}).get("thread_id", "unknown"))
 
 
 # Three narrow tools over OpenSandbox's raw MCP catalog

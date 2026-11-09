@@ -17,8 +17,11 @@ from app.core.routing_policy import DEFAULT_LONG_PROMPT_CHARS
 # webhooks, credentials, the rate, the gate, the export, the wallet reconciliation) is defined in the package, with its validators. `Settings`
 # inherits the class, so the environment variables, defaults and bounds are exactly what they were. The agent app itself reads only the webhook
 # route's rate limit from here (a host middleware, `app/adapters/inbound/api/rate_limit.py`); everything else billing is read by the package.
-from credit_billing.settings import (  # noqa: F401 - re-export: the host's webhook rate-limit middleware reads the limit from here
-    BILLING_WEBHOOK_RATE_LIMIT_PER_MINUTE,
+# `X as X` is the explicit re-export (what mypy's no_implicit_reexport asks for): the host's webhook rate-limit middleware reads the limit from here.
+from credit_billing.settings import (
+    BILLING_WEBHOOK_RATE_LIMIT_PER_MINUTE as BILLING_WEBHOOK_RATE_LIMIT_PER_MINUTE,
+)
+from credit_billing.settings import (
     BillingSettings,
 )
 

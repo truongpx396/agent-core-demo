@@ -165,7 +165,7 @@ class Registry:
 
     def backoff_s(self, failures: int) -> float:
         """5, 10, 20 ... capped. `failures` counts consecutive failures including the one just recorded."""
-        return min(self._base * (2 ** max(failures - 1, 0)), self._max)
+        return float(min(self._base * (2 ** max(failures - 1, 0)), self._max))
 
     def _set(self, slot: Slot, state: State) -> None:
         slot.state = state

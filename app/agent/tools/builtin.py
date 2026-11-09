@@ -132,7 +132,7 @@ def _display_text(hit: SearchHit) -> str:
     back to the point's own `text` otherwise (add_note/remember/memories,
     never split into parent/child)."""
     payload = hit.payload or {}
-    return payload.get("parent_text") or payload.get("text", "")
+    return str(payload.get("parent_text") or payload.get("text", ""))
 
 
 def _dedupe_by_parent(hits: list[SearchHit]) -> list[SearchHit]:

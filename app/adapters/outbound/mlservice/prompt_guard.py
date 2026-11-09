@@ -16,4 +16,4 @@ class MlServicePromptGuard:
         async with httpx.AsyncClient(timeout=_ML_CHECK_TIMEOUT_SECONDS) as client:
             resp = await client.post(f"{ML_SERVICE_URL}/prompt-guard", json={"texts": [text]})
         resp.raise_for_status()
-        return resp.json()[0]["malicious_score"]
+        return float(resp.json()[0]["malicious_score"])

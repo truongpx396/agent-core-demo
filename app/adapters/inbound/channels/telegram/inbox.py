@@ -35,8 +35,9 @@ def chat_of(update: dict[str, Any]) -> int | None:
     """The chat an update belongs to (a message's chat, or the chat a pressed button sits in)."""
     for part in (update.get("message"), (update.get("callback_query") or {}).get("message")):
         chat = (part or {}).get("chat")
-        if isinstance(chat, dict) and isinstance(chat.get("id"), int):
-            return chat["id"]
+        chat_id = chat.get("id") if isinstance(chat, dict) else None
+        if isinstance(chat_id, int):
+            return chat_id
     return None
 
 

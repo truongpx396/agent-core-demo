@@ -202,7 +202,7 @@ def cpt(pgr: Floats, x: float, grid: Floats = GRID) -> float | None:
     """Call-performance threshold: the smallest escalated share that recovers at least a fraction `x` of the gap; None if it never does."""
     for p, value in zip(grid, pgr, strict=True):
         if value >= x:
-            return p
+            return float(p)
     return None
 
 

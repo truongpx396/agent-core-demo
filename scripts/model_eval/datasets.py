@@ -18,7 +18,7 @@ import time
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 REPO = Path(__file__).resolve().parents[2]
 DATASETS_ROOT = REPO / "evals" / "datasets"
@@ -101,15 +101,15 @@ class Manifest:
 
     @property
     def name(self) -> str:
-        return self.raw["name"]
+        return str(self.raw["name"])
 
     @property
     def version(self) -> str:
-        return self.raw["version"]
+        return str(self.raw["version"])
 
     @property
     def kind(self) -> str:
-        return self.raw["kind"]
+        return str(self.raw["kind"])
 
     def split_items(self, split: str) -> list[dict[str, Any]]:
         return read_jsonl(self.root / self.raw["splits"][split]["file"])
@@ -340,7 +340,7 @@ def read_parquet(path: Path) -> list[dict[str, Any]]:
     """Rows of a parquet file. pyarrow is a dev dependency, imported only here, so nothing else needs it."""
     import pyarrow.parquet as pq
 
-    return pq.read_table(path).to_pylist()
+    return cast("list[dict[str, Any]]", pq.read_table(path).to_pylist())
 
 
 def read_tsv(path: Path) -> list[dict[str, str]]:

@@ -29,6 +29,7 @@ tool, never reachable from a request.
 import argparse
 import asyncio
 import sys
+from typing import cast
 
 from app import bootstrap
 from app.agent.cost import budget_policies, budgets
@@ -92,7 +93,7 @@ def _subject(args: argparse.Namespace) -> str:
         return TENANT_SUBJECT
     if args.principal in RESERVED_SUBJECTS:
         raise SystemExit(f"error: {args.principal!r} is reserved and cannot be a principal id")
-    return args.principal
+    return cast("str", args.principal)
 
 
 def _describe(limit: float | None) -> str:

@@ -219,7 +219,7 @@ def _differences(stored: Mapping[str, Any], new: Mapping[str, Any], fields: Sequ
     return {field: (stored[field], new.get(field)) for field in fields if field in stored and stored[field] != new.get(field)}
 
 
-async def _one(cur: AsyncCursor[Any]) -> tuple[Any, ...]:
+async def _one(cur: AsyncCursor[tuple[Any, ...]]) -> tuple[Any, ...]:
     """The row a statement is certain to return (an INSERT ... RETURNING, an aggregate)."""
     row = await cur.fetchone()
     if row is None:
