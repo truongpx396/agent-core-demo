@@ -27,7 +27,7 @@ def make_dataset(root: Path, *, queries=None, licence="repository-internal", pro
         "provenance": provenance if provenance is not None else {"generator": "test-generator"},
         "splits": splits, "corpus": {"file": "corpus.jsonl", "sha256": ds.write_jsonl(root / "corpus.jsonl", corpus), "chunks": 1},
     }
-    (root / "manifest.json").write_text(json.dumps(manifest))
+    (root / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
     return root
 
 
@@ -43,7 +43,7 @@ def test_a_well_formed_dataset_verifies_clean_and_its_reviewed_share_is_computed
 def test_a_one_byte_change_to_a_data_file_stops_the_run(tmp_path):
     root = make_dataset(tmp_path / "d")
     path = root / "test.jsonl"
-    path.write_text(path.read_text().replace("overnight", "overnigh7"))
+    path.write_text(path.read_text(encoding="utf-8").replace("overnight", "overnigh7"), encoding="utf-8")
 
     problems = ds.verify_dataset(root)
 
@@ -57,9 +57,9 @@ def test_dev_and_test_sharing_an_item_id_is_a_problem(tmp_path):
     dev = ds.read_jsonl(root / "dev.jsonl")
     test = ds.read_jsonl(root / "test.jsonl")
     test[0]["qid"] = dev[0]["qid"]
-    manifest = json.loads((root / "manifest.json").read_text())
+    manifest = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
     manifest["splits"]["test"]["sha256"] = ds.write_jsonl(root / "test.jsonl", test)
-    (root / "manifest.json").write_text(json.dumps(manifest))
+    (root / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
 
     assert any("share 1 item ids" in p for p in ds.verify_dataset(root))
 
@@ -89,9 +89,9 @@ def test_provenance_must_name_a_generator_or_an_author(tmp_path):
 
 def test_a_row_count_that_disagrees_with_the_manifest_is_a_problem(tmp_path):
     root = make_dataset(tmp_path / "d")
-    manifest = json.loads((root / "manifest.json").read_text())
+    manifest = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
     manifest["splits"]["test"]["items"] = 99
-    (root / "manifest.json").write_text(json.dumps(manifest))
+    (root / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
     assert any("99" in p for p in ds.verify_dataset(root))
 
 

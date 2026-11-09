@@ -77,7 +77,7 @@ def test_every_connection_site_in_the_app_and_the_billing_package_turns_prepared
     found: dict[str, list[int]] = {}
     flagged = {}
     for path in SCANNED:
-        source = path.read_text()
+        source = path.read_text(encoding="utf-8")
         if "ConnectionPool" in source or ".connect(" in source:
             bad = sites_without_prepare_off(source)
             if bad:

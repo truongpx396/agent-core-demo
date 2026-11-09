@@ -324,7 +324,7 @@ def test_upsert_comment_never_edits_a_marker_comment_planted_by_someone_else():
 
 def test_run_posts_one_advisory_comment_end_to_end(tmp_path, capsys):
     rules = tmp_path / "rules.md"
-    rules.write_text("RULE-ONE")
+    rules.write_text("RULE-ONE", encoding="utf-8")
     http = FakeHttp()
     env = {"AI_REVIEW_BASE_URL": BASE, "AI_REVIEW_MODEL": "m", "GITHUB_TOKEN": "t", "GITHUB_REPOSITORY": "o/r",
            "PR_NUMBER": "7", "GITHUB_API_URL": GH, "AI_REVIEW_RULES_PATH": str(rules)}
@@ -397,9 +397,9 @@ RENAME = "diff --git a/o.py b/p.py\nsimilarity index 100%\nrename from o.py\nren
 
 
 def _repo(root: Path, config: str = CONFIG) -> Path:
-    (root / "m.py").write_text(SRC)
-    (root / "d.md").write_text("# T\n\n## Keep\nline\n```bash\n# not a heading\n```\n### Sub\nmore\n## Next\nno\n")
-    (root / "cfg.toml").write_text(config)
+    (root / "m.py").write_text(SRC, encoding="utf-8")
+    (root / "d.md").write_text("# T\n\n## Keep\nline\n```bash\n# not a heading\n```\n### Sub\nmore\n## Next\nno\n", encoding="utf-8")
+    (root / "cfg.toml").write_text(config, encoding="utf-8")
     return root
 
 
@@ -419,7 +419,7 @@ def test_extract_reference_returns_a_markdown_section_and_ignores_hash_lines_ins
 
 
 def test_extract_reference_refuses_a_path_that_leaves_the_checkout(tmp_path):
-    (tmp_path / "outside.txt").write_text("secret")
+    (tmp_path / "outside.txt").write_text("secret", encoding="utf-8")
     root = tmp_path / "repo"
     root.mkdir()
     assert ai_review.extract_reference(root, "../outside.txt") is None
@@ -437,7 +437,7 @@ def test_load_references_attaches_only_rules_whose_when_matches_dedupes_and_skip
 
 def test_load_references_ignores_a_missing_or_invalid_config_instead_of_losing_the_review(tmp_path, capsys):
     assert ai_review.load_references(tmp_path, "absent.toml", ["a.py"]) == []
-    (tmp_path / "bad.toml").write_text("[[rule")
+    (tmp_path / "bad.toml").write_text("[[rule", encoding="utf-8")
     assert ai_review.load_references(tmp_path, "bad.toml", ["a.py"]) == []
     assert "invalid context config" in capsys.readouterr().out
 
@@ -445,16 +445,16 @@ def test_load_references_ignores_a_missing_or_invalid_config_instead_of_losing_t
 def test_load_references_caps_each_snippet_and_the_total(tmp_path):
     names = [f"big{i}.txt" for i in range(5)]
     for name in names:
-        (tmp_path / name).write_text("\n".join(f"line {i}" for i in range(2000)))
+        (tmp_path / name).write_text("\n".join(f"line {i}" for i in range(2000)), encoding="utf-8")
     attach = ", ".join(f'"{n}"' for n in names)
-    (tmp_path / "c.toml").write_text(f'[[rule]]\nwhen = ["*"]\nattach = [{attach}]\n')
+    (tmp_path / "c.toml").write_text(f'[[rule]]\nwhen = ["*"]\nattach = [{attach}]\n', encoding="utf-8")
     blocks = ai_review.load_references(tmp_path, "c.toml", ["a.py"])
     assert all(len(b.text) <= ai_review._REF_CHARS + 40 and "[... reference truncated ...]" in b.text for b in blocks)
     assert sum(len(b.text) for b in blocks) <= ai_review._REF_TOTAL_CHARS and len(blocks) < len(names)
 
 
 def test_every_reference_in_the_shipped_context_config_still_resolves_against_the_repo():
-    rules = tomllib.loads((REPO / ".github/ai-review-context.toml").read_text())["rule"]
+    rules = tomllib.loads((REPO / ".github/ai-review-context.toml").read_text(encoding="utf-8"))["rule"]
     assert rules
     for rule in rules:
         assert rule["when"] and rule["attach"] and rule["why"]

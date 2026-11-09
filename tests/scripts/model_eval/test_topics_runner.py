@@ -138,7 +138,7 @@ def test_a_missing_label_set_is_a_missing_prerequisite_not_a_crash(tmp_path):
 
 
 def test_a_label_set_the_service_would_refuse_is_refused_here_too(tmp_path):
-    (tmp_path / "bad.json").write_text("{}")
+    (tmp_path / "bad.json").write_text("{}", encoding="utf-8")
     with pytest.raises(PrerequisiteMissingError, match="refused by the service's own parser"):
         topics.load_labelset("bad", tmp_path)
 

@@ -73,7 +73,7 @@ def unwired(files: dict[str, str]) -> list[str]:
 
 def _repo_files() -> dict[str, str]:
     paths = [*(REPO / "app").rglob("*.py"), *(REPO / "scripts").rglob("*.py")]
-    return {p.relative_to(REPO).as_posix(): p.read_text() for p in paths}
+    return {p.relative_to(REPO).as_posix(): p.read_text(encoding="utf-8") for p in paths}
 
 
 def test_every_entrypoint_that_reaches_the_application_wires_the_ports():
@@ -89,7 +89,7 @@ def test_there_are_entrypoints_for_this_rule_to_be_about():
 
 def test_scheduled_job_wires_for_the_one_shot_jobs_that_run_inside_it():
     """`unwired` trusts `scheduled_job` to wire, so that trust is checked here."""
-    assert _calls(ast.parse((REPO / "app/platform/job_runtime.py").read_text()), "wire")
+    assert _calls(ast.parse((REPO / "app/platform/job_runtime.py").read_text(encoding="utf-8")), "wire")
 
 
 @pytest.mark.parametrize(

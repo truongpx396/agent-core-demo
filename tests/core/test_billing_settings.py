@@ -56,5 +56,5 @@ def test_the_comment_in_env_example_names_the_adapters_that_exist_and_an_unbuilt
         providers.build_configured(("paypal",), {"paypal": "whsec_x"})
     for name in ("stripe", "polar"):
         assert providers.build_configured((name,), {name: "whsec_x"})[name].name == name
-    example = (Path(__file__).resolve().parents[2] / ".env.example").read_text()
+    example = (Path(__file__).resolve().parents[2] / ".env.example").read_text(encoding="utf-8")
     assert "STRIPE and POLAR adapters are built" in example and "PAYPAL" in example

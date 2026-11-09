@@ -31,7 +31,7 @@ def rules(text: str, long_prompt_chars: int = LONG) -> rp.Rules:
 
 # ---- the label table --------------------------------------------------------------------------------------------------------------
 def test_the_label_table_names_exactly_the_labels_of_the_shipped_set():
-    shipped = json.loads((REPO / "services" / "ml-service" / "labelsets" / "route-topics.json").read_text())["labels"]
+    shipped = json.loads((REPO / "services" / "ml-service" / "labelsets" / "route-topics.json").read_text(encoding="utf-8"))["labels"]
 
     assert set(LABEL_TIERS) == set(shipped), "a label with no tier is silently local, and a tier for a label that does not exist is dead policy"
     assert set(LABEL_TIERS.values()) <= set(TIERS)

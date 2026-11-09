@@ -151,12 +151,12 @@ def _acquire(key: str, start: Callable[[], dict[str, Any]]) -> dict[str, Any]:
     cache_file, lock_file = _cache_paths(key)
     with FileLock(str(lock_file)):
         if cache_file.exists():
-            info = json.loads(cache_file.read_text())
+            info = json.loads(cache_file.read_text(encoding="utf-8"))
             if _container_is_running(info.get("container_id", "")):
                 return info
             cache_file.unlink(missing_ok=True)
         info = start()
-        cache_file.write_text(json.dumps(info))
+        cache_file.write_text(json.dumps(info), encoding="utf-8")
         return info
 
 
@@ -187,7 +187,7 @@ def teardown_all() -> None:
         return
     for cache_file in cache_files:
         try:
-            info = json.loads(cache_file.read_text())
+            info = json.loads(cache_file.read_text(encoding="utf-8"))
             container_id = info.get("container_id")
             if container_id:
                 client.containers.get(container_id).remove(force=True, v=True)
@@ -298,7 +298,7 @@ def ensure_pgbouncer() -> dict[str, str]:
         from testcontainers.core.container import DockerContainer
         from testcontainers.core.docker_client import DockerClient
 
-        service = yaml.safe_load((_REPO_ROOT / "deploy" / "compose" / "docker-compose.yml").read_text())["services"]["pgbouncer"]
+        service = yaml.safe_load((_REPO_ROOT / "deploy" / "compose" / "docker-compose.yml").read_text(encoding="utf-8"))["services"]["pgbouncer"]
         postgres_ip = DockerClient().bridge_ip(postgres["container_id"])
         env = dict(service["environment"])
         env["DATABASE_URLS"] = ",".join(f"postgresql://langfuse:langfuse@{postgres_ip}:5432/{name}" for name in ("appdata", "checkpointer"))

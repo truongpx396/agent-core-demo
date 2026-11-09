@@ -25,7 +25,7 @@ def _mock_transport(*, status_code=201, response_json=None, capture=None):
 @pytest.fixture
 def report_file(tmp_path):
     path = tmp_path / "report.xml"
-    path.write_text("<report/>")
+    path.write_text("<report/>", encoding="utf-8")
     return path
 
 

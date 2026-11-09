@@ -15,7 +15,7 @@ from scripts.model_eval.routing import (
 
 
 def write_lines(path, *rows):
-    path.write_text("".join((r if isinstance(r, str) else json.dumps(r)) + "\n" for r in rows))
+    path.write_text("".join((r if isinstance(r, str) else json.dumps(r)) + "\n" for r in rows), encoding="utf-8")
 
 
 def test_a_round_trip_keeps_every_row_in_order_and_the_hash_is_of_the_bytes_written(tmp_path):
@@ -26,7 +26,7 @@ def test_a_round_trip_keeps_every_row_in_order_and_the_hash_is_of_the_bytes_writ
 
     assert list(read_outcomes(path).values()) == rows  # order of the dict is the order of the file
     assert digest == outcomes_sha256(path)
-    assert path.read_text().splitlines()[0] == '{"id": "b", "judge": "judge", "local": 0.25, "strong": 0.75}'  # sorted keys: stable bytes
+    assert path.read_text(encoding="utf-8").splitlines()[0] == '{"id": "b", "judge": "judge", "local": 0.25, "strong": 0.75}'  # sorted keys: stable bytes
 
 
 def test_a_missing_score_is_null_not_zero_and_is_not_complete(tmp_path):
@@ -36,13 +36,13 @@ def test_a_missing_score_is_null_not_zero_and_is_not_complete(tmp_path):
     (outcome,) = read_outcomes(path).values()
 
     assert outcome.local is None and not outcome.complete
-    assert json.loads(path.read_text())["local"] is None  # the file says "unknown", never 0.0
+    assert json.loads(path.read_text(encoding="utf-8"))["local"] is None  # the file says "unknown", never 0.0
 
 
 @pytest.mark.parametrize("bad", [1.2, -0.1, "0.5", True, float("inf")])
 def test_a_score_that_is_not_a_number_in_zero_to_one_is_refused(tmp_path, bad):
     path = tmp_path / "o.jsonl"
-    path.write_text(json.dumps({"id": "a", "local": bad, "strong": 0.5, "judge": "j"}, allow_nan=True) + "\n")
+    path.write_text(json.dumps({"id": "a", "local": bad, "strong": 0.5, "judge": "j"}, allow_nan=True) + "\n", encoding="utf-8")
 
     with pytest.raises(OutcomesError, match="a score must be null or a number in"):
         read_outcomes(path)

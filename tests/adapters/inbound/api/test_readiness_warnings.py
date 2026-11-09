@@ -271,6 +271,6 @@ def test_the_list_of_tables_is_exactly_what_the_scripts_create():
         (table, script.name)
         for script in sorted(_INIT.glob("*.sql"))
         if script.name not in _NOT_LISTED
-        for table in _CREATE.findall(script.read_text())
+        for table in _CREATE.findall(script.read_text(encoding="utf-8"))
     }
     assert created == set(health.APPDATA_TABLES)

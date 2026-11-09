@@ -85,7 +85,7 @@ def set_json(**overrides) -> dict:
 def write_set(directory: Path, name: str = "mood", **overrides) -> Path:
     directory.mkdir(parents=True, exist_ok=True)
     path = directory / f"{name}.json"
-    path.write_text(json.dumps(set_json(name=name, **overrides)))
+    path.write_text(json.dumps(set_json(name=name, **overrides)), encoding="utf-8")
     return path
 
 
@@ -479,7 +479,7 @@ def test_classify_is_gone_whatever_task_it_names(tmp_path, sets, task):
 
 # ---- a bad file is that set's problem, and only that set's -----------------------------------------------------------------------
 def test_a_malformed_set_is_refused_in_health_and_the_good_one_still_serves(tmp_path, sets):
-    (sets / "broken.json").write_text("{nope")
+    (sets / "broken.json").write_text("{nope", encoding="utf-8")
     client, _ = client_for(tmp_path, sets)
     with client:
         health = client.get("/health/models").json()

@@ -102,7 +102,7 @@ class TestSessionStore:
     @pytest.mark.parametrize("content", ["", "not json", "{}", '{"issuer": "x"}', "[1, 2]"])
     def test_an_unreadable_session_is_no_session_not_a_crash(self, store, content):
         store.path.parent.mkdir(parents=True)
-        store.path.write_text(content)
+        store.path.write_text(content, encoding="utf-8")
 
         assert store.load(issuer=ISSUER, client_id=CLIENT_ID) is None
 

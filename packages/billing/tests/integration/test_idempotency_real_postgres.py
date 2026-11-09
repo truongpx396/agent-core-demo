@@ -262,7 +262,7 @@ async def test_reapplying_the_wallet_script_does_not_wait_behind_a_reader_of_the
 # --- a database created BEFORE the change gains the column through the tool ---------------------------------------------------------------------
 
 def test_the_pre_change_fixture_is_the_script_as_it_was_and_the_shipped_one_adds_the_column_behind_a_guard():
-    text = FIXTURE.read_text()
+    text = FIXTURE.read_text(encoding="utf-8")
     shipped = schema.read("20-credit-wallet.sql")
 
     assert hashlib.sha256(FIXTURE.read_bytes()).hexdigest() == "e0785146c8455f03c372261ce99ff43a1735cc1502af386a9bc5c550e9599bb2"
@@ -275,7 +275,7 @@ async def test_a_database_made_from_the_old_script_is_upgraded_by_migrate_keepin
     database = await create_database(container_url)
     try:
         # 1. the old schema, exactly as it was, with a wallet written by the old code (no `request` column existed)
-        old_sql = "\n".join(line for line in FIXTURE.read_text().splitlines() if not line.startswith("\\connect")) + "\n"
+        old_sql = "\n".join(line for line in FIXTURE.read_text(encoding="utf-8").splitlines() if not line.startswith("\\connect")) + "\n"
         async with database.connection() as conn:
             await conn.execute(old_sql)
             await conn.execute(schema.executable("22-billing.sql"))

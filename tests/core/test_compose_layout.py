@@ -31,7 +31,7 @@ def _services(*paths: Path) -> dict:
 
 
 def test_the_makefile_starts_and_removes_exactly_the_collectors_file_services():
-    listed = re.search(r"^COLLECTORS\s*:=\s*(.+)$", (REPO / "Makefile").read_text(), re.MULTILINE)
+    listed = re.search(r"^COLLECTORS\s*:=\s*(.+)$", (REPO / "Makefile").read_text(encoding="utf-8"), re.MULTILINE)
     assert listed and set(listed.group(1).split()) == set(_services(COLLECTORS))
 
 
@@ -51,14 +51,14 @@ def test_every_depends_on_names_a_service_in_the_same_project(files):
 def test_prometheus_scrapes_only_what_its_own_project_or_the_host_publishes():
     """Prometheus is in the observability project: a collector is reached through the host port it publishes, not by service name."""
     obs_services = set(_services(OBS))
-    config = yaml.safe_load((REPO / "observability" / "prometheus" / "prometheus.yml").read_text())
+    config = yaml.safe_load((REPO / "observability" / "prometheus" / "prometheus.yml").read_text(encoding="utf-8"))
     hosts = {t.split(":")[0] for job in config["scrape_configs"] for sc in job["static_configs"] for t in sc["targets"]}
     hosts |= {t.split(":")[0] for am in config["alerting"]["alertmanagers"] for sc in am["static_configs"] for t in sc["targets"]}
     assert hosts <= obs_services | {"localhost", "host.docker.internal"}, f"scrape targets not reachable from {OBS.name}: {sorted(hosts - obs_services)}"
 
 
 def test_promtail_pushes_to_loki_through_the_host_and_keeps_only_services_that_exist():
-    config = yaml.safe_load((REPO / "observability" / "promtail" / "promtail-config.yaml").read_text())
+    config = yaml.safe_load((REPO / "observability" / "promtail" / "promtail-config.yaml").read_text(encoding="utf-8"))
     assert "loki" not in config["clients"][0]["url"].split("/")[2].split(":")[0], "Promtail is not in Loki's project"
     keep = next(r for r in config["scrape_configs"][0]["relabel_configs"] if r.get("action") == "keep")
     allowed = set(re.fullmatch(r"\^\((.+)\)\$", keep["regex"]).group(1).split("|"))

@@ -62,7 +62,7 @@ def harness(tmp_path, monkeypatch, ml_service_url):
     monkeypatch.setattr(cli, "CANDIDATES_DIR", cand)
 
     def declare(kind: str, toml: str) -> None:
-        (cand / cli.CANDIDATE_FILES[kind]).write_text(toml)
+        (cand / cli.CANDIDATE_FILES[kind]).write_text(toml, encoding="utf-8")
 
     return declare, tmp_path
 
@@ -76,7 +76,7 @@ def _run(args: list[str]) -> int:
 
 def _report(tmp_path: Path) -> dict:
     newest = max((tmp_path / "reports").glob("*.json"), key=lambda p: p.stat().st_mtime)
-    return json.loads(newest.read_text())
+    return json.loads(newest.read_text(encoding="utf-8"))
 
 
 @pytest.mark.parametrize(

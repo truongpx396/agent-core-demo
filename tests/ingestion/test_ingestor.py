@@ -214,7 +214,7 @@ class TestIngestFile:
         _mock_upsert(monkeypatch, captured)
 
         p = tmp_path / "notes.txt"
-        p.write_text("Some notes about the project.")
+        p.write_text("Some notes about the project.", encoding="utf-8")
         count = await ingestor.ingest_file(str(p), ctx=TEST_CTX)
 
         assert count >= 1
@@ -230,7 +230,7 @@ class TestIngestFile:
         monkeypatch.setattr(qdrant_store, "upsert", fake_upsert)
 
         p = tmp_path / "readme.md"
-        p.write_text("# Title\n\nSome markdown content.")
+        p.write_text("# Title\n\nSome markdown content.", encoding="utf-8")
         count = await ingestor.ingest_file(str(p), ctx=TEST_CTX)
 
         assert count >= 1

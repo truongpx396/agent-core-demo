@@ -23,11 +23,11 @@ def _names(expression: str) -> set[str]:
 
 
 def _rules() -> list[dict]:
-    return [rule for group in yaml.safe_load((OBS / "alerts.yml").read_text())["groups"] for rule in group["rules"]]
+    return [rule for group in yaml.safe_load((OBS / "alerts.yml").read_text(encoding="utf-8"))["groups"] for rule in group["rules"]]
 
 
 def _panels() -> list[dict]:
-    return [p for p in json.loads((OBS / "credit-billing-core.json").read_text())["panels"] if p["type"] != "row"]
+    return [p for p in json.loads((OBS / "credit-billing-core.json").read_text(encoding="utf-8"))["panels"] if p["type"] != "row"]
 
 
 def test_the_package_defines_exactly_these_counters_and_gauges():
@@ -72,7 +72,7 @@ def test_every_metric_a_panel_queries_is_one_the_package_defines():
 
 
 def test_the_dashboard_has_its_own_identity_so_it_never_collides_with_the_applications():
-    dashboard = json.loads((OBS / "credit-billing-core.json").read_text())
+    dashboard = json.loads((OBS / "credit-billing-core.json").read_text(encoding="utf-8"))
 
     assert dashboard["uid"] == "credit-billing-core" and dashboard["uid"] != "credit-billing"
 
@@ -80,7 +80,7 @@ def test_the_dashboard_has_its_own_identity_so_it_never_collides_with_the_applic
 def test_the_dashboard_is_valid_and_its_panels_are_distinct():
     """(Moved here from the application's `tests/core/test_credit_dashboard.py`: the application's dashboard is a copy of this one, and
     `tests/core/test_billing_package_copies.py` fails the build if the copy drifts, so checking the original is checking both.)"""
-    dashboard = json.loads((OBS / "credit-billing-core.json").read_text())
+    dashboard = json.loads((OBS / "credit-billing-core.json").read_text(encoding="utf-8"))
     ids = [panel["id"] for panel in dashboard["panels"]]
 
     assert dashboard["title"] and len(ids) == len(set(ids))

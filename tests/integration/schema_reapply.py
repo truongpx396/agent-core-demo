@@ -30,7 +30,7 @@ ATTEMPTS = 60
 
 def script_sql(name: str) -> str:
     """The migration without its `\\connect` line (psql syntax; the caller is already connected to the right database)."""
-    text = (INIT_DIR / name).read_text()
+    text = (INIT_DIR / name).read_text(encoding="utf-8")
     return "\n".join(line for line in text.splitlines() if not line.startswith("\\connect"))
 
 

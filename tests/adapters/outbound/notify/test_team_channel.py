@@ -50,14 +50,14 @@ class TestLocalSink:
         result = await notify.post_to_team_channel("ops-alerts", "something happened")
 
         assert "ops-alerts" in result
-        assert "something happened" in (tmp_path / "team_channel.log").read_text()
+        assert "something happened" in (tmp_path / "team_channel.log").read_text(encoding="utf-8")
         assert _count(metrics.agent_team_channel_notify_total, sink="local", outcome="ok") == before + 1
 
     async def test_a_write_failure_never_raises_but_records_an_error_outcome(self, monkeypatch, tmp_path):
         # A path whose parent can never be created (a file, not a dir, in
         # its place) forces mkdir to fail — the cheapest real OSError.
         blocking_file = tmp_path / "not_a_directory"
-        blocking_file.write_text("x")
+        blocking_file.write_text("x", encoding="utf-8")
         monkeypatch.setattr(notify, "_LOG_PATH", blocking_file / "team_channel.log")
         monkeypatch.setattr(notify, "SLACK_WEBHOOK_URL", None)
         before = _count(metrics.agent_team_channel_notify_total, sink="local", outcome="error")

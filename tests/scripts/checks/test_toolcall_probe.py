@@ -134,7 +134,7 @@ class TestAliasSettings:
 
     def test_an_alias_served_by_something_other_than_ollama_is_refused(self, tmp_path):
         config = tmp_path / "c.yaml"
-        config.write_text("model_list:\n  - model_name: chat\n    litellm_params: {model: openai/gpt-4o}\n")
+        config.write_text("model_list:\n  - model_name: chat\n    litellm_params: {model: openai/gpt-4o}\n", encoding="utf-8")
         with pytest.raises(SystemExit, match="not Ollama"):
             tp.alias_settings("chat", config)
 

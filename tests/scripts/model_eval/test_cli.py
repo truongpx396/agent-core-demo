@@ -63,7 +63,7 @@ class FakeRunner:
 @pytest.fixture
 def env(tmp_path, monkeypatch):
     (tmp_path / "cand").mkdir()
-    (tmp_path / "cand" / "embedding.toml").write_text(TOML)
+    (tmp_path / "cand" / "embedding.toml").write_text(TOML, encoding="utf-8")
     monkeypatch.setattr(cli, "CANDIDATES_DIR", tmp_path / "cand")
     monkeypatch.setattr(cli, "BASELINES_DIR", tmp_path / "baselines")
     monkeypatch.setattr(cli, "REPORTS_DIR", tmp_path / "reports")
@@ -90,7 +90,7 @@ def test_baseline_then_run_compares_against_it_and_writes_a_valid_report(env, ca
     out = capsys.readouterr().out
     assert "embedding evaluation: bge-small" in out and "| ndcg@10 |" in out
     (json_report,) = (env.tmp / "reports").glob("*.json")
-    report = json.loads(json_report.read_text())
+    report = json.loads(json_report.read_text(encoding="utf-8"))
     assert report["baseline"]["name"] == "nomic" and {d["verdict"] for d in report["deltas"].values()} == {"worse"}
     assert list((env.tmp / "reports").glob("*.md"))
 
@@ -107,7 +107,7 @@ def test_an_unreviewed_set_makes_the_baseline_provisional_and_says_so(env, capsy
     assert cli.main(argv("baseline", "nomic")) == cli.OK
 
     assert "PROVISIONAL" in capsys.readouterr().out
-    record = json.loads((env.tmp / "baselines" / "embedding" / "nomic@retrieval-domains-v1.json").read_text())
+    record = json.loads((env.tmp / "baselines" / "embedding" / "nomic@retrieval-domains-v1.json").read_text(encoding="utf-8"))
     assert record["provisional"] is True
 
 
@@ -117,7 +117,7 @@ def test_a_second_machines_latency_is_added_without_touching_the_first(env):
     env.monkeypatch.setattr(cli.hardware, "profile", lambda threads=None: {"id": "hw-bbbbbbbb", "cpu": "x", "cores": 1, "threads": 1, "onnxruntime": "1", "os": "x"})
 
     assert cli.main(argv("baseline", "nomic", "--add-hardware")) == cli.OK
-    record = json.loads((env.tmp / "baselines" / "embedding" / "nomic@retrieval-domains-v1.json").read_text())
+    record = json.loads((env.tmp / "baselines" / "embedding" / "nomic@retrieval-domains-v1.json").read_text(encoding="utf-8"))
     assert len(record["efficiency"]) == 2 and "hw-bbbbbbbb" in record["efficiency"]
 
 
@@ -127,7 +127,7 @@ def test_a_control_that_comes_out_equal_to_the_baseline_makes_the_run_exit_five_
 
     assert cli.main(argv("run", "random-vectors", "--out", str(env.tmp / "reports"))) == cli.CONTROL_FAILED
     (json_report,) = (env.tmp / "reports").glob("*.json")
-    assert json.loads(json_report.read_text())["status"] == "invalid"  # written, so it can be inspected, but marked unusable
+    assert json.loads(json_report.read_text(encoding="utf-8"))["status"] == "invalid"  # written, so it can be inspected, but marked unusable
 
 
 def test_the_baseline_as_candidate_control_runs_the_baseline_model_under_another_name(env):
@@ -137,7 +137,7 @@ def test_the_baseline_as_candidate_control_runs_the_baseline_model_under_another
     assert cli.main(argv("run", "baseline-as-candidate", "--out", str(env.tmp / "reports"))) == cli.OK
     assert runner.calls[-1][0] == "baseline-as-candidate"
     (json_report,) = (env.tmp / "reports").glob("*.json")
-    assert {c["name"]: c["ok"] for c in json.loads(json_report.read_text())["controls"]}["baseline-as-candidate"] is True
+    assert {c["name"]: c["ok"] for c in json.loads(json_report.read_text(encoding="utf-8"))["controls"]}["baseline-as-candidate"] is True
 
 
 def test_the_dev_split_is_refused_for_reporting(env, capsys):
@@ -180,7 +180,7 @@ def test_a_baseline_recorded_on_another_dataset_version_is_a_verification_failur
     # a v2 run finds no v1 baseline, so it is simply uncompared (with a warning) rather than compared wrongly
     assert cli.main(argv("run", "bge-small", "--out", str(env.tmp / "reports"))) == cli.OK
     (json_report,) = (env.tmp / "reports").glob("*.json")
-    assert "baseline" not in json.loads(json_report.read_text())
+    assert "baseline" not in json.loads(json_report.read_text(encoding="utf-8"))
 
 
 def test_verify_passes_on_a_clean_tree_and_fails_when_a_baseline_item_file_is_edited(env, capsys):
@@ -190,7 +190,7 @@ def test_verify_passes_on_a_clean_tree_and_fails_when_a_baseline_item_file_is_ed
     assert cli.main(["verify"]) == cli.OK
 
     items = env.tmp / "baselines" / "embedding" / "nomic@retrieval-domains-v1.items.json"
-    items.write_text(items.read_text().replace("0.", "0.9", 1))
+    items.write_text(items.read_text(encoding="utf-8").replace("0.", "0.9", 1), encoding="utf-8")
     assert cli.main(["verify"]) == cli.VERIFY_FAILED
     assert "does not match its recorded hash" in capsys.readouterr().out
 

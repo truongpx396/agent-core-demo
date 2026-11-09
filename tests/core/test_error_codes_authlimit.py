@@ -11,7 +11,7 @@ from pathlib import Path
 
 from app.core.errors import AUTH_ERRORS, INTERNAL_ERROR_MESSAGE, ErrorCode
 
-SHARED = json.loads((Path(__file__).resolve().parents[2] / "services" / "authlimit" / "errorcodes.json").read_text())["codes"]
+SHARED = json.loads((Path(__file__).resolve().parents[2] / "services" / "authlimit" / "errorcodes.json").read_text(encoding="utf-8"))["codes"]
 
 
 def test_every_code_the_front_door_can_send_is_a_code_this_registry_knows():

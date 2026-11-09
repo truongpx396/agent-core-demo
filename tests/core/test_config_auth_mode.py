@@ -33,7 +33,7 @@ def _settings(**overrides) -> Settings:
 def _example(path: str) -> dict[str, str]:
     """The NAME=value lines of an env example (a commented line is not a setting)."""
     out = {}
-    for line in (REPO / path).read_text().splitlines():
+    for line in (REPO / path).read_text(encoding="utf-8").splitlines():
         if line and not line.startswith("#") and "=" in line:
             name, _, value = line.partition("=")
             out[name.strip()] = value.strip()

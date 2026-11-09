@@ -21,7 +21,7 @@ from pathlib import Path
 from app.adapters.inbound.api import main as api
 from credit_billing import http as billing_http
 
-TABLE = json.loads((Path(__file__).resolve().parents[4] / "services" / "authlimit" / "routes.json").read_text())
+TABLE = json.loads((Path(__file__).resolve().parents[4] / "services" / "authlimit" / "routes.json").read_text(encoding="utf-8"))
 HTTP_METHODS = {"get", "post", "put", "patch", "delete"}
 
 # What each documented route must be. Adding an endpoint means deciding its class here, on purpose.

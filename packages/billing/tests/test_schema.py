@@ -52,7 +52,7 @@ def test_the_usage_scripts_create_the_event_store_and_its_outbox():
 
 
 def test_the_scripts_are_declared_as_package_data_so_an_install_carries_them():
-    data = tomllib.loads((PACKAGE / "pyproject.toml").read_text())["tool"]["setuptools"]["package-data"]["credit_billing"]
+    data = tomllib.loads((PACKAGE / "pyproject.toml").read_text(encoding="utf-8"))["tool"]["setuptools"]["package-data"]["credit_billing"]
 
     assert "sql/*.sql" in data and "py.typed" in data
 
@@ -79,7 +79,7 @@ def test_no_shipped_script_has_a_backslash_line_other_than_connect(name):
 
 
 def test_executable_refuses_any_other_psql_meta_command_naming_script_and_line(monkeypatch, tmp_path):
-    (tmp_path / "30-demo.sql").write_text("\\connect appdata\nSELECT 1;\n  \\set x 1\nSELECT 2;\n")
+    (tmp_path / "30-demo.sql").write_text("\\connect appdata\nSELECT 1;\n  \\set x 1\nSELECT 2;\n", encoding="utf-8")
     monkeypatch.setattr(schema, "_SQL", tmp_path)
 
     with pytest.raises(ValueError, match=r"30-demo\.sql, line 3: .*\\set x 1.*psql meta-command"):
@@ -87,7 +87,7 @@ def test_executable_refuses_any_other_psql_meta_command_naming_script_and_line(m
 
 
 def test_a_backslash_that_is_not_the_first_character_of_a_line_is_left_alone(monkeypatch, tmp_path):
-    (tmp_path / "30-demo.sql").write_text("\\connect appdata\nSELECT E'a\\nb';\nCREATE FUNCTION f() RETURNS text AS $$ SELECT '\\d' $$ LANGUAGE sql;\n")
+    (tmp_path / "30-demo.sql").write_text("\\connect appdata\nSELECT E'a\\nb';\nCREATE FUNCTION f() RETURNS text AS $$ SELECT '\\d' $$ LANGUAGE sql;\n", encoding="utf-8")
     monkeypatch.setattr(schema, "_SQL", tmp_path)
 
     runnable = schema.executable("30-demo.sql")
@@ -96,7 +96,7 @@ def test_a_backslash_that_is_not_the_first_character_of_a_line_is_left_alone(mon
 
 
 def test_connect_with_a_different_database_name_is_also_removed(monkeypatch, tmp_path):
-    (tmp_path / "30-demo.sql").write_text("\\connect some_other_db\nSELECT 1;\n")
+    (tmp_path / "30-demo.sql").write_text("\\connect some_other_db\nSELECT 1;\n", encoding="utf-8")
     monkeypatch.setattr(schema, "_SQL", tmp_path)
 
     assert schema.executable("30-demo.sql") == "SELECT 1;\n"
@@ -104,7 +104,7 @@ def test_connect_with_a_different_database_name_is_also_removed(monkeypatch, tmp
 
 def test_scripts_are_ordered_by_their_number_as_an_integer_not_as_text(monkeypatch, tmp_path):
     for name in ("100-late.sql", "22-b.sql", "9-early.sql", "20-a.sql"):
-        (tmp_path / name).write_text("SELECT 1;\n")
+        (tmp_path / name).write_text("SELECT 1;\n", encoding="utf-8")
     monkeypatch.setattr(schema, "_SQL", tmp_path)
 
     assert schema.scripts() == ["9-early.sql", "20-a.sql", "22-b.sql", "100-late.sql"]
@@ -112,7 +112,7 @@ def test_scripts_are_ordered_by_their_number_as_an_integer_not_as_text(monkeypat
 
 @pytest.mark.parametrize("bad", ["notes.sql", "x-20.sql", "20_underscore.sql", "20-.sql"])
 def test_a_shipped_name_that_is_not_number_dash_words_is_refused_not_silently_misordered(monkeypatch, tmp_path, bad):
-    (tmp_path / bad).write_text("SELECT 1;\n")
+    (tmp_path / bad).write_text("SELECT 1;\n", encoding="utf-8")
     monkeypatch.setattr(schema, "_SQL", tmp_path)
 
     with pytest.raises(ValueError, match="not a shipped script name"):

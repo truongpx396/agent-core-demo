@@ -59,9 +59,9 @@ def test_a_second_machine_adds_its_latency_without_touching_the_first(tmp_path):
 
 def test_a_record_from_a_newer_schema_is_refused_rather_than_misread(tmp_path):
     path = baselines.write_baseline(tmp_path, _record(), _data())
-    record = json.loads(path.read_text())
+    record = json.loads(path.read_text(encoding="utf-8"))
     record["schema_version"] = 99
-    path.write_text(json.dumps(record))
+    path.write_text(json.dumps(record), encoding="utf-8")
     with pytest.raises(baselines.BaselineMismatchError, match="not understood"):
         baselines.read_baseline(path)
 
@@ -74,8 +74,8 @@ def test_a_hand_edited_per_item_file_is_detectable_from_the_recorded_hash(tmp_pa
     import hashlib
 
     path = baselines.write_baseline(tmp_path, _record(), _data())
-    record = json.loads(path.read_text())
+    record = json.loads(path.read_text(encoding="utf-8"))
     items = path.with_suffix(".items.json")
     assert record["per_query_sha256"] == hashlib.sha256(items.read_bytes()).hexdigest()
-    items.write_text(items.read_text().replace("0.5", "0.9"))
+    items.write_text(items.read_text(encoding="utf-8").replace("0.5", "0.9"), encoding="utf-8")
     assert record["per_query_sha256"] != hashlib.sha256(items.read_bytes()).hexdigest()

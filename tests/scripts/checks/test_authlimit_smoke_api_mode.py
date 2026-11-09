@@ -68,7 +68,8 @@ def _keys_dir(tmp_path: Path, *, retired: bool = False) -> tuple[Path, ed25519.E
         key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption())
     )
     (tmp_path / "keyset.json").write_text(
-        json.dumps({"keys": [{"kid": "kid1", "publish_at": now - 100, "use_from": now - 90, "retire_at": (now - 10) if retired else 0}]})
+        json.dumps({"keys": [{"kid": "kid1", "publish_at": now - 100, "use_from": now - 90, "retire_at": (now - 10) if retired else 0}]}),
+        encoding="utf-8",
     )
     return tmp_path, key.public_key()
 

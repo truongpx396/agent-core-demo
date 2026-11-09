@@ -22,7 +22,7 @@ SETS = sorted(SHIPPED.glob("*.json"))
 
 @pytest.mark.parametrize("path", SETS, ids=lambda p: p.stem)
 def test_every_shipped_set_is_accepted_by_the_services_own_parser(path):
-    parsed = labelsets.parse_labelset(path.read_text(), path.stem)
+    parsed = labelsets.parse_labelset(path.read_text(encoding="utf-8"), path.stem)
 
     assert isinstance(parsed, labelsets.LabelSet), getattr(parsed, "reason", parsed)
 
@@ -30,24 +30,24 @@ def test_every_shipped_set_is_accepted_by_the_services_own_parser(path):
 @pytest.mark.parametrize("path", SETS, ids=lambda p: p.stem)
 def test_every_model_in_the_classify_chain_has_a_cutoff_for_every_shipped_set(path):
     """A model with no entry does not serve the set."""
-    chain = [m["name"] for m in tomllib.loads(MODELS_TOML.read_text())["model"] if "classify" in m["roles"] and m.get("enabled", True)]
-    parsed = labelsets.parse_labelset(path.read_text(), path.stem)
+    chain = [m["name"] for m in tomllib.loads(MODELS_TOML.read_text(encoding="utf-8"))["model"] if "classify" in m["roles"] and m.get("enabled", True)]
+    parsed = labelsets.parse_labelset(path.read_text(encoding="utf-8"), path.stem)
     assert isinstance(parsed, labelsets.LabelSet)
 
     assert chain, "models.toml has no enabled classify-role model"
     assert set(chain) <= set(parsed.calibration), f"{path.name} has no calibration for {sorted(set(chain) - set(parsed.calibration))}"
-    assert set(parsed.calibration) <= {m["name"] for m in tomllib.loads(MODELS_TOML.read_text())["model"]}, "a cutoff for a model models.toml does not declare"
+    assert set(parsed.calibration) <= {m["name"] for m in tomllib.loads(MODELS_TOML.read_text(encoding="utf-8"))["model"]}, "a cutoff for a model models.toml does not declare"
 
 
 @pytest.mark.parametrize("path", SETS, ids=lambda p: p.stem)
 def test_a_shipped_set_names_no_tenant_the_way_the_evaluation_data_may_not(path):
-    text = path.read_text().lower()
+    text = path.read_text(encoding="utf-8").lower()
 
     assert [t for t in ds.TENANT_DENYLIST if t in text] == []
 
 
 def test_the_routing_topics_and_their_dataset_have_the_same_labels_and_share_no_sentence():
-    raw = json.loads((SHIPPED / "route-topics.json").read_text())
+    raw = json.loads((SHIPPED / "route-topics.json").read_text(encoding="utf-8"))
     manifest = ds.load_verified(ds.DATASETS_ROOT / "route-topics" / "v1")
 
     assert sorted(raw["labels"]) == sorted(manifest.raw["labels"])
@@ -60,7 +60,7 @@ def test_the_routing_topics_and_their_dataset_have_the_same_labels_and_share_no_
 def test_the_routing_label_set_shares_no_sentence_with_the_repositorys_route_prompts():
     """`route-domains` is what the router's behaviour on this repository's real traffic is read from (specs/015 research.md R4). An example that is
     also one of those prompts would make the router look right on the very sentence it was copied from."""
-    raw = json.loads((SHIPPED / "route-topics.json").read_text())
+    raw = json.loads((SHIPPED / "route-topics.json").read_text(encoding="utf-8"))
     manifest = ds.load_verified(ds.DATASETS_ROOT / "route-domains" / "v1")
     prompts = {name: [i["text"] for i in manifest.split_items(name)] for name in ("dev", "test")}
     examples = [e for ex in raw["labels"].values() for e in ex]
@@ -71,7 +71,7 @@ def test_the_routing_label_set_shares_no_sentence_with_the_repositorys_route_pro
 
 def test_the_dataset_source_file_and_the_committed_dataset_agree():
     """The TSV is what a person edits and the JSONL is what is scored: rebuilding from the TSV must give the committed bytes, or someone edited one."""
-    raw = json.loads((SHIPPED / "route-topics.json").read_text())
+    raw = json.loads((SHIPPED / "route-topics.json").read_text(encoding="utf-8"))
     splits = build_topics.build_splits(build_topics.read_rows(), list(raw["labels"]))
     manifest = ds.load_verified(ds.DATASETS_ROOT / "route-topics" / "v1")
 

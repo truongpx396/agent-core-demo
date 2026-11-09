@@ -165,7 +165,7 @@ def test_every_variable_the_builder_reads_is_passed_through_by_the_workflow_unde
     env = _Spy({"AI_REVIEW_FALLBACK_MODELS": "a", **{f"AI_REVIEW_FALLBACK_PROVIDER{n}_MODELS": f"m{n}" for n in range(1, p.MAX_PROVIDERS + 1)}})
     p.build_fallbacks(env, PRIMARY)
     assert len(env.read) == 1 + 3 * p.MAX_PROVIDERS  # FALLBACK_MODELS, and MODELS / BASE_URL / API_KEY per group
-    workflow = WORKFLOW.read_text()
+    workflow = WORKFLOW.read_text(encoding="utf-8")
     for name in sorted(env.read):
         source = "secrets" if name.endswith("_API_KEY") else "vars"  # a key is a secret, never a plain variable
         assert f"{name}: ${{{{ {source}.{name} }}}}" in workflow, name

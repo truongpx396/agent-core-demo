@@ -25,7 +25,7 @@ _ENTRY = re.compile(r"^\s*#?\s*([A-Z][A-Z0-9_]+)\s*=", re.MULTILINE)
 
 
 def _env_example_names() -> set[str]:
-    return set(_ENTRY.findall((REPO / ".env.example").read_text()))
+    return set(_ENTRY.findall((REPO / ".env.example").read_text(encoding="utf-8")))
 
 
 def _settings_names() -> set[str]:
@@ -60,7 +60,7 @@ def _tracked_code_and_config() -> list[Path]:
 
 def test_every_entry_that_is_not_a_setting_is_read_somewhere():
     extra = _env_example_names() - _settings_names()
-    corpus = "\n".join(path.read_text(errors="ignore") for path in _tracked_code_and_config())
+    corpus = "\n".join(path.read_text(errors="ignore", encoding="utf-8") for path in _tracked_code_and_config())
 
     unused = sorted(name for name in extra if name not in corpus)
 
@@ -103,7 +103,7 @@ def test_a_listed_default_is_the_settings_real_default():
     # `get_default` also resolves a `default_factory` (BILLING_WEBHOOK_SECRETS: an empty dict), which `.default` does not.
     defaults = {name.upper(): field.get_default(call_default_factory=True) for name, field in Settings.model_fields.items()}
     mismatched = []
-    for name, value in _VALUE.findall((REPO / ".env.example").read_text()):
+    for name, value in _VALUE.findall((REPO / ".env.example").read_text(encoding="utf-8")):
         if name in DELIBERATELY_NOT_THE_DEFAULT:
             if value != DELIBERATELY_NOT_THE_DEFAULT[name]:
                 mismatched.append(f"{name}: .env.example says {value!r}, it must say {DELIBERATELY_NOT_THE_DEFAULT[name]!r} (see the table above)")

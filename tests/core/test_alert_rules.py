@@ -18,16 +18,16 @@ REPO = Path(__file__).resolve().parents[2]
 
 
 def _rules() -> list[dict]:
-    doc = yaml.safe_load((REPO / "observability/prometheus/alerts.yml").read_text())
+    doc = yaml.safe_load((REPO / "observability/prometheus/alerts.yml").read_text(encoding="utf-8"))
     return [rule for group in doc["groups"] for rule in group["rules"]]
 
 
 def _defined_metrics() -> set[str]:
     # The host defines most metrics; the billing core defines its own four (spec 011: it cannot import the host registry).
-    source = "\n".join((REPO / name).read_text() for name in ("app/core/metrics.py", "packages/billing/src/credit_billing/metrics.py"))
+    source = "\n".join((REPO / name).read_text(encoding="utf-8") for name in ("app/core/metrics.py", "packages/billing/src/credit_billing/metrics.py"))
     defined = set(re.findall(r'^\w+ = (?:Counter|Histogram|Gauge)\(\s*"([a-z_]+)"', source, re.MULTILINE))
     # The authlimit service is Go and defines its metrics as string constants in one file (specs/018): the same rule, a different reader.
-    go_metrics = (REPO / "services/authlimit/internal/telemetry/metrics.go").read_text()
+    go_metrics = (REPO / "services/authlimit/internal/telemetry/metrics.go").read_text(encoding="utf-8")
     return defined | set(re.findall(r'"(agent_authlimit_[a-z_]+)"', go_metrics))
 
 
@@ -45,7 +45,7 @@ def test_every_agent_metric_an_alert_names_is_defined_in_the_code():
 
 def _ml_service_metrics() -> set[str]:
     # The ML service is a separate image with its own metrics module (services/ml-service/ml_service/metrics.py), named `ml_*`.
-    source = (REPO / "services/ml-service/ml_service/metrics.py").read_text()
+    source = (REPO / "services/ml-service/ml_service/metrics.py").read_text(encoding="utf-8")
     return set(re.findall(r'(?:Counter|Gauge|Histogram)\(\s*"(ml_[a-z_]+)"', source))
 
 

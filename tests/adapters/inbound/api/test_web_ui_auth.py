@@ -32,9 +32,9 @@ from app.adapters.inbound.api.routers.system import ui
 from app.core.config import settings
 
 REPO = Path(__file__).resolve().parents[4]
-PAGE = (REPO / "app" / "adapters" / "inbound" / "api" / "static" / "index.html").read_text()
-SCRIPT = (REPO / "app" / "adapters" / "inbound" / "api" / "static" / "auth.js").read_text()
-ROUTES = json.loads((REPO / "services" / "authlimit" / "routes.json").read_text())["routes"]
+PAGE = (REPO / "app" / "adapters" / "inbound" / "api" / "static" / "index.html").read_text(encoding="utf-8")
+SCRIPT = (REPO / "app" / "adapters" / "inbound" / "api" / "static" / "auth.js").read_text(encoding="utf-8")
+ROUTES = json.loads((REPO / "services" / "authlimit" / "routes.json").read_text(encoding="utf-8"))["routes"]
 
 
 def _meta(page: str) -> dict:

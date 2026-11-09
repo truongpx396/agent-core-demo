@@ -26,7 +26,7 @@ def test_a_beir_task_joins_corpus_queries_and_test_judgements_and_keeps_only_jud
     _write_parquet(ds.cache_path(entry, src, "queries/queries-00000-of-00001.parquet", tmp_path), [{"_id": "q1", "title": "", "text": "first"}, {"_id": "q2", "title": "", "text": "unjudged"}])
     tsv = ds.cache_path(entry, qsrc, "test.tsv", tmp_path)
     tsv.parent.mkdir(parents=True, exist_ok=True)
-    tsv.write_text("query-id\tcorpus-id\tscore\nq1\td1\t2\nq1\td2\t0\n")
+    tsv.write_text("query-id\tcorpus-id\tscore\nq1\td1\t2\nq1\td2\t0\n", encoding="utf-8")
 
     beir = public.load_beir(entry, tmp_path)
 

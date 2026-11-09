@@ -87,7 +87,7 @@ def test_the_scanner_does_recognise_marks_and_container_use(tmp_path):
         ("import pytest\n\n@pytest.mark.integration\ndef test_one():\n    pass\n", set()),  # a per-test mark is not a module mark
         ("x = 1\n", set()),
     ):
-        marked.write_text(source)
+        marked.write_text(source, encoding="utf-8")
 
         assert marks_of(marked) == expected, source
     for source, expected in (
@@ -96,6 +96,6 @@ def test_the_scanner_does_recognise_marks_and_container_use(tmp_path):
         ("def f():\n    return ensure_postgres()\n", True),
         ("from tests.containers import write_init_dir\n", False),
     ):
-        marked.write_text(source)
+        marked.write_text(source, encoding="utf-8")
 
         assert starts_a_postgres(marked) is expected, source

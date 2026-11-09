@@ -44,7 +44,7 @@ IMPORT_NAMES = {
 
 
 def _declared() -> list[str]:
-    project = tomllib.loads((PACKAGE / "pyproject.toml").read_text())["project"]
+    project = tomllib.loads((PACKAGE / "pyproject.toml").read_text(encoding="utf-8"))["project"]
     requirements = [*project["dependencies"], *project["optional-dependencies"]["http"], *project["optional-dependencies"]["otel"]]
     return [re.split(r"[\[<>=!~ ;]", requirement)[0].lower() for requirement in requirements]
 
