@@ -31,15 +31,19 @@ updates:
       prefix: infra
 
   - package-ecosystem: docker
-    # Both directories: the root Dockerfile and services/ml-service/Dockerfile, which pin the same two digests (a test keeps them equal).
+    # Both directories: the root Dockerfile and services/ml-service/Dockerfile, which pin the same two digests (tests/core/test_dockerfile_pins.py keeps them equal and keeps this list covering both).
     # deploy/images/ holds the sandbox images, whose bases are not pinned by digest: they stay as they are, and are not what this is for.
     directories:
       - /
       - /services/ml-service
     schedule:
       interval: weekly
-    # A release has to be two weeks old before it is proposed: uv's 0.13 line was days old when the pin was chosen, and a base image
-    # tag that was rebuilt yesterday is not yet something to run in production.
+    # The intent: a release has to be two weeks old before it is proposed (uv's 0.13 line was days old when the pin was chosen, and a base
+    # image tag rebuilt yesterday is not yet something to run in production). Dependabot does NOT apply it here: every Docker PR it has
+    # opened (#190, #221, #242, #243, #250) says "Cooldown could not be applied because no publication date was available from the registry",
+    # and #242, #243 and #250 proposed uv 0.13.7 when it was under a week old (#243 was merged at six days). So check a release's age
+    # before merging one of these PRs (`gh api repos/astral-sh/uv/releases/tags/<tag> --jq .published_at`); the setting stays for the
+    # day the registry reports a date.
     cooldown:
       default-days: 14
     # The Python MINOR is a decision (3.13 is what the lock was resolved for), not a bump: only digest refreshes of the same tag.
