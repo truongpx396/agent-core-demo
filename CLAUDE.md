@@ -6,6 +6,7 @@ FastAPI. Four example domains (Ecorp, support, ops, sales) run on one unmodified
 
 Read these before changing behavior; they hold the reasoning this file deliberately omits:
 - `ARCHITECTURE.md` — the hexagonal layout: rings, the ports and their adapters, the dependency rule and the tests that enforce it, how to add a port, and what is not done.
+- `ARCHITECTURE_DIAGRAMS.md` — the whole system as Mermaid maps: runtime topology, the rings, the graph, and a sequence diagram for each critical flow (a turn, sign-in, approval, exactly-once, crash reclaim, retrieval, cost, ingestion, MCP, start-up). Start here for the big picture.
 - `.specify/memory/constitution.md` — the non-negotiable rules. Principles I, II and IV
   (tenant isolation, mandatory approval, exactly-once side effects) are NON-NEGOTIABLE.
 - `GRAPH_PATTERNS.md` — the graph's numbered patterns (1-69 so far; 51 live there), each with the real bug

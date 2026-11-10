@@ -1,5 +1,7 @@
 # Architecture: ports and adapters
 
+For the whole system drawn as diagrams (topology, the graph, and the sequence of each critical flow), see [ARCHITECTURE_DIAGRAMS.md](ARCHITECTURE_DIAGRAMS.md). This file is the layering rules.
+
 The agent and its domains are the inside. Everything they use that is not theirs (Postgres, Qdrant, Redis, the LLM gateway, the ML service, the
 web, Slack, the sandbox) is outside, reached through a **port**: a `Protocol` in `app/ports/outbound/` that says what the inside needs, in its own terms. An
 **adapter** implements a port against one system. One module, `app/bootstrap.py`, names both and joins them when a process starts. The build fails
