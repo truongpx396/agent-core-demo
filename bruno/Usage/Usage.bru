@@ -1,0 +1,21 @@
+meta {
+  name: Usage
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{baseUrl}}/usage
+  body: none
+  auth: inherit
+}
+
+assert {
+  res.status: eq 200
+  res.body.total_tokens: isNumber
+  res.body.budgets: isArray
+}
+
+docs {
+  The tenant's spend, every limit that applies to the caller, and `credits` (`null` when billing is off).
+}

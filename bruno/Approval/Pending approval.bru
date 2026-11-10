@@ -1,0 +1,19 @@
+meta {
+  name: Pending approval
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{baseUrl}}/chat/sessions/{{approvalThreadId}}/pending_approval
+  body: none
+  auth: inherit
+}
+
+assert {
+  res.status: eq 200
+}
+
+docs {
+  `null` when nothing waits, otherwise `{tool_calls, resumable}`; `resumable: false` means the build changed since the pause.
+}

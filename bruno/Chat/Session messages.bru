@@ -1,0 +1,20 @@
+meta {
+  name: Session messages
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{baseUrl}}/chat/sessions/{{threadId}}/messages
+  body: none
+  auth: inherit
+}
+
+assert {
+  res.status: eq 200
+  res.body: isArray
+}
+
+docs {
+  The transcript of one thread. A thread that is not the caller's is a 404, the same as an unknown one.
+}

@@ -1,0 +1,30 @@
+meta {
+  name: Resume a paused turn
+  type: http
+  seq: 3
+}
+
+post {
+  url: {{baseUrl}}/chat/resume
+  body: json
+  auth: inherit
+}
+
+headers {
+  Accept: text/event-stream
+}
+
+body:json {
+  {
+    "thread_id": "{{approvalThreadId}}",
+    "approved": true
+  }
+}
+
+assert {
+  res.status: eq 200
+}
+
+docs {
+  Approves the pending tool call; `"approved": false` rejects it. Send the same `X-Domain` as the original turn.
+}

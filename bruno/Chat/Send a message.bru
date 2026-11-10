@@ -1,0 +1,39 @@
+meta {
+  name: Send a message
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{baseUrl}}/chat/stream/queued
+  body: json
+  auth: inherit
+}
+
+headers {
+  Accept: text/event-stream
+}
+
+body:json {
+  {
+    "message": "What is 21 * 2?",
+    "thread_id": "{{threadId}}"
+  }
+}
+
+assert {
+  res.status: eq 200
+}
+
+tests {
+  test("streams server-sent events that end with done", function () {
+    expect(res.getHeader("content-type")).to.include("text/event-stream");
+    expect(res.getBody()).to.include('"type": "done"');
+  });
+}
+
+docs {
+  Starts a turn on a worker (`make agent-worker`) and relays its events: `token`, `tool_start`,
+  `tool_end`, `citations`, `followups`, `approval_required`, `error`, `done`. Reuse `thread_id` to
+  continue the conversation. The same message within 10 s streams the first attempt instead.
+}

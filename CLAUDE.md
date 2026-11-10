@@ -115,6 +115,8 @@ they delete volumes or kill running processes.
   `app/agent/graph/model_route.py` are the router's whole footprint in the app, and it can only write `State.model_route`.
 - `promptfoo/` — the prompt checks, and the only Node in the repo: its `package.json`, lock file and `node_modules`
   live here, so every `npm`/`npx` runs from this directory (`make promptfoo` does that). The root stays Python-only.
+- `bruno/` — the HTTP API as a Bruno collection (text `.bru` files, no Node project: `bruno/README.md`). A new or changed endpoint gets its
+  request in the same change; `tests/adapters/inbound/api/test_bruno_collection_matches_api.py` fails on a route, body field, header or variable that drifted.
 
 ## Working rules
 
