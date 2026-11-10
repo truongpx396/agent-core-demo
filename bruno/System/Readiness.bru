@@ -1,0 +1,21 @@
+meta {
+  name: Readiness
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{baseUrl}}/health/ready
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.body.status: eq ready
+}
+
+docs {
+  200 only when Qdrant, Postgres, Redis and the ML service are reachable. Otherwise 503 with
+  `status: degraded` and the failing dependency false in `checks`. `warnings` never changes the status.
+}

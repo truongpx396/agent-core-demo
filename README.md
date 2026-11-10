@@ -344,6 +344,7 @@ curl -s -N -X POST http://localhost:8000/chat/stream/queued \
 
 `X-Tenant-Id: ecorp` sees what `make ingest` seeded; another tenant sees none of it, by design.
 
+- 🧪 **Bruno:** [`bruno/`](bruno/README.md) is every endpoint above as a [Bruno](https://www.usebruno.com) collection, with a `local` environment (this API alone) and a `door` one (behind the front door). A test keeps it in step with the routes.
 - 📡 **SSE events:** `token`, `tool_start`, `tool_end`, `citations` (just before `done`; only sources the answer cited), `approval_required`, `error`, `done`.
 - ✋ **Approvals:** `POST /chat/resume` approves or rejects an `approval_required` event; `POST /chat/cancel` stops the run.
 - 🧵 **Threads:** reuse a `thread_id` to continue a conversation (Langfuse groups traces by it). It belongs to whoever sends on it first (tenant + principal + domain); anyone else gets the same 404 an unknown id gets, so switching identity needs a new one. `telegram:<chat id>` ids are reserved. The check lives at the API; the worker doesn't repeat it (pattern 17).
@@ -850,6 +851,7 @@ postgres-init/            numbered SQL schema (fresh volumes only)
 tests/                    mirrors app/ (adapters/inbound, adapters/outbound, services/, scripts/); fakes/ (in-memory ports); integration/, live/, deepeval/ are the marked tiers
 packages/billing/         the independent billing package: src, tests, schema, alerts, docs, specs
 promptfoo/ garak/ loadtest/   prompt checks (the repo's only package.json), jailbreak scan, Locust
+bruno/                    the HTTP API as a Bruno collection (.bru requests, environments, a sample PDF)
 make/                     host.mk, admin.mk, evals.mk, security.mk, test.mk: targets the Makefile includes
 .github/workflows/        ci, deploy, ai-review, terraform-validate, redteam, strix, zap
 ```

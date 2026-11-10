@@ -1,0 +1,29 @@
+meta {
+  name: Cancel a turn
+  type: http
+  seq: 4
+}
+
+post {
+  url: {{baseUrl}}/chat/cancel
+  body: json
+  auth: inherit
+}
+
+headers {
+  Accept: text/event-stream
+}
+
+body:json {
+  {
+    "thread_id": "{{approvalThreadId}}"
+  }
+}
+
+assert {
+  res.status: eq 200
+}
+
+docs {
+  Stops a turn that is streaming or paused. It sets a short-lived cancel flag on the thread, so use a thread you are done with.
+}
