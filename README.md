@@ -85,7 +85,7 @@ is why the limits, the signed identity, the per-thread lock, crash reclaim and t
 
 The code is laid out as **ports and adapters**: the agent and its domains reach Postgres, Qdrant, Redis, the LLM gateway, the ML service, the web and the sandbox
 only through `Protocol`s in `app/ports/`, the adapters implement them, and `app/bootstrap.py` binds the two when a process starts. A test fails the build when an import
-crosses a ring the wrong way or an entrypoint forgets to wire. [ARCHITECTURE.md](ARCHITECTURE.md) has the rings, the port catalogue and how to add one (pattern 90).
+crosses a ring the wrong way or an entrypoint forgets to wire. [ARCHITECTURE.md](ARCHITECTURE.md) has the rings, the port catalogue and how to add one (pattern 90), and [ARCHITECTURE_DIAGRAMS.md](ARCHITECTURE_DIAGRAMS.md) draws the whole system and its critical flows.
 
 ```mermaid
 flowchart TB
@@ -909,6 +909,7 @@ anyone who sets the right headers.
 
 | Document | What is in it |
 |---|---|
+| [ARCHITECTURE_DIAGRAMS.md](ARCHITECTURE_DIAGRAMS.md) · [ARCHITECTURE.md](ARCHITECTURE.md) | The big picture as Mermaid diagrams (topology, layers, the graph, a sequence per critical flow) · the layering rules and the tests that enforce them |
 | [GRAPH_PATTERNS.md](GRAPH_PATTERNS.md) | The graph's numbered design patterns, each with the bug that motivated it, and the honest list of what isn't built |
 | [COST_GOVERNANCE.md](COST_GOVERNANCE.md) · [ENGINEERING_PATTERNS.md](ENGINEERING_PATTERNS.md) | The spend meter and caps · repository-level lessons |
 | [WORKER_CONCURRENCY.md](WORKER_CONCURRENCY.md) | Sizing the worker pools |
