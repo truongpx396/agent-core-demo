@@ -9,6 +9,10 @@ from pathlib import Path
 
 import pytest
 
+# The ML service's metrics need prometheus-client, which only the `test` job (the gate) installs: every other tier collects this directory
+# too, and an import error there is a failed job, not a skip (the same line tests/services/ml_service/conftest.py has).
+pytest.importorskip("prometheus_client", reason="ml_service.metrics needs prometheus-client (requirements-dev.txt / the CI test job)")
+
 from app.adapters.inbound.api import main as api
 from app.adapters.inbound.api.openapi import TAGS
 from ml_service.app import API_TAGS, create_app
