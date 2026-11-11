@@ -6,6 +6,7 @@ FastAPI. Four example domains (Ecorp, support, ops, sales) run on one unmodified
 
 Read these before changing behavior; they hold the reasoning this file deliberately omits:
 - `ARCHITECTURE.md` — the hexagonal layout: rings, the ports and their adapters, the dependency rule and the tests that enforce it, how to add a port, and what is not done.
+- `ARCHITECTURE_DIAGRAMS.md` — the whole system as Mermaid maps: runtime topology, the rings, the graph, and a sequence diagram for each critical flow (a turn, sign-in, approval, exactly-once, crash reclaim, retrieval, cost, ingestion, MCP, start-up). Start here for the big picture.
 - `.specify/memory/constitution.md` — the non-negotiable rules. Principles I, II and IV
   (tenant isolation, mandatory approval, exactly-once side effects) are NON-NEGOTIABLE.
 - `GRAPH_PATTERNS.md` — the graph's numbered patterns (1-69 so far; 51 live there), each with the real bug
@@ -26,6 +27,8 @@ The Makefile assumes an activated venv: `source .venv/bin/activate`. It holds th
 ```bash
 make lint            # ruff check .          (CI gate)
 make typecheck       # mypy --strict over app/ scripts/ the billing package and ml-service (CI gate)
+make openapi         # rewrite openapi.json and services/ml-service/openapi.json from the code; a test fails while they are stale (authlimit's is hand-written, tested by Go)
+make openapi-breaking # oasdiff against origin/main (CI's `openapi` job); a deliberate break is one entry in .github/openapi-breaking-ignore.txt
 make test            # pytest -n auto -q — hermetic, no services needed (CI gate); then the billing package's own tests
 make test-billing-package   # only the package's hermetic tests, from its directory (the app is not on the path)
 make billing-migrate        # apply the billing package's schema scripts to an existing database (billing-migrate-status: read-only)
@@ -115,6 +118,8 @@ they delete volumes or kill running processes.
   `app/agent/graph/model_route.py` are the router's whole footprint in the app, and it can only write `State.model_route`.
 - `promptfoo/` — the prompt checks, and the only Node in the repo: its `package.json`, lock file and `node_modules`
   live here, so every `npm`/`npx` runs from this directory (`make promptfoo` does that). The root stays Python-only.
+- `bruno/` — the HTTP API as a Bruno collection (text `.bru` files, no Node project: `bruno/README.md`). A new or changed endpoint gets its
+  request in the same change, a tag from `app/adapters/inbound/api/openapi.py` and a `make openapi`; `tests/adapters/inbound/api/test_bruno_collection_matches_api.py` fails on a route, body field, header or variable that drifted.
 
 ## Working rules
 

@@ -1,0 +1,32 @@
+meta {
+  name: Ask with approval
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{baseUrl}}/chat/stream/queued
+  body: json
+  auth: inherit
+}
+
+headers {
+  Accept: text/event-stream
+}
+
+body:json {
+  {
+    "message": "What is 21 * 2?",
+    "thread_id": "{{approvalThreadId}}",
+    "require_approval": true
+  }
+}
+
+assert {
+  res.status: eq 200
+}
+
+docs {
+  `require_approval` asks before every tool call. If the model calls a tool, the stream ends at an
+  `approval_required` event and the thread waits. Whether it calls one is the model's choice.
+}

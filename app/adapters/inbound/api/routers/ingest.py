@@ -29,7 +29,7 @@ from app.ports.outbound.jobs import ingest_queue
 from app.ports.outbound.storage import object_store
 
 logger = logging.getLogger(__name__)
-router = APIRouter()
+router = APIRouter(tags=["ingest"])
 
 _UPLOAD_READ_CHUNK_BYTES = 1024 * 1024  # 1 MB per read() call
 _MAX_UPLOAD_BYTES = MAX_UPLOAD_SIZE_MB * 1024 * 1024

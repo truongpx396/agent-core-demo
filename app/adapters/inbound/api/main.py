@@ -42,6 +42,12 @@ from fastapi import (
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.adapters.inbound.api import identity
+from app.adapters.inbound.api.openapi import (
+    API_DESCRIPTION,
+    API_TITLE,
+    API_VERSION,
+    TAGS,
+)
 from app.adapters.inbound.api.rate_limit import WebhookRateLimitMiddleware
 from app.adapters.inbound.api.routers import chat, ingest, system, usage
 from app.agent.runtime.core import close_checkpointer_pool, init_graph_async
@@ -110,7 +116,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     await close_checkpointer_pool()
 
 
-app = FastAPI(title="Core AI Stack Demo", version="1.0.0", lifespan=lifespan)
+app = FastAPI(title=API_TITLE, version=API_VERSION, description=API_DESCRIPTION, openapi_tags=TAGS, lifespan=lifespan)
 
 # A request with no valid identity (401), or one that cannot be checked right now (503), answered in the canonical envelope the front door
 # itself uses (app/adapters/inbound/api/identity.py).

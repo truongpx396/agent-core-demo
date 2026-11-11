@@ -1,0 +1,37 @@
+meta {
+  name: Upload a document
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{baseUrl}}/ingest/upload
+  body: multipartForm
+  auth: inherit
+}
+
+body:multipart-form {
+  files: @file(files/sample.pdf)
+  topic: bruno-sample
+}
+
+assert {
+  res.status: eq 200
+}
+
+script:post-response {
+  const job = (res.getBody() || [])[0]?.job_id;
+  if (job) bru.setVar("jobId", job);
+}
+
+tests {
+  test("the file was queued as a job", function () {
+    expect(res.getBody()[0].error).to.equal(null);
+    expect(bru.getVar("jobId")).to.be.a("string");
+  });
+}
+
+docs {
+  PDF or DOCX only; each file is its own job on the ingest queue (`make ingest-worker`). A file that fails is
+  reported in its own `error`, with the request still 200. This adds a page to the tenant's corpus.
+}

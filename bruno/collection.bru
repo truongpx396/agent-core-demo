@@ -1,0 +1,27 @@
+headers {
+  X-Tenant-Id: {{tenant}}
+  X-Principal-Id: {{principal}}
+  X-Domain: {{domain}}
+}
+
+auth {
+  mode: bearer
+}
+
+auth:bearer {
+  token: {{accessToken}}
+}
+
+script:pre-request {
+  // One conversation for the chat folder, one for the approval flow; a new pair per run, kept for the run.
+  const { v4 } = require("uuid");
+  if (!bru.getVar("threadId")) bru.setVar("threadId", `bruno-${v4()}`);
+  if (!bru.getVar("approvalThreadId")) bru.setVar("approvalThreadId", `bruno-${v4()}`);
+}
+
+docs {
+  The chat API (`app/adapters/inbound/api/`). Environment `local` is the API on its own (`AUTH_MODE=headers`:
+  `X-Tenant-Id` and `X-Principal-Id` say who is calling). Environment `door` is the stack behind the front door
+  (`AUTH_MODE=identity`: only the bearer token says who, and those two headers are ignored). `X-Domain` picks the
+  domain in both. See `bruno/README.md`.
+}

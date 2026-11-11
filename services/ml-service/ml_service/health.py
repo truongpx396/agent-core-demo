@@ -8,7 +8,7 @@ from typing import Any
 
 from fastapi import APIRouter, Request, Response
 
-router = APIRouter()
+router = APIRouter(tags=["operations"])
 
 
 @router.get("/health")

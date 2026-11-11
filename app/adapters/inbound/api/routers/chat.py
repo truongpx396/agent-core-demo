@@ -110,7 +110,7 @@ async def _require_conversation_owner(
         raise HTTPException(status_code=404, detail="session not found")
 
 
-@router.post("/chat/stream/queued")
+@router.post("/chat/stream/queued", tags=["chat"])
 async def chat_stream_queued(
     req: ChatRequest, ctx: SecurityCtx = Depends(get_ctx), domain: str = Depends(get_domain)
 ) -> StreamingResponse:
@@ -182,7 +182,7 @@ async def chat_stream_queued(
     return _queued_sse_response(request_id)
 
 
-@router.post("/chat/resume")
+@router.post("/chat/resume", tags=["chat"])
 async def chat_resume(
     req: ResumeRequest, ctx: SecurityCtx = Depends(get_ctx), domain: str = Depends(get_domain)
 ) -> StreamingResponse:
@@ -213,7 +213,7 @@ async def chat_resume(
     return _queued_sse_response(request_id)
 
 
-@router.post("/chat/cancel")
+@router.post("/chat/cancel", tags=["chat"])
 async def chat_cancel(
     req: CancelRequest, ctx: SecurityCtx = Depends(get_ctx), domain: str = Depends(get_domain)
 ) -> StreamingResponse:
@@ -246,7 +246,7 @@ async def chat_cancel(
     return _queued_sse_response(request_id)
 
 
-@router.get("/chat/sessions", response_model=list[SessionSummary])
+@router.get("/chat/sessions", response_model=list[SessionSummary], tags=["sessions"])
 async def chat_sessions(
     ctx: SecurityCtx = Depends(get_ctx), domain: str = Depends(get_domain)
 ) -> list[SessionSummary]:
@@ -258,7 +258,7 @@ async def chat_sessions(
     return await sessions.list_sessions(ctx, domain)  # type: ignore[return-value]  # response_model coerces dict -> SessionSummary at the HTTP boundary; a direct Python call (see tests/adapters/inbound/api/test_api.py) intentionally gets the raw dicts back
 
 
-@router.get("/chat/sessions/{thread_id}/messages", response_model=list[SessionMessage])
+@router.get("/chat/sessions/{thread_id}/messages", response_model=list[SessionMessage], tags=["sessions"])
 async def chat_session_messages(
     thread_id: str, ctx: SecurityCtx = Depends(get_ctx), domain: str = Depends(get_domain)
 ) -> list[SessionMessage]:
@@ -273,7 +273,7 @@ async def chat_session_messages(
     return await get_session_messages(thread_id)  # type: ignore[return-value]  # same response_model coercion note as chat_sessions above
 
 
-@router.get("/chat/sessions/{thread_id}/pending_approval", response_model=PendingApproval | None)
+@router.get("/chat/sessions/{thread_id}/pending_approval", response_model=PendingApproval | None, tags=["sessions"])
 async def chat_session_pending_approval(
     thread_id: str, ctx: SecurityCtx = Depends(get_ctx), domain: str = Depends(get_domain)
 ) -> PendingApproval | None:
