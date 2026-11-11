@@ -43,13 +43,18 @@ OPENAPI_BASE      ?= origin/main
 # A deliberate break is accepted by one line in .github/openapi-breaking-ignore.txt, the method, the path and the message oasdiff printed
 # (`GET /usage api path removed without deprecation`), in the same PR so review sees it. The file holds entries ONLY: oasdiff has no
 # comment syntax, so a `#` line is matched like any other (measured on v1.35.0). Delete a line once the change is on main.
-openapi-breaking:  ## Fail when a change breaks a client of any OpenAPI document, compared with OPENAPI_BASE (origin/main; CI runs it on every PR). Needs oasdiff, see the comment above
+# An accepted break still has to raise the MAJOR version: .github/openapi-severity-levels.txt lifts oasdiff's own "a breaking change was
+# detected but the major version did not increase" from info to error (also entries only), and the ignore file does not hide it.
+openapi-breaking:  ## Fail when a change breaks a client of any OpenAPI document, or breaks one without a new major version, compared with OPENAPI_BASE (origin/main; CI runs it on every PR). Needs oasdiff, see the comment above
 	@command -v oasdiff >/dev/null || { echo "oasdiff is not installed: go install github.com/oasdiff/oasdiff@v1.35.0"; exit 2; }
 	@rc=0; for doc in $(OPENAPI_DOCUMENTS); do \
 		if git cat-file -e "$(OPENAPI_BASE):$$doc" 2>/dev/null; then \
-			oasdiff breaking "$(OPENAPI_BASE):$$doc" "$$doc" --fail-on ERR --err-ignore .github/openapi-breaking-ignore.txt || rc=1; \
+			oasdiff breaking "$(OPENAPI_BASE):$$doc" "$$doc" --fail-on ERR --err-ignore .github/openapi-breaking-ignore.txt --severity-levels .github/openapi-severity-levels.txt || rc=1; \
 		else echo "$$doc: not in $(OPENAPI_BASE), nothing to compare"; fi; \
 	done; exit $$rc
+
+openapi-version:  ## Fail when a change to an OpenAPI document's contract did not raise its info.version, compared with OPENAPI_BASE (origin/main; CI runs it on every PR). Needs oasdiff, like openapi-breaking
+	python -m scripts.tools.openapi_version --base $(OPENAPI_BASE)
 
 # --- Load tests ---
 

@@ -11,8 +11,9 @@ from fastapi import FastAPI
 
 API_TITLE = "Graph Agent Core API"
 
-# The CONTRACT's version, not a release number: nothing else in the repository is versioned. Bump the minor when a change adds to the
-# API and the major when it breaks a client (the CI job `openapi` fails a break against main, see `make openapi-breaking`).
+# The CONTRACT's version, not a release number: nothing else in the repository is versioned. Raise it with every change to the contract
+# (`make openapi-version` fails one that did not) and its major with a break (`make openapi-breaking` fails a break that did not); which
+# step is the author's call. CI's `openapi` job runs both on every pull request.
 API_VERSION = "2.0.0"  # 2.0.0: the document was corrected (it said the four streaming routes returned application/json)
 
 API_DESCRIPTION = """\

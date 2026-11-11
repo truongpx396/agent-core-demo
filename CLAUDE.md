@@ -28,7 +28,8 @@ The Makefile assumes an activated venv: `source .venv/bin/activate`. It holds th
 make lint            # ruff check .          (CI gate)
 make typecheck       # mypy --strict over app/ scripts/ the billing package and ml-service (CI gate)
 make openapi         # rewrite openapi.json and services/ml-service/openapi.json from the code; a test fails while they are stale (authlimit's is hand-written, tested by Go)
-make openapi-breaking # oasdiff against origin/main (CI's `openapi` job); a deliberate break is one entry in .github/openapi-breaking-ignore.txt
+make openapi-breaking # oasdiff against origin/main (CI's `openapi` job); a deliberate break is one entry in .github/openapi-breaking-ignore.txt and needs a new major version
+make openapi-version  # fails a change to an OpenAPI contract that did not raise info.version (scripts/tools/openapi_version.py)
 make test            # pytest -n auto -q — hermetic, no services needed (CI gate); then the billing package's own tests
 make test-billing-package   # only the package's hermetic tests, from its directory (the app is not on the path)
 make billing-migrate        # apply the billing package's schema scripts to an existing database (billing-migrate-status: read-only)
