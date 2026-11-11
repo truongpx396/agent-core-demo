@@ -29,6 +29,7 @@ import (
 	"strings"
 	"time"
 
+	"authlimit/internal/api"
 	"authlimit/internal/config"
 	"authlimit/internal/errenv"
 	"authlimit/internal/extjwt"
@@ -87,24 +88,14 @@ func New(d Deps) *Server {
 	return &Server{Deps: d}
 }
 
-// routes is every route the service answers, keyed by the pattern ServeMux takes. It is a table, not four calls, so a test can hold the
-// OpenAPI document (openapi.json) to it: a route added here without its entry there fails the build.
-func (s *Server) routes() map[string]http.HandlerFunc {
-	return map[string]http.HandlerFunc{
-		"GET /v1/check":           s.check,
-		"GET /healthz":            s.healthz,
-		"GET /readyz":             s.readyz,
-		"GET /internal/jwks.json": s.jwks,
-	}
-}
-
-// Handler is the HTTP handler.
+// Handler is the HTTP handler. Its routes are registered by the code generated from openapi.json (internal/api), which takes a Server only
+// because it implements every operation the document lists: a route exists here only if the document declares it, and the compiler says so.
 func (s *Server) Handler() http.Handler {
-	mux := http.NewServeMux()
-	for pattern, h := range s.routes() {
-		mux.HandleFunc(pattern, h)
-	}
-	return mux
+	return api.HandlerWithOptions(s, api.StdHTTPServerOptions{
+		// Unreachable today: no operation declares a parameter or a body for the generated wrapper to bind (see internal/api/generate.go).
+		// If one ever does, a binding failure must be this service's envelope, not the generator's plain-text 400.
+		ErrorHandlerFunc: func(w http.ResponseWriter, _ *http.Request, _ error) { errenv.Write(w, errenv.Internal, nil, nil) },
+	})
 }
 
 // HTTPServer wraps the handler with the timeouts a service on the request path needs: every wait has a ceiling (Principle V).
@@ -118,7 +109,8 @@ func (s *Server) HTTPServer(addr string) *http.Server {
 
 // --- the check ---------------------------------------------------------------------------------------------------------------------
 
-func (s *Server) check(w http.ResponseWriter, r *http.Request) {
+// Check is GET /v1/check: the decision for one request, in the order the package comment gives.
+func (s *Server) Check(w http.ResponseWriter, r *http.Request) {
 	start := s.Now()
 	// A forged value cannot decide the class: if Caddy's header was duplicated (a client added its own), or is missing, the request is
 	// classified as an unclean path, which can only ever mean the fallback (verified and limited), never public.
@@ -297,9 +289,10 @@ func bearer(r *http.Request) (string, reason.Reason) {
 
 // --- health, readiness, keys -------------------------------------------------------------------------------------------------------
 
-func (s *Server) healthz(w http.ResponseWriter, _ *http.Request) {
+// Healthz is GET /healthz.
+func (s *Server) Healthz(w http.ResponseWriter, _ *http.Request) {
 	// Liveness depends on nothing external: a replica that cannot reach Casdoor or Redis is not dead, and restarting it would not help.
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	writeJSON(w, http.StatusOK, api.Ok{Status: "ok"})
 }
 
 // Ready reports whether this replica can decide requests and, if not, the one word why.
@@ -316,15 +309,17 @@ func (s *Server) Ready() (ok bool, why string) {
 	return true, ""
 }
 
-func (s *Server) readyz(w http.ResponseWriter, _ *http.Request) {
+// Readyz is GET /readyz.
+func (s *Server) Readyz(w http.ResponseWriter, _ *http.Request) {
 	if ok, why := s.Ready(); !ok {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"status": "not_ready", "reason": why})
+		writeJSON(w, http.StatusServiceUnavailable, api.NotReady{Status: "not_ready", Reason: api.NotReadyReason(why)})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	writeJSON(w, http.StatusOK, api.Ok{Status: "ok"})
 }
 
-func (s *Server) jwks(w http.ResponseWriter, _ *http.Request) {
+// Jwks is GET /internal/jwks.json.
+func (s *Server) Jwks(w http.ResponseWriter, _ *http.Request) {
 	body, err := s.Keyset.PublicJWKS()
 	if err != nil {
 		errenv.Write(w, errenv.Internal, nil, nil)

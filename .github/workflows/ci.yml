@@ -188,6 +188,13 @@ jobs:
       - name: go test -race (reads the shared vectors in testdata/auth-vectors)
         run: go test -race -count=1 ./...
         working-directory: services/authlimit
+      # The routing and the body types are GENERATED from openapi.json (internal/api). A document edited without `make authlimit-generate`
+      # leaves code that describes yesterday's API; the generator's version is pinned in internal/api/generate.go.
+      - name: The generated code is the document's (go generate, then no difference)
+        run: |
+          go generate ./...
+          git diff --exit-code -- internal/api
+        working-directory: services/authlimit
       - name: The image builds and refuses to start without a configuration
         run: |
           docker build -t authlimit:ci services/authlimit

@@ -10,6 +10,8 @@ import (
 	"unicode/utf8"
 
 	"github.com/golang-jwt/jwt/v5"
+
+	"authlimit/internal/api"
 )
 
 // The fixed parts of an internal identity (contracts/authlimit.md section B). They differ on purpose from everything about an external
@@ -89,19 +91,11 @@ func checkID(s string) error {
 
 // PublicJWKS is the document served at /internal/jwks.json: the Ed25519 public keys consumers accept now, as an OKP JWK Set (RFC 8037).
 func (k *Keyset) PublicJWKS() ([]byte, error) {
-	type jwk struct {
-		Kty string `json:"kty"`
-		Crv string `json:"crv"`
-		X   string `json:"x"`
-		Kid string `json:"kid"`
-		Use string `json:"use"`
-		Alg string `json:"alg"`
-	}
-	keys := []jwk{}
+	keys := []api.Jwk{} // the generated type (openapi.json): a field the document does not declare cannot be added here
 	for _, p := range k.Published() {
-		keys = append(keys, jwk{
+		keys = append(keys, api.Jwk{
 			Kty: "OKP", Crv: "Ed25519", X: base64.RawURLEncoding.EncodeToString(p.Key), Kid: p.KID, Use: "sig", Alg: Algorithm,
 		})
 	}
-	return json.Marshal(map[string]any{"keys": keys})
+	return json.Marshal(api.JWKS{Keys: keys})
 }

@@ -12,15 +12,17 @@ import (
 	"testing"
 	"time"
 
+	"authlimit/internal/api"
 	"authlimit/internal/errenv"
 	"authlimit/internal/extjwt"
 	"authlimit/internal/limiter"
 	"authlimit/internal/revoke"
 )
 
-// openapi.json is written by hand (Go has nothing to generate it from), so these tests are what keep it true: the routes it lists are the
-// routes the server answers, the error codes it names are the registry's, and each answer a handler gives is one the document says it gives,
-// with the headers it says come with it. They read the document the way a client does, from the file.
+// openapi.json is written by hand, and the routing and the body types are generated from it (internal/api). CI regenerates the code and
+// fails on a difference; these tests are what keep the rest true: the generated routes are the document's (a quick local answer to a
+// forgotten `make authlimit-generate`), the error codes it names are the registry's, and each answer a handler gives is one the document
+// says it gives, with the headers it says come with it. They read the document the way a client does, from the file.
 
 type document map[string]any
 
@@ -84,17 +86,30 @@ func sorted(set map[string]bool) []string {
 	return out
 }
 
-func TestTheOpenAPIDocumentListsExactlyTheRoutesTheServerAnswers(t *testing.T) {
+// recordingMux notes the patterns registered on it and otherwise behaves as a ServeMux.
+type recordingMux struct {
+	*http.ServeMux
+	patterns []string
+}
+
+func (m *recordingMux) HandleFunc(pattern string, h func(http.ResponseWriter, *http.Request)) {
+	m.patterns = append(m.patterns, pattern)
+	m.ServeMux.HandleFunc(pattern, h)
+}
+
+func TestTheGeneratedRoutesAreExactlyTheOnesTheOpenAPIDocumentLists(t *testing.T) {
 	documented := map[string]bool{}
 	for key := range loadDocument(t).operations(t) {
 		documented[key] = true
 	}
-	served := map[string]bool{}
-	for pattern := range newBed(t).srv.routes() {
-		served[pattern] = true
+	rec := &recordingMux{ServeMux: http.NewServeMux()}
+	api.HandlerFromMux(newBed(t).srv, rec)
+	registered := map[string]bool{}
+	for _, pattern := range rec.patterns {
+		registered[pattern] = true
 	}
-	if strings.Join(sorted(documented), "\n") != strings.Join(sorted(served), "\n") {
-		t.Fatalf("openapi.json lists %v, the server answers %v: a route and its entry in the document change together", sorted(documented), sorted(served))
+	if strings.Join(sorted(documented), "\n") != strings.Join(sorted(registered), "\n") {
+		t.Fatalf("openapi.json lists %v, the generated code registers %v: run `make authlimit-generate` and commit the result", sorted(documented), sorted(registered))
 	}
 }
 

@@ -89,6 +89,9 @@ loadtest-queued-headless:  ## Headless 20-user, 2-minute run of the same scenari
 authlimit-test:  ## go vet and the authlimit service's tests with the race detector (specs/018; needs Go, no Docker)
 	cd services/authlimit && go vet ./... && go test -race ./...
 
+authlimit-generate:  ## Regenerate services/authlimit/internal/api (the server interface and body types) from services/authlimit/openapi.json with oapi-codegen; needs Go and the network, CI fails when the committed file differs
+	cd services/authlimit && go generate ./...
+
 mcp-gateway-smoke: mcp-gateway-secrets  ## OAuth + MCP end-to-end check against the running gateway stack, as a client does it (throwaway users, deleted after). Run after `make mcp-gateway-ca` and `make mcp-gateway-bootstrap`, and after any change to the Casdoor digest. Manual, never CI
 	@. $(GATEWAY_SECRETS) && export CASDOOR_ADMIN_PASSWORD && python -m scripts.checks.mcp_gateway_smoke --ca $(GATEWAY_DIR)/caddy-root.crt
 

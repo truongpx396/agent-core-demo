@@ -2,8 +2,8 @@
   "openapi": "3.1.0",
   "info": {
     "title": "authlimit",
-    "version": "1.0.0",
-    "description": "The edge authentication and rate-limit service. Caddy asks it about every request to the chat API and the MCP routes (`forward_auth`) before the request goes any further, and acts on the answer: a 200 lets the request through, anything else goes straight back to the client. Nothing here is routed to the public; the caller is the reverse proxy.\n\nFor one request, in this order: classify the route (routes.json), verify the access token, refuse a revoked person, charge the rate limit, mint the internal identity. The order is a security property: a revoked person consumes no bucket, and a refused or limited request is never handed an identity.\n\nThis document is held to the handlers by a test (internal/server/openapi_test.go) and its error codes to errorcodes.json. The behaviour, class by class, is section A of specs/018-authlimit-edge-auth/contracts/authlimit.md; that is the contract, and this is its machine-readable form."
+    "version": "1.0.1",
+    "description": "The edge authentication and rate-limit service. Caddy asks it about every request to the chat API and the MCP routes (`forward_auth`) before the request goes any further, and acts on the answer: a 200 lets the request through, anything else goes straight back to the client. Nothing here is routed to the public; the caller is the reverse proxy.\n\nFor one request, in this order: classify the route (routes.json), verify the access token, refuse a revoked person, charge the rate limit, mint the internal identity. The order is a security property: a revoked person consumes no bucket, and a refused or limited request is never handed an identity.\n\nThe server's routing and the types of its bodies are GENERATED from this document (internal/api, `make authlimit-generate`), so a route or a field exists in the code only if it is written here; internal/server/openapi_test.go holds each answer and its headers to it, and its error codes to errorcodes.json. The behaviour, class by class, is section A of specs/018-authlimit-edge-auth/contracts/authlimit.md; that is the contract, and this is its machine-readable form."
   },
   "servers": [
     { "url": "http://authlimit:8080", "description": "Inside the compose network (AUTHLIMIT_LISTEN, default :8080). Caddy's forward_auth is the caller." }
@@ -19,24 +19,8 @@
         "tags": ["check"],
         "operationId": "check",
         "summary": "Decide one request",
-        "description": "Called by Caddy once per request to a non-public route, with the client's own `Authorization` header forwarded unchanged and the original method and URI in the two `X-Forwarded-*` headers. The route's class decides what is checked: `public` is not; `turn` and `upload` are verified and rate limited; `read` and `cancel` are verified and never limited; `mcp` is limit-only (the MCP gateway verifies the token itself, so a missing or invalid one is passed through with a 200 and no identity, and only a revoked person is refused). A route nobody listed is classified like a turn.\n\nThe token is optional only in that a `public` or `mcp` route does not need one. On every other route no usable token is a 401.",
+        "description": "Called by Caddy once per request to a non-public route, with the client's own `Authorization` header forwarded unchanged and the original method and URI in the two `X-Forwarded-*` headers. The route's class decides what is checked: `public` is not; `turn` and `upload` are verified and rate limited; `read` and `cancel` are verified and never limited; `mcp` is limit-only (the MCP gateway verifies the token itself, so a missing or invalid one is passed through with a 200 and no identity, and only a revoked person is refused). A route nobody listed is classified like a turn.\n\nThe token is optional only in that a `public` or `mcp` route does not need one. On every other route no usable token is a 401.\n\n`X-Forwarded-Method` and `X-Forwarded-Uri` carry the method and the path and query of the request Caddy is asking about. They are deliberately not declared as parameters: a generated server binds a declared parameter and answers a repeated one with a plain-text 400 before the handler runs, and this service must instead read the raw headers. A missing or repeated header is not an error: the request is classified as an unclean path, which can only mean the fallback class (verified and limited), never public. A path that is not plain (an escape, a dot segment, a double slash) is never public either.",
         "security": [{ "bearerAuth": [] }, {}],
-        "parameters": [
-          {
-            "name": "X-Forwarded-Method",
-            "in": "header",
-            "required": false,
-            "schema": { "type": "string" },
-            "description": "The method of the request Caddy is asking about. Missing or repeated is not an error: the request is classified as an unclean path, which can only mean the fallback class (verified and limited), never public."
-          },
-          {
-            "name": "X-Forwarded-Uri",
-            "in": "header",
-            "required": false,
-            "schema": { "type": "string" },
-            "description": "The path and query of the request Caddy is asking about. A path that is not plain (an escape, a dot segment, a double slash) is never public."
-          }
-        ],
         "responses": {
           "200": {
             "description": "Let the request through. A verified class carries the internal identity; a public route and an MCP route carry none.",
@@ -138,27 +122,28 @@
         "properties": {
           "code": { "type": "string", "enum": ["unauthenticated", "forbidden", "rate_limited", "auth_unavailable", "internal"] },
           "message": { "type": "string", "description": "Fixed text per code, written for the caller. It never contains a token, a claim or an exception's text." },
-          "details": {
-            "type": "object",
-            "description": "Only these keys, ever; anything else is dropped before it is written.",
-            "additionalProperties": false,
-            "properties": {
-              "required_scope": { "type": "string" },
-              "retry_after_seconds": { "type": "integer", "minimum": 0 }
-            }
-          }
+          "details": { "$ref": "#/components/schemas/ErrorDetails" }
+        }
+      },
+      "ErrorDetails": {
+        "type": "object",
+        "description": "Only these keys, ever. The generated type has no field for anything else, so a claim or a token fragment cannot ride into a response through it.",
+        "additionalProperties": false,
+        "properties": {
+          "required_scope": { "type": "string" },
+          "retry_after_seconds": { "type": "integer", "minimum": 0 }
         }
       },
       "Ok": {
         "type": "object",
         "required": ["status"],
-        "properties": { "status": { "const": "ok" } }
+        "properties": { "status": { "const": "ok", "x-go-type": "string" } }
       },
       "NotReady": {
         "type": "object",
         "required": ["status", "reason"],
         "properties": {
-          "status": { "const": "not_ready" },
+          "status": { "const": "not_ready", "x-go-type": "string" },
           "reason": { "type": "string", "enum": ["no_signing_key", "keys_unavailable", "revocation_unavailable"] }
         }
       },
@@ -166,21 +151,19 @@
         "type": "object",
         "required": ["keys"],
         "properties": {
-          "keys": {
-            "type": "array",
-            "items": {
-              "type": "object",
-              "required": ["kty", "crv", "x", "kid", "use", "alg"],
-              "properties": {
-                "kty": { "const": "OKP" },
-                "crv": { "const": "Ed25519" },
-                "x": { "type": "string", "description": "The public key, base64url without padding." },
-                "kid": { "type": "string" },
-                "use": { "const": "sig" },
-                "alg": { "const": "EdDSA" }
-              }
-            }
-          }
+          "keys": { "type": "array", "items": { "$ref": "#/components/schemas/Jwk" } }
+        }
+      },
+      "Jwk": {
+        "type": "object",
+        "required": ["kty", "crv", "x", "kid", "use", "alg"],
+        "properties": {
+          "kty": { "const": "OKP", "x-go-type": "string" },
+          "crv": { "const": "Ed25519", "x-go-type": "string" },
+          "x": { "type": "string", "description": "The public key, base64url without padding." },
+          "kid": { "type": "string" },
+          "use": { "const": "sig", "x-go-type": "string" },
+          "alg": { "const": "EdDSA", "x-go-type": "string" }
         }
       }
     }
