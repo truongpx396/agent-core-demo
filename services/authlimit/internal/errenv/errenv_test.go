@@ -54,8 +54,9 @@ func TestEnvelopeShapeAndHeaders(t *testing.T) {
 func TestDetailsAreAllowListed(t *testing.T) {
 	// A claim value or a token fragment must not be able to ride into a response through `details`.
 	e := New(Forbidden, map[string]any{DetailRequiredScope: "api:chat", "tenant": "ecorp", "token": "eyJhbGciOi"})
-	if len(e.Details) != 1 || e.Details[DetailRequiredScope] != "api:chat" {
-		t.Fatalf("details = %v", e.Details)
+	b, _ := json.Marshal(e.Details)
+	if string(b) != `{"required_scope":"api:chat"}` {
+		t.Fatalf("details = %s", b)
 	}
 }
 
@@ -71,7 +72,7 @@ func TestDetailsAlwaysAnObject(t *testing.T) {
 
 func TestUnknownCodeBecomesInternal(t *testing.T) {
 	e := New(Code("made_up"), nil)
-	if e.Code != Internal || e.Message == "" {
+	if Code(e.Code) != Internal || e.Message == "" {
 		t.Fatalf("envelope = %+v", e)
 	}
 }

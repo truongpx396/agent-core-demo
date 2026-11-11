@@ -188,6 +188,13 @@ jobs:
       - name: go test -race (reads the shared vectors in testdata/auth-vectors)
         run: go test -race -count=1 ./...
         working-directory: services/authlimit
+      # The routing and the body types are GENERATED from openapi.json (internal/api). A document edited without `make authlimit-generate`
+      # leaves code that describes yesterday's API; the generator's version is pinned in internal/api/generate.go.
+      - name: The generated code is the document's (go generate, then no difference)
+        run: |
+          go generate ./...
+          git diff --exit-code -- internal/api
+        working-directory: services/authlimit
       - name: The image builds and refuses to start without a configuration
         run: |
           docker build -t authlimit:ci services/authlimit
@@ -213,7 +220,8 @@ jobs:
   # they are TRUE is held by tests in `test` (the two generated ones, tests/scripts/test_openapi_documents_are_current.py) and in
   # `authlimit` (the hand-written one, internal/server/openapi_test.go). This job asks the other question: does the change BREAK a client of
   # what main serves? oasdiff compares each document with main's (`make openapi-breaking`; a deliberate break is one line in
-  # .github/openapi-breaking-ignore.txt). A pull request only: there is no "before" on a push to main.
+  # .github/openapi-breaking-ignore.txt and still needs a new major version), and `make openapi-version` fails any other change to the
+  # contract that left `info.version` where it was. A pull request only: there is no "before" on a push to main.
   openapi:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
@@ -224,6 +232,9 @@ jobs:
         with:
           go-version-file: services/authlimit/go.mod
           cache: false # nothing here is built from this repository's own modules
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0 (scripts.tools.openapi_version is stdlib only)
+        with:
+          python-version: "3.13"
       # The checkout is the merge of the PR into main, so this compares what main would become with what main is now.
       - name: Fetch main, the side to compare with
         env:
@@ -233,10 +244,14 @@ jobs:
         env:
           GOTOOLCHAIN: auto # v1.35.0's go.mod asks for a newer toolchain than the one set up above; Go fetches it
         run: go install github.com/oasdiff/oasdiff@v1.35.0
-      - name: Breaking changes against main
+      - name: Breaking changes against main (and a breaking one needs a new major version)
         env:
           BASE_REF: ${{ github.base_ref }}
         run: make openapi-breaking OPENAPI_BASE="origin/${BASE_REF}"
+      - name: A changed contract has a higher version than main's
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: make openapi-version OPENAPI_BASE="origin/${BASE_REF}"
 
   test-integration:
     # Real Postgres/Redis/Qdrant via testcontainers (tests/containers.py) —

@@ -56,7 +56,8 @@ internal/errenv      the {code, message, details} error envelope
 internal/telemetry   OTLP metrics and JSON logs
 internal/reason      the one vocabulary of refusal reasons (metric labels, logs, tests)
 routes.json          the route-class table          errorcodes.json   the error codes (the Python side checks against it)
-openapi.json         the service's OpenAPI document, hand-written; internal/server/openapi_test.go holds it to the handlers and to errorcodes.json
+openapi.json         the service's OpenAPI document, hand-written: the one place a route or a body field is declared
+internal/api         GENERATED from openapi.json by oapi-codegen (`make authlimit-generate`): the server interface the routes register from and the body types; CI fails on a stale copy
 ```
 
 ## Rules this module keeps

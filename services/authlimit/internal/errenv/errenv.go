@@ -19,6 +19,7 @@ import (
 	"sort"
 
 	"authlimit"
+	"authlimit/internal/api"
 )
 
 // Code is one of the codes in errorcodes.json.
@@ -37,11 +38,6 @@ const (
 	DetailRequiredScope     = "required_scope"
 	DetailRetryAfterSeconds = "retry_after_seconds"
 )
-
-var allowedDetails = map[string]bool{
-	DetailRequiredScope:     true,
-	DetailRetryAfterSeconds: true,
-}
 
 type entry struct {
 	Status  int    `json:"status"`
@@ -83,27 +79,25 @@ func Status(c Code) int {
 	return http.StatusInternalServerError
 }
 
-// Envelope is the response body.
-type Envelope struct {
-	Code    Code           `json:"code"`
-	Message string         `json:"message"`
-	Details map[string]any `json:"details"`
-}
+// Envelope is the response body: the type generated from openapi.json, not one declared here. Its `details` is a struct with the two keys
+// the document allows and no field for anything else, so "only these keys" is a property of the type, not of a filter someone must keep.
+type Envelope = api.Error
 
-// New builds an envelope for a code, keeping only the allowed detail keys. An unknown code becomes Internal rather than a body with
-// no message.
+// New builds an envelope for a code, keeping only the allowed detail keys (and only a value of the type the document declares for it).
+// An unknown code becomes Internal rather than a body with no message.
 func New(c Code, details map[string]any) Envelope {
 	e, ok := registry[c]
 	if !ok {
 		c, e = Internal, registry[Internal]
 	}
-	kept := map[string]any{}
-	for k, v := range details {
-		if allowedDetails[k] {
-			kept[k] = v
-		}
+	var kept api.ErrorDetails
+	if v, ok := details[DetailRequiredScope].(string); ok {
+		kept.RequiredScope = &v
 	}
-	return Envelope{Code: c, Message: e.Message, Details: kept}
+	if v, ok := details[DetailRetryAfterSeconds].(int); ok {
+		kept.RetryAfterSeconds = &v
+	}
+	return Envelope{Code: api.ErrorCode(c), Message: e.Message, Details: kept}
 }
 
 // Write sends the envelope with the registered status. `extra` headers (WWW-Authenticate, Retry-After) are set first.

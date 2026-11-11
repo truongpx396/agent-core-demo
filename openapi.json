@@ -3,7 +3,7 @@
   "info": {
     "title": "Graph Agent Core API",
     "description": "A multi-tenant, multi-domain LangGraph RAG agent. A client starts a turn, reads its events as they stream, answers an approval the\nagent asks for, and lists its own past sessions. One graph serves every domain; `X-Domain` picks which (default `ecorp`).\n\n**Who is calling.** Behind the front door (the authlimit service) a client sends `Authorization: Bearer <access token>`; the door\nverifies it and gives the API a signed identity, so the tenant and person are never taken from a header or a body. Only a deployment run\nwith `AUTH_MODE=headers` (a developer's machine, the tests) reads `X-Tenant-Id` and `X-Principal-Id` as sent. Everything a caller reads or\nchanges is scoped to its tenant and person.\n\n**Errors.** A refusal the application makes is the canonical envelope `{\"code\", \"message\", \"details\"}`; switch on `code`, not on the\ntext. A turn's own failures arrive as an `error` event on its stream, in the same shape.\n\n**Streams.** `POST /chat/stream/queued` and `GET /ingest/stream/{job_id}` answer with server-sent events, which OpenAPI describes only\nas a `text/event-stream` body; the event vocabulary is in the first route's description.\n",
-    "version": "1.0.0"
+    "version": "2.0.0"
   },
   "servers": [
     {
@@ -35,7 +35,8 @@
               }
             }
           }
-        }
+        },
+        "security": []
       }
     },
     "/health": {
@@ -57,7 +58,8 @@
               }
             }
           }
-        }
+        },
+        "security": []
       }
     },
     "/health/ready": {
@@ -79,7 +81,8 @@
               }
             }
           }
-        }
+        },
+        "security": []
       }
     },
     "/chat/stream/queued": {
@@ -88,7 +91,7 @@
           "chat"
         ],
         "summary": "Chat Stream Queued",
-        "description": "Same SSE event vocabulary an in-process `astream_events_turn` would\nproduce (token, tool_start, tool_end, citations, followups,\napproval_required, error, done), but this process never runs the graph\nitself — it publishes the turn onto a shared Redis Stream and streams\nback whatever a separate `agent_worker.py` process publishes to this\nturn's results stream (pattern 43, app/adapters/outbound/redis/queue.py).\n\nThis makes the SSE-serving tier and agent-executing tier independently\nscalable: more `uvicorn` processes scale concurrent SSE connections,\nmore `agent_worker.py` processes scale concurrent turns. Needs at least\none worker running (`make agent-worker`) to ever produce a reply.\n\nA real `approval_required` pause here IS actionable (the worker no\nlonger auto-declines it), resumed via `POST /chat/resume` below.\n\n`domain` (`X-Domain` header, see `get_domain`) picks which domain's\nrequests stream this is published onto — only a worker serving that\ndomain (`AGENT_WORKER_DOMAINS`) reads it, letting one API process serve\nevery running domain.\n\nDeduplicated against an identical (`thread_id`, `message`, `images`)\nresubmission within `CHAT_SUBMIT_DEDUP_TTL_SECONDS`\n(`queue.py::claim_or_get_existing_submission`) — a client's own retry\nof this exact call reuses the first attempt's `request_id` and SSE\nstream rather than publishing (and running) a second, independent\nturn. See that function's own docstring for why the thread lock alone\ndoesn't already cover this.",
+        "description": "Same SSE event vocabulary an in-process `astream_events_turn` would\nproduce (token, tool_start, tool_end, retry, compacted, citations,\nfollowups, approval_required, error, done), but this process never runs the graph\nitself — it publishes the turn onto a shared Redis Stream and streams\nback whatever a separate `agent_worker.py` process publishes to this\nturn's results stream (pattern 43, app/adapters/outbound/redis/queue.py).\n\nThis makes the SSE-serving tier and agent-executing tier independently\nscalable: more `uvicorn` processes scale concurrent SSE connections,\nmore `agent_worker.py` processes scale concurrent turns. Needs at least\none worker running (`make agent-worker`) to ever produce a reply.\n\nA real `approval_required` pause here IS actionable (the worker no\nlonger auto-declines it), resumed via `POST /chat/resume` below.\n\n`domain` (`X-Domain` header, see `get_domain`) picks which domain's\nrequests stream this is published onto — only a worker serving that\ndomain (`AGENT_WORKER_DOMAINS`) reads it, letting one API process serve\nevery running domain.\n\nDeduplicated against an identical (`thread_id`, `message`, `images`)\nresubmission within `CHAT_SUBMIT_DEDUP_TTL_SECONDS`\n(`queue.py::claim_or_get_existing_submission`) — a client's own retry\nof this exact call reuses the first attempt's `request_id` and SSE\nstream rather than publishing (and running) a second, independent\nturn. See that function's own docstring for why the thread lock alone\ndoesn't already cover this.",
         "operationId": "chat_stream_queued_chat_stream_queued_post",
         "parameters": [
           {
@@ -170,10 +173,70 @@
         },
         "responses": {
           "200": {
-            "description": "Successful Response",
+            "description": "A server-sent event stream: `data: <event>` frames until one terminal event (`done`, `error` or `approval_required`). The schema is that of one event.",
             "content": {
-              "application/json": {
-                "schema": {}
+              "text/event-stream": {
+                "itemSchema": {
+                  "type": "object",
+                  "required": [
+                    "data"
+                  ],
+                  "properties": {
+                    "data": {
+                      "type": "string",
+                      "contentMediaType": "application/json",
+                      "contentSchema": {
+                        "oneOf": [
+                          {
+                            "$ref": "#/components/schemas/TokenEvent"
+                          },
+                          {
+                            "$ref": "#/components/schemas/ToolStartEvent"
+                          },
+                          {
+                            "$ref": "#/components/schemas/ToolEndEvent"
+                          },
+                          {
+                            "$ref": "#/components/schemas/RetryEvent"
+                          },
+                          {
+                            "$ref": "#/components/schemas/CompactedEvent"
+                          },
+                          {
+                            "$ref": "#/components/schemas/CitationsEvent"
+                          },
+                          {
+                            "$ref": "#/components/schemas/FollowupsEvent"
+                          },
+                          {
+                            "$ref": "#/components/schemas/ApprovalRequiredEvent"
+                          },
+                          {
+                            "$ref": "#/components/schemas/DoneEvent"
+                          },
+                          {
+                            "$ref": "#/components/schemas/ErrorEvent"
+                          }
+                        ],
+                        "discriminator": {
+                          "propertyName": "type",
+                          "mapping": {
+                            "token": "#/components/schemas/TokenEvent",
+                            "tool_start": "#/components/schemas/ToolStartEvent",
+                            "tool_end": "#/components/schemas/ToolEndEvent",
+                            "retry": "#/components/schemas/RetryEvent",
+                            "compacted": "#/components/schemas/CompactedEvent",
+                            "citations": "#/components/schemas/CitationsEvent",
+                            "followups": "#/components/schemas/FollowupsEvent",
+                            "approval_required": "#/components/schemas/ApprovalRequiredEvent",
+                            "done": "#/components/schemas/DoneEvent",
+                            "error": "#/components/schemas/ErrorEvent"
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
               }
             }
           },
@@ -278,10 +341,70 @@
         },
         "responses": {
           "200": {
-            "description": "Successful Response",
+            "description": "A server-sent event stream: `data: <event>` frames until one terminal event (`done`, `error` or `approval_required`). The schema is that of one event.",
             "content": {
-              "application/json": {
-                "schema": {}
+              "text/event-stream": {
+                "itemSchema": {
+                  "type": "object",
+                  "required": [
+                    "data"
+                  ],
+                  "properties": {
+                    "data": {
+                      "type": "string",
+                      "contentMediaType": "application/json",
+                      "contentSchema": {
+                        "oneOf": [
+                          {
+                            "$ref": "#/components/schemas/TokenEvent"
+                          },
+                          {
+                            "$ref": "#/components/schemas/ToolStartEvent"
+                          },
+                          {
+                            "$ref": "#/components/schemas/ToolEndEvent"
+                          },
+                          {
+                            "$ref": "#/components/schemas/RetryEvent"
+                          },
+                          {
+                            "$ref": "#/components/schemas/CompactedEvent"
+                          },
+                          {
+                            "$ref": "#/components/schemas/CitationsEvent"
+                          },
+                          {
+                            "$ref": "#/components/schemas/FollowupsEvent"
+                          },
+                          {
+                            "$ref": "#/components/schemas/ApprovalRequiredEvent"
+                          },
+                          {
+                            "$ref": "#/components/schemas/DoneEvent"
+                          },
+                          {
+                            "$ref": "#/components/schemas/ErrorEvent"
+                          }
+                        ],
+                        "discriminator": {
+                          "propertyName": "type",
+                          "mapping": {
+                            "token": "#/components/schemas/TokenEvent",
+                            "tool_start": "#/components/schemas/ToolStartEvent",
+                            "tool_end": "#/components/schemas/ToolEndEvent",
+                            "retry": "#/components/schemas/RetryEvent",
+                            "compacted": "#/components/schemas/CompactedEvent",
+                            "citations": "#/components/schemas/CitationsEvent",
+                            "followups": "#/components/schemas/FollowupsEvent",
+                            "approval_required": "#/components/schemas/ApprovalRequiredEvent",
+                            "done": "#/components/schemas/DoneEvent",
+                            "error": "#/components/schemas/ErrorEvent"
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
               }
             }
           },
@@ -386,10 +509,70 @@
         },
         "responses": {
           "200": {
-            "description": "Successful Response",
+            "description": "A server-sent event stream: `data: <event>` frames until one terminal event (`done`, `error` or `approval_required`). The schema is that of one event.",
             "content": {
-              "application/json": {
-                "schema": {}
+              "text/event-stream": {
+                "itemSchema": {
+                  "type": "object",
+                  "required": [
+                    "data"
+                  ],
+                  "properties": {
+                    "data": {
+                      "type": "string",
+                      "contentMediaType": "application/json",
+                      "contentSchema": {
+                        "oneOf": [
+                          {
+                            "$ref": "#/components/schemas/TokenEvent"
+                          },
+                          {
+                            "$ref": "#/components/schemas/ToolStartEvent"
+                          },
+                          {
+                            "$ref": "#/components/schemas/ToolEndEvent"
+                          },
+                          {
+                            "$ref": "#/components/schemas/RetryEvent"
+                          },
+                          {
+                            "$ref": "#/components/schemas/CompactedEvent"
+                          },
+                          {
+                            "$ref": "#/components/schemas/CitationsEvent"
+                          },
+                          {
+                            "$ref": "#/components/schemas/FollowupsEvent"
+                          },
+                          {
+                            "$ref": "#/components/schemas/ApprovalRequiredEvent"
+                          },
+                          {
+                            "$ref": "#/components/schemas/DoneEvent"
+                          },
+                          {
+                            "$ref": "#/components/schemas/ErrorEvent"
+                          }
+                        ],
+                        "discriminator": {
+                          "propertyName": "type",
+                          "mapping": {
+                            "token": "#/components/schemas/TokenEvent",
+                            "tool_start": "#/components/schemas/ToolStartEvent",
+                            "tool_end": "#/components/schemas/ToolEndEvent",
+                            "retry": "#/components/schemas/RetryEvent",
+                            "compacted": "#/components/schemas/CompactedEvent",
+                            "citations": "#/components/schemas/CitationsEvent",
+                            "followups": "#/components/schemas/FollowupsEvent",
+                            "approval_required": "#/components/schemas/ApprovalRequiredEvent",
+                            "done": "#/components/schemas/DoneEvent",
+                            "error": "#/components/schemas/ErrorEvent"
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
               }
             }
           },
@@ -951,10 +1134,46 @@
         ],
         "responses": {
           "200": {
-            "description": "Successful Response",
+            "description": "A server-sent event stream: `data: <event>` frames until one terminal event (`done` or `error`). The schema is that of one event.",
             "content": {
-              "application/json": {
-                "schema": {}
+              "text/event-stream": {
+                "itemSchema": {
+                  "type": "object",
+                  "required": [
+                    "data"
+                  ],
+                  "properties": {
+                    "data": {
+                      "type": "string",
+                      "contentMediaType": "application/json",
+                      "contentSchema": {
+                        "oneOf": [
+                          {
+                            "$ref": "#/components/schemas/IngestStartedEvent"
+                          },
+                          {
+                            "$ref": "#/components/schemas/IngestProgressEvent"
+                          },
+                          {
+                            "$ref": "#/components/schemas/IngestDoneEvent"
+                          },
+                          {
+                            "$ref": "#/components/schemas/IngestErrorEvent"
+                          }
+                        ],
+                        "discriminator": {
+                          "propertyName": "type",
+                          "mapping": {
+                            "started": "#/components/schemas/IngestStartedEvent",
+                            "progress": "#/components/schemas/IngestProgressEvent",
+                            "done": "#/components/schemas/IngestDoneEvent",
+                            "error": "#/components/schemas/IngestErrorEvent"
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
               }
             }
           },
@@ -974,6 +1193,29 @@
   },
   "components": {
     "schemas": {
+      "ApprovalRequiredEvent": {
+        "properties": {
+          "type": {
+            "type": "string",
+            "const": "approval_required",
+            "title": "Type"
+          },
+          "tool_calls": {
+            "items": {
+              "$ref": "#/components/schemas/ToolCall"
+            },
+            "type": "array",
+            "title": "Tool Calls"
+          }
+        },
+        "type": "object",
+        "required": [
+          "type",
+          "tool_calls"
+        ],
+        "title": "ApprovalRequiredEvent",
+        "description": "Terminal for this request: the turn is paused until `POST /chat/resume` approves or rejects the calls."
+      },
       "Body_ingest_upload_ingest_upload_post": {
         "properties": {
           "files": {
@@ -1122,6 +1364,83 @@
         ],
         "title": "ChatRequest"
       },
+      "Citation": {
+        "properties": {
+          "marker": {
+            "type": "string",
+            "title": "Marker",
+            "description": "`[1]`, `[2]`... as the answer cites it."
+          },
+          "doc_id": {
+            "type": "string",
+            "title": "Doc Id"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "text": {
+            "type": "string",
+            "title": "Text"
+          },
+          "score": {
+            "type": "number",
+            "title": "Score"
+          }
+        },
+        "type": "object",
+        "required": [
+          "marker",
+          "doc_id",
+          "title",
+          "text",
+          "score"
+        ],
+        "title": "Citation"
+      },
+      "CitationsEvent": {
+        "properties": {
+          "type": {
+            "type": "string",
+            "const": "citations",
+            "title": "Type"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/Citation"
+            },
+            "type": "array",
+            "title": "Items"
+          },
+          "ungrounded_claims_count": {
+            "type": "integer",
+            "title": "Ungrounded Claims Count"
+          }
+        },
+        "type": "object",
+        "required": [
+          "type",
+          "items",
+          "ungrounded_claims_count"
+        ],
+        "title": "CitationsEvent",
+        "description": "Just before `done`, when the answer cited a source."
+      },
+      "CompactedEvent": {
+        "properties": {
+          "type": {
+            "type": "string",
+            "const": "compacted",
+            "title": "Type"
+          }
+        },
+        "type": "object",
+        "required": [
+          "type"
+        ],
+        "title": "CompactedEvent",
+        "description": "Not terminal. Informational: older context was trimmed before the model ran."
+      },
       "CreditBalance": {
         "properties": {
           "available": {
@@ -1158,6 +1477,99 @@
         "title": "CreditBalance",
         "description": "The caller's tenant's wallet (packages/billing/src/credit_billing/credits.py). Exact decimals, serialised as strings:\na JSON number would round-trip through a float and a balance must not drift."
       },
+      "DoneEvent": {
+        "properties": {
+          "type": {
+            "type": "string",
+            "const": "done",
+            "title": "Type"
+          }
+        },
+        "type": "object",
+        "required": [
+          "type"
+        ],
+        "title": "DoneEvent",
+        "description": "Terminal: the turn finished."
+      },
+      "ErrorEvent": {
+        "properties": {
+          "type": {
+            "type": "string",
+            "const": "error",
+            "title": "Type"
+          },
+          "content": {
+            "type": "string",
+            "title": "Content",
+            "description": "A message for a person; also what a client without the envelope shows."
+          },
+          "code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Code"
+          },
+          "message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Message"
+          },
+          "details": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Details"
+          }
+        },
+        "type": "object",
+        "required": [
+          "type",
+          "content"
+        ],
+        "title": "ErrorEvent",
+        "description": "Terminal. `code`, `message` and `details` are the canonical error envelope (app/core/errors.py): switch on `code`. They are absent on\none event, the queue's \"no agent worker answered in time\", which carries only `content`."
+      },
+      "FollowupsEvent": {
+        "properties": {
+          "type": {
+            "type": "string",
+            "const": "followups",
+            "title": "Type"
+          },
+          "items": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Items"
+          }
+        },
+        "type": "object",
+        "required": [
+          "type",
+          "items"
+        ],
+        "title": "FollowupsEvent",
+        "description": "Just before `done`, when the agent has suggestions."
+      },
       "HTTPValidationError": {
         "properties": {
           "detail": {
@@ -1181,6 +1593,84 @@
         },
         "type": "object",
         "title": "HealthResponse"
+      },
+      "IngestDoneEvent": {
+        "properties": {
+          "type": {
+            "type": "string",
+            "const": "done",
+            "title": "Type"
+          },
+          "chunks": {
+            "type": "integer",
+            "title": "Chunks"
+          }
+        },
+        "type": "object",
+        "required": [
+          "type",
+          "chunks"
+        ],
+        "title": "IngestDoneEvent",
+        "description": "Terminal."
+      },
+      "IngestErrorEvent": {
+        "properties": {
+          "type": {
+            "type": "string",
+            "const": "error",
+            "title": "Type"
+          },
+          "content": {
+            "type": "string",
+            "title": "Content"
+          }
+        },
+        "type": "object",
+        "required": [
+          "type",
+          "content"
+        ],
+        "title": "IngestErrorEvent",
+        "description": "Terminal. Only a message: an upload's error is not the chat turn's envelope."
+      },
+      "IngestProgressEvent": {
+        "properties": {
+          "type": {
+            "type": "string",
+            "const": "progress",
+            "title": "Type"
+          },
+          "done": {
+            "type": "integer",
+            "title": "Done"
+          },
+          "total": {
+            "type": "integer",
+            "title": "Total"
+          }
+        },
+        "type": "object",
+        "required": [
+          "type",
+          "done",
+          "total"
+        ],
+        "title": "IngestProgressEvent"
+      },
+      "IngestStartedEvent": {
+        "properties": {
+          "type": {
+            "type": "string",
+            "const": "started",
+            "title": "Type"
+          }
+        },
+        "type": "object",
+        "required": [
+          "type"
+        ],
+        "title": "IngestStartedEvent"
       },
       "IngestUploadResult": {
         "properties": {
@@ -1296,6 +1786,21 @@
         ],
         "title": "ResumeRequest"
       },
+      "RetryEvent": {
+        "properties": {
+          "type": {
+            "type": "string",
+            "const": "retry",
+            "title": "Type"
+          }
+        },
+        "type": "object",
+        "required": [
+          "type"
+        ],
+        "title": "RetryEvent",
+        "description": "Not terminal. Discard everything streamed so far: the answer was rejected or replaced, and fresh tokens (or a corrected one) follow."
+      },
       "SessionMessage": {
         "properties": {
           "role": {
@@ -1349,6 +1854,112 @@
           "last_active_at"
         ],
         "title": "SessionSummary"
+      },
+      "TokenEvent": {
+        "properties": {
+          "type": {
+            "type": "string",
+            "const": "token",
+            "title": "Type"
+          },
+          "content": {
+            "type": "string",
+            "title": "Content"
+          }
+        },
+        "type": "object",
+        "required": [
+          "type",
+          "content"
+        ],
+        "title": "TokenEvent",
+        "description": "A piece of the answer. A `retry` event discards every token before it."
+      },
+      "ToolCall": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "args": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Args"
+          }
+        },
+        "type": "object",
+        "required": [
+          "name",
+          "args"
+        ],
+        "title": "ToolCall"
+      },
+      "ToolEndEvent": {
+        "properties": {
+          "type": {
+            "type": "string",
+            "const": "tool_end",
+            "title": "Type"
+          },
+          "tool": {
+            "type": "string",
+            "title": "Tool"
+          },
+          "subagent": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Subagent"
+          }
+        },
+        "type": "object",
+        "required": [
+          "type",
+          "tool"
+        ],
+        "title": "ToolEndEvent"
+      },
+      "ToolStartEvent": {
+        "properties": {
+          "type": {
+            "type": "string",
+            "const": "tool_start",
+            "title": "Type"
+          },
+          "tool": {
+            "type": "string",
+            "title": "Tool"
+          },
+          "args": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Args"
+          },
+          "subagent": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Subagent",
+            "description": "Set when the call happened inside a subagent's nested run."
+          }
+        },
+        "type": "object",
+        "required": [
+          "type",
+          "tool",
+          "args"
+        ],
+        "title": "ToolStartEvent"
       },
       "UsageResponse": {
         "properties": {
@@ -1442,6 +2053,14 @@
         ],
         "title": "ValidationError"
       }
+    },
+    "securitySchemes": {
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT",
+        "description": "A Casdoor access token, sent to the front door (the authlimit service), which verifies it, charges the rate limit and hands this API a signed identity. This API never sees the token: the door removes it. A deployment run with `AUTH_MODE=headers` (a developer's machine, the tests) has no door and takes `X-Tenant-Id` and `X-Principal-Id` as sent instead."
+      }
     }
   },
   "tags": [
@@ -1468,6 +2087,11 @@
     {
       "name": "web",
       "description": "The built-in web UI, a single page. Not part of the API a client calls."
+    }
+  ],
+  "security": [
+    {
+      "bearerAuth": []
     }
   ]
 }

@@ -1,0 +1,16 @@
+GET /chat/sessions the endpoint no longer allows anonymous access and now only accepts `bearerAuth` [api-security-anonymous-access-removed]. This endpoint inherits the API's top-level security requirements.
+GET /chat/sessions/{thread_id}/messages the endpoint no longer allows anonymous access and now only accepts `bearerAuth` [api-security-anonymous-access-removed]. This endpoint inherits the API's top-level security requirements.
+GET /chat/sessions/{thread_id}/pending_approval the endpoint no longer allows anonymous access and now only accepts `bearerAuth` [api-security-anonymous-access-removed]. This endpoint inherits the API's top-level security requirements.
+GET /ingest/stream/{job_id} removed the media type `application/json` for the response with the status `200`
+GET /ingest/stream/{job_id} the endpoint no longer allows anonymous access and now only accepts `bearerAuth` [api-security-anonymous-access-removed]. This endpoint inherits the API's top-level security requirements.
+GET /metrics removed the media type `application/json` for the response with the status `200`
+GET /usage the endpoint no longer allows anonymous access and now only accepts `bearerAuth` [api-security-anonymous-access-removed]. This endpoint inherits the API's top-level security requirements.
+POST /chat/cancel removed the media type `application/json` for the response with the status `200`
+POST /chat/cancel the endpoint no longer allows anonymous access and now only accepts `bearerAuth` [api-security-anonymous-access-removed]. This endpoint inherits the API's top-level security requirements.
+POST /chat/resume removed the media type `application/json` for the response with the status `200`
+POST /chat/resume the endpoint no longer allows anonymous access and now only accepts `bearerAuth` [api-security-anonymous-access-removed]. This endpoint inherits the API's top-level security requirements.
+POST /chat/stream/queued removed the media type `application/json` for the response with the status `200`
+POST /chat/stream/queued the endpoint no longer allows anonymous access and now only accepts `bearerAuth` [api-security-anonymous-access-removed]. This endpoint inherits the API's top-level security requirements.
+POST /ingest/upload the endpoint no longer allows anonymous access and now only accepts `bearerAuth` [api-security-anonymous-access-removed]. This endpoint inherits the API's top-level security requirements.
+POST /v1/decide added required request body
+POST /v1/embeddings added required request body

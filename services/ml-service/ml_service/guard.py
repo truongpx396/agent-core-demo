@@ -17,6 +17,7 @@ from pydantic import BaseModel
 from ml_service.batching import MicroBatcher
 from ml_service.http import unavailable
 from ml_service.onnx_text import OnnxText
+from ml_service.schemas import GuardItem, errors
 from ml_service.settings import (
     GUARD_LABELS,
     GUARD_MAX_SEQ_LEN,
@@ -81,7 +82,9 @@ def load_guard_service(settings: Settings) -> GuardService:
 router = APIRouter(tags=["prompt-guard"])
 
 
-@router.post("/prompt-guard", response_model=None)
+@router.post(
+    "/prompt-guard", response_model=None, responses={200: {"description": "One verdict per text, in input order.", "model": list[GuardItem]}, **errors(503)}
+)
 async def prompt_guard(req: PromptGuardRequest, request: Request) -> JSONResponse | list[dict[str, Any]]:
     service: GuardService | None = request.app.state.registry.ready_value("prompt-guard")
     if service is None:
