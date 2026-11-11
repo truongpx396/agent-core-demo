@@ -65,6 +65,36 @@ def event_streams_as_items(spec: dict[str, Any]) -> None:
                 }
 
 
+# The routes the front door does not check (class `public` in the door's own route table, which this app may not read: it talks to the door
+# over HTTP only, so tests/adapters/inbound/api/test_authlimit_routes_cover_api.py holds this list to the table). Every other operation needs a token.
+PUBLIC_OPERATIONS = {("get", "/"), ("get", "/health"), ("get", "/health/ready")}
+
+BEARER = {
+    "type": "http",
+    "scheme": "bearer",
+    "bearerFormat": "JWT",
+    "description": (
+        "A Casdoor access token, sent to the front door (the authlimit service), which verifies it, charges the rate limit and hands this API a "
+        "signed identity. This API never sees the token: the door removes it. A deployment run with `AUTH_MODE=headers` (a developer's "
+        "machine, the tests) has no door and takes `X-Tenant-Id` and `X-Principal-Id` as sent instead."
+    ),
+}
+
+
+def require_the_front_doors_token(spec: dict[str, Any]) -> None:
+    """Declare the bearer scheme, require it everywhere, and say which operations the front door lets through without one, in place.
+
+    This is the contract a client has with the deployed system, not something this process checks (its own check is the signed identity,
+    deps.py), so it is written here and not as a FastAPI security dependency, which would parse an Authorization header the door strips.
+    """
+    spec.setdefault("components", {}).setdefault("securitySchemes", {})["bearerAuth"] = BEARER
+    spec["security"] = [{"bearerAuth": []}]
+    for path, path_item in spec.get("paths", {}).items():
+        for method, operation in path_item.items():
+            if (method, path) in PUBLIC_OPERATIONS:
+                operation["security"] = []  # an operation's own list replaces the root's: none needed
+
+
 def install(app: FastAPI) -> None:
     """Make `app.openapi()` return the document with this module's rewrites applied, once, to the dict FastAPI caches."""
     original = app.openapi
@@ -74,6 +104,7 @@ def install(app: FastAPI) -> None:
         spec = original()
         if fresh:
             event_streams_as_items(spec)
+            require_the_front_doors_token(spec)
         return spec
 
     app.openapi = openapi  # type: ignore[method-assign]  # FastAPI's documented way to extend the document (docs: "Extending OpenAPI")

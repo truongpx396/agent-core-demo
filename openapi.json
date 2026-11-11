@@ -35,7 +35,8 @@
               }
             }
           }
-        }
+        },
+        "security": []
       }
     },
     "/health": {
@@ -57,7 +58,8 @@
               }
             }
           }
-        }
+        },
+        "security": []
       }
     },
     "/health/ready": {
@@ -79,7 +81,8 @@
               }
             }
           }
-        }
+        },
+        "security": []
       }
     },
     "/chat/stream/queued": {
@@ -2050,6 +2053,14 @@
         ],
         "title": "ValidationError"
       }
+    },
+    "securitySchemes": {
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT",
+        "description": "A Casdoor access token, sent to the front door (the authlimit service), which verifies it, charges the rate limit and hands this API a signed identity. This API never sees the token: the door removes it. A deployment run with `AUTH_MODE=headers` (a developer's machine, the tests) has no door and takes `X-Tenant-Id` and `X-Principal-Id` as sent instead."
+      }
     }
   },
   "tags": [
@@ -2076,6 +2087,11 @@
     {
       "name": "web",
       "description": "The built-in web UI, a single page. Not part of the API a client calls."
+    }
+  ],
+  "security": [
+    {
+      "bearerAuth": []
     }
   ]
 }

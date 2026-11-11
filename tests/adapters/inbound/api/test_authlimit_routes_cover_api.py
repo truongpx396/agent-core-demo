@@ -115,3 +115,21 @@ def test_only_the_three_turn_creating_routes_are_limited():
 def test_the_port_of_the_matcher_agrees_with_the_go_fallback_for_a_route_nobody_listed():
     assert classify("GET", "/not-a-route") == (TABLE["fallback"], False)
     assert classify("POST", "/chat/cancel/extra") == (TABLE["fallback"], False), "a longer path is not the listed route"
+
+
+def test_the_document_says_a_route_needs_a_token_exactly_when_the_front_door_checks_it():
+    """The OpenAPI document's security is the client's contract with the door; the door's table (routes.json) is what the door does."""
+    spec = api.app.openapi()
+    assert spec["components"]["securitySchemes"]["bearerAuth"]["scheme"] == "bearer"
+    problems = []
+    for path, operations in spec["paths"].items():
+        for method, operation in operations.items():
+            if method not in HTTP_METHODS:
+                continue
+            public = classify(method, path)[0] == "public"
+            required = operation.get("security", spec["security"])  # an operation's own list replaces the root's
+            if public and required != []:
+                problems.append(f"{method.upper()} {path} is public at the door and the document says it needs {required}")
+            if not public and required != [{"bearerAuth": []}]:
+                problems.append(f"{method.upper()} {path} is checked at the door and the document says it needs {required}")
+    assert not problems, "\n  ".join(problems)
