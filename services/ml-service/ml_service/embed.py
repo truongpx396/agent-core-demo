@@ -109,7 +109,7 @@ def _encode(vector: np.ndarray, encoding: str) -> Any:
     return [float(x) for x in vector]
 
 
-router = APIRouter()
+router = APIRouter(tags=["embeddings"])
 
 
 @router.post("/v1/embeddings", response_model=None)

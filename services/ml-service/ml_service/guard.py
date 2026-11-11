@@ -78,7 +78,7 @@ def load_guard_service(settings: Settings) -> GuardService:
     return GuardService(text, max_batch_size=settings.guard_max_batch_size, max_wait_ms=settings.max_batch_wait_ms)
 
 
-router = APIRouter()
+router = APIRouter(tags=["prompt-guard"])
 
 
 @router.post("/prompt-guard", response_model=None)

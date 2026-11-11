@@ -87,13 +87,23 @@ func New(d Deps) *Server {
 	return &Server{Deps: d}
 }
 
+// routes is every route the service answers, keyed by the pattern ServeMux takes. It is a table, not four calls, so a test can hold the
+// OpenAPI document (openapi.json) to it: a route added here without its entry there fails the build.
+func (s *Server) routes() map[string]http.HandlerFunc {
+	return map[string]http.HandlerFunc{
+		"GET /v1/check":           s.check,
+		"GET /healthz":            s.healthz,
+		"GET /readyz":             s.readyz,
+		"GET /internal/jwks.json": s.jwks,
+	}
+}
+
 // Handler is the HTTP handler.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /v1/check", s.check)
-	mux.HandleFunc("GET /healthz", s.healthz)
-	mux.HandleFunc("GET /readyz", s.readyz)
-	mux.HandleFunc("GET /internal/jwks.json", s.jwks)
+	for pattern, h := range s.routes() {
+		mux.HandleFunc(pattern, h)
+	}
 	return mux
 }
 

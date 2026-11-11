@@ -130,7 +130,7 @@ def _validate(body: Any, settings: Settings, labeller: Labeller) -> Parsed:
     return Parsed(state, tuple(options))
 
 
-router = APIRouter()
+router = APIRouter(tags=["decide"])
 
 
 @router.post("/v1/decide", response_model=None)

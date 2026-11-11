@@ -15,7 +15,7 @@ router = APIRouter()
 _UI_HTML_PATH = Path(__file__).parent.parent / "static" / "index.html"
 
 
-@router.get("/", response_class=HTMLResponse)
+@router.get("/", response_class=HTMLResponse, tags=["web"])
 def ui() -> str:
     """The built-in web UI (pattern 29) — a single self-contained page, no
     build step, no CDN dependency. Talks only to `POST /chat/stream/queued`'s
@@ -33,7 +33,7 @@ def ui_sign_in_script() -> Response:
     return Response(web_auth.script(), media_type="text/javascript", headers={"Cache-Control": "no-cache"})
 
 
-@router.get("/health", response_model=HealthResponse)
+@router.get("/health", response_model=HealthResponse, tags=["health"])
 def health() -> HealthResponse:
     """Liveness only — always 200 if this process can respond at all. See
     `GET /health/ready` for whether it can actually complete a turn (see
@@ -41,7 +41,7 @@ def health() -> HealthResponse:
     return HealthResponse()
 
 
-@router.get("/health/ready", response_model=ReadinessResponse)
+@router.get("/health/ready", response_model=ReadinessResponse, tags=["health"])
 async def health_ready(response: Response) -> ReadinessResponse:
     """Readiness — 200 only if every real dependency is reachable right now,
     503 otherwise, with which one(s) failed in the body (see

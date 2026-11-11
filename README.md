@@ -344,6 +344,7 @@ curl -s -N -X POST http://localhost:8000/chat/stream/queued \
 
 `X-Tenant-Id: ecorp` sees what `make ingest` seeded; another tenant sees none of it, by design.
 
+- 📜 **OpenAPI:** the running API serves it at `/openapi.json` (Swagger UI at `/docs`). Each HTTP service's document is also committed, beside its Dockerfile: [`openapi.json`](openapi.json) (this API), [`services/ml-service/openapi.json`](services/ml-service/openapi.json) and [`services/authlimit/openapi.json`](services/authlimit/openapi.json) (hand-written; Go has nothing to generate it from). `make openapi` rewrites the first two from the code, and a test fails while a committed document is stale (authlimit's is held to its handlers by a Go test). CI's `openapi` job runs `make openapi-breaking` on every PR and fails a change that breaks a client of what main serves; a deliberate break is one line in [`.github/openapi-breaking-ignore.txt`](.github/openapi-breaking-ignore.txt).
 - 🧪 **Bruno:** [`bruno/`](bruno/README.md) is every endpoint above as a [Bruno](https://www.usebruno.com) collection, with a `local` environment (this API alone) and a `door` one (behind the front door). A test keeps it in step with the routes.
 - 📡 **SSE events:** `token`, `tool_start`, `tool_end`, `citations` (just before `done`; only sources the answer cited), `approval_required`, `error`, `done`.
 - ✋ **Approvals:** `POST /chat/resume` approves or rejects an `approval_required` event; `POST /chat/cancel` stops the run.
@@ -816,6 +817,7 @@ until configured**.
 | `make ops-digest` · `make followup-sweep` · `make tool-call-dedup-sweep` | The ops digest · the sales follow-up sweep · the dedup-table sweep |
 | **✅ Gates and tools** | |
 | `make lint` · `make typecheck` · `make test` | The CI gates |
+| `make openapi` · `make openapi-breaking` | Rewrite the committed OpenAPI documents from the code · fail a change that breaks a client of main's (needs `oasdiff`, see the target) |
 | `make obs-up` · `make obs-down` · `make collectors-up` · `make sandbox-up` | Observability with its collectors · the collectors alone · OpenSandbox (opt-in) |
 
 ⚠️ `make clean`, `make clear-*`, `make obs-clean` and `make restart-all` delete volumes or kill running processes; don't run them
@@ -852,6 +854,7 @@ tests/                    mirrors app/ (adapters/inbound, adapters/outbound, ser
 packages/billing/         the independent billing package: src, tests, schema, alerts, docs, specs
 promptfoo/ garak/ loadtest/   prompt checks (the repo's only package.json), jailbreak scan, Locust
 bruno/                    the HTTP API as a Bruno collection (.bru requests, environments, a sample PDF)
+openapi.json              the chat API's OpenAPI document (generated: make openapi); the ML service's and authlimit's sit beside their Dockerfiles
 make/                     host.mk, admin.mk, evals.mk, security.mk, test.mk: targets the Makefile includes
 .github/workflows/        ci, deploy, ai-review, terraform-validate, redteam, strix, zap
 ```
