@@ -56,6 +56,7 @@ internal/errenv      the {code, message, details} error envelope
 internal/telemetry   OTLP metrics and JSON logs
 internal/reason      the one vocabulary of refusal reasons (metric labels, logs, tests)
 routes.json          the route-class table          errorcodes.json   the error codes (the Python side checks against it)
+openapi.json         the service's OpenAPI document, hand-written; internal/server/openapi_test.go holds it to the handlers and to errorcodes.json
 ```
 
 ## Rules this module keeps

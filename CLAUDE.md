@@ -27,6 +27,8 @@ The Makefile assumes an activated venv: `source .venv/bin/activate`. It holds th
 ```bash
 make lint            # ruff check .          (CI gate)
 make typecheck       # mypy --strict over app/ scripts/ the billing package and ml-service (CI gate)
+make openapi         # rewrite openapi.json and services/ml-service/openapi.json from the code; a test fails while they are stale (authlimit's is hand-written, tested by Go)
+make openapi-breaking # oasdiff against origin/main (CI's `openapi` job); a deliberate break is one entry in .github/openapi-breaking-ignore.txt
 make test            # pytest -n auto -q — hermetic, no services needed (CI gate); then the billing package's own tests
 make test-billing-package   # only the package's hermetic tests, from its directory (the app is not on the path)
 make billing-migrate        # apply the billing package's schema scripts to an existing database (billing-migrate-status: read-only)
@@ -117,7 +119,7 @@ they delete volumes or kill running processes.
 - `promptfoo/` — the prompt checks, and the only Node in the repo: its `package.json`, lock file and `node_modules`
   live here, so every `npm`/`npx` runs from this directory (`make promptfoo` does that). The root stays Python-only.
 - `bruno/` — the HTTP API as a Bruno collection (text `.bru` files, no Node project: `bruno/README.md`). A new or changed endpoint gets its
-  request in the same change; `tests/adapters/inbound/api/test_bruno_collection_matches_api.py` fails on a route, body field, header or variable that drifted.
+  request in the same change, a tag from `app/adapters/inbound/api/openapi.py` and a `make openapi`; `tests/adapters/inbound/api/test_bruno_collection_matches_api.py` fails on a route, body field, header or variable that drifted.
 
 ## Working rules
 

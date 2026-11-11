@@ -56,7 +56,7 @@ def load_rerank_service(settings: Settings) -> RerankService:
     )
 
 
-router = APIRouter()
+router = APIRouter(tags=["rerank"])
 
 
 @router.post("/rerank", response_model=None)

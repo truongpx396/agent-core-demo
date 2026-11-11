@@ -15,7 +15,7 @@ from app.core.config import (
 )
 from app.core.security import SecurityCtx
 
-router = APIRouter()
+router = APIRouter(tags=["usage"])
 
 
 @router.get("/usage", response_model=UsageResponse)

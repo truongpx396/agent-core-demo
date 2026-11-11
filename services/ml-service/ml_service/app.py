@@ -25,6 +25,27 @@ from ml_service.registry import (
 from ml_service.settings import Settings
 
 logger = logging.getLogger("ml_service")
+
+# What the OpenAPI document says about the service as a whole (the routes describe themselves). Committed as
+# `services/ml-service/openapi.json`; a test fails while it is stale and `make openapi` rewrites it. The version is the CONTRACT's, not
+# a release number: bump the minor when a change adds to the API, the major when it breaks a caller (CI's `openapi` job checks).
+API_TITLE = "Graph Agent Core ML Service"
+API_VERSION = "1.0.0"
+API_DESCRIPTION = """\
+The models the agent runs next to it, on CPU, behind one internal HTTP API: sentence embeddings, a reranker, a prompt-injection
+screen, and typed decisions (pick one label out of a served label set, or "none of these"). The app's `mlservice` adapter is the
+caller. It is an internal service with no authentication of its own, so it is never published; reach it only over the private network.
+
+A model that fails to load is that model's `failed` state, not the container's: `/health` stays 200 so Docker does not restart a
+process that is only missing a model, and `/health/models` says which one is down and when it is retried.
+"""
+API_TAGS = [
+    {"name": "embeddings", "description": "OpenAI-compatible `/v1/embeddings`, and the models it serves (`/v1/models`)."},
+    {"name": "decide", "description": "A typed decision: which label of a served label set fits the text, or none."},
+    {"name": "rerank", "description": "Order passages by relevance to a query."},
+    {"name": "prompt-guard", "description": "Screen a text for prompt injection."},
+    {"name": "operations", "description": "Liveness, per-model state and Prometheus metrics."},
+]
 SUPERVISOR_INTERVAL_S = 1.0
 MODELS_TOML = Path(__file__).resolve().parent.parent / "models.toml"
 
@@ -102,7 +123,7 @@ def create_app(
             supervisor.cancel()
             await registry.close()
 
-    app = FastAPI(lifespan=lifespan)
+    app = FastAPI(title=API_TITLE, version=API_VERSION, description=API_DESCRIPTION, openapi_tags=API_TAGS, lifespan=lifespan)
     app.state.settings = settings
     app.state.metrics = metrics
     app.state.embed_specs = embed_specs

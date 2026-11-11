@@ -209,6 +209,35 @@ jobs:
           ignore-unfixed: true
           exit-code: "1"
 
+  # What a client reads is three OpenAPI documents (openapi.json, services/ml-service/openapi.json, services/authlimit/openapi.json). That
+  # they are TRUE is held by tests in `test` (the two generated ones, tests/scripts/test_openapi_documents_are_current.py) and in
+  # `authlimit` (the hand-written one, internal/server/openapi_test.go). This job asks the other question: does the change BREAK a client of
+  # what main serves? oasdiff compares each document with main's (`make openapi-breaking`; a deliberate break is one line in
+  # .github/openapi-breaking-ignore.txt). A pull request only: there is no "before" on a push to main.
+  openapi:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: services/authlimit/go.mod
+          cache: false # nothing here is built from this repository's own modules
+      # The checkout is the merge of the PR into main, so this compares what main would become with what main is now.
+      - name: Fetch main, the side to compare with
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: git fetch --no-tags --depth=1 origin "+refs/heads/${BASE_REF}:refs/remotes/origin/${BASE_REF}"
+      - name: Install oasdiff
+        env:
+          GOTOOLCHAIN: auto # v1.35.0's go.mod asks for a newer toolchain than the one set up above; Go fetches it
+        run: go install github.com/oasdiff/oasdiff@v1.35.0
+      - name: Breaking changes against main
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: make openapi-breaking OPENAPI_BASE="origin/${BASE_REF}"
+
   test-integration:
     # Real Postgres/Redis/Qdrant via testcontainers (tests/containers.py) —
     # no LLM, so this stays cheap; GH-hosted ubuntu-latest runners already

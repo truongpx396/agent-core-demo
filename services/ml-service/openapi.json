@@ -1,0 +1,345 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Graph Agent Core ML Service",
+    "description": "The models the agent runs next to it, on CPU, behind one internal HTTP API: sentence embeddings, a reranker, a prompt-injection\nscreen, and typed decisions (pick one label out of a served label set, or \"none of these\"). The app's `mlservice` adapter is the\ncaller. It is an internal service with no authentication of its own, so it is never published; reach it only over the private network.\n\nA model that fails to load is that model's `failed` state, not the container's: `/health` stays 200 so Docker does not restart a\nprocess that is only missing a model, and `/health/models` says which one is down and when it is retried.\n",
+    "version": "1.0.0"
+  },
+  "servers": [
+    {
+      "url": "http://localhost:8083",
+      "description": "The container's port 80, published by `make up`."
+    },
+    {
+      "url": "http://ml-service",
+      "description": "Inside the compose network, where the app reaches it (ML_SERVICE_URL)."
+    }
+  ],
+  "paths": {
+    "/health": {
+      "get": {
+        "tags": [
+          "operations"
+        ],
+        "summary": "Health",
+        "operationId": "health_health_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Health Health Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/health/models": {
+      "get": {
+        "tags": [
+          "operations"
+        ],
+        "summary": "Health Models",
+        "operationId": "health_models_health_models_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Health Models Health Models Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/metrics": {
+      "get": {
+        "tags": [
+          "operations"
+        ],
+        "summary": "Metrics",
+        "operationId": "metrics_metrics_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/embeddings": {
+      "post": {
+        "tags": [
+          "embeddings"
+        ],
+        "summary": "Create Embeddings",
+        "operationId": "create_embeddings_v1_embeddings_post",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/models": {
+      "get": {
+        "tags": [
+          "embeddings"
+        ],
+        "summary": "List Models",
+        "operationId": "list_models_v1_models_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response List Models V1 Models Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/decide": {
+      "post": {
+        "tags": [
+          "decide"
+        ],
+        "summary": "Decide",
+        "operationId": "decide_v1_decide_post",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/rerank": {
+      "post": {
+        "tags": [
+          "rerank"
+        ],
+        "summary": "Rerank",
+        "operationId": "rerank_rerank_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RerankRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/prompt-guard": {
+      "post": {
+        "tags": [
+          "prompt-guard"
+        ],
+        "summary": "Prompt Guard",
+        "operationId": "prompt_guard_prompt_guard_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PromptGuardRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "type": "array",
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "title": "HTTPValidationError"
+      },
+      "PromptGuardRequest": {
+        "properties": {
+          "texts": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Texts"
+          }
+        },
+        "type": "object",
+        "required": [
+          "texts"
+        ],
+        "title": "PromptGuardRequest"
+      },
+      "RerankRequest": {
+        "properties": {
+          "query": {
+            "type": "string",
+            "title": "Query"
+          },
+          "texts": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Texts"
+          },
+          "raw_scores": {
+            "type": "boolean",
+            "title": "Raw Scores",
+            "default": true
+          }
+        },
+        "type": "object",
+        "required": [
+          "query",
+          "texts"
+        ],
+        "title": "RerankRequest"
+      },
+      "ValidationError": {
+        "properties": {
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "type": "array",
+            "title": "Location"
+          },
+          "msg": {
+            "type": "string",
+            "title": "Message"
+          },
+          "type": {
+            "type": "string",
+            "title": "Error Type"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "ctx": {
+            "type": "object",
+            "title": "Context"
+          }
+        },
+        "type": "object",
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError"
+      }
+    }
+  },
+  "tags": [
+    {
+      "name": "embeddings",
+      "description": "OpenAI-compatible `/v1/embeddings`, and the models it serves (`/v1/models`)."
+    },
+    {
+      "name": "decide",
+      "description": "A typed decision: which label of a served label set fits the text, or none."
+    },
+    {
+      "name": "rerank",
+      "description": "Order passages by relevance to a query."
+    },
+    {
+      "name": "prompt-guard",
+      "description": "Screen a text for prompt injection."
+    },
+    {
+      "name": "operations",
+      "description": "Liveness, per-model state and Prometheus metrics."
+    }
+  ]
+}

@@ -33,6 +33,24 @@ lint:  ## ruff over the repo (config in pyproject.toml)
 typecheck:  ## mypy, strict, over app/, scripts/, the billing package and ml-service (config in pyproject.toml)
 	mypy
 
+openapi:  ## Rewrite the committed OpenAPI documents of the chat API (openapi.json) and the ML service from the code; a test fails while they are stale. authlimit's is hand-written and tested against its handlers
+	python -m scripts.tools.export_openapi
+
+# Each document sits beside the Dockerfile of the process it describes.
+OPENAPI_DOCUMENTS := openapi.json services/ml-service/openapi.json services/authlimit/openapi.json
+OPENAPI_BASE      ?= origin/main
+
+# A deliberate break is accepted by one line in .github/openapi-breaking-ignore.txt, the method, the path and the message oasdiff printed
+# (`GET /usage api path removed without deprecation`), in the same PR so review sees it. The file holds entries ONLY: oasdiff has no
+# comment syntax, so a `#` line is matched like any other (measured on v1.35.0). Delete a line once the change is on main.
+openapi-breaking:  ## Fail when a change breaks a client of any OpenAPI document, compared with OPENAPI_BASE (origin/main; CI runs it on every PR). Needs oasdiff, see the comment above
+	@command -v oasdiff >/dev/null || { echo "oasdiff is not installed: go install github.com/oasdiff/oasdiff@v1.35.0"; exit 2; }
+	@rc=0; for doc in $(OPENAPI_DOCUMENTS); do \
+		if git cat-file -e "$(OPENAPI_BASE):$$doc" 2>/dev/null; then \
+			oasdiff breaking "$(OPENAPI_BASE):$$doc" "$$doc" --fail-on ERR --err-ignore .github/openapi-breaking-ignore.txt || rc=1; \
+		else echo "$$doc: not in $(OPENAPI_BASE), nothing to compare"; fi; \
+	done; exit $$rc
+
 # --- Load tests ---
 
 loadtest-up:  ## Before `make loadtest-queued`: (re)start loadtest/fake_llm_server.py as a background host process (var/fake-llm.log) and point the containerized api and workers at it. Safe to re-run; counterpart `make loadtest-down`

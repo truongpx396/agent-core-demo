@@ -1,0 +1,188 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "authlimit",
+    "version": "1.0.0",
+    "description": "The edge authentication and rate-limit service. Caddy asks it about every request to the chat API and the MCP routes (`forward_auth`) before the request goes any further, and acts on the answer: a 200 lets the request through, anything else goes straight back to the client. Nothing here is routed to the public; the caller is the reverse proxy.\n\nFor one request, in this order: classify the route (routes.json), verify the access token, refuse a revoked person, charge the rate limit, mint the internal identity. The order is a security property: a revoked person consumes no bucket, and a refused or limited request is never handed an identity.\n\nThis document is held to the handlers by a test (internal/server/openapi_test.go) and its error codes to errorcodes.json. The behaviour, class by class, is section A of specs/018-authlimit-edge-auth/contracts/authlimit.md; that is the contract, and this is its machine-readable form."
+  },
+  "servers": [
+    { "url": "http://authlimit:8080", "description": "Inside the compose network (AUTHLIMIT_LISTEN, default :8080). Caddy's forward_auth is the caller." }
+  ],
+  "tags": [
+    { "name": "check", "description": "The decision Caddy asks for on every request." },
+    { "name": "health", "description": "Liveness and readiness of one replica." },
+    { "name": "keys", "description": "The public keys of the internal identity this service signs." }
+  ],
+  "paths": {
+    "/v1/check": {
+      "get": {
+        "tags": ["check"],
+        "operationId": "check",
+        "summary": "Decide one request",
+        "description": "Called by Caddy once per request to a non-public route, with the client's own `Authorization` header forwarded unchanged and the original method and URI in the two `X-Forwarded-*` headers. The route's class decides what is checked: `public` is not; `turn` and `upload` are verified and rate limited; `read` and `cancel` are verified and never limited; `mcp` is limit-only (the MCP gateway verifies the token itself, so a missing or invalid one is passed through with a 200 and no identity, and only a revoked person is refused). A route nobody listed is classified like a turn.\n\nThe token is optional only in that a `public` or `mcp` route does not need one. On every other route no usable token is a 401.",
+        "security": [{ "bearerAuth": [] }, {}],
+        "parameters": [
+          {
+            "name": "X-Forwarded-Method",
+            "in": "header",
+            "required": false,
+            "schema": { "type": "string" },
+            "description": "The method of the request Caddy is asking about. Missing or repeated is not an error: the request is classified as an unclean path, which can only mean the fallback class (verified and limited), never public."
+          },
+          {
+            "name": "X-Forwarded-Uri",
+            "in": "header",
+            "required": false,
+            "schema": { "type": "string" },
+            "description": "The path and query of the request Caddy is asking about. A path that is not plain (an escape, a dot segment, a double slash) is never public."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Let the request through. A verified class carries the internal identity; a public route and an MCP route carry none.",
+            "headers": {
+              "X-Internal-Identity": {
+                "description": "A compact JWS, EdDSA, valid for 30 seconds, naming the verified tenant and person. Caddy copies it onto the request to the API, which trusts nothing else about the caller. Absent on a public or MCP route.",
+                "schema": { "type": "string" }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthenticated" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "429": { "$ref": "#/components/responses/RateLimited" },
+          "503": { "$ref": "#/components/responses/AuthUnavailable" }
+        }
+      }
+    },
+    "/healthz": {
+      "get": {
+        "tags": ["health"],
+        "operationId": "healthz",
+        "summary": "Liveness",
+        "description": "Always 200 while the process runs. It depends on nothing outside it: a replica that cannot reach Casdoor or Redis is not dead, and restarting it would not help.",
+        "responses": {
+          "200": { "description": "The process is alive.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Ok" } } } }
+        }
+      }
+    },
+    "/readyz": {
+      "get": {
+        "tags": ["health"],
+        "operationId": "readyz",
+        "summary": "Readiness",
+        "description": "Whether this replica can decide requests. Ready means a current signing key, usable external keys (stale ones inside the grace count as degraded, not unready) and, under the closed revocation policy, a revocation copy within its ceiling. Caddy's health check reads it to stop sending requests to a replica that is not.",
+        "responses": {
+          "200": { "description": "Ready.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Ok" } } } },
+          "503": { "description": "Not ready, and the one word why.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/NotReady" } } } }
+        }
+      }
+    },
+    "/internal/jwks.json": {
+      "get": {
+        "tags": ["keys"],
+        "operationId": "jwks",
+        "summary": "Public keys of the internal identity",
+        "description": "The Ed25519 public keys a consumer accepts now, as an OKP JWK Set (RFC 8037). The API fetches it to verify `X-Internal-Identity`. Public keys only, never key material.",
+        "responses": {
+          "200": {
+            "description": "The key set.",
+            "headers": {
+              "Cache-Control": { "description": "`max-age=10`: a rotation is picked up within seconds.", "schema": { "type": "string" } }
+            },
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/JWKS" } } }
+          },
+          "500": { "description": "The key set could not be written.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "bearerAuth": { "type": "http", "scheme": "bearer", "description": "The client's Casdoor access token (RS256), exactly one `Authorization` header. A second header is refused: a proxy and this service could otherwise read different tokens." }
+    },
+    "responses": {
+      "Unauthenticated": {
+        "description": "No usable token, an invalid one, or a revoked person. `WWW-Authenticate` says which kind. On an MCP route only a revoked person gets this, and the challenge carries the `resource_metadata` URL an MCP client needs to sign in again.",
+        "headers": {
+          "WWW-Authenticate": { "description": "`Bearer realm=\"agent-core-api\"` for no token, with `error=\"invalid_token\"` for a token that is not acceptable.", "schema": { "type": "string" } }
+        },
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+      },
+      "Forbidden": {
+        "description": "A valid token without the required scope. `details.required_scope` names it.",
+        "headers": {
+          "WWW-Authenticate": { "description": "`Bearer realm=\"agent-core-api\", error=\"insufficient_scope\", scope=\"<scope>\"`.", "schema": { "type": "string" } }
+        },
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+      },
+      "RateLimited": {
+        "description": "The tenant's or the person's bucket is empty (enforce mode; observe mode answers 200 and counts it).",
+        "headers": {
+          "Retry-After": { "description": "Whole seconds until a token is available.", "schema": { "type": "integer", "minimum": 0 } }
+        },
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+      },
+      "AuthUnavailable": {
+        "description": "The service cannot check a token right now: no usable Casdoor keys, a revocation copy too old to trust, or no signing key. The caller did nothing wrong, so this is not a 401. A security check fails closed.",
+        "headers": {
+          "Retry-After": { "description": "`30`.", "schema": { "type": "integer" } }
+        },
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+      }
+    },
+    "schemas": {
+      "Error": {
+        "type": "object",
+        "description": "The repository's canonical error envelope (app/core/errors.py): switch on `code`, not on the message.",
+        "required": ["code", "message", "details"],
+        "properties": {
+          "code": { "type": "string", "enum": ["unauthenticated", "forbidden", "rate_limited", "auth_unavailable", "internal"] },
+          "message": { "type": "string", "description": "Fixed text per code, written for the caller. It never contains a token, a claim or an exception's text." },
+          "details": {
+            "type": "object",
+            "description": "Only these keys, ever; anything else is dropped before it is written.",
+            "additionalProperties": false,
+            "properties": {
+              "required_scope": { "type": "string" },
+              "retry_after_seconds": { "type": "integer", "minimum": 0 }
+            }
+          }
+        }
+      },
+      "Ok": {
+        "type": "object",
+        "required": ["status"],
+        "properties": { "status": { "const": "ok" } }
+      },
+      "NotReady": {
+        "type": "object",
+        "required": ["status", "reason"],
+        "properties": {
+          "status": { "const": "not_ready" },
+          "reason": { "type": "string", "enum": ["no_signing_key", "keys_unavailable", "revocation_unavailable"] }
+        }
+      },
+      "JWKS": {
+        "type": "object",
+        "required": ["keys"],
+        "properties": {
+          "keys": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["kty", "crv", "x", "kid", "use", "alg"],
+              "properties": {
+                "kty": { "const": "OKP" },
+                "crv": { "const": "Ed25519" },
+                "x": { "type": "string", "description": "The public key, base64url without padding." },
+                "kid": { "type": "string" },
+                "use": { "const": "sig" },
+                "alg": { "const": "EdDSA" }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

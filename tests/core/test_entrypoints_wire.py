@@ -28,6 +28,7 @@ EXEMPT = {
     "app/adapters/inbound/channels/telegram/bot.py": "a client of the chat API through the front door (specs/020): plain HTTP, it reaches no port and never touches the graph; its Redis state is its own small keys (offset, inbox, approvals, links) and its listener serves only the webhook and the link pages (specs/021)",
     "app/adapters/inbound/channels/telegram/server.py": "the Telegram channel's own listener, run inside app/adapters/inbound/channels/telegram/bot.py's process (exempt above for the same reason): it serves the webhook and the link pages and reaches no port",
     "scripts/tools/litellm_key.py": "mints a gateway key over HTTP; it imports one pure helper (`admin_base_url`) from an adapter module and calls no port",
+    "scripts/tools/export_openapi.py": "writes the OpenAPI documents from the apps' route declarations (`app.openapi()`): building a document runs no handler and so calls no port",
 }
 
 

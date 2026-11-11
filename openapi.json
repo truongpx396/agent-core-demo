@@ -1,0 +1,1473 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Graph Agent Core API",
+    "description": "A multi-tenant, multi-domain LangGraph RAG agent. A client starts a turn, reads its events as they stream, answers an approval the\nagent asks for, and lists its own past sessions. One graph serves every domain; `X-Domain` picks which (default `ecorp`).\n\n**Who is calling.** Behind the front door (the authlimit service) a client sends `Authorization: Bearer <access token>`; the door\nverifies it and gives the API a signed identity, so the tenant and person are never taken from a header or a body. Only a deployment run\nwith `AUTH_MODE=headers` (a developer's machine, the tests) reads `X-Tenant-Id` and `X-Principal-Id` as sent. Everything a caller reads or\nchanges is scoped to its tenant and person.\n\n**Errors.** A refusal the application makes is the canonical envelope `{\"code\", \"message\", \"details\"}`; switch on `code`, not on the\ntext. A turn's own failures arrive as an `error` event on its stream, in the same shape.\n\n**Streams.** `POST /chat/stream/queued` and `GET /ingest/stream/{job_id}` answer with server-sent events, which OpenAPI describes only\nas a `text/event-stream` body; the event vocabulary is in the first route's description.\n",
+    "version": "1.0.0"
+  },
+  "servers": [
+    {
+      "url": "http://localhost:8000",
+      "description": "This API alone (`make serve`). Runs with AUTH_MODE=headers: name the caller with X-Tenant-Id and X-Principal-Id."
+    },
+    {
+      "url": "https://api.localhost:8443",
+      "description": "Behind the front door (`make authlimit-up-app`). Send a Casdoor access token as a Bearer token."
+    }
+  ],
+  "paths": {
+    "/": {
+      "get": {
+        "tags": [
+          "web"
+        ],
+        "summary": "Ui",
+        "description": "The built-in web UI (pattern 29) — a single self-contained page, no\nbuild step, no CDN dependency. Talks only to `POST /chat/stream/queued`'s\nSSE vocabulary, never a special-cased endpoint of its own. Read from\ndisk per request (not cached) so editing the file and refreshing is\nenough during development — this isn't a hot path.",
+        "operationId": "ui__get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/health": {
+      "get": {
+        "tags": [
+          "health"
+        ],
+        "summary": "Health",
+        "description": "Liveness only — always 200 if this process can respond at all. See\n`GET /health/ready` for whether it can actually complete a turn (see\napp/adapters/inbound/api/health.py on why these stay separate endpoints).",
+        "operationId": "health_health_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/health/ready": {
+      "get": {
+        "tags": [
+          "health"
+        ],
+        "summary": "Health Ready",
+        "description": "Readiness — 200 only if every real dependency is reachable right now,\n503 otherwise, with which one(s) failed in the body (see\napp/adapters/inbound/api/health.py::check_dependencies).",
+        "operationId": "health_ready_health_ready_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReadinessResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/chat/stream/queued": {
+      "post": {
+        "tags": [
+          "chat"
+        ],
+        "summary": "Chat Stream Queued",
+        "description": "Same SSE event vocabulary an in-process `astream_events_turn` would\nproduce (token, tool_start, tool_end, citations, followups,\napproval_required, error, done), but this process never runs the graph\nitself — it publishes the turn onto a shared Redis Stream and streams\nback whatever a separate `agent_worker.py` process publishes to this\nturn's results stream (pattern 43, app/adapters/outbound/redis/queue.py).\n\nThis makes the SSE-serving tier and agent-executing tier independently\nscalable: more `uvicorn` processes scale concurrent SSE connections,\nmore `agent_worker.py` processes scale concurrent turns. Needs at least\none worker running (`make agent-worker`) to ever produce a reply.\n\nA real `approval_required` pause here IS actionable (the worker no\nlonger auto-declines it), resumed via `POST /chat/resume` below.\n\n`domain` (`X-Domain` header, see `get_domain`) picks which domain's\nrequests stream this is published onto — only a worker serving that\ndomain (`AGENT_WORKER_DOMAINS`) reads it, letting one API process serve\nevery running domain.\n\nDeduplicated against an identical (`thread_id`, `message`, `images`)\nresubmission within `CHAT_SUBMIT_DEDUP_TTL_SECONDS`\n(`queue.py::claim_or_get_existing_submission`) — a client's own retry\nof this exact call reuses the first attempt's `request_id` and SSE\nstream rather than publishing (and running) a second, independent\nturn. See that function's own docstring for why the thread lock alone\ndoesn't already cover this.",
+        "operationId": "chat_stream_queued_chat_stream_queued_post",
+        "parameters": [
+          {
+            "name": "x-tenant-id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Header mode only: the tenant, as sent. Ignored in identity mode.",
+              "title": "X-Tenant-Id"
+            },
+            "description": "Header mode only: the tenant, as sent. Ignored in identity mode."
+          },
+          {
+            "name": "x-principal-id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Header mode only: the principal, as sent. Ignored in identity mode.",
+              "title": "X-Principal-Id"
+            },
+            "description": "Header mode only: the principal, as sent. Ignored in identity mode."
+          },
+          {
+            "name": "x-internal-identity",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Identity mode only: the front door's signed identity. Never send it yourself; the front door overwrites it.",
+              "title": "X-Internal-Identity"
+            },
+            "description": "Identity mode only: the front door's signed identity. Never send it yourself; the front door overwrites it."
+          },
+          {
+            "name": "x-domain",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "description": "Which domain (app/domains/registry.py) this turn runs against. Read by every chat endpoint below (all of them queued).",
+              "default": "ecorp",
+              "title": "X-Domain"
+            },
+            "description": "Which domain (app/domains/registry.py) this turn runs against. Read by every chat endpoint below (all of them queued)."
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChatRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/chat/resume": {
+      "post": {
+        "tags": [
+          "chat"
+        ],
+        "summary": "Chat Resume",
+        "description": "Continue a turn paused at human_approval — the HTTP counterpart to\n`astream_events_resume`. Always routed through the same Redis queue as a\nnew turn (pattern 43), not run in-process: a resume can execute a real\ntool call and run more LLM turns, so handling it in the SSE-serving tier\nwould reintroduce the work `POST /chat/stream/queued` exists to move\noff. Any worker in `domain`'s own pool can pick this up — the shared\ncheckpoint lives in Postgres, not a worker's process memory. `domain`\nmust match the original turn's (the caller is expected to keep sending\nthe same `X-Domain` for a given thread_id).\n\n`ctx` is re-supplied here, not reused from the original pause — see\n`astream_events_resume`'s own docstring for why. It must belong to the\nconversation's owner: `_require_conversation_owner` is checked first, so\napproving, rejecting or running another caller's paused action is a 404.",
+        "operationId": "chat_resume_chat_resume_post",
+        "parameters": [
+          {
+            "name": "x-tenant-id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Header mode only: the tenant, as sent. Ignored in identity mode.",
+              "title": "X-Tenant-Id"
+            },
+            "description": "Header mode only: the tenant, as sent. Ignored in identity mode."
+          },
+          {
+            "name": "x-principal-id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Header mode only: the principal, as sent. Ignored in identity mode.",
+              "title": "X-Principal-Id"
+            },
+            "description": "Header mode only: the principal, as sent. Ignored in identity mode."
+          },
+          {
+            "name": "x-internal-identity",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Identity mode only: the front door's signed identity. Never send it yourself; the front door overwrites it.",
+              "title": "X-Internal-Identity"
+            },
+            "description": "Identity mode only: the front door's signed identity. Never send it yourself; the front door overwrites it."
+          },
+          {
+            "name": "x-domain",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "description": "Which domain (app/domains/registry.py) this turn runs against. Read by every chat endpoint below (all of them queued).",
+              "default": "ecorp",
+              "title": "X-Domain"
+            },
+            "description": "Which domain (app/domains/registry.py) this turn runs against. Read by every chat endpoint below (all of them queued)."
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ResumeRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/chat/cancel": {
+      "post": {
+        "tags": [
+          "chat"
+        ],
+        "summary": "Chat Cancel",
+        "description": "Stop a turn, whichever of two states it's in — two independent\nmechanisms fire unconditionally (each a no-op if it doesn't apply):\n\n1. Actively streaming — a new turn, or the run that follows an approval\n   (`\"resume\"`): sets a short-lived Redis flag\n   (`queue.py::set_cancel_flag`) the worker running that turn polls\n   between graph events (`app/agent/runtime/core.py`'s `cancel_check`) — its own\n   results stream gets the terminal \"cancelled\" event directly. Keyed\n   by thread_id alone; domain is irrelevant since the worker polls the\n   flag directly.\n2. Paused at human_approval: publishes a `\"cancel\"` job (pattern 36's\n   `cancel_run`, over `domain`'s own queue) — picked up by any worker in\n   that domain's pool.\n\nThis endpoint's own SSE response is the job-2 outcome specifically —\nnot a proxy for job-1's effect on the original turn's stream, which the\ncaller is expected to already be reading independently.",
+        "operationId": "chat_cancel_chat_cancel_post",
+        "parameters": [
+          {
+            "name": "x-tenant-id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Header mode only: the tenant, as sent. Ignored in identity mode.",
+              "title": "X-Tenant-Id"
+            },
+            "description": "Header mode only: the tenant, as sent. Ignored in identity mode."
+          },
+          {
+            "name": "x-principal-id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Header mode only: the principal, as sent. Ignored in identity mode.",
+              "title": "X-Principal-Id"
+            },
+            "description": "Header mode only: the principal, as sent. Ignored in identity mode."
+          },
+          {
+            "name": "x-internal-identity",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Identity mode only: the front door's signed identity. Never send it yourself; the front door overwrites it.",
+              "title": "X-Internal-Identity"
+            },
+            "description": "Identity mode only: the front door's signed identity. Never send it yourself; the front door overwrites it."
+          },
+          {
+            "name": "x-domain",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "description": "Which domain (app/domains/registry.py) this turn runs against. Read by every chat endpoint below (all of them queued).",
+              "default": "ecorp",
+              "title": "X-Domain"
+            },
+            "description": "Which domain (app/domains/registry.py) this turn runs against. Read by every chat endpoint below (all of them queued)."
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CancelRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/chat/sessions": {
+      "get": {
+        "tags": [
+          "sessions"
+        ],
+        "summary": "Chat Sessions",
+        "description": "This caller's own past conversation threads, most recently active\nfirst — the session switcher's list. Scoped to tenant+principal+domain,\nnever tenant alone: a session belongs to whoever started it, same axis\nas Policy.lower's memory scoping (pattern 49 added the domain part), so\nswitching domains in the web UI also switches which sessions list.",
+        "operationId": "chat_sessions_chat_sessions_get",
+        "parameters": [
+          {
+            "name": "x-tenant-id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Header mode only: the tenant, as sent. Ignored in identity mode.",
+              "title": "X-Tenant-Id"
+            },
+            "description": "Header mode only: the tenant, as sent. Ignored in identity mode."
+          },
+          {
+            "name": "x-principal-id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Header mode only: the principal, as sent. Ignored in identity mode.",
+              "title": "X-Principal-Id"
+            },
+            "description": "Header mode only: the principal, as sent. Ignored in identity mode."
+          },
+          {
+            "name": "x-internal-identity",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Identity mode only: the front door's signed identity. Never send it yourself; the front door overwrites it.",
+              "title": "X-Internal-Identity"
+            },
+            "description": "Identity mode only: the front door's signed identity. Never send it yourself; the front door overwrites it."
+          },
+          {
+            "name": "x-domain",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "description": "Which domain (app/domains/registry.py) this turn runs against. Read by every chat endpoint below (all of them queued).",
+              "default": "ecorp",
+              "title": "X-Domain"
+            },
+            "description": "Which domain (app/domains/registry.py) this turn runs against. Read by every chat endpoint below (all of them queued)."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/SessionSummary"
+                  },
+                  "title": "Response Chat Sessions Chat Sessions Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/chat/sessions/{thread_id}/messages": {
+      "get": {
+        "tags": [
+          "sessions"
+        ],
+        "summary": "Chat Session Messages",
+        "description": "One session's transcript, for the switcher to replay. `session_belongs_to`\nis checked FIRST and is the entire authorization boundary — the shared\nPostgres checkpointer `get_session_messages` reads has no tenant/\nprincipal/domain of its own to scope by, so skipping this would let any\ncaller read any thread_id's transcript by guessing ids. `domain` must\nmatch too, extending the same check to a third axis.",
+        "operationId": "chat_session_messages_chat_sessions__thread_id__messages_get",
+        "parameters": [
+          {
+            "name": "thread_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Thread Id"
+            }
+          },
+          {
+            "name": "x-tenant-id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Header mode only: the tenant, as sent. Ignored in identity mode.",
+              "title": "X-Tenant-Id"
+            },
+            "description": "Header mode only: the tenant, as sent. Ignored in identity mode."
+          },
+          {
+            "name": "x-principal-id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Header mode only: the principal, as sent. Ignored in identity mode.",
+              "title": "X-Principal-Id"
+            },
+            "description": "Header mode only: the principal, as sent. Ignored in identity mode."
+          },
+          {
+            "name": "x-internal-identity",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Identity mode only: the front door's signed identity. Never send it yourself; the front door overwrites it.",
+              "title": "X-Internal-Identity"
+            },
+            "description": "Identity mode only: the front door's signed identity. Never send it yourself; the front door overwrites it."
+          },
+          {
+            "name": "x-domain",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "description": "Which domain (app/domains/registry.py) this turn runs against. Read by every chat endpoint below (all of them queued).",
+              "default": "ecorp",
+              "title": "X-Domain"
+            },
+            "description": "Which domain (app/domains/registry.py) this turn runs against. Read by every chat endpoint below (all of them queued)."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/SessionMessage"
+                  },
+                  "title": "Response Chat Session Messages Chat Sessions  Thread Id  Messages Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/chat/sessions/{thread_id}/pending_approval": {
+      "get": {
+        "tags": [
+          "sessions"
+        ],
+        "summary": "Chat Session Pending Approval",
+        "description": "Lets the session switcher re-show the approve/reject UI for a thread\nthat's still paused at human_approval, instead of it looking idle —\n`switchToSession` (index.html) calls this alongside .../messages on\nevery switch. Same `session_belongs_to` authorization boundary as\nthat endpoint, and for the same reason (get_pending_approval itself\nhas no tenant/principal/domain of its own to check).",
+        "operationId": "chat_session_pending_approval_chat_sessions__thread_id__pending_approval_get",
+        "parameters": [
+          {
+            "name": "thread_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Thread Id"
+            }
+          },
+          {
+            "name": "x-tenant-id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Header mode only: the tenant, as sent. Ignored in identity mode.",
+              "title": "X-Tenant-Id"
+            },
+            "description": "Header mode only: the tenant, as sent. Ignored in identity mode."
+          },
+          {
+            "name": "x-principal-id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Header mode only: the principal, as sent. Ignored in identity mode.",
+              "title": "X-Principal-Id"
+            },
+            "description": "Header mode only: the principal, as sent. Ignored in identity mode."
+          },
+          {
+            "name": "x-internal-identity",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Identity mode only: the front door's signed identity. Never send it yourself; the front door overwrites it.",
+              "title": "X-Internal-Identity"
+            },
+            "description": "Identity mode only: the front door's signed identity. Never send it yourself; the front door overwrites it."
+          },
+          {
+            "name": "x-domain",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "description": "Which domain (app/domains/registry.py) this turn runs against. Read by every chat endpoint below (all of them queued).",
+              "default": "ecorp",
+              "title": "X-Domain"
+            },
+            "description": "Which domain (app/domains/registry.py) this turn runs against. Read by every chat endpoint below (all of them queued)."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/PendingApproval"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Response Chat Session Pending Approval Chat Sessions  Thread Id  Pending Approval Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/usage": {
+      "get": {
+        "tags": [
+          "usage"
+        ],
+        "summary": "Usage",
+        "description": "This caller's own tenant usage — exposes\n`spend.usage_summary` (the usage events) over HTTP, so a caller can see how close they are to\nMAX_COST_USD_PER_TENANT_PER_DAY without getting refused first. `budgets` adds every limit\nthat applies to this caller (the tenant's and their own, overrides included).\nTenant-scoped only; no way to query another tenant's spend, or another person's.\n\n`credits` is the tenant's wallet, present only when the deployment has credits on and the tenant has\na wallet (the billing port decides; this endpoint only shows what it is given). Like the budget figures it\ndoes not fail open: an endpoint that cannot read the wallet says so rather than report a calm \"no wallet\".",
+        "operationId": "usage_usage_get",
+        "parameters": [
+          {
+            "name": "x-tenant-id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Header mode only: the tenant, as sent. Ignored in identity mode.",
+              "title": "X-Tenant-Id"
+            },
+            "description": "Header mode only: the tenant, as sent. Ignored in identity mode."
+          },
+          {
+            "name": "x-principal-id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Header mode only: the principal, as sent. Ignored in identity mode.",
+              "title": "X-Principal-Id"
+            },
+            "description": "Header mode only: the principal, as sent. Ignored in identity mode."
+          },
+          {
+            "name": "x-internal-identity",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Identity mode only: the front door's signed identity. Never send it yourself; the front door overwrites it.",
+              "title": "X-Internal-Identity"
+            },
+            "description": "Identity mode only: the front door's signed identity. Never send it yourself; the front door overwrites it."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UsageResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/ingest/upload": {
+      "post": {
+        "tags": [
+          "ingest"
+        ],
+        "summary": "Ingest Upload",
+        "description": "Upload documents to build this tenant's corpus — PDF/DOCX only today\n(app/ingestion/extractors.py); `.txt`/`.md` have their own path\n(ingestor.py::ingest_file, the CLI/script-driven one).\n\nFire-and-forget per file: this handler only gets bytes into MinIO and a\njob onto the queue — parsing/embedding happens in ingest_worker.py, on a\nSEPARATE queue from chat turns (see ingest_queue.py). Each file's\noutcome tracks independently via its own `job_id`\n(`GET /ingest/stream/{job_id}`), so one slow/failing file never blocks\nthe others — including a FAILING one: every per-file problem (bad\nextension, too-large, a MinIO/Redis error) is caught and reported back\nas that file's own `IngestUploadResult.error`, rather than raising and\nlosing whatever earlier files in the SAME request already succeeded.\n\nOnly \"too many files\" is rejected synchronously, before touching any\nfile — a UX/abuse guard on this one call, distinct from\nINGEST_WORKER_MAX_CONCURRENCY (it limits how many jobs one submission\ncreates, not how many a worker runs at once), and genuinely\nrequest-wide rather than per-file.\n\nA file that uploads to MinIO but then fails to publish its own job is\ncleaned up (`ObjectStore.delete_object`) rather than left as an\norphaned blob nothing will ever ingest or remove.",
+        "operationId": "ingest_upload_ingest_upload_post",
+        "parameters": [
+          {
+            "name": "x-tenant-id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Header mode only: the tenant, as sent. Ignored in identity mode.",
+              "title": "X-Tenant-Id"
+            },
+            "description": "Header mode only: the tenant, as sent. Ignored in identity mode."
+          },
+          {
+            "name": "x-principal-id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Header mode only: the principal, as sent. Ignored in identity mode.",
+              "title": "X-Principal-Id"
+            },
+            "description": "Header mode only: the principal, as sent. Ignored in identity mode."
+          },
+          {
+            "name": "x-internal-identity",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Identity mode only: the front door's signed identity. Never send it yourself; the front door overwrites it.",
+              "title": "X-Internal-Identity"
+            },
+            "description": "Identity mode only: the front door's signed identity. Never send it yourself; the front door overwrites it."
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_ingest_upload_ingest_upload_post"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/IngestUploadResult"
+                  },
+                  "title": "Response Ingest Upload Ingest Upload Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/ingest/stream/{job_id}": {
+      "get": {
+        "tags": [
+          "ingest"
+        ],
+        "summary": "Ingest Stream",
+        "description": "SSE progress for one upload's job — `{\"type\": \"started\"}`, zero or\nmore `{\"type\": \"progress\", \"done\": N, \"total\": M}` while\ningest_worker.py's embedding loop runs, then one terminal event:\n`{\"type\": \"done\", \"chunks\": N}` or `{\"type\": \"error\", ...}`.\nDeliberately NOT ownership-checked against app/agent/runtime/sessions.py-style records\n(this pipeline keeps no job directory) — `job_id` is a `uuid4().hex`,\nunguessable in practice, same posture as the chat results streams.",
+        "operationId": "ingest_stream_ingest_stream__job_id__get",
+        "parameters": [
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Job Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "Body_ingest_upload_ingest_upload_post": {
+        "properties": {
+          "files": {
+            "items": {
+              "type": "string",
+              "contentMediaType": "application/octet-stream"
+            },
+            "type": "array",
+            "title": "Files"
+          },
+          "topic": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Topic"
+          }
+        },
+        "type": "object",
+        "required": [
+          "files"
+        ],
+        "title": "Body_ingest_upload_ingest_upload_post"
+      },
+      "BudgetStatus": {
+        "properties": {
+          "scope": {
+            "type": "string",
+            "title": "Scope",
+            "description": "\"tenant\" (the whole organisation) or \"principal\" (this caller alone)."
+          },
+          "window": {
+            "type": "string",
+            "title": "Window",
+            "description": "\"day\" (rolling 24h) or \"month\" (the calendar month, UTC)."
+          },
+          "limit_usd": {
+            "type": "number",
+            "title": "Limit Usd",
+            "description": "The cap, after any per-tenant or per-person override."
+          },
+          "spent_usd": {
+            "type": "number",
+            "title": "Spent Usd",
+            "description": "Recorded spend inside the window."
+          },
+          "remaining_usd": {
+            "type": "number",
+            "title": "Remaining Usd",
+            "description": "What is left, counting in-flight turns for a tenant limit; never below 0."
+          },
+          "resets_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Resets At",
+            "description": "When a monthly window next starts from zero; null for the rolling day."
+          }
+        },
+        "type": "object",
+        "required": [
+          "scope",
+          "window",
+          "limit_usd",
+          "spent_usd",
+          "remaining_usd"
+        ],
+        "title": "BudgetStatus",
+        "description": "One spend limit that applies to the caller, with how much of it is used."
+      },
+      "CancelRequest": {
+        "properties": {
+          "thread_id": {
+            "type": "string",
+            "title": "Thread Id",
+            "description": "The conversation's thread id to cancel — whether it's actively streaming right now or paused at human_approval; POST /chat/cancel handles both cases from this one field."
+          }
+        },
+        "type": "object",
+        "required": [
+          "thread_id"
+        ],
+        "title": "CancelRequest"
+      },
+      "ChatRequest": {
+        "properties": {
+          "message": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Message",
+            "description": "The user's message to the agent."
+          },
+          "thread_id": {
+            "type": "string",
+            "title": "Thread Id",
+            "description": "Conversation id; reuse it across calls to keep memory."
+          },
+          "images": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Images",
+            "description": "Optional image URLs or data URIs to attach to this turn (GRAPH_PATTERNS.md pattern 44) — passed straight through to whichever model is configured behind CHAT_MODEL; a non-vision-capable model simply can't act on them. Never fetched or decoded by this app itself."
+          },
+          "require_approval": {
+            "type": "boolean",
+            "title": "Require Approval",
+            "description": "Ask for an approval before EVERY tool call, read-only ones included (`make chat-hitl`). Can only add approvals.",
+            "default": false
+          },
+          "unattended": {
+            "type": "boolean",
+            "title": "Unattended",
+            "description": "Nobody can answer an approval (the Telegram channel): the worker declines a pause and never approves it, and the conversation is left ready for the next message (GRAPH_PATTERNS.md 89).",
+            "default": false
+          },
+          "replay_key": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 200,
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Replay Key",
+            "description": "Makes this request one attempt however often it is sent: a second request for the same conversation with the same key streams the FIRST attempt's turn and starts none, for as long as its results stream lives. Scoped to the conversation, and so to its owner."
+          }
+        },
+        "type": "object",
+        "required": [
+          "message"
+        ],
+        "title": "ChatRequest"
+      },
+      "CreditBalance": {
+        "properties": {
+          "available": {
+            "type": "string",
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Available",
+            "description": "What may still be consumed right now: live (unexpired) credits minus any debt. Can be negative."
+          },
+          "debt": {
+            "type": "string",
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Debt",
+            "description": "Credits consumed beyond the balance, repaid first by the next grant; 0 if none."
+          },
+          "ledger": {
+            "type": "string",
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Ledger",
+            "description": "Every lot including expired ones not yet swept, plus debt: the ledger's own total."
+          },
+          "enforced": {
+            "type": "boolean",
+            "title": "Enforced",
+            "description": "Whether a turn is refused (insufficient_credits) when `available` is not positive."
+          }
+        },
+        "type": "object",
+        "required": [
+          "available",
+          "debt",
+          "ledger",
+          "enforced"
+        ],
+        "title": "CreditBalance",
+        "description": "The caller's tenant's wallet (packages/billing/src/credit_billing/credits.py). Exact decimals, serialised as strings:\na JSON number would round-trip through a float and a balance must not drift."
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "type": "array",
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "title": "HTTPValidationError"
+      },
+      "HealthResponse": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "title": "Status",
+            "default": "ok"
+          }
+        },
+        "type": "object",
+        "title": "HealthResponse"
+      },
+      "IngestUploadResult": {
+        "properties": {
+          "filename": {
+            "type": "string",
+            "title": "Filename",
+            "description": "The uploaded file's original name."
+          },
+          "job_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Job Id",
+            "description": "Poll/stream this at GET /ingest/stream/{job_id}. None if this file failed."
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error",
+            "description": "Set instead of job_id if THIS file failed (bad type, upload, or publish failure) — other files in the same request still succeed independently; see ingest_upload's own docstring."
+          }
+        },
+        "type": "object",
+        "required": [
+          "filename"
+        ],
+        "title": "IngestUploadResult"
+      },
+      "PendingApproval": {
+        "properties": {
+          "tool_calls": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Tool Calls",
+            "description": "The tool call(s) awaiting approval, same shape as the approval_required SSE event."
+          },
+          "resumable": {
+            "type": "boolean",
+            "title": "Resumable",
+            "description": "False if this checkpoint's state_schema_version no longer matches the running build — approve/reject would be refused; the caller should show it as unresumable, not a working button."
+          }
+        },
+        "type": "object",
+        "required": [
+          "tool_calls",
+          "resumable"
+        ],
+        "title": "PendingApproval"
+      },
+      "ReadinessResponse": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "title": "Status",
+            "description": "\"ready\" if every check passed, else \"degraded\"."
+          },
+          "checks": {
+            "additionalProperties": {
+              "type": "boolean"
+            },
+            "type": "object",
+            "title": "Checks",
+            "description": "Per-dependency reachability (app/adapters/inbound/api/health.py::check_dependencies)."
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Warnings",
+            "description": "Conditions worth a person's attention that do NOT make the API unready: an embedding-identity mismatch (retrieval from that collection is refused and degrades, but turns still run), a legacy collection adopted without proof, an ML-service model that is down. Never changes `status` or the HTTP code."
+          }
+        },
+        "type": "object",
+        "required": [
+          "status",
+          "checks"
+        ],
+        "title": "ReadinessResponse",
+        "description": "GET /health/ready's body — see app/adapters/inbound/api/health.py's module docstring for\nwhy this is a separate question from GET /health's liveness probe."
+      },
+      "ResumeRequest": {
+        "properties": {
+          "thread_id": {
+            "type": "string",
+            "title": "Thread Id",
+            "description": "The paused conversation's thread id."
+          },
+          "approved": {
+            "type": "boolean",
+            "title": "Approved",
+            "description": "Approve (true) or reject (false) the pending tool call(s)."
+          }
+        },
+        "type": "object",
+        "required": [
+          "thread_id",
+          "approved"
+        ],
+        "title": "ResumeRequest"
+      },
+      "SessionMessage": {
+        "properties": {
+          "role": {
+            "type": "string",
+            "title": "Role",
+            "description": "\"user\" or \"assistant\", or \"system\" for a compact_history breadcrumb noting that older turns were trimmed/summarized."
+          },
+          "text": {
+            "type": "string",
+            "title": "Text",
+            "description": "The message's text content."
+          }
+        },
+        "type": "object",
+        "required": [
+          "role",
+          "text"
+        ],
+        "title": "SessionMessage"
+      },
+      "SessionSummary": {
+        "properties": {
+          "thread_id": {
+            "type": "string",
+            "title": "Thread Id",
+            "description": "Reuse as ChatRequest.thread_id to continue this session."
+          },
+          "title": {
+            "type": "string",
+            "title": "Title",
+            "description": "The opening message that started this session, truncated."
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At",
+            "description": "When this thread_id was first seen."
+          },
+          "last_active_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Last Active At",
+            "description": "Most recent turn on this thread_id."
+          }
+        },
+        "type": "object",
+        "required": [
+          "thread_id",
+          "title",
+          "created_at",
+          "last_active_at"
+        ],
+        "title": "SessionSummary"
+      },
+      "UsageResponse": {
+        "properties": {
+          "total_tokens": {
+            "type": "integer",
+            "title": "Total Tokens",
+            "description": "All-time tokens recorded for this tenant."
+          },
+          "total_cost_usd": {
+            "type": "number",
+            "title": "Total Cost Usd",
+            "description": "All-time cost (USD) recorded for this tenant."
+          },
+          "last_24h_cost_usd": {
+            "type": "number",
+            "title": "Last 24H Cost Usd",
+            "description": "Cost recorded in the last rolling 24h — what the daily budget check sees."
+          },
+          "daily_budget_usd": {
+            "type": "number",
+            "title": "Daily Budget Usd",
+            "description": "MAX_COST_USD_PER_TENANT_PER_DAY — the ceiling last_24h_cost_usd is checked against."
+          },
+          "budgets": {
+            "items": {
+              "$ref": "#/components/schemas/BudgetStatus"
+            },
+            "type": "array",
+            "title": "Budgets",
+            "description": "Every spend limit that applies to THIS caller — the tenant's and the caller's own, overrides included — with how much is used, so they can see how close they are before being refused. Only the caller's own personal figures; never another person's."
+          },
+          "credits": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CreditBalance"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The tenant's credit wallet, or null when the deployment has credits off or this tenant has no wallet (it is then never charged or gated). Tenant-wide, like the cost figures above."
+          }
+        },
+        "type": "object",
+        "required": [
+          "total_tokens",
+          "total_cost_usd",
+          "last_24h_cost_usd",
+          "daily_budget_usd"
+        ],
+        "title": "UsageResponse",
+        "description": "GET /usage's body — this caller's tenant, all-time plus the same\nrolling-24h number budgets.check_tenant_daily checks, so a caller can see\nhow close they are to the daily budget without getting refused first."
+      },
+      "ValidationError": {
+        "properties": {
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "type": "array",
+            "title": "Location"
+          },
+          "msg": {
+            "type": "string",
+            "title": "Message"
+          },
+          "type": {
+            "type": "string",
+            "title": "Error Type"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "ctx": {
+            "type": "object",
+            "title": "Context"
+          }
+        },
+        "type": "object",
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError"
+      }
+    }
+  },
+  "tags": [
+    {
+      "name": "chat",
+      "description": "Start a turn, answer the approval it pauses on, or cancel it. A turn runs on an agent worker; these routes stream its events back."
+    },
+    {
+      "name": "sessions",
+      "description": "The caller's own past threads and their transcripts, for the given domain."
+    },
+    {
+      "name": "usage",
+      "description": "The caller's tenant spend and the limits that apply to it."
+    },
+    {
+      "name": "ingest",
+      "description": "Upload documents into the knowledge base. Each file is a job on its own queue, with a progress stream."
+    },
+    {
+      "name": "health",
+      "description": "Liveness and readiness. They need no identity."
+    },
+    {
+      "name": "web",
+      "description": "The built-in web UI, a single page. Not part of the API a client calls."
+    }
+  ]
+}
