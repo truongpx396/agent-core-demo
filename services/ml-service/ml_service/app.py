@@ -30,7 +30,7 @@ logger = logging.getLogger("ml_service")
 # `services/ml-service/openapi.json`; a test fails while it is stale and `make openapi` rewrites it. The version is the CONTRACT's, not
 # a release number: bump the minor when a change adds to the API, the major when it breaks a caller (CI's `openapi` job checks).
 API_TITLE = "Graph Agent Core ML Service"
-API_VERSION = "1.0.0"
+API_VERSION = "2.0.0"  # 2.0.0: the document was corrected (it said /metrics was JSON and /v1/embeddings and /v1/decide took no body)
 API_DESCRIPTION = """\
 The models the agent runs next to it, on CPU, behind one internal HTTP API: sentence embeddings, a reranker, a prompt-injection
 screen, and typed decisions (pick one label out of a served label set, or "none of these"). The app's `mlservice` adapter is the

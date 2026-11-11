@@ -3,7 +3,7 @@
   "info": {
     "title": "Graph Agent Core ML Service",
     "description": "The models the agent runs next to it, on CPU, behind one internal HTTP API: sentence embeddings, a reranker, a prompt-injection\nscreen, and typed decisions (pick one label out of a served label set, or \"none of these\"). The app's `mlservice` adapter is the\ncaller. It is an internal service with no authentication of its own, so it is never published; reach it only over the private network.\n\nA model that fails to load is that model's `failed` state, not the container's: `/health` stays 200 so Docker does not restart a\nprocess that is only missing a model, and `/health/models` says which one is down and when it is retried.\n",
-    "version": "1.0.0"
+    "version": "2.0.0"
   },
   "servers": [
     {
@@ -25,13 +25,11 @@
         "operationId": "health_health_get",
         "responses": {
           "200": {
-            "description": "Successful Response",
+            "description": "The process answers. It says nothing of the models.",
             "content": {
               "application/json": {
                 "schema": {
-                  "additionalProperties": true,
-                  "type": "object",
-                  "title": "Response Health Health Get"
+                  "$ref": "#/components/schemas/Health"
                 }
               }
             }
@@ -48,13 +46,11 @@
         "operationId": "health_models_health_models_get",
         "responses": {
           "200": {
-            "description": "Successful Response",
+            "description": "Per-model state and the label sets' index state.",
             "content": {
               "application/json": {
                 "schema": {
-                  "additionalProperties": true,
-                  "type": "object",
-                  "title": "Response Health Models Health Models Get"
+                  "$ref": "#/components/schemas/HealthModels"
                 }
               }
             }
@@ -71,10 +67,12 @@
         "operationId": "metrics_metrics_get",
         "responses": {
           "200": {
-            "description": "Successful Response",
+            "description": "Prometheus text exposition format.",
             "content": {
-              "application/json": {
-                "schema": {}
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
               }
             }
           }
@@ -88,12 +86,119 @@
         ],
         "summary": "Create Embeddings",
         "operationId": "create_embeddings_v1_embeddings_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "model": {
+                    "type": "string",
+                    "title": "Model"
+                  },
+                  "input": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "items": {
+                          "type": "string"
+                        },
+                        "type": "array"
+                      }
+                    ],
+                    "title": "Input"
+                  },
+                  "encoding_format": {
+                    "type": "string",
+                    "enum": [
+                      "float",
+                      "base64"
+                    ],
+                    "title": "Encoding Format",
+                    "default": "float"
+                  },
+                  "dimensions": {
+                    "type": "null",
+                    "title": "Dimensions"
+                  }
+                },
+                "type": "object",
+                "required": [
+                  "model",
+                  "input"
+                ],
+                "title": "EmbeddingsRequest",
+                "description": "The OpenAI embeddings request, as far as this service goes: nothing that truncates (`dimensions`) or batches past its limits."
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
           "200": {
-            "description": "Successful Response",
+            "description": "One embedding per input, in order.",
+            "headers": {
+              "X-Truncated-Items": {
+                "description": "How many inputs were cut to the model's length.",
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/EmbeddingsResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is malformed or past a documented limit; `error.code` says which.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`model_not_found`: no such model is served here.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "`internal`: the model failed on this request. It never takes the service down.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "`model_unavailable`: the model is loading, or failed and is waiting out its backoff.",
+            "headers": {
+              "Retry-After": {
+                "description": "Whole seconds until the model is worth asking again (its backoff left).",
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
               }
             }
           }
@@ -109,13 +214,11 @@
         "operationId": "list_models_v1_models_get",
         "responses": {
           "200": {
-            "description": "Successful Response",
+            "description": "The embedding models served here.",
             "content": {
               "application/json": {
                 "schema": {
-                  "additionalProperties": true,
-                  "type": "object",
-                  "title": "Response List Models V1 Models Get"
+                  "$ref": "#/components/schemas/ModelsResponse"
                 }
               }
             }
@@ -130,12 +233,130 @@
         ],
         "summary": "Decide",
         "operationId": "decide_v1_decide_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "model": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "const": "local"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "title": "Model"
+                  },
+                  "state": {
+                    "type": "string",
+                    "title": "State"
+                  },
+                  "questions": {
+                    "additionalProperties": {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "enum": [
+                            "choice",
+                            "score",
+                            "noul"
+                          ],
+                          "title": "Type"
+                        },
+                        "instructions": {
+                          "type": "string",
+                          "title": "Instructions"
+                        },
+                        "criteria": {
+                          "additionalProperties": {
+                            "type": "string"
+                          },
+                          "type": "object",
+                          "title": "Criteria"
+                        }
+                      },
+                      "type": "object",
+                      "required": [
+                        "type",
+                        "instructions",
+                        "criteria"
+                      ],
+                      "title": "ChoiceQuestion"
+                    },
+                    "type": "object",
+                    "title": "Questions"
+                  }
+                },
+                "type": "object",
+                "required": [
+                  "state",
+                  "questions"
+                ],
+                "title": "DecideRequest"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
           "200": {
-            "description": "Successful Response",
+            "description": "One answer per question, named as the question was.",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/DecideResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is malformed or past a documented limit; `error.code` says which.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "`input_too_long`: the text is past the limit.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A field or question type this service does not answer (`unsupported_*`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "`model_unavailable`: the model is loading, or failed and is waiting out its backoff.",
+            "headers": {
+              "Retry-After": {
+                "description": "Whole seconds until the model is worth asking again (its backoff left).",
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
               }
             }
           }
@@ -161,10 +382,34 @@
         },
         "responses": {
           "200": {
-            "description": "Successful Response",
+            "description": "One score per text, in input order.",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/RerankItem"
+                  },
+                  "type": "array",
+                  "title": "Response 200 Rerank Rerank Post"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "`model_unavailable`: the model is loading, or failed and is waiting out its backoff.",
+            "headers": {
+              "Retry-After": {
+                "description": "Whole seconds until the model is worth asking again (its backoff left).",
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
               }
             }
           },
@@ -200,10 +445,34 @@
         },
         "responses": {
           "200": {
-            "description": "Successful Response",
+            "description": "One verdict per text, in input order.",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/GuardItem"
+                  },
+                  "type": "array",
+                  "title": "Response 200 Prompt Guard Prompt Guard Post"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "`model_unavailable`: the model is loading, or failed and is waiting out its backoff.",
+            "headers": {
+              "Retry-After": {
+                "description": "Whole seconds until the model is worth asking again (its backoff left).",
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
               }
             }
           },
@@ -223,6 +492,304 @@
   },
   "components": {
     "schemas": {
+      "Answer": {
+        "properties": {
+          "type": {
+            "type": "string",
+            "const": "choice",
+            "title": "Type"
+          },
+          "choice": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Choice"
+          },
+          "x_evidence": {
+            "$ref": "#/components/schemas/Evidence"
+          },
+          "x_labelset_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "X Labelset Version"
+          }
+        },
+        "type": "object",
+        "required": [
+          "type",
+          "choice",
+          "x_evidence",
+          "x_labelset_version"
+        ],
+        "title": "Answer"
+      },
+      "DecideResponse": {
+        "properties": {
+          "model": {
+            "type": "string",
+            "title": "Model"
+          },
+          "answers": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/Answer"
+            },
+            "type": "object",
+            "title": "Answers"
+          },
+          "usage": {
+            "$ref": "#/components/schemas/DecideUsage"
+          },
+          "x_served_by": {
+            "type": "string",
+            "title": "X Served By"
+          }
+        },
+        "type": "object",
+        "required": [
+          "model",
+          "answers",
+          "usage",
+          "x_served_by"
+        ],
+        "title": "DecideResponse"
+      },
+      "DecideUsage": {
+        "properties": {
+          "input_tokens": {
+            "type": "integer",
+            "title": "Input Tokens"
+          },
+          "output_tokens": {
+            "type": "integer",
+            "title": "Output Tokens"
+          }
+        },
+        "type": "object",
+        "required": [
+          "input_tokens",
+          "output_tokens"
+        ],
+        "title": "DecideUsage"
+      },
+      "EmbeddingItem": {
+        "properties": {
+          "object": {
+            "type": "string",
+            "const": "embedding",
+            "title": "Object"
+          },
+          "index": {
+            "type": "integer",
+            "title": "Index"
+          },
+          "embedding": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "number"
+                },
+                "type": "array"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "title": "Embedding"
+          }
+        },
+        "type": "object",
+        "required": [
+          "object",
+          "index",
+          "embedding"
+        ],
+        "title": "EmbeddingItem"
+      },
+      "EmbeddingsResponse": {
+        "properties": {
+          "object": {
+            "type": "string",
+            "const": "list",
+            "title": "Object"
+          },
+          "model": {
+            "type": "string",
+            "title": "Model"
+          },
+          "data": {
+            "items": {
+              "$ref": "#/components/schemas/EmbeddingItem"
+            },
+            "type": "array",
+            "title": "Data"
+          },
+          "usage": {
+            "$ref": "#/components/schemas/EmbeddingsUsage"
+          }
+        },
+        "type": "object",
+        "required": [
+          "object",
+          "model",
+          "data",
+          "usage"
+        ],
+        "title": "EmbeddingsResponse"
+      },
+      "EmbeddingsUsage": {
+        "properties": {
+          "prompt_tokens": {
+            "type": "integer",
+            "title": "Prompt Tokens"
+          },
+          "total_tokens": {
+            "type": "integer",
+            "title": "Total Tokens"
+          }
+        },
+        "type": "object",
+        "required": [
+          "prompt_tokens",
+          "total_tokens"
+        ],
+        "title": "EmbeddingsUsage"
+      },
+      "ErrorBody": {
+        "properties": {
+          "code": {
+            "type": "string",
+            "title": "Code"
+          },
+          "message": {
+            "type": "string",
+            "title": "Message"
+          }
+        },
+        "type": "object",
+        "required": [
+          "code",
+          "message"
+        ],
+        "title": "ErrorBody"
+      },
+      "ErrorResponse": {
+        "properties": {
+          "error": {
+            "$ref": "#/components/schemas/ErrorBody"
+          }
+        },
+        "type": "object",
+        "required": [
+          "error"
+        ],
+        "title": "ErrorResponse",
+        "description": "The service's one error shape (contracts/ml-service.md); `error.code` is the stable part, the message is for a person."
+      },
+      "Evidence": {
+        "properties": {
+          "nearest": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Nearest"
+          },
+          "similarity": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Similarity"
+          },
+          "runner_up": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Runner Up"
+          },
+          "margin": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Margin"
+          },
+          "truncated": {
+            "type": "boolean",
+            "title": "Truncated"
+          }
+        },
+        "type": "object",
+        "required": [
+          "nearest",
+          "similarity",
+          "runner_up",
+          "margin",
+          "truncated"
+        ],
+        "title": "Evidence",
+        "description": "Facts, never a decision about them: a caller applies its own policy to the similarity and the margin."
+      },
+      "GuardItem": {
+        "properties": {
+          "index": {
+            "type": "integer",
+            "title": "Index"
+          },
+          "label": {
+            "type": "string",
+            "enum": [
+              "BENIGN",
+              "MALICIOUS"
+            ],
+            "title": "Label"
+          },
+          "malicious_score": {
+            "type": "number",
+            "title": "Malicious Score"
+          },
+          "text": {
+            "type": "string",
+            "title": "Text"
+          }
+        },
+        "type": "object",
+        "required": [
+          "index",
+          "label",
+          "malicious_score",
+          "text"
+        ],
+        "title": "GuardItem"
+      },
       "HTTPValidationError": {
         "properties": {
           "detail": {
@@ -235,6 +802,299 @@
         },
         "type": "object",
         "title": "HTTPValidationError"
+      },
+      "Health": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "const": "ok",
+            "title": "Status"
+          }
+        },
+        "type": "object",
+        "required": [
+          "status"
+        ],
+        "title": "Health"
+      },
+      "HealthModels": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "ok",
+              "degraded"
+            ],
+            "title": "Status"
+          },
+          "models": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/ModelState"
+            },
+            "type": "object",
+            "title": "Models"
+          },
+          "labelsets": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/LabelsetState"
+            },
+            "type": "object",
+            "title": "Labelsets"
+          }
+        },
+        "type": "object",
+        "required": [
+          "status",
+          "models",
+          "labelsets"
+        ],
+        "title": "HealthModels"
+      },
+      "LabelsetState": {
+        "properties": {
+          "state": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "State"
+          },
+          "version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Version"
+          },
+          "labels": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Labels"
+          },
+          "models": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Models"
+          }
+        },
+        "type": "object",
+        "title": "LabelsetState",
+        "description": "A label set: its version and labels and, per model, whether its index is loaded; or why the set was refused."
+      },
+      "ModelInfo": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "object": {
+            "type": "string",
+            "const": "model",
+            "title": "Object"
+          },
+          "owned_by": {
+            "type": "string",
+            "title": "Owned By"
+          },
+          "state": {
+            "type": "string",
+            "title": "State"
+          },
+          "dim": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dim"
+          },
+          "max_length": {
+            "type": "integer",
+            "title": "Max Length"
+          },
+          "needs_prefix": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object",
+            "title": "Needs Prefix"
+          },
+          "licence": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Licence"
+          },
+          "revision": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Revision"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "object",
+          "owned_by",
+          "state",
+          "dim",
+          "max_length",
+          "needs_prefix",
+          "licence",
+          "revision"
+        ],
+        "title": "ModelInfo"
+      },
+      "ModelState": {
+        "properties": {
+          "state": {
+            "type": "string",
+            "title": "State"
+          },
+          "roles": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Roles"
+          },
+          "licence": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Licence"
+          },
+          "file": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "File"
+          },
+          "revision": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Revision"
+          },
+          "ready_for_s": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ready For S"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "retry_in_s": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Retry In S"
+          }
+        },
+        "additionalProperties": true,
+        "type": "object",
+        "required": [
+          "state",
+          "roles"
+        ],
+        "title": "ModelState",
+        "description": "One model slot. The registry adds what it knows (`dim`, a loaded model's own facts), so more keys than these are normal."
+      },
+      "ModelsResponse": {
+        "properties": {
+          "object": {
+            "type": "string",
+            "const": "list",
+            "title": "Object"
+          },
+          "data": {
+            "items": {
+              "$ref": "#/components/schemas/ModelInfo"
+            },
+            "type": "array",
+            "title": "Data"
+          }
+        },
+        "type": "object",
+        "required": [
+          "object",
+          "data"
+        ],
+        "title": "ModelsResponse"
       },
       "PromptGuardRequest": {
         "properties": {
@@ -251,6 +1111,29 @@
           "texts"
         ],
         "title": "PromptGuardRequest"
+      },
+      "RerankItem": {
+        "properties": {
+          "index": {
+            "type": "integer",
+            "title": "Index"
+          },
+          "score": {
+            "type": "number",
+            "title": "Score"
+          },
+          "text": {
+            "type": "string",
+            "title": "Text"
+          }
+        },
+        "type": "object",
+        "required": [
+          "index",
+          "score",
+          "text"
+        ],
+        "title": "RerankItem"
       },
       "RerankRequest": {
         "properties": {

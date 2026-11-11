@@ -15,6 +15,7 @@ from pydantic import BaseModel
 
 from ml_service.batching import MicroBatcher
 from ml_service.http import unavailable
+from ml_service.schemas import RerankItem, errors
 from ml_service.settings import Settings
 
 
@@ -59,7 +60,9 @@ def load_rerank_service(settings: Settings) -> RerankService:
 router = APIRouter(tags=["rerank"])
 
 
-@router.post("/rerank", response_model=None)
+@router.post(
+    "/rerank", response_model=None, responses={200: {"description": "One score per text, in input order.", "model": list[RerankItem]}, **errors(503)}
+)
 async def rerank(req: RerankRequest, request: Request) -> JSONResponse | list[dict[str, Any]]:
     service: RerankService | None = request.app.state.registry.ready_value("rerank")
     if service is None:

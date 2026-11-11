@@ -27,6 +27,13 @@ from fastapi.responses import JSONResponse
 from ml_service.batching import MicroBatcher
 from ml_service.http import error, unavailable
 from ml_service.registry import ModelSpec
+from ml_service.schemas import (
+    EmbeddingsRequest,
+    EmbeddingsResponse,
+    ModelsResponse,
+    errors,
+    request_body,
+)
 from ml_service.settings import Settings
 from ml_service.text_model import TextModel, load_text_model
 
@@ -112,7 +119,19 @@ def _encode(vector: np.ndarray, encoding: str) -> Any:
 router = APIRouter(tags=["embeddings"])
 
 
-@router.post("/v1/embeddings", response_model=None)
+@router.post(
+    "/v1/embeddings",
+    response_model=None,  # a large array: it is not validated a second time on the way out (schemas.py)
+    responses={
+        200: {
+            "description": "One embedding per input, in order.",
+            "model": EmbeddingsResponse,
+            "headers": {"X-Truncated-Items": {"description": "How many inputs were cut to the model's length.", "schema": {"type": "integer"}}},
+        },
+        **errors(400, 404, 500, 503),
+    },
+    openapi_extra=request_body(EmbeddingsRequest),
+)
 async def create_embeddings(request: Request) -> JSONResponse:
     app = request.app
     settings: Settings = app.state.settings
@@ -153,7 +172,7 @@ async def create_embeddings(request: Request) -> JSONResponse:
     return JSONResponse(payload, headers={"X-Truncated-Items": str(sum(1 for r in results if r.truncated))})
 
 
-@router.get("/v1/models")
+@router.get("/v1/models", response_model=None, responses={200: {"description": "The embedding models served here.", "model": ModelsResponse}})
 async def list_models(request: Request) -> dict[str, Any]:
     registry = request.app.state.registry
     snapshot = registry.snapshot()

@@ -1,0 +1,3 @@
+GET /metrics removed the media type `application/json` for the response with the status `200`
+POST /v1/decide added required request body
+POST /v1/embeddings added required request body

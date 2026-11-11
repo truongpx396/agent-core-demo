@@ -40,6 +40,7 @@ from fastapi.responses import JSONResponse
 
 from ml_service.http import error
 from ml_service.labelsets import Labeller
+from ml_service.schemas import DecideRequest, DecideResponse, errors, request_body
 from ml_service.settings import Settings
 
 logger = logging.getLogger("ml_service.decide")
@@ -133,7 +134,12 @@ def _validate(body: Any, settings: Settings, labeller: Labeller) -> Parsed:
 router = APIRouter(tags=["decide"])
 
 
-@router.post("/v1/decide", response_model=None)
+@router.post(
+    "/v1/decide",
+    response_model=None,
+    responses={200: {"description": "One answer per question, named as the question was.", "model": DecideResponse}, **errors(400, 413, 422, 503)},
+    openapi_extra=request_body(DecideRequest),
+)
 async def decide(request: Request) -> JSONResponse:
     app = request.app
     try:
