@@ -7,11 +7,13 @@ served behind the front door to a different origin. Served live, the document na
 """
 from typing import Any
 
+from fastapi import FastAPI
+
 API_TITLE = "Graph Agent Core API"
 
 # The CONTRACT's version, not a release number: nothing else in the repository is versioned. Bump the minor when a change adds to the
 # API and the major when it breaks a client (the CI job `openapi` fails a break against main, see `make openapi-breaking`).
-API_VERSION = "1.0.0"
+API_VERSION = "2.0.0"  # 2.0.0: the document was corrected (it said the four streaming routes returned application/json)
 
 API_DESCRIPTION = """\
 A multi-tenant, multi-domain LangGraph RAG agent. A client starts a turn, reads its events as they stream, answers an approval the
@@ -38,3 +40,40 @@ TAGS: list[dict[str, Any]] = [
     {"name": "health", "description": "Liveness and readiness. They need no identity."},
     {"name": "web", "description": "The built-in web UI, a single page. Not part of the API a client calls."},
 ]
+
+
+def event_streams_as_items(spec: dict[str, Any]) -> None:
+    """Rewrite each `text/event-stream` body from `schema` to `itemSchema`, in place.
+
+    The routes answer with a hand-framed StreamingResponse and name an event model under `responses=` (events.py), which FastAPI puts under
+    `schema` next to a `type: string` it adds for a non-JSON class: a string that is also one of several objects, which nothing satisfies.
+    What the model describes is ONE frame's data, which is what `itemSchema` says (OpenAPI 3.2, and the shape FastAPI's own SSE support
+    writes into a 3.1 document): a frame's `data` is a JSON string whose `contentSchema` is the event. oasdiff reads it and reports a change
+    inside it ("item schema"), so the breaking-change check sees an event change.
+    """
+    for path_item in spec.get("paths", {}).values():
+        for operation in path_item.values():
+            for response in operation.get("responses", {}).values():
+                media = response.get("content", {}).get("text/event-stream")
+                if media is None or "schema" not in media:
+                    continue
+                event = {key: value for key, value in media.pop("schema").items() if key not in ("type", "title")}
+                media["itemSchema"] = {
+                    "type": "object",
+                    "required": ["data"],
+                    "properties": {"data": {"type": "string", "contentMediaType": "application/json", "contentSchema": event}},
+                }
+
+
+def install(app: FastAPI) -> None:
+    """Make `app.openapi()` return the document with this module's rewrites applied, once, to the dict FastAPI caches."""
+    original = app.openapi
+
+    def openapi() -> dict[str, Any]:
+        fresh = app.openapi_schema is None
+        spec = original()
+        if fresh:
+            event_streams_as_items(spec)
+        return spec
+
+    app.openapi = openapi  # type: ignore[method-assign]  # FastAPI's documented way to extend the document (docs: "Extending OpenAPI")

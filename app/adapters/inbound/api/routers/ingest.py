@@ -16,6 +16,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
 
 from app.adapters.inbound.api.deps import get_ctx
+from app.adapters.inbound.api.events import EventStreamResponse, IngestEvent
 from app.adapters.inbound.api.schemas import IngestUploadResult
 from app.core import metrics
 from app.core.config import (
@@ -164,7 +165,16 @@ async def ingest_upload(
     return results
 
 
-@router.get("/ingest/stream/{job_id}")
+@router.get(
+    "/ingest/stream/{job_id}",
+    response_class=EventStreamResponse,
+    responses={
+        200: {
+            "description": "A server-sent event stream: `data: <event>` frames until one terminal event (`done` or `error`). The schema is that of one event.",
+            "model": IngestEvent,
+        }
+    },
+)
 async def ingest_stream(job_id: str) -> StreamingResponse:
     """SSE progress for one upload's job — `{"type": "started"}`, zero or
     more `{"type": "progress", "done": N, "total": M}` while

@@ -41,7 +41,7 @@ from fastapi import (
 )
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.adapters.inbound.api import identity
+from app.adapters.inbound.api import identity, openapi
 from app.adapters.inbound.api.openapi import (
     API_DESCRIPTION,
     API_TITLE,
@@ -117,6 +117,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 
 app = FastAPI(title=API_TITLE, version=API_VERSION, description=API_DESCRIPTION, openapi_tags=TAGS, lifespan=lifespan)
+openapi.install(app)
 
 # A request with no valid identity (401), or one that cannot be checked right now (503), answered in the canonical envelope the front door
 # itself uses (app/adapters/inbound/api/identity.py).

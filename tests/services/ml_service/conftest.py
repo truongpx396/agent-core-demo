@@ -2,8 +2,6 @@
 ONNX session. Nothing here loads a model or opens a socket. It also holds every response any test in this directory gets from the app to
 the committed OpenAPI document (`every_response_conforms_to_the_openapi_document`)."""
 import functools
-import json
-from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 from urllib.parse import urlsplit
@@ -15,33 +13,18 @@ from fastapi.testclient import TestClient
 from jsonschema import Draft202012Validator
 from tokenizers import Tokenizer, models, pre_tokenizers
 
+from tests.openapi_conformance import load, validator
+
 pytest.importorskip("prometheus_client", reason="ml_service.metrics needs prometheus-client (requirements-dev.txt / the CI test job)")
 
 # FastAPI serves these itself and never lists them in the document it serves.
 FRAMEWORK_ROUTES = {"/openapi.json", "/docs", "/docs/oauth2-redirect", "/redoc"}
-DOCUMENT = json.loads((Path(__file__).resolve().parents[3] / "services" / "ml-service" / "openapi.json").read_text(encoding="utf-8"))
+DOCUMENT = load("services/ml-service/openapi.json")
 
 
-def _closed(node: Any) -> Any:
-    """The document's objects that list `properties` and say nothing of `additionalProperties` are closed here, so a field the code sends and
-    the document lacks fails (a client reading the document would not know it exists)."""
-    if isinstance(node, dict):
-        out = {key: _closed(value) for key, value in node.items()}
-        if out.get("type") == "object" and "properties" in out and "additionalProperties" not in out:
-            out["additionalProperties"] = False
-        return out
-    if isinstance(node, list):
-        return [_closed(item) for item in node]
-    return node
-
-
-COMPONENTS = _closed(DOCUMENT["components"])  # once: a per-request walk of this slowed the supervisor tests' timing into flaking
-
-
-@functools.cache
+@functools.cache  # built once per (route, status): a per-request rebuild slowed the supervisor tests' timing into flaking
 def _validator(path: str, method: str, status: int) -> Draft202012Validator:
-    schema = DOCUMENT["paths"][path][method]["responses"][str(status)]["content"]["application/json"]["schema"]
-    return Draft202012Validator({"components": COMPONENTS, **_closed(schema)})
+    return validator(DOCUMENT, DOCUMENT["paths"][path][method]["responses"][str(status)]["content"]["application/json"]["schema"])
 
 
 def conforms(method: str, url: Any, response: httpx.Response) -> None:

@@ -13,11 +13,13 @@ import hashlib
 import json
 import uuid
 from collections.abc import AsyncIterator
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 
 from app.adapters.inbound.api.deps import get_ctx, get_domain
+from app.adapters.inbound.api.events import ChatEvent, EventStreamResponse
 from app.adapters.inbound.api.schemas import (
     CancelRequest,
     ChatRequest,
@@ -36,6 +38,17 @@ from app.core.security import SecurityCtx
 from app.ports.outbound.jobs import RESULTS_STREAM_TTL_SECONDS, turn_queue
 
 router = APIRouter()
+
+# What the document says of every route here: the body is a stream of events, and the schema is that of ONE event (events.py).
+_EVENT_STREAM: dict[str, Any] = {
+    "response_class": EventStreamResponse,
+    "responses": {
+        200: {
+            "description": "A server-sent event stream: `data: <event>` frames until one terminal event (`done`, `error` or `approval_required`). The schema is that of one event.",
+            "model": ChatEvent,
+        }
+    },
+}
 
 
 def _queued_sse_response(
@@ -110,13 +123,13 @@ async def _require_conversation_owner(
         raise HTTPException(status_code=404, detail="session not found")
 
 
-@router.post("/chat/stream/queued", tags=["chat"])
+@router.post("/chat/stream/queued", tags=["chat"], **_EVENT_STREAM)
 async def chat_stream_queued(
     req: ChatRequest, ctx: SecurityCtx = Depends(get_ctx), domain: str = Depends(get_domain)
 ) -> StreamingResponse:
     """Same SSE event vocabulary an in-process `astream_events_turn` would
-    produce (token, tool_start, tool_end, citations, followups,
-    approval_required, error, done), but this process never runs the graph
+    produce (token, tool_start, tool_end, retry, compacted, citations,
+    followups, approval_required, error, done), but this process never runs the graph
     itself — it publishes the turn onto a shared Redis Stream and streams
     back whatever a separate `agent_worker.py` process publishes to this
     turn's results stream (pattern 43, app/adapters/outbound/redis/queue.py).
@@ -182,7 +195,7 @@ async def chat_stream_queued(
     return _queued_sse_response(request_id)
 
 
-@router.post("/chat/resume", tags=["chat"])
+@router.post("/chat/resume", tags=["chat"], **_EVENT_STREAM)
 async def chat_resume(
     req: ResumeRequest, ctx: SecurityCtx = Depends(get_ctx), domain: str = Depends(get_domain)
 ) -> StreamingResponse:
@@ -213,7 +226,7 @@ async def chat_resume(
     return _queued_sse_response(request_id)
 
 
-@router.post("/chat/cancel", tags=["chat"])
+@router.post("/chat/cancel", tags=["chat"], **_EVENT_STREAM)
 async def chat_cancel(
     req: CancelRequest, ctx: SecurityCtx = Depends(get_ctx), domain: str = Depends(get_domain)
 ) -> StreamingResponse:
