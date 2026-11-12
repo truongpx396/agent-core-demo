@@ -21,7 +21,7 @@ A diagram is a map, not the contract. The text under each one names the code tha
 
 ### 1. Runtime topology
 
-The processes and how a request reaches them. Every chat client, the web UI, the CLI and Telegram alike, goes through the front door and the queue; nothing runs the graph inside a client's process and nothing but the API writes to the queue (patterns 89 and 91). The ways in that carry no token are few and each is bounded: the **sign-in** goes through Caddy to Casdoor, with the credential endpoints charged to the caller's network address (nobody has a token yet, so there is nothing to verify); the payment **webhook** is charged the same way; the **MCP gateway** verifies its own tokens and only reads; and the **Telegram bot's own listener** (webhook mode, and the page a login returns to) is authenticated by what it carries and is not behind the door. Which process touches which store is in [section 5](#5-where-state-lives).
+The processes and how a request reaches them. Every chat client, the web UI, the CLI and Telegram alike, goes through the front door and the queue; nothing runs the graph inside a client's process and nothing but the API writes to the queue (patterns 89 and 91). The ways in that carry no token are few and each is bounded: the **sign-in** goes through Caddy to Casdoor, with the credential endpoints charged to the caller's network address (nobody has a token yet, so there is nothing to verify); the payment **webhook** is charged the same way; the **MCP gateway** verifies its own tokens and only reads; and the **Telegram bot's own listener** (webhook mode, and the page a login returns to) is routed by Caddy to the bot, authenticated by what it carries (a secret header, a one-time state), and charged to the caller's address like the other tokenless routes. Which process touches which store is in [section 5](#5-where-state-lives).
 
 ```mermaid
 flowchart LR
@@ -59,7 +59,8 @@ flowchart LR
     ui -.->|"get a token: through Caddy,<br/>credentials charged per address"| caddy
     mcpc -.->|"get a token"| caddy
     caddy -.->|"sign-in"| casdoor
-    tg -.->|"webhook: a secret header,<br/>no token, not behind the door"| ui
+    tg -.->|"webhook: a secret header, no token"| caddy
+    caddy -.->|"/telegram/*, charged per address"| ui
     caddy -->|"asks about every request:<br/>a token, or for a tokenless one its address"| authlimit
     authlimit -.->|"signing keys"| casdoor
     caddy -->|"signed identity"| api
@@ -77,7 +78,7 @@ flowchart LR
 ```
 
 - The API and the workers share no memory, only Redis and Postgres, so the tier that holds SSE connections and the tier that runs turns scale on their own (pattern 43).
-- The production compose file ships `api`, `agent-worker`, `ingest-worker`, PgBouncer, Postgres, Redis, Qdrant, LiteLLM and `ml-service` behind Caddy. Casdoor, the MCP gateway, Langfuse, MinIO, crawl4ai and OpenSandbox are in the dev stack only, and the production Caddyfile is not yet wired to authlimit ([README](README.md#-deploying-to-production)).
+- The production compose file ships the same front door as the dev stack (pattern 98): Caddy on three real names, `authlimit`, Casdoor and its own Postgres, the MCP gateway, and the Telegram bot as an opt-in service, in front of `api`, `agent-worker`, `ingest-worker`, PgBouncer, Postgres, Redis, Qdrant, LiteLLM and `ml-service`. Langfuse, MinIO, crawl4ai and OpenSandbox are in the dev stack only. Both stacks' Caddyfiles import one routing file, `deploy/caddy/gateway.caddy` ([deploy/README.md](deploy/README.md)).
 - The README's [architecture diagram](README.md#-architecture) draws the same system at node level, including the upload pipeline.
 
 ### 2. The rings: ports and adapters
@@ -301,7 +302,8 @@ flowchart LR
     deploy -->|"SSH, pull, redeploy"| appdrop_sg
 
     subgraph appdrop_sg["App droplet: docker-compose.prod.yml"]
-        caddy["Caddy<br/>TLS, balances the api replicas"]
+        caddy["Caddy<br/>TLS on three names, balances the api replicas"]
+        door["authlimit x2, Casdoor, mcp-gateway,<br/>telegram-bot (opt-in)"]
         procs["api xN, agent-worker xN, ingest-worker<br/>one image"]
         pgb["PgBouncer"]
         pg[("Postgres")]
@@ -321,6 +323,7 @@ flowchart LR
     llm[("LLM provider<br/>any OpenAI-compatible endpoint")]
     spaces[("DigitalOcean Spaces")]
 
+    caddy -->|"asks about every request"| door
     caddy --> procs
     procs --> pgb --> pg
     procs --> rd

@@ -625,7 +625,7 @@ Full runbook, scaling, backups, rollback and teardown: **[deploy/README.md](depl
 
 ### 🚨 Four things that bite on a first deploy
 
-- 🔓 **Production authentication is not wired.** `deploy/env/prod.env.example` sets `AUTH_MODE=identity`, but the prod compose and Caddyfile don't include the authlimit service, so requests get a 401 or 503 until it is wired (spec 018). `AUTH_MODE=headers` trusts `X-Tenant-Id`/`X-Principal-Id` as sent: use it only behind a gateway of your own that sets both and discards client copies ([Known gaps](#-roadmap-and-known-gaps)).
+- 🔓 **Production runs in identity mode behind the same front door as the dev stack** (`docker-compose.prod.yml`: Caddy on three real names, `authlimit`, Casdoor, the MCP gateway; [deploy/README.md](deploy/README.md)). A domain is required, and `AUTH_MODE=headers` is never set there. `AUTH_MODE=headers` trusts `X-Tenant-Id`/`X-Principal-Id` as sent: use it only for local runs, or behind a gateway of your own that sets both and discards client copies.
 - 📦 **The images ship no installer.** Built in stages with uv, the prod `api`, worker and `ml-service` containers run read-only with all capabilities dropped, so a change that writes to the image filesystem at runtime fails ([ENGINEERING_PATTERNS.md](ENGINEERING_PATTERNS.md) pattern 76).
 - 🗄️ **SQL migrations aren't applied to an existing volume.** `postgres-init/*.sql` runs only on a fresh volume and the deploy only syncs the files ([Database migrations](#database-migrations)).
 - 📒 **Upgrading from a release whose spend caps read `usage_ledger`:** apply `postgres-init/19`, run `make usage-events-carry-over` (`ARGS=--dry-run` first), deploy, then run it once more. Skipping the first makes every cap read fail open; skipping the second makes a monthly cap forget the month so far ([runbook](deploy/README.md#upgrading-carry-the-ledgers-history-into-the-usage-events)).
@@ -868,7 +868,6 @@ make/                     host.mk, admin.mk, evals.mk, security.mk, test.mk: tar
 **❌ Not built** (the reasoning is in [GRAPH_PATTERNS.md](GRAPH_PATTERNS.md#extending-further)):
 
 - **Crash-restart and autoscaling for workers.** They shut down gracefully and compose can `--scale` them, but nothing restarts a crashed one or scales on queue depth.
-- **Authentication in the shipped production proxy.** The API verifies a signed identity and the front door that issues it runs in the local stack, but the production Caddyfile and compose aren't wired to it.
 - **Per-action authorization within a tenant.** Every principal in a tenant has the same write capability.
 - **Several domains in one process.** Each domain is its own process; only the API routes per request.
 - **A vision model that also does tool calling.** Small local vision models do one or the other; the `vision` alias is a slot, not a verified default. Moderation screens text only, and only the HTTP API accepts images.

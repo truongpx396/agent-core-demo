@@ -233,7 +233,9 @@ def main(argv: list[str] | None = None) -> None:
     except (CasdoorError, httpx.HTTPError) as exc:
         sys.exit(f"mcp-gateway-bootstrap: {exc}")
 
-    print("\nRegister each server in Claude Code (a pre-registered client; trust the local CA first: make mcp-gateway-ca):\n")
+    issuer = os.environ.get("MCP_GATEWAY_ISSUER", "https://auth.localhost:8443").rstrip("/")
+    local = ".localhost" in issuer  # the development stack's names, signed by Caddy's own CA; a real deployment's are not
+    print("\nRegister each server in Claude Code (a pre-registered client" + ("; trust the local CA first: make mcp-gateway-ca" if local else "") + "):\n")
     for label, organization, path, client_id, user, user_password in commands:
         print(f"  claude mcp add --transport http --callback-port {args.callback_port} --client-id {client_id} {label} {public}{path}")
         shown = user_password if user_password else "(already existed: password unchanged)"
@@ -242,7 +244,7 @@ def main(argv: list[str] | None = None) -> None:
     for tenant, api_client_id in api_clients:
         print(f"  {tenant}: client id {api_client_id}")
     print(f"\nAccess tokens last {args.token_hours} hours. `make authlimit-revoke TENANT=<tenant> SUB=<subject>` voids a person's tokens at once.")
-    print("The browser login is https://auth.localhost:8443 (Casdoor, signed by Caddy's local CA).")
+    print(f"The browser login is {issuer} (Casdoor" + (", signed by Caddy's local CA" if local else "") + ").")
 
 
 if __name__ == "__main__":

@@ -4,7 +4,9 @@ Provisions TWO droplets (via `deploy/terraform/`):
 
 - The **app droplet**, running a lean production subset of this app's stack
   (`docker-compose.prod.yml`): api + agent-worker + ingest-worker + postgres
-  + redis + qdrant + litellm + ml-service, fronted by Caddy, plus a handful
+  + redis + qdrant + litellm + ml-service, fronted by the same front door as
+  the development stack (Caddy on three real names, `authlimit`, Casdoor and
+  the MCP gateway; the Telegram bot is opt-in), plus a handful
   of lightweight observability sidecars (node-exporter, cadvisor,
   otel-collector-agent, promtail). It deliberately excludes local Ollama,
   Langfuse, open-webui, and MinIO from `docker-compose.yml` — see that
@@ -93,7 +95,8 @@ sudo mkdir -p /opt/graph-agent-core   # cloud-init already does this; harmless i
 cd /opt/graph-agent-core
 # paste this repo's deploy/env/prod.env.example content into .env and fill in real
 # values (POSTGRES_PASSWORD, LITELLM_MASTER_KEY, LLM_API_KEY, MINIO_*,
-# CORS_ALLOWED_ORIGINS, APP_IMAGE/ML_IMAGE, OBS_COLLECTOR_ENDPOINT/
+# CORS_ALLOWED_ORIGINS, APP_IMAGE/ML_IMAGE/AUTHLIMIT_IMAGE, API_DOMAIN/AUTH_DOMAIN/
+# MCP_DOMAIN, CASDOOR_DB_PASSWORD/CASDOOR_ADMIN_PASSWORD, OBS_COLLECTOR_ENDPOINT/
 # LOKI_PUSH_HOST from `terraform output observability_private_ipv4`, ...)
 # — see that file's own comments.
 nano .env
@@ -114,10 +117,16 @@ chmod 600 .env
 
 ### 5. First deploy
 
+**Before it, do [step 7](#7-point-dns-at-them-required)** (DNS for the three names: Caddy asks Let's Encrypt for a certificate for each on first
+use, and a name that does not resolve yet is retried with backoff and counts against Let's Encrypt's failure limits). **After it, do
+[steps 8 and 9](#8-create-authlimits-signing-keys-once)**: until the signing keys exist `authlimit` restarts in a loop and every route that needs
+the front door answers 502 (it fails closed); `/health` and the web page stay up, so the deploy's own readiness check passes.
+
 Merge to `main`. Once `CI` passes, `deploy.yml` fires automatically and
 runs two independent jobs:
-- `deploy`: builds the app + ml-service images, pushes them to GHCR,
-  rsyncs `deploy/compose/docker-compose.prod.yml`, `deploy/caddy/Caddyfile`,
+- `deploy`: builds the app + ml-service + authlimit images, pushes them to GHCR,
+  rsyncs `deploy/compose/docker-compose.prod.yml`, `deploy/caddy/Caddyfile`
+  and `gateway.caddy` (Caddy mounts the directory),
   `deploy/litellm/litellm-config.prod.yaml`, `postgres-init/` and
   `observability/` to the app droplet (keeping their repo paths, so the
   droplet mirrors the repo layout), then `docker compose pull && up -d`.
@@ -235,15 +244,59 @@ principal, conversation or metadata reaches the model backend**: the end user is
 is only safe while LiteLLM keeps it to itself, and that is a property of the image, not of this repo. The
 stop's HTTP status changed between releases once, and the app's checks were written against 1.94.1.
 
-### 7. Point DNS at them (optional)
+### 7. Point DNS at them (required)
 
-If you set `DOMAIN_NAME` in the app droplet's `.env`, create an A (and
-AAAA, if you use one) record pointing it at the `reserved_ip` output.
-Likewise, if you set `OBS_DOMAIN_NAME` in the observability droplet's
-`.env`, point another record at `observability_reserved_ip`. Caddy (on
-each droplet) requests a real cert automatically on first request to its
-own host — see `Caddyfile`'s/`Caddyfile.observability`'s own comments for
-the no-domain HTTP-only fallback.
+Create an A (and AAAA, if you use one) record for each of `API_DOMAIN`, `AUTH_DOMAIN` and `MCP_DOMAIN` in the app droplet's `.env`, all pointing at the
+`reserved_ip` output (they share one droplet and one Caddy). A domain is **required** for the app droplet: identity needs an https issuer, so there
+is no plain-HTTP fallback, and `docker compose` refuses to start without the three names. Caddy requests a real certificate for each automatically on
+first use; ports 80 and 443 are already open (`main.tf`'s firewall).
+
+Likewise, if you set `OBS_DOMAIN_NAME` in the observability droplet's `.env`, point another record at `observability_reserved_ip` (that one is still
+optional: see `Caddyfile.observability` for its no-domain HTTP-only fallback).
+
+### 8. Create authlimit's signing keys (once)
+
+`authlimit` signs a 30-second identity for the API with an Ed25519 key kept in a host directory outside the repo and the image, mode 700, owned by the
+container's user (uid 65532). Make it once, after the first deploy has pulled the image (the `latest` tag is the one just pushed):
+
+```
+cd /opt/graph-agent-core
+image="$(grep '^AUTHLIMIT_IMAGE=' .env | cut -d= -f2-)"
+sudo install -d -m 700 -o 65532 -g 65532 /opt/graph-agent-core/authlimit-keys
+docker run --rm --user 65532:65532 -v /opt/graph-agent-core/authlimit-keys:/keys "$image:latest" keys init --dir /keys
+dc restart authlimit
+dc ps authlimit            # both replicas healthy
+```
+
+`keys rotate --overlap 10m` (the same `docker run`, with `keys rotate`) adds a new key, publishes it, and retires the old one after the overlap; the
+replicas and the API pick it up without a restart. The directory is a secret: back it up with the `.env`, and never put it in the repo or an image.
+If it is lost, run `keys init` again: every replica and the API fetch the new public key, and requests in flight with the old identity (30 seconds) fail once.
+
+### 9. Create the tenants and sign-in clients (once)
+
+Casdoor starts empty. `mcp_gateway_bootstrap` creates, idempotently, one Casdoor organization per tenant, the chat API's public sign-in client for it
+(`api-<tenant>`, which the web page, the CLI and the Telegram bot look up by that name), the MCP applications, and one demo user per organization. It runs
+inside the MCP gateway container, where Casdoor is `http://casdoor:8000`, and needs the admin password from your shell's environment, never as an argument:
+
+```
+cd /opt/graph-agent-core
+export CASDOOR_ADMIN_PASSWORD="$(grep '^CASDOOR_ADMIN_PASSWORD=' .env | cut -d= -f2-)"
+dc exec -T -e CASDOOR_ADMIN_PASSWORD mcp-gateway python -m scripts.tools.mcp_gateway_bootstrap --tenant ecorp --token-hours 24 \
+  [--tenant acme ...] [--telegram-link-url https://<API_DOMAIN>]
+unset CASDOOR_ADMIN_PASSWORD
+```
+
+- It prints each demo user's password **once**. Those are demonstration accounts: sign in to `https://<AUTH_DOMAIN>` as `built-in/admin`, create your
+  real people, and disable the demo ones. A shorter `--token-hours` with a refresh token is the production recommendation (the default is seven
+  days; `authlimit revoke` voids a person's tokens at once, see the keys image's `revoke` command).
+- `--telegram-link-url` registers the bot's `/telegram/link/callback` as a redirect URI of every tenant's client; leave it out unless the bot links accounts.
+- **The admin UI shares the sign-in host.** Anyone can reach `https://<AUTH_DOMAIN>/login`, so the admin password (required, generated) is what protects every
+  tenant. Narrowing it by source address is not done: Caddy would need Casdoor's admin paths, which this repo does not enumerate. The sign-in routes are
+  charged per address by authlimit (`routes.json` `address_limits`), which slows guessing; it does not stop it, and it does not stop an attacker locking
+  an account (Casdoor locks one after five wrong passwords).
+
+**The Telegram bot** is opt-in: set its variables in `.env` (see `prod.env.example`), then `dc --profile telegram up -d telegram-bot`. In `poll` mode (the default) it
+needs nothing public; in `webhook` mode Caddy routes `https://<API_DOMAIN>/telegram/webhook` to it, which Telegram calls with the secret you set.
 
 ## Everyday operations
 
@@ -257,6 +310,7 @@ cd /opt/graph-agent-core
 alias dc='docker compose --project-directory . -f deploy/compose/docker-compose.prod.yml'
 dc ps
 dc logs -f api
+dc logs -f authlimit caddy         # the front door: a 429 is a rate limit, a 401 a token, a 502 on a checked route authlimit not ready
 dc up -d --scale agent-worker=3   # scale workers (GRAPH_PATTERNS.md pattern 43)
 ```
 

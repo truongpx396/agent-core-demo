@@ -82,6 +82,19 @@ jobs:
           provenance: mode=max
           sbom: true
 
+      # The front door's edge service (specs/018 T069, pattern 98): a Go binary with its own module and Dockerfile, the same image the development stack builds.
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: services/authlimit
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/graph-agent-core-authlimit:${{ steps.tag.outputs.value }}
+            ghcr.io/${{ github.repository_owner }}/graph-agent-core-authlimit:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          provenance: mode=max
+          sbom: true
+
   deploy:
     needs: build-and-push
     runs-on: ubuntu-latest
@@ -125,10 +138,12 @@ jobs:
         run: |
           # -R keeps each file's repo path (deploy/compose/..., deploy/caddy/...),
           # so the droplet mirrors the repo layout and the compose file's
-          # repo-root-relative mounts (./deploy/caddy/Caddyfile,
-          # ./postgres-init, ...) resolve identically there and in dev.
+          # repo-root-relative mounts (./deploy/caddy, ./postgres-init, ...)
+          # resolve identically there and in dev. Caddy mounts the whole
+          # directory because Caddyfile imports gateway.caddy: ship both.
           rsync -azR -e "ssh -i ~/.ssh/deploy_key -o UserKnownHostsFile=~/.ssh/known_hosts" \
-            deploy/compose/docker-compose.prod.yml deploy/caddy/Caddyfile \
+            deploy/compose/docker-compose.prod.yml \
+            deploy/caddy/Caddyfile deploy/caddy/gateway.caddy \
             deploy/litellm/litellm-config.prod.yaml \
             deploy@${{ secrets.DROPLET_HOST }}:/opt/graph-agent-core/
           rsync -az --delete -e "ssh -i ~/.ssh/deploy_key -o UserKnownHostsFile=~/.ssh/known_hosts" \
@@ -162,11 +177,15 @@ jobs:
           # after the new `up -d` succeeded, so a failed deploy never
           # strips the previous files.
 
-      - name: Wait for /health/ready
+      # Through the front door, as a client reaches it: the API publishes no host port (docker-compose.prod.yml), so a curl to localhost:8000 could
+      # never succeed. This proves Caddy's certificate, the route and the API at once. API_DOMAIN is read from the droplet's own .env, which CI never
+      # sees. 120 s: the first deploy also waits for Let's Encrypt to issue the three certificates.
+      - name: Wait for /health/ready through the front door
         run: |
           ssh -i ~/.ssh/deploy_key -o UserKnownHostsFile=~/.ssh/known_hosts \
             deploy@${{ secrets.DROPLET_HOST }} \
-            "timeout 90 bash -c 'until curl -sf http://localhost:8000/health/ready; do sleep 3; done'"
+            "cd /opt/graph-agent-core && api=\$(grep '^API_DOMAIN=' .env | cut -d= -f2-) && \
+             timeout 120 bash -c \"until curl -sf https://\$api/health/ready; do sleep 3; done\""
 
   # Independent of build-and-push/deploy above — this stack (Prometheus/
   # Loki/Grafana/Alertmanager/otel-collector) only ever uses off-the-shelf

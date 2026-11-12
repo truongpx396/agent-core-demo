@@ -1,61 +1,68 @@
-# Reverse proxy + TLS termination for the `api` service (docker-compose.prod.yml).
+# The production entry of the front door (docker-compose.prod.yml): TLS from Let's Encrypt on three real names, and the API's replicas behind the
+# check. The routing is gateway.caddy's, the same file the development stack's Caddyfile.gateway imports, so what authlimit decides in
+# production is what the smoke checks decide in development.
 #
-# No explicit `email` global option for Let's Encrypt registration — Let's
-# Encrypt issues certs fine without one, you just don't get
-# renewal-problem notices.
+# The three names are required (compose refuses to start without them): identity needs an https issuer, so there is no plain-HTTP fallback. Each
+# needs an A/AAAA record at the droplet's reserved IP (deploy/README.md, "Point DNS at them"), and ports 80 and 443 reachable from the internet
+# (deploy/terraform's firewall already opens both): 80 is for Let's Encrypt's challenge and the redirect to https.
 #
-# CADDY_SITE_ADDRESS (docker-compose.prod.yml) is already resolved to a
-# real, non-empty value before it gets here — NOT `{$DOMAIN_NAME:-:80}`
-# resolved by Caddy's own placeholder syntax: verified directly that its
-# default only fires on a completely UNSET env var, not one set-but-empty
-# (exactly what `DOMAIN_NAME=` in .env produces), which would otherwise
-# leave the site address blank and corrupt this whole block into an
-# invalid global-options block instead of a site block. See that file's
-# own comment for the fix (compose's `:-`, unlike Caddy's, treats
-# empty-and-unset the same). Net effect unchanged: a real DOMAIN_NAME gets
-# a real Let's Encrypt certificate (needs its DNS A/AAAA record already
-# pointed at deploy/terraform's reserved_ip output, and ports 80/443
-# reachable from the internet — both already true per that module's
-# firewall); empty means plain HTTP on `:80` for any hostname/IP — no cert
-# to issue for a bare IP, so this is the deliberate fallback, not a bug:
-# verified against Caddy's own docs that ACME can't issue a cert for an IP
-# address at all.
-{$CADDY_SITE_ADDRESS} {
+#   API_DOMAIN   the chat API and the web page; the audience of every token (AUTHLIMIT_AUDIENCE is https://<it>)
+#   AUTH_DOMAIN  Casdoor: the issuer of every token (AUTHLIMIT_ISSUER is https://<it>), where people sign in
+#   MCP_DOMAIN   the MCP gateway's read-only tools
+#
+# Behind a CDN (Cloudflare) later: `trusted_proxies` and `client_ip_headers` in a global `servers` block make `{client_ip}` the address behind it,
+# which is what authlimit charges the address limits to; authlimit itself changes not at all.
+{
+}
+
+# The API's replicas. `dynamic a` re-resolves the `api` service name every `refresh` and treats every A record Docker Compose's embedded DNS returns
+# as a live upstream: that is what makes `docker compose up -d --scale api=N` load-balance at all (a static `api:8000` only ever reaches ONE of
+# the N replicas). Safe at the default of one replica too: one A record behaves like a static upstream.
+(api_proxy) {
 	reverse_proxy {
-		# `dynamic a` re-resolves the `api` service name on every
-		# `refresh` interval and treats every A record Docker Compose's
-		# embedded DNS returns as a live upstream — the actual mechanism
-		# that makes `docker compose up -d --scale api=N` (prod
-		# compose file) load-balance at all (a single static
-		# `reverse_proxy api:8000` — what this used to be — only ever
-		# reaches ONE of the N replicas). Safe at the current default of
-		# one replica too: one A record behaves identically to a static
-		# upstream, so this doesn't force scaling a decision.
 		dynamic a {
 			name api
 			port 8000
 			refresh 5s
 		}
 
-		# Active health check so a replica that's draining (SIGTERM,
-		# see docker-compose.prod.yml's `api` stop_grace_period) or
-		# still starting up stops receiving new requests quickly,
-		# rather than only being caught passively after a failed request.
+		# Active health check, so a replica that is draining (SIGTERM, see docker-compose.prod.yml's `api` stop_grace_period) or still starting up
+		# stops receiving new requests quickly instead of only being caught after a failed request.
 		health_uri /health/ready
 		health_interval 10s
 
-		# SSE (POST /chat/stream/queued) needs the proxy to not buffer/
-		# chunk-coalesce the response — Caddy streams by default, but
-		# flush_interval -1 makes that explicit rather than relying on
-		# the default heuristic. (The payment webhook's per-address limit,
-		# app/adapters/inbound/api/rate_limit.py, keys on the connecting address, which
-		# behind this proxy is the proxy's own; per-tenant and per-person
-		# turn limits are the front door's, services/authlimit.)
+		# SSE (POST /chat/stream/queued) needs the proxy to not buffer or chunk-coalesce the response: Caddy streams by default, and this makes
+		# it explicit instead of relying on the default heuristic.
 		flush_interval -1
 	}
+}
 
+# The Telegram bot's own listener (the `telegram-bot` service, profile `telegram`). Until it runs, its two routes answer 502 and nothing else changes.
+(telegram_proxy) {
+	reverse_proxy telegram-bot:8081
+}
+
+import gateway.caddy
+
+{$API_DOMAIN} {
+	import api_site
 	encode gzip
+	log {
+		output stdout
+		format json
+	}
+}
 
+{$AUTH_DOMAIN} {
+	import auth_site
+	log {
+		output stdout
+		format json
+	}
+}
+
+{$MCP_DOMAIN} {
+	import mcp_site
 	log {
 		output stdout
 		format json

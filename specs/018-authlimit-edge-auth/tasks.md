@@ -198,7 +198,7 @@ Start from `main` after PR 1 merges (or stack on PR 1's branch and restack after
 
 ## Phase 17: Production wiring (cuttable first, per the spec's Delivery section)
 
-- [ ] T069 [P] Wire `deploy/compose/docker-compose.prod.yml` and `deploy/caddy/Caddyfile` for identity mode: `authlimit` ×2 with required variables (no defaults for issuer, JWKS URL, audience, Redis URL, keys directory), `forward_auth` and `request_header -Authorization` on the API site, the API with `AUTH_MODE: identity` and `AUTHLIMIT_KEYS_URL`. Document in `deploy/env/prod.env.example` that no identity provider is provisioned by this feature (spec 017 T021) and that without one the API refuses requests. Extend the prod compose tests the repo has (look for `test_compose_prod*`) so the new service and required variables are checked.
+- [X] T069 [P] (done in pattern 98: also Casdoor and the MCP gateway, the three names required, one shared routing file) Wire `deploy/compose/docker-compose.prod.yml` and `deploy/caddy/Caddyfile` for identity mode: `authlimit` ×2 with required variables (no defaults for issuer, JWKS URL, audience, Redis URL, keys directory), `forward_auth` and `request_header -Authorization` on the API site, the API with `AUTH_MODE: identity` and `AUTHLIMIT_KEYS_URL`. Document in `deploy/env/prod.env.example` that no identity provider is provisioned by this feature (spec 017 T021) and that without one the API refuses requests. Extend the prod compose tests the repo has (look for `test_compose_prod*`) so the new service and required variables are checked.
 
 ## Phase 18: PR 2 polish and shipping
 
