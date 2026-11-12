@@ -165,6 +165,13 @@ func TestEveryAnswerTheHandlersGiveIsDocumentedWithTheHeadersThatComeWithIt(t *t
 			b.rev.verdict = revoke.Unavailable
 			return b.check("POST", "/chat/stream/queued", b.vf.token(t, "valid_chat"))
 		}},
+		{"address let through", "GET /v1/limit/signin", 200, func(t *testing.T, b *bed) *httptest.ResponseRecorder {
+			return b.limit("/v1/limit/signin", "203.0.113.7")
+		}},
+		{"address bucket empty", "GET /v1/limit/webhook", 429, func(t *testing.T, b *bed) *httptest.ResponseRecorder {
+			b.lim.decision = limiter.Decision{Allowed: false, RetryAfter: 3 * time.Second}
+			return b.limit("/v1/limit/webhook", "203.0.113.7")
+		}},
 		{"alive", "GET /healthz", 200, func(t *testing.T, b *bed) *httptest.ResponseRecorder { return get(b.h, "/healthz") }},
 		{"ready", "GET /readyz", 200, func(t *testing.T, b *bed) *httptest.ResponseRecorder { return get(b.h, "/readyz") }},
 		{"not ready", "GET /readyz", 503, func(t *testing.T, b *bed) *httptest.ResponseRecorder {
@@ -215,5 +222,34 @@ func TestEveryAnswerTheHandlersGiveIsDocumentedWithTheHeadersThatComeWithIt(t *t
 				t.Errorf("openapi.json declares no body and the handler sent %q", rec.Body.String())
 			}
 		})
+	}
+}
+
+func TestTheAddressLimitsInTheTableAndTheOperationsInTheDocumentAreTheSameList(t *testing.T) {
+	// Caddy asks for an address limit by a path, and the path exists only because the document declares it (the routes are generated).
+	// A limit in the table with no operation can never be asked for, and an operation with no limit answers a 500, so either direction
+	// of drift is a defect the build must show.
+	raw, err := os.ReadFile(filepath.Join("..", "..", "routes.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var table struct {
+		AddressLimits map[string]json.RawMessage `json:"address_limits"`
+	}
+	if err := json.Unmarshal(raw, &table); err != nil {
+		t.Fatal(err)
+	}
+	inTable := map[string]bool{}
+	for name := range table.AddressLimits {
+		inTable["GET /v1/limit/"+name] = true
+	}
+	inDocument := map[string]bool{}
+	for key := range loadDocument(t).operations(t) {
+		if strings.HasPrefix(key, "GET /v1/limit/") {
+			inDocument[key] = true
+		}
+	}
+	if strings.Join(sorted(inTable), "\n") != strings.Join(sorted(inDocument), "\n") {
+		t.Fatalf("routes.json address_limits give %v and openapi.json declares %v", sorted(inTable), sorted(inDocument))
 	}
 }

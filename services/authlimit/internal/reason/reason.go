@@ -36,6 +36,13 @@ const (
 	// SigningUnavailable: no internal signing key is current, so no identity can be minted (the replica reports not ready).
 	SigningUnavailable Reason = "signing_unavailable"
 
+	// NoAddress: a request for an address limit arrived without a usable client address (Caddy did not send one, or sent a value that is
+	// not an address). It is charged to one shared bucket, so a proxy that lost the header shows up as everyone being limited rather than
+	// as nobody being limited.
+	NoAddress Reason = "no_address"
+	// UnknownLimit: Caddy asked for an address limit the table does not define. That is a typo in the Caddyfile, so the request is refused.
+	UnknownLimit Reason = "unknown_limit"
+
 	// UnlistedRoute is not a refusal: a route the table does not list is verified and limited like a turn, and counted under this reason
 	// so a route that drifted out of the table is visible.
 	UnlistedRoute Reason = "unlisted_route"

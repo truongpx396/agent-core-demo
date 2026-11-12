@@ -40,6 +40,23 @@
 	}
 }
 
+# A request that carries no token and cannot: a sign-in, a webhook. authlimit has nobody to verify and nobody to charge, so it charges the
+# NETWORK ADDRESS (`/v1/limit/<name>`, the buckets are `address_limits` in services/authlimit/routes.json) and Caddy acts on the answer like
+# the check above: a 200 goes on, a 429 goes straight back to the client.
+#
+# `X-Client-Ip` is Caddy's own `{client_ip}`, and `header_up` SETS the header, so a value the client sent never survives. When Caddy sits
+# behind Cloudflare, `trusted_proxies` and `client_ip_headers` in the global options make `{client_ip}` the address behind it; authlimit
+# changes not at all. A Caddy that stopped sending it does not turn the limit off: authlimit charges one shared bucket and counts it.
+#
+# Fail closed, like the check: with authlimit unreachable the request is a 502 and the upstream is not called.
+(address_limit) {
+	forward_auth {
+		import authlimit_pool
+		uri /v1/limit/{args[0]}
+		header_up X-Client-Ip {client_ip}
+	}
+}
+
 # The MCP gateway's replicas (the same shape as above).
 (mcp_gateway_pool) {
 	# Every replica Docker's DNS returns is a live upstream, so `--scale mcp-gateway=N` load-balances with no sticky routing: the
@@ -108,7 +125,7 @@ https://mcp.localhost:8443 {
 https://api.localhost:8443 {
 	tls internal
 
-	# Not checked: the page and its assets, health, the payment webhook (it authenticates by its signature), the discovery documents.
+	# Not checked: the page and its assets, health, the discovery documents.
 	#
 	# Only PLAIN URLs are public here. A request Caddy declares public goes straight to the upstream and authlimit never sees it, so
 	# authlimit's stricter reading of the path cannot rescue a request this matcher lets through: found by the smoke check, where
@@ -116,10 +133,23 @@ https://api.localhost:8443 {
 	# contains a percent escape, a backslash, a dot segment or a double slash, so any URL that does is NOT public: it falls through to
 	# the checked handler below, where authlimit classifies it (an unclean path is always verified) and refuses it without a token.
 	@public_path {
-		path / /health /health/ready /static/* /billing/webhooks/* /.well-known/*
+		path / /health /health/ready /static/* /.well-known/*
 		not expression `{http.request.uri}.matches(r"%|\\|\.\.|//")`
 	}
 	handle @public_path {
+		reverse_proxy {$AUTHLIMIT_UPSTREAM:authlimit-echo:8000} {
+			flush_interval -1
+		}
+	}
+	# The payment webhook has no token (its provider authenticates it by a signature the app checks), so it is not verified here; it is
+	# limited per source ADDRESS, so a stranger cannot make the app compute a signature check as fast as they can send. The same unclean-path
+	# rule as above: a URL with an escape or a dot segment is not a webhook, it is checked (and refused for want of a token).
+	@webhook {
+		path /billing/webhooks/*
+		not expression `{http.request.uri}.matches(r"%|\\|\.\.|//")`
+	}
+	handle @webhook {
+		import address_limit webhook
 		reverse_proxy {$AUTHLIMIT_UPSTREAM:authlimit-echo:8000} {
 			flush_interval -1
 		}
@@ -155,5 +185,22 @@ https://api.localhost:8443 {
 # discovers agree.
 https://auth.localhost:8443 {
 	tls internal
-	reverse_proxy casdoor:8000
+
+	# Credentials and tokens are charged to the caller's address: `/api/login` takes a password (the page's and the channels' headless
+	# sign-in) and `/api/login/oauth/access_token` turns a code or a refresh token into an access token. There is no token to check yet, so
+	# the address is all there is. This bounds how fast one address can try passwords or spray accounts; it does not stop an attacker from
+	# locking one person out (Casdoor locks an account after five wrong passwords, whoever sent them), and many addresses share nothing.
+	#
+	# Everything else on this host (the sign-in page and its assets, the metadata) is not charged: a page load is dozens of requests, and
+	# an office behind one address would exhaust any bucket sized to stop guessing. The unclean-path rule of the API site applies here the
+	# other way round: a path with a dot segment, a double slash or a backslash is charged whatever it resolves to, so a path trick can
+	# only cost the caller a token, never skip the limit. (Caddy's `path` matcher already sees the decoded path, so `%2f` is a `/`.)
+	@credentials expression `path('/api/login*') || {http.request.uri.path}.matches(r"\\|\.\.|//|/\.(/|$)")`
+	handle @credentials {
+		import address_limit signin
+		reverse_proxy casdoor:8000
+	}
+	handle {
+		reverse_proxy casdoor:8000
+	}
 }

@@ -21,17 +21,18 @@ A diagram is a map, not the contract. The text under each one names the code tha
 
 ### 1. Runtime topology
 
-The processes and how a request reaches them. Every chat client, the web UI, the CLI and Telegram alike, goes through the front door and the queue; nothing runs the graph inside a client's process and nothing but the API writes to the queue (patterns 89 and 91). The MCP gateway is the one other way in, and it only reads. Which process touches which store is in [section 5](#5-where-state-lives).
+The processes and how a request reaches them. Every chat client, the web UI, the CLI and Telegram alike, goes through the front door and the queue; nothing runs the graph inside a client's process and nothing but the API writes to the queue (patterns 89 and 91). The ways in that carry no token are few and each is bounded: the **sign-in** goes through Caddy to Casdoor, with the credential endpoints charged to the caller's network address (nobody has a token yet, so there is nothing to verify); the payment **webhook** is charged the same way; the **MCP gateway** verifies its own tokens and only reads; and the **Telegram bot's own listener** (webhook mode, and the page a login returns to) is authenticated by what it carries and is not behind the door. Which process touches which store is in [section 5](#5-where-state-lives).
 
 ```mermaid
 flowchart LR
     ui["Web UI, CLI, Telegram bot"]
+    tg["Telegram<br/>(webhook mode only)"]
     mcpc["External MCP client"]
     casdoor["Casdoor<br/>OAuth 2.1 server"]
 
     subgraph door_sg["Front door (specs 018, 020)"]
         caddy["Caddy<br/>TLS, forward_auth"]
-        authlimit["authlimit (Go)<br/>verify token offline, rate limit,<br/>revocation, sign a 30 s identity"]
+        authlimit["authlimit (Go)<br/>verify token offline, rate limit,<br/>revocation, sign a 30 s identity,<br/>charge a tokenless request to its address"]
     end
 
     subgraph app_sg["Application processes (one image)"]
@@ -55,9 +56,11 @@ flowchart LR
 
     ui --> caddy
     mcpc --> caddy
-    ui -.->|"get a token"| casdoor
-    mcpc -.->|"get a token"| casdoor
-    caddy -->|"asks about every request"| authlimit
+    ui -.->|"get a token: through Caddy,<br/>credentials charged per address"| caddy
+    mcpc -.->|"get a token"| caddy
+    caddy -.->|"sign-in"| casdoor
+    tg -.->|"webhook: a secret header,<br/>no token, not behind the door"| ui
+    caddy -->|"asks about every request:<br/>a token, or for a tokenless one its address"| authlimit
     authlimit -.->|"signing keys"| casdoor
     caddy -->|"signed identity"| api
     caddy -->|"bearer token"| mcpgw
@@ -265,7 +268,7 @@ A turn keeps nothing in process memory, which is why any worker can take any job
 | Redis Streams | `agent:requests:<domain>` jobs, `agent:results:<request_id>` events (5 minute TTL), `:dead` dead letters, `ingest:requests`, `ingest:results:<job_id>` | api (requests), workers (results) | workers (requests), api (results) |
 | Redis plain keys | `agent:lock:<thread>`, `agent:cancel:<thread>`, `chat:submit_dedup:...`, Telegram's update list and poll offset | agent-worker (lock), api (cancel flag, dedup claim), the bot | the same |
 | Redis semantic cache | a RediSearch vector index, keyed by tenant and principal | agent-worker (the finish step) | agent-worker (the cache check) |
-| Redis limiter state | token buckets, the revocation list | authlimit | authlimit |
+| Redis limiter state | token buckets (per tenant and person, and per network address), the revocation list | authlimit | authlimit |
 | Qdrant | documents and memories in one collection, told apart by a `kind` field; a separate skills collection. A collection's name carries the embedding identity of its vectors | ingest-worker (documents), agent-worker (memories, through the approved `remember` tool), `make index-skills` | agent-worker |
 | MinIO or Spaces | uploaded files, as `<tenant>/<job_id>-<filename>` | api | ingest-worker |
 
@@ -410,15 +413,24 @@ sequenceDiagram
     participant R as Redis
     participant A as api
 
-    Note over X,Z: Sign in, once per session
+    Note over X,Z: Sign in, once per session. Nobody has a token yet, so authlimit charges the caller's address and verifies nothing
     alt web UI
-        X->>Z: authorization code with PKCE, in the browser
+        X->>D: authorization code with PKCE, in the browser
     else CLI
-        X->>Z: browser sign-in, redirect caught on a loopback port
+        X->>D: browser sign-in, redirect caught on a loopback port
     else Telegram bot
-        X->>Z: sign in as the person telegram-id, or as a linked account
+        X->>D: sign in as the person telegram-id, or as a linked account
     end
-    Z-->>X: access token: audience is the API, owner is the tenant, sub is the person
+    D->>L: GET /v1/limit/signin with X-Client-Ip, for the credential and token endpoints only
+    L->>R: charge this address's bucket
+    alt address over the limit
+        L-->>D: 429 with the wait time
+        D-->>X: refused, Casdoor is never called
+    else allowed
+        L-->>D: 200
+        D->>Z: the request
+        Z-->>X: access token: audience is the API, owner is the tenant, sub is the person
+    end
 
     Note over X,A: Every request
     X->>D: request with Authorization: Bearer token
@@ -445,6 +457,8 @@ sequenceDiagram
 
 - **Fail closed where it is a check, open where it is a protection.** No usable signing keys or an untrustworthy revocation list is a 503; a Redis outage for the limiter is served and alerted. The API likewise answers 503, never a guess, when it cannot confirm its keys (pattern 86).
 - Route classes (`services/authlimit/routes.json`): a turn and an upload are verified and limited; cancel and reads are verified and not limited; `/health` and the web page are public; the two MCP routes are limit-only.
+- **A request with no token is charged to its address instead** (`address_limits` in the same file, asked as `/v1/limit/signin` and `/v1/limit/webhook`, pattern 97): the credential and token endpoints of Casdoor, and the payment webhook. The address is Caddy's own `{client_ip}`, which a client cannot set. It bounds how fast one address can guess passwords or flood a webhook; it does not stop someone locking one person out (Casdoor locks an account after five wrong passwords, whoever sent them).
+- **Where this fails:** a store outage serves the request (a protection fails open); authlimit unreachable is a 502 at Caddy, so sign-in is down with the door, like everything else behind it.
 - The CLI and Telegram are clients of this same path (spec 020): they never touch the queue or the graph (`tests/adapters/inbound/channels/test_channels_use_the_door.py`).
 
 ### 10. Human approval: pause, decide, resume

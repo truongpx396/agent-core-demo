@@ -33,7 +33,9 @@ _strategy = strategies.MovingWindowRateLimiter(_storage)
 # The payment-provider webhook has no tenant (the caller is a provider, not a person), so it is limited per SOURCE
 # ADDRESS, with its own generous ceiling: a provider redelivering a backlog must not be throttled into a longer
 # outage. The signature, not this, is the defence; this only bounds how fast a stranger can make the app compute
-# MACs. Behind a proxy every request shares the proxy's address, so this is a global ceiling in practice (disclosed).
+# MACs. Behind a proxy every request shares the proxy's address, so this is a global ceiling in practice (disclosed). The per-address
+# limit that means what it says is at the door now (pattern 97: `/v1/limit/webhook`, keyed on the real client address); this one is the
+# backstop behind it.
 WEBHOOK_PATH_PREFIX = "/billing/webhooks/"
 _webhook_limit = RateLimitItemPerMinute(BILLING_WEBHOOK_RATE_LIMIT_PER_MINUTE)
 

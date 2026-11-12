@@ -8,12 +8,16 @@
 // what it looks like is never public: dot segments, encoded slashes, backslashes, NULs, empty segments and undecodable escapes all fall
 // back to the fallback class (verified and limited like a turn). Caddy's own matcher makes a first decision on the same paths; a mistake
 // in either one is caught by the other, because public in one place and verified in the other resolves to "verified".
+//
+// The table also holds the address limits: named buckets for the requests that carry no identity to charge (a sign-in, a webhook), which
+// Caddy sends to /v1/limit/{name} instead of /v1/check. They are keyed by the caller's network address, not by anything the caller says.
 package limiter
 
 import (
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"regexp"
 	"strings"
 )
 
@@ -57,17 +61,26 @@ type rule struct {
 type Table struct {
 	rules    []rule
 	limits   map[Class]Limits
+	address  map[string]Bucket
 	fallback Class
 }
 
 type tableFile struct {
-	Fallback Class            `json:"fallback"`
-	Limits   map[Class]Limits `json:"limits"`
-	Routes   []struct {
+	Fallback      Class             `json:"fallback"`
+	Limits        map[Class]Limits  `json:"limits"`
+	AddressLimits map[string]Bucket `json:"address_limits"`
+	Routes        []struct {
 		Method  string `json:"method"`
 		Pattern string `json:"pattern"`
 		Class   Class  `json:"class"`
 	} `json:"routes"`
+}
+
+// addressLimitName is what an address limit may be called: it ends up in a URL path and a Redis key, so nothing else is accepted.
+var addressLimitName = regexp.MustCompile(`^[a-z][a-z0-9_]{0,31}$`)
+
+func (b Bucket) valid() bool {
+	return b.Capacity >= 1 && b.Capacity <= 10000 && b.PerMinute >= 1 && b.PerMinute <= 1000000
 }
 
 var knownClasses = map[Class]bool{Turn: true, Upload: true, Read: true, Cancel: true, Public: true, MCP: true}
@@ -90,9 +103,17 @@ func ParseTable(data []byte) (*Table, error) {
 			return nil, fmt.Errorf("routes table: limits for %q, which is not a limited class", c)
 		}
 		for who, b := range map[string]Bucket{"tenant": l.Tenant, "person": l.Person} {
-			if b.Capacity < 1 || b.Capacity > 10000 || b.PerMinute < 1 || b.PerMinute > 1000000 {
+			if !b.valid() {
 				return nil, fmt.Errorf("routes table: %s bucket of %q needs capacity 1..10000 and per_minute 1..1000000", who, c)
 			}
+		}
+	}
+	for name, b := range f.AddressLimits {
+		if !addressLimitName.MatchString(name) {
+			return nil, fmt.Errorf("routes table: address limit %q: a name is a lower-case letter then up to 31 of a-z, 0-9 and _", name)
+		}
+		if !b.valid() {
+			return nil, fmt.Errorf("routes table: address limit %q needs capacity 1..10000 and per_minute 1..1000000", name)
 		}
 	}
 	for c := range limitedClasses {
@@ -100,7 +121,7 @@ func ParseTable(data []byte) (*Table, error) {
 			return nil, fmt.Errorf("routes table: no limits for the limited class %q", c)
 		}
 	}
-	t := &Table{limits: f.Limits, fallback: f.Fallback}
+	t := &Table{limits: f.Limits, address: f.AddressLimits, fallback: f.Fallback}
 	for i, r := range f.Routes {
 		if !knownClasses[r.Class] {
 			return nil, fmt.Errorf("routes table: route %d names the unknown class %q", i, r.Class)
@@ -234,6 +255,12 @@ func CleanPath(raw string) (string, bool) {
 func (t *Table) Limits(c Class) (Limits, bool) {
 	l, ok := t.limits[c]
 	return l, ok
+}
+
+// AddressLimit returns the bucket of a named address limit. ok is false for a name the table does not define.
+func (t *Table) AddressLimit(name string) (Bucket, bool) {
+	b, ok := t.address[name]
+	return b, ok
 }
 
 // HasClass reports whether any route is in the class (used to decide whether the MCP metadata template is required).

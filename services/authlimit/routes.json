@@ -5,6 +5,10 @@
     "upload": { "tenant": { "capacity": 10, "per_minute": 30 }, "person": { "capacity": 5, "per_minute": 10 } },
     "mcp": { "tenant": { "capacity": 60, "per_minute": 120 }, "person": { "capacity": 30, "per_minute": 60 } }
   },
+  "address_limits": {
+    "signin": { "capacity": 60, "per_minute": 120 },
+    "webhook": { "capacity": 100, "per_minute": 600 }
+  },
   "routes": [
     { "method": "OPTIONS", "pattern": "/*", "class": "public" },
     { "method": "GET", "pattern": "/", "class": "public" },
