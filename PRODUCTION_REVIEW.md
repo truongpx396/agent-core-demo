@@ -17,9 +17,10 @@ When every row is done this file can be deleted, like `AGENT_GRAPH_FIXES.md` bef
 4. [P0: correctness, leaks and unbounded growth](#4-p0-correctness-leaks-and-unbounded-growth) (R01 to R07)
 5. [P1: scale, security and operability](#5-p1-scale-security-and-operability) (R08 to R21)
 6. [P2: smaller items](#6-p2-smaller-items) (R22 to R28)
-7. [Reviewed and deliberately left alone](#7-reviewed-and-deliberately-left-alone)
-8. [What this review did not cover](#8-what-this-review-did-not-cover)
-9. [Sources](#9-sources)
+7. [The cost of a turn, and the code's own structure](#7-the-cost-of-a-turn-and-the-codes-own-structure) (R29 to R35)
+8. [Reviewed and deliberately left alone](#8-reviewed-and-deliberately-left-alone)
+9. [What this review did not cover](#9-what-this-review-did-not-cover)
+10. [Sources](#10-sources)
 
 ## 1. Verdict
 
@@ -53,6 +54,13 @@ major versions behind. None of it is architectural. Listed by what it would cost
 | The gateway keeps every prompt and answer in its database, in production, forever | R16 |
 | Conversations (checkpoints) are kept forever and nobody can delete one | R11 |
 
+**The turn itself is built for correctness, not for cost.** Every turn runs the same pipeline whatever was asked:
+moderation, an answer-cache lookup, routing, and two retrieval searches, one after another, before the model starts;
+then a second model call for follow-up suggestions before `done`. Old tool results are re-sent on every later call.
+Much of the output checking exists to correct small local models and is pure overhead on a strong one. And the
+runtime that turns graph events into stream events recognises nodes by name. Section 7 (R29 to R35) is the work for
+these. **Measure first:** R17's first-token and queue-wait metrics say which of these dominates on your traffic.
+
 **Scale, stated honestly.** The production stack is one droplet running Docker Compose with single instances of Postgres,
 Redis and Qdrant. That is a reasonable pilot or small-production shape and the code is ready for more (stateless API and
 workers, PgBouncer, per-domain queues). It is not highly available: any of the three stores going down takes the service
@@ -66,9 +74,9 @@ Every work order says how its evidence was obtained, in the same words `GRAPH_PA
 - **reproduced**: a script against the pinned library versions showed the behaviour (the scripts are quoted in the work order);
 - **verified in the installed source**: read in the pinned version of the third-party library, not assumed;
 - **read from code**: read in this repository; not executed;
-- **from the field**: a current practice or upstream change, with a source in section 9. Check it again before acting.
+- **from the field**: a current practice or upstream change, with a source in section 10. Check it again before acting.
 
-The repository's own test suite was **not run** for this review (section 8). A work order's "Tests" section is therefore
+The repository's own test suite was **not run** for this review (section 9). A work order's "Tests" section is therefore
 part of the work, not a formality.
 
 ## 2. How to use this file
@@ -145,9 +153,20 @@ pick silently. If the owner has not answered, implement the recommended default 
 | R26 | Backups are a paragraph, not a job; no restore drill | P2 | M | read from code | | open |
 | R27 | A transcript is read whole | P2 | S | read from code | | open |
 | R28 | Nothing learns from production answers | P2 | M | from the field | R17 | open |
+| R29 | Retrieval runs on every turn, after the router instead of beside it | P1 | M | read from code; reproduced (parallel join) | R17 | open |
+| R30 | A second model call for follow-ups holds back `done` | P1 | S | read from code | | open |
+| R31 | Old tool results are re-sent to the model on every later call | P1 | S | read from code | | open |
+| R32 | Output checks built for small models also run on strong ones | P2 | M | read from code | R17 | open |
+| R33 | The answer cache can answer a follow-up from another conversation | P1 | S | read from code | | open |
+| R34 | Every change to the history stores the whole history again | P2 | M | reproduced | R19 | open |
+| R35 | Code structure: node names in the runtime, repeated entry points, patch-shaped modules | P2 | S to L | read from code; reproduced (custom events) | | open |
 
 Suggested order: R01, R02, R03, R06, R07 (five small, independent fixes), then R04 and R05 (the queue), then R16 and
-R21 (two small ones), then the P1 list in whatever order the owner's priorities set.
+R21 (two small ones), then R17 part 1 (the measurements), then R33 and R30 and R31 (small, and each cuts work from every
+turn), then R29, then the rest in whatever order the owner's priorities set.
+
+**R29 to R33 change what the model is sent or what a turn runs.** The repository's rule applies to each of them: run
+`make eval` and `make promptfoo` before and after, and put both results in the PR.
 
 ## 4. P0: correctness, leaks and unbounded growth
 
@@ -908,7 +927,7 @@ with the same source name.
 
 ### R19. The dependency ladder: Langfuse 2, LangChain 0.3, LangGraph 0.2
 
-**Established:** the pins are read from `requirements.txt`; the upstream state is from the field (section 9) and must
+**Established:** the pins are read from `requirements.txt`; the upstream state is from the field (section 10) and must
 be re-checked on the day.
 
 **Where it stands.** `langgraph>=0.2.20,<0.3` (0.2.76 installed), `langchain-core` 0.3, `langfuse` 2.60. The reason is
@@ -1032,7 +1051,303 @@ optional comment on one answer, stored with the request id and attached to the t
 exists), and a scheduled job that samples yesterday's answered turns and runs the existing grounded-claims check over
 them, exported as a metric. Keep both advisory, as Principle VII says of judged signals.
 
-## 7. Reviewed and deliberately left alone
+## 7. The cost of a turn, and the code's own structure
+
+What one ordinary turn costs today, counted from the code (no measurement; R17 adds the measurement):
+
+```
+validate_input            pure
+moderate_input            ML service call (prompt guard)                     } one after another,
+check_semantic_cache      embedding call + Redis vector search               } before the model
+[compact_history]         an LLM call, only past 24k tokens of history       } sees anything
+route_model               ML service call (only when ROUTER_MODE is not off)  }
+retrieve_context          2 x (embedding + sparse + 2 Qdrant queries + rerank) }
+agent <-> tools           the answer: 1 LLM call per round
+check_output              pure; a rejection costs another full round (retry_output)
+suggest_followups   } in parallel: an LLM call (on a cited answer)
+write_semantic_cache} and another embedding + a Redis write; `done` waits for both
+```
+
+### R29. Retrieval runs on every turn, after the router instead of beside it
+
+**Established:** read from code (`app/agent/graph/build.py`); the parallel join reproduced on `langgraph==0.2.76`.
+
+**Problem.**
+1. `retrieve_context` runs on every turn of every domain: a document search and a memory search, each with an
+   embedding, a sparse vector, a Qdrant query and a rerank. It runs for "hi", for "thanks", and for
+   "log an incident" in the ops domain, whose tools do not use documents. The model can also call `search_docs`
+   itself, so a turn that needs a search may pay for two.
+2. `route_model` runs before `retrieve_context`, but the two do not depend on each other. `route_model` reads only the
+   person's message ([model_route.py](app/agent/graph/model_route.py), it calls `human_text(last_human_message(...))`)
+   and writes only `model_route`. `retrieve_context` writes only `context`, `citations` and `context_anchor_index`.
+   Running them one after the other adds the router's latency (up to `ROUTER_TIMEOUT_SECONDS`, 0.5 s) to every turn
+   that has routing on.
+
+**Change.** Two PRs.
+
+*PR 1: router beside retrieval (S).* In `build_graph`, when `profile.include_router` is true, the step before
+retrieval fans out to both nodes and `agent` waits for both. Checked on the pinned LangGraph: a conditional edge may
+return a list, and `add_edge([...], "agent")` waits for every node in the list.
+
+```python
+before_retrieval = ["route_model", "retrieve_context"] if profile.include_router else "retrieve_context"
+# route_after_cache / route_after_compaction keep returning their names; the path maps send
+# "retrieve_context" (and "compact_history" when compaction is off) to `before_retrieval`.
+# A path-map value cannot be a list, so wrap the two routers instead, as route_after_check_bound does:
+#   def to_retrieval(route): return before_retrieval if route == "retrieve_context" else route
+if profile.include_router:
+    builder.add_edge(["route_model", "retrieve_context"], "agent")
+else:
+    builder.add_edge("retrieve_context", "agent")
+```
+
+Remove the old `builder.add_edge("route_model", "retrieve_context")`. Read the whole edge section of `build_graph`
+before changing it: the cache-miss and compaction paths both lead here.
+
+*Checkpoint compatibility.* This changes the topology between `compact_history` and `agent`. A paused conversation
+sits at `human_approval`, whose edges do not change, so it resumes. A turn that crashed exactly between those nodes
+during the deploy is the case `tests/agent/graph/test_checkpoint_across_a_topology_change.py` covers (the reclaim path
+dead-letters it). Do not bump `STATE_SCHEMA_VERSION`.
+
+*PR 2: whether to pre-fetch (M).* `AgentManifest` (`app/ports/outbound/domains.py`) gains
+`prefetch: Literal["always", "never"] = "always"`. With `"never"`, `build_graph` leaves `retrieve_context` out of the
+graph and the edge goes straight to `agent` (or from `route_model` to `agent`). The domain's prompt must then tell the
+model to call `search_docs` when it needs documents; check the domain has that tool.
+
+**Decide:** which domains use `"never"`. The recommended starting point is `ops` only, judged by `make eval` and the
+domain's promptfoo suite. A third mode (`"auto"`, skipping the search for greetings and very short messages) is
+possible later; do not build it without a measurement of how many turns it would skip.
+
+**Tests.** `tests/agent/graph/test_graph_integration.py`:
+`test_the_router_and_retrieval_run_in_the_same_step` (both nodes' outputs reach `agent`; with fakes that record start
+times, neither starts after the other finished) and `test_a_domain_that_never_prefetches_reaches_the_model_without_a_search`
+(a counting fake `GraphDeps(search_docs=...)` is never called). The existing graph-flow tests must pass unchanged.
+
+**Docs.** Pattern 20 and the "Graph Flow" diagram in `GRAPH_PATTERNS.md`; the graph diagram in
+`ARCHITECTURE_DIAGRAMS.md`.
+
+### R30. A second model call for follow-ups holds back `done`
+
+**Established:** read from code (`app/agent/graph/followups.py`, `build.py`).
+
+**Problem.** After an answer that cites something, `suggest_followups` makes a full LLM call (without tools since
+pattern 79). It runs in parallel with the cache write, but the graph ends, and so `done` is sent, only when both have
+finished. So every cited answer costs a second model call, and the person's client shows the turn as still running
+for as long as that call takes. On a hosted model that is money on every cited turn; on a local one it is seconds
+(a Langfuse trace quoted in `app/agent/graph/utils.py::without_tools` measured 15 of a turn's 40 seconds before the
+tools were removed).
+
+**Change.**
+1. `AgentManifest` gains `suggest_followups: bool = True`. `build_graph` includes the node only when
+   `profile.include_followups and manifest.suggest_followups`. The client already handles a turn with no
+   `followups` event.
+2. Setting `followups_enabled: bool = True` in `Settings`, so an operator can turn the feature off everywhere without
+   a code change; `build_graph` reads it at build time (the graph is built once per process).
+
+**Decide:** the defaults. Recommended: keep `True` for `ecorp` (the web page shows the chips) and set `False` for
+`ops`, `support` and `sales`, whose answers usually end in an action rather than a reading list.
+
+**Not recommended:** emitting `done` before the follow-ups. `done` is terminal for every reader of the stream
+(`TERMINAL_EVENT_TYPES` in `app/ports/outbound/jobs.py`), so the follow-ups would never arrive.
+
+**Tests.** `tests/agent/graph/test_post_answer_parallelism.py` (the existing tests of this step):
+`test_a_domain_without_followups_makes_one_model_call_for_a_cited_answer` (count calls on the fake LLM).
+
+**Docs.** Pattern 27 in `GRAPH_PATTERNS.md`.
+
+### R31. Old tool results are re-sent to the model on every later call
+
+**Established:** read from code (`app/agent/graph/agent_node.py`).
+
+**Problem.** The agent node sends the whole stored history on every call. Tool results from earlier turns are part of
+it: a crawled page (up to 20,000 characters), a sandbox output, a loaded skill's full text, a subagent's answer. Each
+is paid for again on every later call, every round of every later turn, until history passes `HISTORY_TOKEN_CEILING`
+(24,000 estimated tokens) and `compact_history` summarises it. On a small local model a long, stale tool output also
+pushes the current question and the reminders further from where the model generates, which pattern 79 says it
+already struggles with. Current practice is to clear stale tool results from what the model is sent and keep them in
+the stored record.
+
+**Change.** In `make_agent_node`'s `agent` function, next to where earlier turns' retry artifacts are dropped (the
+`turn_start` / `droppable` code), replace the content of each `ToolMessage` that is before `turn_start` and longer than
+a limit with a short note, **in the copy sent to the model only**:
+
+```python
+STALE_TOOL_RESULT_NOTE = "[Earlier result of {name}, omitted to save space. Call the tool again if you need it.]"
+
+def _without_stale_tool_results(messages, turn_start, max_chars):
+    if not max_chars or turn_start is None:
+        return messages
+    out = list(messages)
+    for i in range(turn_start):
+        m = out[i]
+        if isinstance(m, ToolMessage) and len(str(m.content)) > max_chars:  # content may be a list of parts
+            out[i] = m.model_copy(update={"content": STALE_TOOL_RESULT_NOTE.format(name=m.name or "a tool")})
+    return out
+```
+
+- Keep `tool_call_id` and `name` (the copy keeps them): every `tool_call` must still have its answer, or the call is
+  rejected by OpenAI-style APIs (pattern 8).
+- Do it after the retry-artifact filtering and before `with_turn_notes`, and recompute nothing else: `anchor` is an
+  index into `messages` and this replaces items in place without changing their positions.
+- Never write the result back to state. `state["messages"]` and the checkpoint keep the full results;
+  `get_session_messages` and the compaction summary are unchanged.
+- New setting `stale_tool_result_max_chars: int = Field(default=2000, ge=0)` (0 = off) in `Settings` and
+  `.env.example`; `build_graph` passes it to `make_agent_node`.
+
+**Cost to state in the PR.** The provider's prompt cache keeps the prefix of the previous call. When a new turn
+starts, the previous turn's long results become notes, so the prefix changes once at that point. Within a turn the
+prefix stays stable. For a conversation with long tool outputs this trades one cache miss per turn for a much shorter
+prompt on every call.
+
+**Tests.** `tests/agent/graph/test_agent_node.py`: a long tool result from the previous turn reaches the fake model as
+the note; a long tool result from the current turn reaches it whole; a short one from the previous turn is unchanged;
+the stored state still holds the full text; every `tool_call` still has its `ToolMessage` in what was sent.
+
+**Docs.** Pattern 13 (bounded history) in `GRAPH_PATTERNS.md`.
+
+### R32. Output checks built for small models also run on strong ones
+
+**Established:** read from code (`app/agent/graph/output_checks.py`, `routing.py::check_output`, `agent_node.py`).
+
+**Problem.** Many steps of a turn exist because a 3B or 7B local model drops instructions: inserting a missing
+citation marker, cutting a closing offer, detecting "I will do X" instead of doing it, detecting tool output the model
+made up, reminders after the question (citation, summary, skill tool, links), and a full retry round when a check
+fires. Each check is cheap; a false positive is not, because it costs another full model round, and against a strong
+model most of these fire rarely or never. Nothing records which checks fire for which model tier, so nobody can tell
+which ones still earn their place once `ROUTER_MODE=on` sends turns to the medium or strong tier.
+
+**Change.** Two PRs; the second only if the first's numbers justify it.
+
+*PR 1: count by tier (S).* A counter `agent_output_check_fired_total{check, tier}` incremented in `check_output` for
+every code in `output_findings`, with `tier = state.get("model_route") or "local"`. Keep the existing per-check
+counters (alerts and dashboards use them). Add a dashboard panel.
+
+*PR 2: skip checks on the tiers that do not need them (M).* A setting
+`output_checks_off_on_routed_tiers: str = ""` (comma-separated check codes). `build_graph` validates each code
+against `CHECKS` and raises at start-up for an unknown one, and **refuses `leaked_prompt` and `fabricated`**: those
+two protect the person, not the formatting. `check_output` receives the set (bound with `functools.partial`, like
+its other per-domain arguments) and skips a listed check when the turn's tier is `medium` or `strong`. Nothing
+changes for the local tier.
+
+**Decide:** which codes to list, from PR 1's numbers. Candidates to look at first: `too_short`, `deferred`,
+`uncited`, `misattributed`, `skipped_tool`.
+
+**Tests.** `tests/agent/graph/test_routing.py`: a listed check does not fire on a strong-tier turn and still fires on a
+local one; a start-up with `leaked_prompt` listed raises.
+
+**Docs.** Pattern 5 in `GRAPH_PATTERNS.md`; pattern 68 (routing).
+
+### R33. The answer cache can answer a follow-up from another conversation
+
+**Established:** read from code. Already listed under "Known gaps" in `GRAPH_PATTERNS.md` as "The answer cache key
+ignores conversation context"; ranked higher here because in an agent most messages after the first depend on the
+conversation.
+
+**Problem.** `check_semantic_cache` looks up the person's last message alone, by meaning, among everything that person
+asked in the last hour in any conversation. "yes", "do it", "more detail please" and "and for March?" mean nothing on
+their own, so they match whatever similar short message was cached, and the cached answer belongs to another
+conversation. Every miss also costs an embedding and a vector search, and every finished turn an embedding and a write.
+
+**Change.**
+1. Consult and write the cache only for a conversation's **first** question: in both nodes in
+   `app/agent/graph/cache.py`, return `{}` early when the thread has an earlier message the person sent
+   (`messages.previous_human_message(state["messages"], <index of the last human message>)` is not `None`). A first
+   question is the only one whose meaning does not depend on the conversation.
+2. Setting `semantic_cache_enabled: bool = True` in `Settings`. When it is false, both nodes return `{}` at once.
+   Keep the nodes in the graph so the topology does not change with a setting.
+3. Then read `agent_semantic_cache_total` by outcome for a week. **Decide:** if hits are a small share of lookups,
+   switch the cache off: each lookup adds latency to every first turn.
+
+**Tests.** `tests/agent/graph/test_nodes.py`: a second message in a thread never calls `cache_get` or `cache_set`
+(fakes injected through the node factories); a first message still does; with the setting off, neither is called.
+
+**Docs.** Pattern 22 in `GRAPH_PATTERNS.md`; remove the bullet from "Known gaps" in the same PR.
+
+### R34. Every change to the history stores the whole history again
+
+**Established:** reproduced on `langgraph==0.2.76`; verified in `langgraph-checkpoint-postgres==2.0.25`
+(`BasePostgresSaver._dump_blobs` serialises the full value of each channel whose version changed).
+
+**Problem.** `messages` is one channel. Each step that changes it (the model's reply, a tool round, a repaired answer,
+a retry) writes a new version, and each version is the whole list:
+
+```
+messages blobs stored (one per version): [184, 1408]      <- the second holds the first message again
+```
+
+So a turn with five message-changing steps on a conversation of 100 KB writes about 500 KB to `checkpoint_blobs`,
+and the cost grows with the length of the conversation. Each turn also reads the full state twice
+(`paused_approval_async` before it starts, `aget_state` after it ends). Nothing deletes old versions (see R11).
+
+**Change.** Measure first, then choose.
+1. Measure: run `make loadtest-queued-headless` against a stack whose conversations are long, and record
+   `pg_total_relation_size('checkpoint_blobs')` before and after, and the checkpointer's query time
+   (`pg_stat_statements` is already loaded in the production Postgres). Put the numbers in `WORKER_CONCURRENCY.md`.
+2. R11's retention bounds the total; it does not bound the per-turn writes.
+3. After R19 rung 4, use LangGraph's `durability="async"`, which writes checkpoints without holding up the next step.
+   **Do not use `durability="exit"`:** `astream_events_continue_turn` (crash recovery) relies on the per-step writes
+   being in the database when a worker dies.
+4. R31 does not help here: it shortens what the model is sent, not what is stored.
+
+**Not recommended without a spec:** storing messages outside the checkpoint (an append-only table keyed by thread and
+message id). It removes the amplification but replaces LangGraph's message reducer and every reader of the state.
+
+### R35. Code structure: node names in the runtime, repeated entry points, patch-shaped modules
+
+**Established:** read from code; part A's mechanism reproduced on `langgraph==0.2.76` / `langchain-core==0.3.86`.
+
+Five independent parts. Each is its own PR; none changes behaviour, so each is proven by the existing tests passing
+unchanged plus the new ones listed.
+
+**A. The runtime recognises nodes by name (M).** `app/agent/runtime/stream.py::_run_graph_stream` decides what to send
+the client by matching `on_chain_end` events for `"retry_output"`, `"check_output"`, `"retry_exhausted"` and
+`"compact_history"`, and reading their outputs. Renaming a node, or adding a node that also replaces the answer,
+silently changes what the client sees. Instead, the node announces the event itself:
+
+```python
+from langchain_core.callbacks.manager import adispatch_custom_event
+await adispatch_custom_event("agent_stream", {"type": "retry"}, config=config)
+```
+
+Checked on the pinned versions: it arrives in `astream_events(version="v2")` as `on_custom_event` named
+`agent_stream`, with `metadata.langgraph_node` set. Steps:
+1. In `retry_output`, `check_output` (only when it replaced the answer), `retry_exhausted` (only when it replaced the
+   answer) and `compact_history` (only when it trimmed), dispatch `{"type": "retry"}` plus, where the text was
+   replaced, `{"type": "token", "content": <replacement>}`, or `{"type": "compacted"}`. `retry_output`,
+   `check_output` and `retry_exhausted` (`app/agent/graph/retry.py`, `routing.py`) are plain `def` today; a node that
+   dispatches must become `async def` and take `config`. Their unit tests call them directly with a state, so give
+   `config` a default of `None` and dispatch only when it is given.
+2. In `_run_graph_stream`, one branch forwards every `on_custom_event` named `agent_stream` whose metadata has no
+   `subagent_name` (a nested run's events reach the same stream, so this filter is still needed), appending a `token`'s
+   content to `final_answer` and clearing it on `retry`. Delete the four `on_chain_end` branches.
+3. The order of events the client sees must not change. `tests/agent/runtime/test_streaming_terminal_events.py` and
+   the tests that hold the stream to the OpenAPI document (`tests/agent/conftest.py`) are the proof.
+
+**B. Three entry points repeat their setup (S).** `astream_events_turn`, `astream_events_resume` and
+`astream_events_continue_turn` each reserve a budget hold, load the graph, open a trace, build the same config and
+release the hold. Extract one private async generator,
+`_run_turn(name, thread_id, ctx, graph_input, trace_input, cancel_check)`, that does those and wraps
+`_run_graph_stream`; each entry point keeps only its own checks (the allowance, the pending approval, resumability).
+Keep `aclosing` on every inner generator (`.claude/rules/runtime-reliability.md`).
+
+**C. Two log lines per node at INFO (S).** `app/agent/graph/utils.py::instrumented` logs `node_started` and
+`node_completed` at INFO for every node: about 25 to 30 lines per turn. Log `node_started` at DEBUG and keep
+`node_completed`, `node_failed` and `node_paused` at INFO (they carry the duration and the outcome).
+`tests/agent/graph/test_instrumentation.py` asserts on `node_started`; update it in the same PR (capture at DEBUG).
+
+**D. Modules shaped for test patching (L, gradual; optional).** `app/core/config.py` defines every setting twice, in
+`Settings` and as a module constant read at import time, and `stream.py` calls `runtime_module.X` so that tests can
+replace `X`. New code reads `settings.<name>` at call time; when a module is touched for another reason, move its
+constants to that. Do not do it as one sweep: the constants are imported in many modules and patched in many tests.
+
+**E. Docstrings that retell history (S each, optional).** `CLAUDE.md` asks for short comments that name the failure
+and point at the pattern number. Many docstrings in `app/agent/runtime/stream.py`,
+`app/adapters/inbound/workers/agent_worker.py`, `app/core/config.py` and `app/agent/graph/` retell the whole
+investigation, which makes the code slow to read for a person and costly for a coding agent's context. When a module
+is touched, move the story into the pattern it belongs to and leave one sentence and the pattern number. Never delete
+a "why" without moving it.
+
+## 8. Reviewed and deliberately left alone
 
 These were read with the same question and need no change. They are listed so that nobody "fixes" them.
 
@@ -1053,7 +1368,7 @@ These were read with the same question and need no change. They are listed so th
 - **mypy strict, ruff's rule set, the hermetic default tier, the advisory status of judged evaluations.**
 - **The billing package's boundary** and the authlimit service's boundary: both enforced in both directions.
 
-## 8. What this review did not cover
+## 9. What this review did not cover
 
 - **The test suite was not run.** The checkout had no virtual environment and the machine's Python is 3.15. The
   reproductions in R01 and R02 and the library checks in R03, R06, R09 and R11 were made in a separate environment with
@@ -1067,7 +1382,7 @@ These were read with the same question and need no change. They are listed so th
 - **The web statements in R15, R17 and R19** come from search results, several of them secondary sources. Each says
   "from the field" and should be checked against the project's own documentation on the day the work is done.
 
-## 9. Sources
+## 10. Sources
 
 Consulted on 2026-11-13.
 

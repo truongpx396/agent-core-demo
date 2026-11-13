@@ -919,4 +919,4 @@ anyone who sets the right headers.
 | [`specs/`](specs/) · [Constitution](.specify/memory/constitution.md) | Spec Kit specs 001–018 · the non-negotiable rules (tenant isolation, mandatory approval and exactly-once side effects are principles I, II and IV) |
 | [deploy/README.md](deploy/README.md) · [evals/README.md](evals/README.md) | Deploy runbook: scaling, backups, rollback, teardown · judging a model swap |
 | [CLAUDE.md](CLAUDE.md) | Working rules for contributors and coding agents |
-| [PRODUCTION_REVIEW.md](PRODUCTION_REVIEW.md) | The 2026-11-13 review of the whole system, written as work orders (R01 to R28): what to fix, where, how to test it, and what was left alone on purpose |
+| [PRODUCTION_REVIEW.md](PRODUCTION_REVIEW.md) | The 2026-11-13 review of the whole system, written as work orders (R01 to R35): what to fix, where, how to test it, and what was left alone on purpose |
