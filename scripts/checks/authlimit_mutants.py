@@ -43,6 +43,9 @@ M = [
     ("read and cancel are limited too", "internal/server/server.go", 'if !limited {\n\t\treturn false // read, cancel: verified and never limited\n\t}', 'if !limited && false {\n\t\treturn false\n\t}', "./internal/server"),
     ("a duplicated X-Forwarded-Uri is trusted", "internal/server/server.go", 'len(m) == 1 && len(u) == 1 {', 'len(m) >= 1 && len(u) >= 1 {', "./internal/server"),
     ("MCP limit-only mode refuses an invalid token itself", "internal/server/server.go", 'claims, why := s.Verifier.Verify(ctx, token, extjwt.Identify)\n\tif why != reason.None {\n\t\ts.done(w, class, reason.Passthrough, why, start)', 'claims, why := s.Verifier.Verify(ctx, token, extjwt.Identify)\n\tif why != reason.None {\n\t\ts.refuse(w, class, why, start)', "./internal/server"),
+    ("an IPv6 client takes a fresh sign-in bucket per address", "internal/server/address.go", 'p, err := a.Prefix(64)', 'p, err := a.Prefix(128)', "./internal/server"),
+    ("a repeated X-Client-Ip is trusted", "internal/server/address.go", 'if len(vals) != 1 {', 'if len(vals) < 1 {', "./internal/server"),
+    ("an address limit fails closed on a store failure", "internal/server/address.go", 's.Log.Warn("limiter_store_failed", "route_class", string(label)) // fail open: the counter and the alert are the signal\n\t\ts.done(w, label, reason.Allowed, why, start)', 's.Log.Warn("limiter_store_failed", "route_class", string(label))\n\t\terrenv.Write(w, errenv.Internal, nil, nil)', "./internal/server"),
     ("an unusable key set answers 401 about the token, not 503", "internal/extjwt/verify.go", 'case err != nil:\n\t\treturn Claims{}, reason.KeysUnavailable', 'case err != nil:\n\t\treturn Claims{}, reason.BadSignature', "./internal/server"),
 ]
 

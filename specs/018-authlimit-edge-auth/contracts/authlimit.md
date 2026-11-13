@@ -35,6 +35,27 @@ The route class comes from `X-Forwarded-Method` and the path of `X-Forwarded-Uri
 
 Default buckets (`routes.json`; capacity and refill per minute): a chat turn or upload, tenant 10 / 30, person 5 / 10; an MCP route, tenant 60 / 120, person 30 / 60 (an MCP tool is a cheap read and one client session makes several requests).
 
+### A.0 Requests with no token: address limits
+
+A request that cannot carry a token (a sign-in, a webhook) is asked about on a different path, and charged to its network address:
+
+```
+GET /v1/limit/signin  |  GET /v1/limit/webhook     (the `uri` of forward_auth)
+X-Client-Ip: <Caddy's {client_ip}>      set by Caddy with header_up, so a client-sent value never survives
+(no Authorization is read, no body)
+```
+
+| Condition | Status | Answer |
+|---|---|---|
+| the address's bucket admits | 200 | none |
+| the bucket is empty, mode `enforce` | 429 | `Retry-After: <seconds>`; code `rate_limited` |
+| the bucket is empty, mode `observe` | 200 | `would_limit` counted |
+| the store is down or slow | 200 | served, counted (a protection fails open) |
+| `X-Client-Ip` missing, repeated or not an address | as above, on the shared `unknown` bucket | counted under reason `no_address` |
+| the name is not in `address_limits` | 500 | code `internal`, reason `unknown_limit` (a configuration error) |
+
+Default buckets (`routes.json` `address_limits`; capacity and refill per minute, per address): `signin` 60 / 120, `webhook` 100 / 600. An IPv4 address is its own key; an IPv6 address is keyed by its /64. The metric's `route_class` is `address_signin` or `address_webhook`.
+
 ### A.1 Agreement with the MCP gateway's verifier
 
 In the `mcp` class a token the service cannot identify is passed on to the gateway uncounted (the gateway answers 401 with its metadata), so the service must never be **stricter** than the gateway or a token would be served without being charged to any bucket. Both verifiers run the same vectors (`testdata/auth-vectors/`, profiles `identify` and `mcp`; `tests/mcp/test_gateway_vectors.py` for the gateway) and agreed on all 37 on the first run: T066 found no case to fix, and the gateway's verifier was not changed. Two differences are known and deliberate:
@@ -114,6 +135,7 @@ Make targets (PR 1): `authlimit-test`, `authlimit-build`, `authlimit-keys` (`ARG
 |---|---|---|
 | `b:{<tenant>}:t:<class>` | hash | `mt` (millitokens), `ts` (ms) |
 | `b:{<tenant>}:p:<sub>:<class>` | hash | same |
+| `a:<limit>:<address>` | hash | same; the address is an IPv4 address or an IPv6 /64, with `:` percent-encoded |
 | `revoked` | sorted set | member `<tenant>\0<sub>`, score `revoked_at` |
 
 Nothing else is written; no token, claim value other than tenant and sub, or key is ever stored.

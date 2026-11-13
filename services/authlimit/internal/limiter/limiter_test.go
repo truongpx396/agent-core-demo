@@ -374,3 +374,84 @@ func TestRetryAfterRounding(t *testing.T) {
 		}
 	}
 }
+
+// --- address buckets ---------------------------------------------------------------------------------------------------------------
+
+func (tb *testbed) takeAddress(t *testing.T, name, address string, b Bucket) Decision {
+	t.Helper()
+	d, err := tb.lim.TakeAddress(context.Background(), name, address, b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return d
+}
+
+func TestAnAddressBucketTakesOneTokenPerRequestAndRefills(t *testing.T) {
+	// The script is shared with the tenant and person buckets and sees ONE bucket twice here. If it charged both views, a capacity of 3
+	// would admit one request and not three: this is the test that the aliasing takes each token once.
+	tb := newTestbed(t)
+	b := Bucket{Capacity: 3, PerMinute: 60}
+	for i := 1; i <= 3; i++ {
+		if !tb.takeAddress(t, "signin", "203.0.113.7", b).Allowed {
+			t.Fatalf("request %d of a capacity-3 address bucket was refused", i)
+		}
+	}
+	d := tb.takeAddress(t, "signin", "203.0.113.7", b)
+	if d.Allowed || d.RetryAfter != time.Second {
+		t.Fatalf("the 4th request must be refused and told to wait one second (60 a minute), got %+v", d)
+	}
+	tb.advance(time.Second)
+	if !tb.takeAddress(t, "signin", "203.0.113.7", b).Allowed {
+		t.Fatal("a second later one token must be back")
+	}
+	if tb.takeAddress(t, "signin", "203.0.113.7", b).Allowed {
+		t.Fatal("and only one")
+	}
+}
+
+func TestOneAddressCannotSpendAnotherAddressesTokens(t *testing.T) {
+	tb := newTestbed(t)
+	b := Bucket{Capacity: 1, PerMinute: 1}
+	tb.takeAddress(t, "signin", "203.0.113.7", b)
+	if tb.takeAddress(t, "signin", "203.0.113.7", b).Allowed {
+		t.Fatal("the first address should be out")
+	}
+	if !tb.takeAddress(t, "signin", "198.51.100.9", b).Allowed {
+		t.Fatal("a flood from one address must not limit another")
+	}
+}
+
+func TestTwoAddressLimitsKeepSeparateBucketsForOneAddress(t *testing.T) {
+	tb := newTestbed(t)
+	b := Bucket{Capacity: 1, PerMinute: 1}
+	tb.takeAddress(t, "signin", "203.0.113.7", b)
+	if !tb.takeAddress(t, "webhook", "203.0.113.7", b).Allowed {
+		t.Fatal("exhausting the sign-in bucket must not spend the webhook bucket of the same address")
+	}
+}
+
+func TestAnAddressKeyIsOneKeyInItsOwnNamespaceAndAnIPv6AddressCannotBreakOutOfIt(t *testing.T) {
+	tb := newTestbed(t)
+	tb.takeAddress(t, "signin", "2001:db8:1:2::/64", Bucket{Capacity: 1, PerMinute: 1})
+	tb.take(t, "ecorp", "alice", limits(10, 30, 3, 60))
+	var address []string
+	for _, k := range tb.mr.Keys() {
+		if len(k) > len("authlimit:v1:a:") && k[:len("authlimit:v1:a:")] == "authlimit:v1:a:" {
+			address = append(address, k)
+		}
+	}
+	// One key, in the `a:` namespace (the tenant and person buckets are `b:`), with the address's colons percent-encoded so they cannot
+	// be read as the separators of the key.
+	if len(address) != 1 || address[0] != "authlimit:v1:a:signin:2001%3Adb8%3A1%3A2%3A%3A/64" {
+		t.Fatalf("address keys = %q", address)
+	}
+}
+
+func TestAnAddressBucketExpiresWhenItHasHadTimeToRefill(t *testing.T) {
+	// A bucket per address is a bucket per stranger: they must not pile up in Redis forever.
+	tb := newTestbed(t)
+	tb.takeAddress(t, "signin", "203.0.113.7", Bucket{Capacity: 1, PerMinute: 60})
+	if ttl := tb.mr.TTL("authlimit:v1:a:signin:203.0.113.7"); ttl <= 0 {
+		t.Fatalf("the address bucket has no expiry (ttl %s)", ttl)
+	}
+}

@@ -19,6 +19,8 @@ What it does for each request, in this order (`internal/server/server.go`):
 
 On the MCP routes it runs **limit-only**: the MCP gateway verifies the token itself, so this service only identifies the caller to meter and revoke them, and passes everything else through for the gateway to answer.
 
+**A second question for requests that carry no token** (`internal/server/address.go`, GRAPH_PATTERNS.md 97): Caddy asks `/v1/limit/signin` for the credential and token endpoints of the authorization server and `/v1/limit/webhook` for the payment webhook. Nothing is verified and no identity is minted; the request is charged to one bucket per network address (`address_limits` in `routes.json`), taken from the `X-Client-Ip` header Caddy sets from its own `{client_ip}`. An address it cannot read is charged to one shared bucket and counted as `no_address`; an IPv6 address is its /64; a store outage serves the request.
+
 ## Failure policy
 
 | Failure | Policy |
@@ -49,9 +51,9 @@ cmd/echo/            the stub upstream of the smoke check (a test fixture)
 internal/config      environment -> validated Config
 internal/extjwt      the external token verifier and the Casdoor key cache (with the stale grace)
 internal/identity    the key directory, rotation, minting the internal identity
-internal/limiter     routes.json and the Redis token-bucket script (bucket.lua)
+internal/limiter     routes.json and the Redis token-bucket script (bucket.lua), for a person's buckets and an address's
 internal/revoke      the revocation list and its local copy
-internal/server      /v1/check, /healthz, /readyz, /internal/jwks.json
+internal/server      /v1/check, /v1/limit/signin, /v1/limit/webhook, /healthz, /readyz, /internal/jwks.json
 internal/errenv      the {code, message, details} error envelope
 internal/telemetry   OTLP metrics and JSON logs
 internal/reason      the one vocabulary of refusal reasons (metric labels, logs, tests)
@@ -64,5 +66,5 @@ internal/api         GENERATED from openapi.json by oapi-codegen (`make authlimi
 
 - **It imports nothing from the rest of the repository, and the rest of the repository imports nothing from it** (`tests/core/test_authlimit_boundary.py`; constitution 1.4.0, "Non-Python services"). The only coupling is the HTTP contract, `routes.json`, `errorcodes.json` and the shared token vectors in `testdata/auth-vectors/`, which the tests of both languages read.
 - **No private key is ever committed or put in an image.** The signing keys are mounted from a directory outside the repository (`make authlimit-keys`). The vectors were signed with a throwaway key that was discarded.
-- **No token, key or claim value other than a tenant or person id reaches a log, a metric label or an error body.** Metric names are literals in `internal/telemetry/metrics.go`, which `tests/core/test_alert_rules.py` reads, so an alert on a metric nothing records fails the build.
+- **No token, key or claim value other than a tenant or person id reaches a log, a metric label or an error body.** (A network address is logged on a limited request, so an operator can see who is flooding, and is never a metric label.) Metric names are literals in `internal/telemetry/metrics.go`, which `tests/core/test_alert_rules.py` reads, so an alert on a metric nothing records fails the build.
 - The tests are hermetic (an in-memory Redis, a fake authorization server, an injected clock). The real behaviour is checked by `make authlimit-smoke`, and the claim that the tests would catch a defect by `make authlimit-mutants`.

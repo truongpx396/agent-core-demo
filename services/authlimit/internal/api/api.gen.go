@@ -135,6 +135,12 @@ type ServerInterface interface {
 	// Check Decide one request
 	// (GET /v1/check)
 	Check(w http.ResponseWriter, r *http.Request)
+	// LimitSignin Charge a sign-in request to its network address
+	// (GET /v1/limit/signin)
+	LimitSignin(w http.ResponseWriter, r *http.Request)
+	// LimitWebhook Charge a webhook request to its network address
+	// (GET /v1/limit/webhook)
+	LimitWebhook(w http.ResponseWriter, r *http.Request)
 }
 
 // ServerInterfaceWrapper converts contexts to parameters.
@@ -193,6 +199,34 @@ func (siw *ServerInterfaceWrapper) Check(w http.ResponseWriter, r *http.Request)
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.Check(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// LimitSignin operation middleware
+func (siw *ServerInterfaceWrapper) LimitSignin(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.LimitSignin(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// LimitWebhook operation middleware
+func (siw *ServerInterfaceWrapper) LimitWebhook(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.LimitWebhook(w, r)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -326,6 +360,8 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/internal/jwks.json", wrapper.Jwks)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/readyz", wrapper.Readyz)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/check", wrapper.Check)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/limit/signin", wrapper.LimitSignin)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/limit/webhook", wrapper.LimitWebhook)
 
 	return m
 }

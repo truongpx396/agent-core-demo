@@ -187,3 +187,34 @@ func TestFirstMatchWins(t *testing.T) {
 		t.Errorf("got %s", got)
 	}
 }
+
+func TestTheDefaultTableDefinesTheAddressLimitsTheServiceAnswers(t *testing.T) {
+	tbl := defaultTable(t)
+	for _, name := range []string{"signin", "webhook"} {
+		if b, ok := tbl.AddressLimit(name); !ok || !b.valid() {
+			t.Errorf("the default table does not define a usable %q address limit: %+v", name, b)
+		}
+	}
+	if _, ok := tbl.AddressLimit("turn"); ok {
+		t.Error("a route class is not an address limit")
+	}
+}
+
+func TestAnAddressLimitThatCannotBeUsedStopsTheStart(t *testing.T) {
+	const head = `{"fallback":"turn","limits":{
+		"turn":{"tenant":{"capacity":1,"per_minute":1},"person":{"capacity":1,"per_minute":1}},
+		"upload":{"tenant":{"capacity":1,"per_minute":1},"person":{"capacity":1,"per_minute":1}},
+		"mcp":{"tenant":{"capacity":1,"per_minute":1},"person":{"capacity":1,"per_minute":1}}},`
+	for name, limits := range map[string]string{
+		"a name with a capital":  `"address_limits":{"Signin":{"capacity":1,"per_minute":1}}`,
+		"a name with a slash":    `"address_limits":{"sign/in":{"capacity":1,"per_minute":1}}`,
+		"a name starting with _": `"address_limits":{"_x":{"capacity":1,"per_minute":1}}`,
+		"zero capacity":          `"address_limits":{"signin":{"capacity":0,"per_minute":1}}`,
+		"no refill":              `"address_limits":{"signin":{"capacity":1,"per_minute":0}}`,
+		"an unknown field":       `"address_limits":{"signin":{"capacity":1,"per_minute":1,"burst":9}}`,
+	} {
+		if _, err := ParseTable([]byte(head + limits + `,"routes":[]}`)); err == nil {
+			t.Errorf("%s was accepted: a typo here must stop the start, not leave a sign-in unmetered", name)
+		}
+	}
+}

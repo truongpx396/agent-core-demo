@@ -34,10 +34,11 @@ import (
 // --- fakes ---------------------------------------------------------------------------------------------------------------------
 
 type fakeLimiter struct {
-	mu       sync.Mutex
-	calls    []call
-	decision limiter.Decision
-	err      error
+	mu           sync.Mutex
+	calls        []call
+	addressCalls []addressCall
+	decision     limiter.Decision
+	err          error
 }
 
 type call struct {
@@ -45,10 +46,22 @@ type call struct {
 	class          limiter.Class
 }
 
+type addressCall struct {
+	name, address string
+	bucket        limiter.Bucket
+}
+
 func (f *fakeLimiter) Take(_ context.Context, tenant, person string, class limiter.Class, _ limiter.Limits) (limiter.Decision, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls = append(f.calls, call{tenant, person, class})
+	return f.decision, f.err
+}
+
+func (f *fakeLimiter) TakeAddress(_ context.Context, name, address string, b limiter.Bucket) (limiter.Decision, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.addressCalls = append(f.addressCalls, addressCall{name, address, b})
 	return f.decision, f.err
 }
 

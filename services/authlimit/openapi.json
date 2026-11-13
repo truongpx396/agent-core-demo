@@ -2,14 +2,15 @@
   "openapi": "3.1.0",
   "info": {
     "title": "authlimit",
-    "version": "1.0.1",
-    "description": "The edge authentication and rate-limit service. Caddy asks it about every request to the chat API and the MCP routes (`forward_auth`) before the request goes any further, and acts on the answer: a 200 lets the request through, anything else goes straight back to the client. Nothing here is routed to the public; the caller is the reverse proxy.\n\nFor one request, in this order: classify the route (routes.json), verify the access token, refuse a revoked person, charge the rate limit, mint the internal identity. The order is a security property: a revoked person consumes no bucket, and a refused or limited request is never handed an identity.\n\nThe server's routing and the types of its bodies are GENERATED from this document (internal/api, `make authlimit-generate`), so a route or a field exists in the code only if it is written here; internal/server/openapi_test.go holds each answer and its headers to it, and its error codes to errorcodes.json. The behaviour, class by class, is section A of specs/018-authlimit-edge-auth/contracts/authlimit.md; that is the contract, and this is its machine-readable form."
+    "version": "1.1.0",
+    "description": "The edge authentication and rate-limit service. Caddy asks it about every request to the chat API and the MCP routes (`forward_auth`) before the request goes any further, and acts on the answer: a 200 lets the request through, anything else goes straight back to the client. Nothing here is routed to the public; the caller is the reverse proxy.\n\nTwo questions are asked. `/v1/check` is for a request that carries a token: the route is classified, the token verified, the person charged. `/v1/limit/{class}` is for a request that carries none and cannot (a sign-in, a webhook): it is charged to the caller's network address, nothing is verified, and no identity is minted.\n\nFor one request, in this order: classify the route (routes.json), verify the access token, refuse a revoked person, charge the rate limit, mint the internal identity. The order is a security property: a revoked person consumes no bucket, and a refused or limited request is never handed an identity.\n\nThe server's routing and the types of its bodies are GENERATED from this document (internal/api, `make authlimit-generate`), so a route or a field exists in the code only if it is written here; internal/server/openapi_test.go holds each answer and its headers to it, and its error codes to errorcodes.json. The behaviour, class by class, is section A of specs/018-authlimit-edge-auth/contracts/authlimit.md; that is the contract, and this is its machine-readable form."
   },
   "servers": [
     { "url": "http://authlimit:8080", "description": "Inside the compose network (AUTHLIMIT_LISTEN, default :8080). Caddy's forward_auth is the caller." }
   ],
   "tags": [
-    { "name": "check", "description": "The decision Caddy asks for on every request." },
+    { "name": "check", "description": "The decision Caddy asks for on every request that carries a token." },
+    { "name": "limit", "description": "The rate limit Caddy asks for on a request that carries no token, charged to its network address." },
     { "name": "health", "description": "Liveness and readiness of one replica." },
     { "name": "keys", "description": "The public keys of the internal identity this service signs." }
   ],
@@ -35,6 +36,30 @@
           "403": { "$ref": "#/components/responses/Forbidden" },
           "429": { "$ref": "#/components/responses/RateLimited" },
           "503": { "$ref": "#/components/responses/AuthUnavailable" }
+        }
+      }
+    },
+    "/v1/limit/signin": {
+      "get": {
+        "tags": ["limit"],
+        "operationId": "limitSignin",
+        "summary": "Charge a sign-in request to its network address",
+        "description": "Called by Caddy once per credential or token request to the authorization server (`/api/login*`): a person signing in has no token yet, so there is nothing to verify and nobody to charge but the address it came from. No identity is minted; the request is charged to the `signin` bucket of `address_limits` in routes.json.\n\nThe address is the single `X-Client-Ip` header Caddy sets from its own `{client_ip}`, so a trusted proxy in front of Caddy is Caddy's setting and not this service's. The header is deliberately not declared as a parameter, for the reason `X-Forwarded-Method` is not on `/v1/check`: this service must read the raw header, and a generated wrapper would answer a repeated one with a plain-text 400. A missing, repeated or unparseable value is charged to one shared `unknown` bucket and counted under the reason `no_address`, so a proxy that lost the header shows up as everyone being limited and not as nobody being limited. An IPv4 address is its own key; an IPv6 address is keyed by its /64, because one client holds a whole /64 and would otherwise get a fresh bucket per address.\n\nA store failure serves the request: this is a protection, not a check.",
+        "responses": {
+          "200": { "description": "Let the request through. Nothing is sent back for Caddy to copy." },
+          "429": { "$ref": "#/components/responses/RateLimited" }
+        }
+      }
+    },
+    "/v1/limit/webhook": {
+      "get": {
+        "tags": ["limit"],
+        "operationId": "limitWebhook",
+        "summary": "Charge a webhook request to its network address",
+        "description": "The same question as `/v1/limit/signin` for the routes whose caller authenticates by what it sends and holds no token: a payment provider's webhook (a signature) and Telegram's (a secret header). Charged to the `webhook` bucket of `address_limits`. The address, its fallback and the failure policy are as described there.",
+        "responses": {
+          "200": { "description": "Let the request through. Nothing is sent back for Caddy to copy." },
+          "429": { "$ref": "#/components/responses/RateLimited" }
         }
       }
     },
@@ -100,7 +125,7 @@
         "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
       },
       "RateLimited": {
-        "description": "The tenant's or the person's bucket is empty (enforce mode; observe mode answers 200 and counts it).",
+        "description": "The tenant's or the person's bucket is empty, or, on `/v1/limit/{class}`, the caller's address's (enforce mode; observe mode answers 200 and counts it).",
         "headers": {
           "Retry-After": { "description": "Whole seconds until a token is available.", "schema": { "type": "integer", "minimum": 0 } }
         },
