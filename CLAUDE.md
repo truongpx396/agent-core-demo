@@ -15,6 +15,7 @@ Read these before changing behavior; they hold the reasoning this file deliberat
   the spend meter and caps are in `COST_GOVERNANCE.md`, three repository lessons in `ENGINEERING_PATTERNS.md`,
   and the billing package keeps its own (`packages/billing/docs/PATTERNS.md`, see the constitution's
   "Self-contained packages").
+- `PRODUCTION_REVIEW.md` — the open work orders from the 2026-11-13 review (R01 to R28), each with its evidence, the change, the tests and the docs to update. Pick work from its table; mark the row done in the PR that closes it.
 - `README.md` — architecture, make targets, testing tiers. `WORKER_CONCURRENCY.md` — worker sizing.
   `BILLING_INTEGRATION.md` — the app's side of the billing seam; everything else about billing (patterns,
   runbook, roadmap, specs) is in `packages/billing/`.
