@@ -20,5 +20,5 @@
 
 ## Not done (disclosed)
 - [ ] T060 Run against the real Telegram (webhook delivery, button taps, edit behaviour) and against Casdoor (refresh rotation, the redirect URI). HUMAN: needs a bot token and the gateway stack.
-- [ ] T061 Configure the reverse proxy to route `/telegram/*` to the bot without the front door's token (production Caddyfile; depends on spec 018 T069).
+- [X] T061 (done in pattern 98: `deploy/caddy/gateway.caddy`, charged per address, and the bot as an opt-in prod service) Configure the reverse proxy to route `/telegram/*` to the bot without the front door's token (production Caddyfile; depends on spec 018 T069).
 - [ ] T062 Rate-limit `/login`; load-test the dispatcher; a consumer-specific processing list for more than one bot process per domain.

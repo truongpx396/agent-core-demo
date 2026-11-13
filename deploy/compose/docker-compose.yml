@@ -388,10 +388,15 @@ services:
     ports:
       # Loopback only: this is a development stack with Casdoor's admin UI behind it.
       - "127.0.0.1:8443:8443"
+    # The directory, not one file: Caddyfile.gateway imports gateway.caddy, the routing production's Caddyfile imports too. Read-only, so the
+    # container cannot rewrite its own configuration.
+    command: ["caddy", "run", "--config", "/etc/caddy/Caddyfile.gateway", "--adapter", "caddyfile"]
     volumes:
-      - ./deploy/caddy/Caddyfile.gateway:/etc/caddy/Caddyfile:ro
+      - ./deploy/caddy:/etc/caddy:ro
       - caddy-gateway-data:/data    # the local CA (and its root certificate: `make mcp-gateway-ca`) lives here
       - caddy-gateway-config:/config
+    extra_hosts:
+      - "host.docker.internal:host-gateway"   # the Telegram bot's own listener runs on the host (`make telegram`); see Caddyfile.gateway's telegram_proxy
     depends_on:
       mcp-gateway:
         condition: service_healthy

@@ -1,6 +1,10 @@
 # Lean production stack for the DigitalOcean droplet deploy/terraform provisions (runbook: deploy/README.md). A smaller set than the dev stack:
 # no Ollama (litellm-config.prod.yaml points at a hosted OpenAI-compatible endpoint), no Langfuse or open-webui, and no MinIO (object storage is
-# DigitalOcean Spaces; the `minio` client talks to any S3-compatible endpoint, see MINIO_* in deploy/env/prod.env.example). Caddy fronts it for TLS.
+# DigitalOcean Spaces; the `minio` client talks to any S3-compatible endpoint, see MINIO_* in deploy/env/prod.env.example).
+#
+# The front door is the same as the development stack's (docker-compose.yml, profile `gateway`; specs/018 T069, pattern 98): Caddy terminates TLS on three real names
+# and asks authlimit about every request; Casdoor issues the tokens; the API runs in identity mode and trusts only the identity authlimit signs. The
+# routing is deploy/caddy/gateway.caddy, imported by both stacks' Caddyfiles. A domain is therefore REQUIRED: identity needs an https issuer.
 #
 # The Grafana/Prometheus/Loki/Alertmanager stack is NOT here: it runs on a separate, smaller droplet (docker-compose.observability.prod.yml) so a
 # metrics or logs spike cannot compete with the app for CPU and memory. This file carries only the sidecars that feed it (node-exporter, cadvisor,
@@ -259,7 +263,17 @@ services:
     stop_grace_period: 60s
     # No `ports:`: a fixed host port cannot be shared across replicas, and Caddy's `dynamic a` upstream needs `--scale api=N`. To reach the API by hand,
     # `ssh` in and `docker compose exec api curl localhost:8000/health` (deploy/README.md).
-    environment: *app-env
+    environment:
+      <<: *app-env
+      # Identity mode, written down rather than left to the default: the API trusts only the identity authlimit signs on a request it verified, and a
+      # request that skips the door is a 401. NEVER `headers` here (any client could claim any tenant; the alert ApiHeaderAuthMode fires). The keys are
+      # authlimit's, by its in-network name; the API answers 503 until they load.
+      AUTH_MODE: identity
+      AUTHLIMIT_KEYS_URL: http://authlimit:8080/internal/jwks.json
+      # What the built-in page signs in against: the issuer, and this API's public address (the audience of the token it asks for). The same two
+      # values authlimit is started with, derived from the same names below, so they cannot disagree.
+      WEB_AUTH_ISSUER: https://${AUTH_DOMAIN:?set AUTH_DOMAIN in .env}
+      WEB_AUTH_AUDIENCE: https://${API_DOMAIN:?set API_DOMAIN in .env}
     depends_on:
       pgbouncer:
         condition: service_healthy
@@ -302,26 +316,214 @@ services:
       redis:
         condition: service_healthy
 
-  # Reverse proxy and TLS, the only service with host ports 80/443 (deploy/terraform's firewall). Let's Encrypt when DOMAIN_NAME is set, plain HTTP on
-  # the reserved IP otherwise (see the Caddyfile).
-  caddy:
-    image: caddy:2-alpine
+  # --- The front door (specs/018 T069, pattern 98): the same services, images and settings as the development stack's `gateway` profile (docker-compose.yml), with
+  # the local names replaced by the three real ones and the passwords required instead of defaulted. ---
+
+  # Casdoor's own Postgres: it migrates its schema on upgrade, so it does not share the app's (the dev stack does the same). Pinned by digest, like dev.
+  casdoor-db:
+    image: postgres:16-alpine@sha256:f4610795587492cd4fb887c2dc3de301b813278bb6f616992061141b5f15ac36
     restart: unless-stopped
     cpus: "0.1"
+    mem_limit: 192m
+    environment:
+      POSTGRES_USER: casdoor
+      POSTGRES_PASSWORD: ${CASDOOR_DB_PASSWORD:?set CASDOOR_DB_PASSWORD in .env}
+      POSTGRES_DB: casdoor
+    volumes:
+      - casdoor-db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U casdoor -d casdoor"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # The OAuth 2.1 authorization server: where people sign in and what issues the tokens authlimit and the MCP gateway verify. Pinned by digest because it
+  # releases almost daily (docker-compose.yml says how to move it). `origin` is the public issuer: every URL Casdoor generates (a token's `iss`, the
+  # discovery document) derives from it, not from the request's Host, and it must equal AUTHLIMIT_ISSUER and MCP_GATEWAY_ISSUER below. No `ports`: reached
+  # through Caddy (the browser sign-in) and, inside the network, by authlimit and the MCP gateway (the signing keys).
+  #
+  # The admin UI is on the same host as the sign-in page: protect the `built-in` admin with CASDOOR_ADMIN_PASSWORD (required), and see deploy/README.md
+  # on narrowing it further.
+  casdoor:
+    image: casbin/casdoor:v4.24.0@sha256:b7a2005518396a1d800ad77a695a4edb0c73eb1123070c35b5624440d5fdc550
+    restart: unless-stopped
+    cpus: "0.2"
+    mem_limit: 384m
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      driverName: postgres
+      dataSourceName: user=casdoor password=${CASDOOR_DB_PASSWORD} host=casdoor-db port=5432 sslmode=disable dbname=casdoor
+      dbName: casdoor
+      runmode: prod
+      origin: https://${AUTH_DOMAIN:?set AUTH_DOMAIN in .env}
+      initAdminPassword: ${CASDOOR_ADMIN_PASSWORD:?set CASDOOR_ADMIN_PASSWORD in .env}
+    depends_on:
+      casdoor-db:
+        condition: service_healthy
+
+  # Edge authentication and rate limiting: Caddy asks it about every request (specs/018), and about the sign-in and webhook routes that carry no token
+  # (pattern 97). Stateless apart from caches, so two replicas behind Caddy's `dynamic a`; its signing keys are a host directory outside the
+  # image and the repo, made once (deploy/README.md) and never written by this service. Every setting that names a place is required: a default would
+  # be the development stack's.
+  authlimit:
+    image: ${AUTHLIMIT_IMAGE:?set AUTHLIMIT_IMAGE in .env}:${IMAGE_TAG:-latest}
+    restart: unless-stopped
+    init: true
+    cpus: "0.2"
     mem_limit: 128m
+    deploy:
+      replicas: 2
+    user: "65532:65532"
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m
+    environment:
+      AUTHLIMIT_ISSUER: https://${AUTH_DOMAIN}
+      # In-network name and plain http: the keys are fetched by this process, not shown to a client, so only the ISSUER has to be public.
+      AUTHLIMIT_JWKS_URL: http://casdoor:8000/.well-known/jwks
+      AUTHLIMIT_AUDIENCE: https://${API_DOMAIN}
+      AUTHLIMIT_REDIS_URL: redis://redis:6379
+      AUTHLIMIT_KEYS_DIR: /keys
+      AUTHLIMIT_LIMIT_MODE: ${AUTHLIMIT_LIMIT_MODE:-enforce}
+      AUTHLIMIT_MCP_METADATA_URL_TEMPLATE: https://${MCP_DOMAIN:?set MCP_DOMAIN in .env}/.well-known/oauth-protected-resource{path}
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector-agent:4318
+    volumes:
+      # Read-only, owned by uid 65532 with mode 700 (deploy/README.md creates it with `authlimit keys init`); `keys rotate` runs the same way and the
+      # replicas pick a new key up without a restart.
+      - ${AUTHLIMIT_KEYS_DIR:-/opt/graph-agent-core/authlimit-keys}:/keys:ro
+    # Ready = a signing key, usable Casdoor keys and a trustworthy revocation list; Caddy's `health_uri /readyz` drops a replica that is not.
+    healthcheck:
+      test: ["CMD", "/authlimit", "healthcheck", "--ready"]
+      interval: 10s
+      timeout: 5s
+      start_period: 15s
+      retries: 5
+    depends_on:
+      redis:
+        condition: service_healthy
+      casdoor:
+        condition: service_started
+
+  # The MCP gateway (specs/017): the two read-only MCP servers over Streamable HTTP, an OAuth 2.1 resource server that verifies tokens itself and never
+  # issues one. The app image with a different command, and only what the two tools read (the app database, Prometheus): no LLM keys, Redis or sandbox
+  # key, because anyone holding a token can reach this process. Stateless, so `--scale mcp-gateway=N` works behind Caddy's `dynamic a`.
+  mcp-gateway:
+    <<: *hardened
+    image: ${APP_IMAGE}:${IMAGE_TAG:-latest}
+    restart: unless-stopped
+    cpus: "0.2"
+    mem_limit: 256m
+    command: ["python", "-m", "app.adapters.inbound.mcp.gateway", "--host", "0.0.0.0", "--port", "8000"]
+    environment:
+      APPDATA_DATABASE_URL: postgresql://langfuse:${POSTGRES_PASSWORD}@pgbouncer:6432/appdata
+      # The ops server reads Prometheus. The observability droplet's is not reachable from here by default (its firewall opens Grafana, OTLP, Loki and
+      # Pyroscope only): point this at one this droplet can reach, or the ops tools report it as unreachable and the directory tools are unaffected.
+      PROMETHEUS_URL: ${MCP_GATEWAY_PROMETHEUS_URL:-http://localhost:9090}
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector-agent:4318
+      MCP_GATEWAY_PUBLIC_URL: https://${MCP_DOMAIN}
+      MCP_GATEWAY_ISSUER: https://${AUTH_DOMAIN}
+      MCP_GATEWAY_JWKS_URL: http://casdoor:8000/.well-known/jwks
+      MCP_GATEWAY_OPS_TENANTS: ${MCP_GATEWAY_OPS_TENANTS:-ops-team}
+      # Read by `scripts.tools.mcp_gateway_bootstrap`, which runs inside this container (deploy/README.md): the chat API's resource identifier.
+      AUTHLIMIT_AUDIENCE: https://${API_DOMAIN}
+    # Ready = can check a token: a replica that cannot reach the signing keys leaves rotation instead of answering 401.
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/readyz', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      start_period: 10s
+      retries: 5
+    depends_on:
+      pgbouncer:
+        condition: service_healthy
+      casdoor:
+        condition: service_started
+
+  # The Telegram bot (specs/020, 021), opt-in: `docker compose --profile telegram up -d`. A client of the chat API through the front door like the web page
+  # and the CLI, never the queue or the graph. It reaches the API and Casdoor by their public names, which Caddy's network aliases below resolve to Caddy
+  # itself, so it needs no hairpin through the droplet's public address and the certificates verify. In `poll` mode (the default) it needs no inbound
+  # port at all; in `webhook` mode, and for the page a login returns to, Caddy routes /telegram/* to its listener (deploy/caddy/gateway.caddy).
+  telegram-bot:
+    <<: *hardened
+    image: ${APP_IMAGE}:${IMAGE_TAG:-latest}
+    profiles: ["telegram"]
+    restart: unless-stopped
+    cpus: "0.1"
+    mem_limit: 192m
+    command: ["python", "-m", "app.adapters.inbound.channels.telegram.bot"]
+    healthcheck: *worker-healthcheck
+    environment:
+      REDIS_URL: redis://redis:6379
+      AUTH_MODE: identity
+      CHANNEL_API_URL: https://${API_DOMAIN}
+      WEB_AUTH_ISSUER: https://${AUTH_DOMAIN}
+      WEB_AUTH_AUDIENCE: https://${API_DOMAIN}
+      AGENT_DOMAIN: ${TELEGRAM_AGENT_DOMAIN:-ecorp}
+      # Not `:?`: compose interpolates the whole file for every command, profile or not, so a required variable here would break `pull` and `up` for
+      # everyone who does not run the bot. The bot itself refuses to start without it (telegram/bot.py check_settings).
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_MODE: ${TELEGRAM_MODE:-poll}
+      TELEGRAM_WEBHOOK_URL: ${TELEGRAM_WEBHOOK_URL:-}
+      TELEGRAM_WEBHOOK_SECRET: ${TELEGRAM_WEBHOOK_SECRET:-}
+      # Bound to every interface of its own container, which is only reachable from Caddy over the compose network (no `ports`).
+      TELEGRAM_LISTEN_HOST: 0.0.0.0
+      TELEGRAM_PERSON_SECRET: ${TELEGRAM_PERSON_SECRET:-}
+      TELEGRAM_TENANT: ${TELEGRAM_TENANT:-}
+      TELEGRAM_LINKING: ${TELEGRAM_LINKING:-false}
+      TELEGRAM_LINK_PUBLIC_URL: https://${API_DOMAIN}
+      TELEGRAM_LINK_KEY: ${TELEGRAM_LINK_KEY:-}
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector-agent:4318
+    depends_on:
+      redis:
+        condition: service_healthy
+      caddy:
+        condition: service_started
+
+  # Reverse proxy and TLS, the only service with host ports 80/443 (deploy/terraform's firewall): Let's Encrypt on the three names. The same image,
+  # pinned by digest, as the development stack's. deploy/caddy/Caddyfile is the entry; it imports gateway.caddy, so the directory is mounted.
+  caddy:
+    image: caddy:2.11.7@sha256:504a44d7d74bd2bc28a66afc4774912fc21223ca8a67734af1c54ab2f999b489
+    restart: unless-stopped
+    cpus: "0.2"
+    mem_limit: 128m
+    security_opt:
+      - no-new-privileges:true
     ports:
       - "80:80"
       - "443:443"
+    command: ["caddy", "run", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile"]
     environment:
-      # Resolved here, not by Caddy's own {$VAR:default}: that default only fires on an UNSET variable, and .env's `DOMAIN_NAME=` is set-but-empty,
-      # which would leave an empty site address and corrupt the site block. Compose's `:-` treats empty and unset alike (verified).
-      CADDY_SITE_ADDRESS: ${DOMAIN_NAME:-:80}
+      API_DOMAIN: ${API_DOMAIN:?set API_DOMAIN in .env}
+      AUTH_DOMAIN: ${AUTH_DOMAIN:?set AUTH_DOMAIN in .env}
+      MCP_DOMAIN: ${MCP_DOMAIN:?set MCP_DOMAIN in .env}
     volumes:
-      - ./deploy/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./deploy/caddy:/etc/caddy:ro
       - caddy_data:/data
       - caddy_config:/config
+    networks:
+      default:
+        # The public names resolve to this container for the services inside the network that call the door the way a client does (the Telegram bot).
+        aliases:
+          - ${API_DOMAIN}
+          - ${AUTH_DOMAIN}
+          - ${MCP_DOMAIN}
+    # `service_started`, not `service_healthy`, for authlimit and the MCP gateway: Caddy's own health checks (`health_uri /readyz`) already keep a replica
+    # that cannot decide out of rotation and the routes that need it fail CLOSED (a 502), so a missing signing key shows up as exactly that. Waiting for
+    # healthy instead would make the first deploy of a fresh droplet, before its keys exist (deploy/README.md), never finish.
     depends_on:
-      - api
+      api:
+        condition: service_started
+      authlimit:
+        condition: service_started
+      casdoor:
+        condition: service_started
+      mcp-gateway:
+        condition: service_started
 
   # --- Observability sidecars: relay this droplet's metrics and logs to the observability droplet (docker-compose.observability.prod.yml; its header has the
   # topology). None publishes a host port; only otel-collector-agent and promtail reach off-box (OTLP to OBS_COLLECTOR_ENDPOINT, Loki push to
@@ -398,3 +600,4 @@ volumes:
   ml-service:
   caddy_data:
   caddy_config:
+  casdoor-db:
