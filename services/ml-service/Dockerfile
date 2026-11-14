@@ -20,7 +20,7 @@
 FROM python:3.13-slim@sha256:57b29a7c050c4e679e4bea572e14b3965cf4b5839de2da49d55e49ffc4024f39 AS base
 
 # ---- uv: the installer, pinned by digest (see the root Dockerfile) ----------------------------------------------------------
-FROM ghcr.io/astral-sh/uv:0.13.7@sha256:96f40d3904aad8d0bd010539001d36c8e2188b981e1334471a90c4a1d93bb490 AS uv
+FROM ghcr.io/astral-sh/uv:0.13.8@sha256:5cc1805e2426484abca4ad46ea783bab281fdb225fd82d8ce6d66a81254bac85 AS uv
 
 # ---- builder: dependencies only, never shipped ------------------------------------------------------------------------------
 FROM base AS builder
